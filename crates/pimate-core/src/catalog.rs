@@ -73,6 +73,16 @@ impl State {
                     self.keyed(col, "id", row)
                 }
             }
+            "set_default_model" => self.put("view", "defaultModel", body["default"].clone()),
+            "set_scoped_models" => {
+                for (id, mut m) in self.models() {
+                    m["favorite"] = json!(body["scoped"].as_array().is_some_and(|s| {
+                        s.iter()
+                            .any(|f| f["id"] == m["id"] && f["provider"] == m["provider"])
+                    }));
+                    self.put("model", &id, m)
+                }
+            }
             "set_model" => self.put("view", "model", body["model"].clone()),
             "set_thinking" => self.put("view", "thinking", body["thinking"].clone()),
             "auth_list" | "auth_begin" | "auth_wait" | "auth_cancel" | "auth_respond" => {
@@ -112,6 +122,9 @@ impl State {
         Ok(())
     }
     pub(crate) fn builtins(&mut self) {
+        if self.get("view", "slashCommands") != true {
+            return;
+        }
         for name in [
             "model", "reload", "new", "resume", "fork", "compact", "tree",
         ] {

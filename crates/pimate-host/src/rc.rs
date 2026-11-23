@@ -2,18 +2,13 @@ use crate::config::private;
 use anyhow::{Result, anyhow, ensure};
 use futures_util::{SinkExt, StreamExt};
 use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+pub use pimate_protocol::valid_instance_id as valid_id;
 use pimate_protocol::{PROTOCOL_VERSION, decode_json};
 use serde_json::{Value, json};
 use std::{fs, path::Path, time::Duration};
 use tokio::{net::UnixStream, time::timeout};
 use tokio_util::codec::{Framed, LinesCodec};
 use uuid::Uuid;
-pub fn valid_id(id: &str) -> bool {
-    (1..=100).contains(&id.len())
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
-}
 pub struct Rc {
     pub(super) io: Framed<UnixStream, LinesCodec>,
     id: String,

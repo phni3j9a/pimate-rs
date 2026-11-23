@@ -8,7 +8,7 @@ use std::{
 };
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, oneshot, watch},
+    sync::{broadcast, mpsc, oneshot, watch},
     time::{Instant, timeout},
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
@@ -17,7 +17,7 @@ type Reply = oneshot::Sender<Result<String, Error>>;
 struct Command(Operation, Reply);
 struct Shared {
     state: Mutex<State>,
-    listener: Arc<dyn Listener>,
+    notifications: broadcast::Sender<(u64, Vec<crate::Change>)>,
     online: Mutex<Option<mpsc::Sender<Command>>>,
 }
 impl Shared {
@@ -28,14 +28,36 @@ impl Shared {
         if !changes.is_empty() {
             s.revision += 1;
             let revision = s.revision;
-            drop(s);
-            self.listener.changed(revision, changes)
+            let _ = self.notifications.send((revision, changes));
         }
         out
     }
     fn status(&self, s: &str) {
         self.edit(|st| st.put("host", "connection", json!(s)))
     }
+}
+/// Never wait for foreign code on a runtime worker. A bounded mailbox reports lag even
+/// when the producer goes idle immediately after filling it.
+fn delivery(listener: Arc<dyn Listener>) -> broadcast::Sender<(u64, Vec<crate::Change>)> {
+    let (tx, mut rx) = broadcast::channel(8);
+    std::thread::spawn(move || {
+        let mut lagged = false;
+        loop {
+            match rx.blocking_recv() {
+                Ok((rev, changes)) => listener.changed(
+                    rev,
+                    if std::mem::take(&mut lagged) {
+                        vec![crate::Change::ResyncRequired]
+                    } else {
+                        changes
+                    },
+                ),
+                Err(broadcast::error::RecvError::Lagged(_)) => lagged = true,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    tx
 }
 pub struct Connection {
     shared: Arc<Shared>,
@@ -57,7 +79,7 @@ impl Connection {
     ) -> Arc<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
-            listener,
+            notifications: delivery(listener),
             online: Mutex::default(),
         });
         let (selection, mut rx) = watch::channel(None);
@@ -72,6 +94,14 @@ impl Connection {
                     .unwrap_or(Error::Offline);
                 *s.online.lock().unwrap() = None;
                 s.edit(|st| {
+                    for id in st.drafts.iter().map(|d| d.id.clone()).collect::<Vec<_>>() {
+                        if matches!(
+                            st.get("draft", &id)["status"].as_str(),
+                            Some("sending" | "queued")
+                        ) {
+                            unconfirmed(st, &id)
+                        }
+                    }
                     st.reset();
                     st.selected = None;
                     st.put("host", "selection", Value::Null);
@@ -81,13 +111,6 @@ impl Connection {
                     }
                     st.clear("instance");
                     st.put("host", "listKnown", json!(false));
-                    for id in st.drafts.iter().map(|d| d.id.clone()).collect::<Vec<_>>() {
-                        let mut v = st.get("draft", &id).clone();
-                        if matches!(v["status"].as_str(), Some("sending" | "queued")) {
-                            v["status"] = json!("unconfirmed");
-                            st.put("draft", &id, v)
-                        }
-                    }
                 });
                 if matches!(error, Error::Revoked | Error::InvalidToken)
                     && store
@@ -148,25 +171,35 @@ impl Connection {
             items: st.snapshot(),
         }
     }
-    pub fn subscribe(&self, instance: Option<String>) {
+    pub fn subscribe(&self, instance: Option<String>) -> Result<(), Error> {
+        if instance
+            .as_deref()
+            .is_some_and(|id| !pimate_protocol::valid_instance_id(id))
+        {
+            return Err(Error::BadRequest);
+        }
         self.selection.send_replace(instance);
+        Ok(())
     }
     pub async fn perform(&self, operation: Operation) -> Result<String, Error> {
         if let Operation::Rc {
             target,
-            method: pimate_protocol::RcMethod::EntryImage,
+            method:
+                method @ (pimate_protocol::RcMethod::EntryImage | pimate_protocol::RcMethod::FileImage),
             params,
         } = &operation
         {
             // Serialize large replies; immutable transcript entries are shared within one connection.
             let mut cache = self.images.lock().await;
             self.check(operation.clone())?;
-            let key = json!([target.instance, target.session, params]).to_string();
+            let key = json!([target.instance, target.session, method, params]).to_string();
             if let Some(v) = cache.shift_remove(&key) {
                 cache.insert(key, v.clone());
                 return Ok(v);
             }
-            let cacheable = target.session.is_some();
+            // Files can change in place. Only immutable history entries are cached.
+            let cacheable =
+                target.session.is_some() && *method == pimate_protocol::RcMethod::EntryImage;
             let v = self.dispatch(operation).await?;
             if cacheable {
                 const MAX: usize = 24 * 1024 * 1024;
@@ -254,6 +287,21 @@ async fn read(ws: &mut Ws) -> Result<Value, Error> {
             Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
             _ => return Err(Error::Offline),
         }
+    }
+}
+fn request_timeout(m: &Value) -> Duration {
+    if m["type"] == "update" {
+        Duration::from_secs(630)
+    } else if m["request"]["method"] == "subagents_rpc" {
+        Duration::from_millis(
+            m["request"]["params"]["timeoutMs"]
+                .as_u64()
+                .unwrap_or(15000)
+                .min(120000)
+                + 32000,
+        )
+    } else {
+        Duration::from_secs(90)
     }
 }
 struct Pending {
@@ -370,6 +418,7 @@ async fn attempt(
                 let method = m["request"]["method"].as_str().map(str::to_owned);
                 let session = m["request"]["expectSessionId"].clone();
                 let thumbnail = m["request"]["params"]["thumbnail"] == true;
+                let deadline = Instant::now() + request_timeout(&m);
                 send(&mut ws, m).await?;
                 if kind == "auth_session_end" {
                     let _ = reply.send(Ok("{}".into()));
@@ -378,7 +427,7 @@ async fn attempt(
                         id,
                         Pending {
                             reply,
-                            deadline: Instant::now() + Duration::from_secs(90),
+                            deadline,
                             kind,
                             instance,
                             hold,
@@ -426,6 +475,9 @@ async fn attempt(
                     let p = pending.remove(&id).unwrap();
                     s.edit(|st| {
                         st.release(&id);
+                        if p.method.as_deref() == Some("abort") {
+                            st.settle_drafts(&p.instance, &p.session, true)
+                        }
                         unconfirmed(st, &id)
                     });
                     let _ = p.reply.send(Err(Error::OutcomeUnknown));
@@ -474,6 +526,9 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
             _ => Error::Rejected,
         };
         if err == Error::OutcomeUnknown {
+            if p.method.as_deref() == Some("abort") {
+                st.settle_drafts(&p.instance, &p.session, true)
+            }
             unconfirmed(st, id)
         } else if !st.get("draft", id).is_null() {
             let mut v = st.get("draft", id).clone();
@@ -487,12 +542,19 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     };
     let mut body = crate::operation::rc_result(method, &result["result"])
         .inspect_err(|_| unconfirmed(st, id))?;
-    if method == "prompt" {
-        if matches!(body["deliveredAs"].as_str(), Some("steer" | "followUp")) {
-            st.draft_status(id, "queued")
-        } else {
-            st.forget_draft(id)
+    if method == "abort" {
+        st.settle_drafts(&p.instance, &p.session, true)
+    }
+    if matches!(method.as_str(), "session_op" | "compact") {
+        let mut op = st.get("busy", "operation").clone();
+        if op["id"] == id {
+            op["accepted"] = json!(true);
+            st.put("busy", "operation", op)
         }
+        return Ok(body.to_string());
+    }
+    if method == "prompt" {
+        st.prompt_ack(id, &body["deliveredAs"]);
     }
     let dedicated = st.auth_targets.values().any(|i| p.instance == *i);
     if !(dedicated
@@ -513,11 +575,7 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     Ok(body.to_string())
 }
 fn unconfirmed(st: &mut State, id: &str) {
-    let mut v = st.get("draft", id).clone();
-    if !v.is_null() {
-        v["status"] = json!("unconfirmed");
-        st.put("draft", id, v)
-    }
+    st.draft_status(id, "unconfirmed");
 }
 impl Connection {
     /// Acquire a login-only Pi and check both Host and RC capabilities. End the hold when the screen closes.
@@ -588,5 +646,143 @@ impl Connection {
     }
     pub fn command_suggestions(&self, text: String) -> Vec<String> {
         self.shared.state.lock().unwrap().suggestions(&text)
+    }
+}
+#[cfg(test)]
+mod regressions {
+    use super::*;
+    use std::sync::mpsc as channel;
+    #[test]
+    fn deadlines_outlast_host_processing() {
+        assert!(request_timeout(&json!({"type":"update"})) > Duration::from_secs(600));
+        assert!(
+            request_timeout(
+                &json!({"type":"rc","request":{"method":"subagents_rpc","params":{"timeoutMs":120000}}})
+            ) > Duration::from_secs(122)
+        );
+    }
+    #[test]
+    fn abort_success_or_unknown_retains_queued_drafts_but_rejection_does_not() {
+        for (result, status) in [
+            (json!({"ok":true,"result":{}}), "unconfirmed"),
+            (
+                json!({"ok":false,"error":{"code":"timeout"}}),
+                "unconfirmed",
+            ),
+            (
+                json!({"ok":false,"error":{"code":"session_changed"}}),
+                "queued",
+            ),
+        ] {
+            let mut s = State::default();
+            s.selected = Some("i".into());
+            s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":1,"session":{"id":"s"}},"history":{"items":[]}}));
+            s.prepare(
+                "prompt",
+                Operation::Send {
+                    target: crate::Target {
+                        instance: "i".into(),
+                        session: Some("s".into()),
+                    },
+                    text: "first".into(),
+                    images: vec![],
+                },
+                true,
+            )
+            .unwrap();
+            s.prompt_ack("prompt", &json!("steer"));
+            let p = Pending {
+                reply: oneshot::channel().0,
+                deadline: Instant::now(),
+                kind: "rc".into(),
+                instance: json!("i"),
+                hold: None,
+                method: Some("abort".into()),
+                session: json!("s"),
+                thumbnail: false,
+            };
+            let _ = resolve(&mut s, &p, "stop", &result);
+            assert_eq!(s.get("draft", "prompt")["status"], status);
+        }
+    }
+    struct Blocking {
+        events: channel::Sender<(u64, Vec<crate::Change>)>,
+        resume: Mutex<channel::Receiver<()>>,
+    }
+    impl Listener for Blocking {
+        fn changed(&self, revision: u64, changes: Vec<crate::Change>) {
+            self.events.send((revision, changes)).unwrap();
+            if revision == 1 {
+                self.resume.lock().unwrap().recv().unwrap();
+            }
+        }
+    }
+    #[test]
+    fn blocked_listener_cannot_block_producer_and_gets_resync_after_overflow() {
+        let (tx, rx) = channel::channel();
+        let (resume, wait) = channel::channel();
+        let shared = Shared {
+            state: Mutex::default(),
+            online: Mutex::default(),
+            notifications: delivery(Arc::new(Blocking {
+                events: tx,
+                resume: Mutex::new(wait),
+            })),
+        };
+        shared.status("connected");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().0, 1);
+        for n in 2..=40 {
+            shared.status(&n.to_string())
+        }
+        assert_eq!(shared.state.lock().unwrap().revision, 40);
+        resume.send(()).unwrap();
+        let (r, c) = rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(c, [crate::Change::ResyncRequired]);
+        assert!(r > 1);
+        for _ in r..40 {
+            rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn entry_and_file_images_share_a_serial_network_queue() {
+        let (tx, mut rx) = mpsc::channel(3);
+        let mut st = State::default();
+        st.selected = Some("i".into());
+        st.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":1,"session":{"id":"s"},"entryImages":true,"fileImages":true},"history":{"items":[]}}));
+        let c = Connection {
+            shared: Arc::new(Shared {
+                state: Mutex::new(st),
+                notifications: broadcast::channel(1).0,
+                online: Mutex::new(Some(tx)),
+            }),
+            selection: watch::channel(None).0,
+            task: tokio::spawn(async {}),
+            images: Default::default(),
+        };
+        let request = |method, params: Value| Operation::Rc {
+            method,
+            params: params.to_string(),
+            target: crate::Target {
+                instance: "i".into(),
+                session: Some("s".into()),
+            },
+        };
+        use pimate_protocol::RcMethod::*;
+        let mut a = Box::pin(c.perform(request(FileImage, json!({"path":"one"}))));
+        let mut b = Box::pin(c.perform(request(EntryImage, json!({"entryId":"u","index":0}))));
+        let mut d = Box::pin(c.perform(request(FileImage, json!({"path":"two"}))));
+        assert!(futures_util::poll!(&mut a).is_pending());
+        assert!(futures_util::poll!(&mut b).is_pending());
+        assert!(futures_util::poll!(&mut d).is_pending());
+        let cmd = rx.try_recv().unwrap();
+        assert!(rx.try_recv().is_err());
+        cmd.1.send(Ok("image1".into())).unwrap();
+        a.await.unwrap();
+        assert!(futures_util::poll!(&mut b).is_pending());
+        rx.try_recv().unwrap().1.send(Ok("image2".into())).unwrap();
+        b.await.unwrap();
+        assert!(futures_util::poll!(&mut d).is_pending());
+        rx.try_recv().unwrap().1.send(Ok("image3".into())).unwrap();
+        d.await.unwrap();
     }
 }

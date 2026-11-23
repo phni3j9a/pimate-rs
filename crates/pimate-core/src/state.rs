@@ -10,6 +10,7 @@ pub struct Item {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub enum Change {
+    ResyncRequired,
     Upsert(Item),
     Remove { collection: String, id: String },
 }
@@ -18,7 +19,7 @@ pub struct Snapshot {
     pub revision: u64,
     pub items: Vec<Item>,
 }
-/// Called serially on the core runtime. Enqueue UI work and return without blocking.
+/// Called in revision order on a dedicated delivery thread. On ResyncRequired replace the mirror with snapshot().
 pub trait Listener: Send + Sync {
     fn changed(&self, revision: u64, changes: Vec<Change>);
 }
@@ -30,6 +31,7 @@ pub(crate) struct State {
     pub changes: Vec<Change>,
     pub selected: Option<String>,
     seq: Option<u64>,
+    effect_seq: Option<u64>,
     pub caps: Value,
     pub drafts: Vec<Draft>,
 }
@@ -49,6 +51,9 @@ fn item(c: &str, id: &str, pos: usize, v: &Value) -> Item {
     }
 }
 impl State {
+    pub(crate) fn models(&self) -> IndexMap<String, Value> {
+        self.rows.get("model").cloned().unwrap_or_default()
+    }
     pub fn snapshot(&self) -> Vec<Item> {
         self.rows
             .iter()
@@ -95,8 +100,15 @@ impl State {
         }
     }
     pub fn reset(&mut self) {
-        self.seq = None;
+        self.effect_seq = None;
         self.clear("busy");
+        self.clear("operationResult");
+        self.clear("notice");
+        self.reset_view()
+    }
+    fn reset_view(&mut self) {
+        self.seq = None;
+        self.remove("busy", "answer");
         for c in [
             "entry", "question", "quota", "run", "tool", "stream", "view", "command", "session",
             "model", "node",
@@ -118,7 +130,16 @@ impl State {
         let mut v = self.get("draft", id).clone();
         if !v.is_null() {
             v["status"] = json!(status);
-            self.put("draft", id, v)
+            self.put("draft", id, v);
+            if matches!(status, "unconfirmed" | "queued")
+                && self.drafts.iter().find(|d| d.id == id).is_some_and(|d| {
+                    self.rows
+                        .get("entry")
+                        .is_some_and(|r| r.values().any(|v| self.matches_entry(d, v)))
+                })
+            {
+                self.forget_draft(id)
+            }
         }
     }
     pub fn release(&mut self, id: &str) {
@@ -140,14 +161,33 @@ impl State {
         }
 
         if let Some(i) = self.drafts.iter().position(|d| {
-            self.selected.as_ref() == Some(&d.instance)
-                && self.get("view", "session")["id"] == d.session
-                && !d.known.contains(&id)
-                && v["text"].as_str().map(str::trim) == d.params["text"].as_str().map(str::trim)
-                && same_images(&v, &d.params)
+            matches!(
+                self.get("draft", &d.id)["status"].as_str(),
+                Some("queued" | "unconfirmed")
+            ) && self.matches_entry(d, &v)
         }) {
             let id = self.drafts.remove(i).id;
             self.remove("draft", &id)
+        }
+    }
+    fn matches_entry(&self, d: &Draft, v: &Value) -> bool {
+        v["kind"] == "user"
+            && self.selected.as_ref() == Some(&d.instance)
+            && self.get("view", "session")["id"] == d.session
+            && v["entryId"]
+                .as_str()
+                .is_some_and(|id| !d.known.contains(id))
+            && v["text"].as_str().map(str::trim) == d.params["text"].as_str().map(str::trim)
+            && same_images(v, &d.params)
+    }
+    pub fn prompt_ack(&mut self, id: &str, delivery: &Value) {
+        if self.get("draft", id)["status"] != "sending" {
+            return;
+        }
+        if matches!(delivery.as_str(), Some("steer" | "followUp")) {
+            self.draft_status(id, "queued")
+        } else {
+            self.forget_draft(id)
         }
     }
     pub(crate) fn keyed(&mut self, c: &str, key: &str, v: &Value) {
@@ -181,7 +221,7 @@ impl State {
                     Some((v["instanceId"].as_str()?.to_owned(), v))
                 })
                 .collect();
-            let prev = self
+            let mut prev = self
                 .rows
                 .insert("instance".into(), next)
                 .unwrap_or_default();
@@ -192,11 +232,15 @@ impl State {
                     id: id.clone(),
                 })
             }
+            prev.retain(|id, _| next.contains_key(id));
             for (i, (id, v)) in next.iter().enumerate() {
-                if prev
-                    .get_full(id)
-                    .is_none_or(|(p, _, old)| p != i || old != v)
-                {
+                let changed = prev.get(id) != Some(v);
+                let pos = prev.get_index_of(id).unwrap_or_else(|| {
+                    prev.insert(id.clone(), Value::Null);
+                    prev.len() - 1
+                });
+                if pos != i || changed {
+                    prev.move_index(pos, i);
                     self.changes
                         .push(Change::Upsert(item("instance", id, i, v)))
                 }
@@ -208,9 +252,12 @@ impl State {
         }
         match t {
             "subscribed" => {
-                self.reset();
+                // A fresh snapshot is not proof that a pending operation completed.
+                self.finish_missing_op(&m["snapshot"]["session"]["id"]);
+                self.reset_view();
                 let s = &m["snapshot"];
                 self.seq = s["seq"].as_u64();
+                self.effect_seq = self.seq;
                 for (k, v) in s.as_object().into_iter().flatten() {
                     match k.as_str() {
                         "pendingUI" => {
@@ -267,7 +314,11 @@ impl State {
                 self.put("view", "phase", json!("ready"))
             }
             "subscribe_error" | "instance_gone" => {
-                self.reset();
+                if t == "instance_gone" {
+                    self.reset()
+                } else {
+                    self.reset_view()
+                }
                 self.put("view", "phase", json!(t));
                 if t == "subscribe_error" {
                     self.put("view", "error", m["code"].clone())
@@ -277,6 +328,43 @@ impl State {
                 let Some(seq) = m["seq"].as_u64() else {
                     return false;
                 };
+                let e = &m["event"];
+                let k = e["type"].as_str().unwrap_or_default();
+                // Host forwards these before `subscribed`: they are not represented in history.
+                if matches!(
+                    k,
+                    "session_op_done" | "compact_done" | "compact_error" | "notify"
+                ) {
+                    if self.seq.max(self.effect_seq).is_some_and(|n| seq <= n) {
+                        return false;
+                    }
+                    self.effect_seq = Some(seq);
+                    if k == "notify" {
+                        self.put("notice", "latest", json!({"seq":seq,"event":e}));
+                        return false;
+                    }
+                    let op = self.get("busy", "operation");
+                    if !(k == "session_op_done"
+                        && op["method"] == "session_op"
+                        && op["op"] == e["op"]
+                        || k.starts_with("compact_")
+                            && op["method"] == "compact"
+                            && op["sessionId"] == m["sessionId"])
+                    {
+                        return false;
+                    }
+                    let mut result = json!({"id":op["id"],"sessionId":m["sessionId"],"event":e});
+                    if e["op"] == "tree"
+                        && (op["sessionId"] != m["sessionId"]
+                            || self.ready() && op["sessionId"] != self.get("view", "session")["id"]
+                            || !op["arrival"].is_null() && op["arrival"] != op["sessionId"])
+                    {
+                        result = json!({"id":op["id"],"outcome":"unknown"})
+                    }
+                    self.put("operationResult", "latest", result);
+                    self.remove("busy", "operation");
+                    return false;
+                }
                 if self.seq.is_none_or(|n| seq <= n) {
                     return false;
                 }
@@ -289,7 +377,25 @@ impl State {
                 let e = &m["event"];
                 match e["type"].as_str().unwrap_or("") {
                     "session_changed" => {
-                        self.reset();
+                        let mut op = self.get("busy", "operation").clone();
+                        if !op.is_null()
+                            && op["method"] == "session_op"
+                            && op["op"] == e["reason"]
+                            && op["sessionId"] == self.get("view", "session")["id"]
+                        {
+                            if op["op"] == "reload" {
+                                self.put(
+                                    "operationResult",
+                                    "latest",
+                                    json!({"id":op["id"],"outcome":"done"}),
+                                );
+                                self.remove("busy", "operation")
+                            } else {
+                                op["arrival"] = e["session"]["id"].clone();
+                                self.put("busy", "operation", op)
+                            }
+                        }
+                        self.reset_view();
                         self.put("view", "phase", json!("resyncing"));
                         return true;
                     }
@@ -351,23 +457,7 @@ impl State {
                         self.put("view", "agentActive", json!(true))
                     }
                     "agent_settled" => {
-                        let drafts = self
-                            .drafts
-                            .iter()
-                            .filter(|d| {
-                                self.selected.as_ref() == Some(&d.instance)
-                                    && d.session == self.get("view", "session")["id"]
-                                    && self.get("draft", &d.id)["status"] == "queued"
-                            })
-                            .map(|d| d.id.clone())
-                            .collect::<Vec<_>>();
-                        for id in drafts {
-                            if e["aborted"] == true {
-                                self.draft_status(&id, "unconfirmed")
-                            } else {
-                                self.forget_draft(&id)
-                            }
-                        }
+                        self.settle_drafts(&m["instanceId"], &m["sessionId"], e["aborted"] == true);
                         let tools = self
                             .rows
                             .get("tool")
@@ -416,21 +506,43 @@ impl State {
                         );
                         self.put("tool", id, Value::Object(tool))
                     }
-                    k @ ("session_op_done" | "compact_done" | "compact_error") => {
-                        let op = self.get("busy", "operation");
-                        if (k == "session_op_done" && op["method"] == "session_op")
-                            || (k.starts_with("compact_") && op["method"] == "compact")
-                        {
-                            self.remove("busy", "operation")
-                        }
-                        self.put("view", k, e.clone())
-                    }
                     _ => {}
                 }
             }
             _ => {}
         }
         false
+    }
+    pub fn settle_drafts(&mut self, instance: &Value, session: &Value, aborted: bool) {
+        let ids = self
+            .drafts
+            .iter()
+            .filter(|d| {
+                d.instance == *instance
+                    && d.session == *session
+                    && (self.get("draft", &d.id)["status"] == "queued"
+                        || aborted && self.get("draft", &d.id)["status"] == "sending")
+            })
+            .map(|d| d.id.clone())
+            .collect::<Vec<_>>();
+        for id in ids {
+            if aborted {
+                self.draft_status(&id, "unconfirmed")
+            } else {
+                self.forget_draft(&id)
+            }
+        }
+    }
+    fn finish_missing_op(&mut self, session: &Value) {
+        let op = self.get("busy", "operation");
+        if op["accepted"] == true || !op["arrival"].is_null() {
+            self.put(
+                "operationResult",
+                "latest",
+                json!({"id":op["id"],"outcome":if op["op"]!="tree"&&!op["arrival"].is_null()&&op["arrival"]==*session&&op["sessionId"]!=*session{"done"}else{"unknown"}}),
+            );
+            self.remove("busy", "operation")
+        }
     }
     fn runs(&mut self, v: &Value) {
         self.clear("run");

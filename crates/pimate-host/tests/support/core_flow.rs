@@ -178,7 +178,10 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let c = core.connect(h.id, Arc::new(Changes(tx)))?;
     until(&mut rx, "instance", "stub", None).await?;
-    c.subscribe(Some("stub".into()));
+    c.subscribe(Some("stub".into()))?;
+    for bad in ["", "../stub", "invalid/target", &"x".repeat(101)] {
+        assert_eq!(c.subscribe(Some(bad.into())), Err(Error::BadRequest));
+    }
     until(&mut rx, "stream", "text", Some("hello")).await?;
     let target = Target {
         instance: "stub".into(),

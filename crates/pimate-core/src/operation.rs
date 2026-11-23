@@ -90,7 +90,7 @@ impl State {
             self.put(
                 "busy",
                 lock,
-                json!({"id":id,"requestId":msg["request"]["params"]["requestId"],"method":method}),
+                json!({"id":id,"requestId":msg["request"]["params"]["requestId"],"method":method,"op":msg["request"]["params"]["op"],"sessionId":msg["request"]["expectSessionId"]}),
             )
         }
         Ok(msg)
@@ -110,7 +110,7 @@ impl State {
                     || self.drafts.iter().any(|d| {
                         d.instance == target.instance
                             && d.session == json!(target.session)
-                            && self.get("draft", &d.id)["status"] != "queued"
+                            && self.get("draft", &d.id)["status"] == "sending"
                     })
                 {
                     return Err(Error::Blocked);
@@ -148,6 +148,20 @@ impl State {
                     }
                 }
                 if commit {
+                    let replaced = self
+                        .drafts
+                        .iter()
+                        .filter(|d| {
+                            d.instance == target.instance
+                                && d.session == json!(target.session)
+                                && d.params == params
+                                && self.get("draft", &d.id)["status"] == "unconfirmed"
+                        })
+                        .map(|d| d.id.clone())
+                        .collect::<Vec<_>>();
+                    for id in replaced {
+                        self.forget_draft(&id)
+                    }
                     self.drafts.push(Draft {
                         id: id.into(),
                         instance: target.instance.clone(),
@@ -160,6 +174,9 @@ impl State {
                 return Ok(rc(id, target, "prompt", params));
             }
             Abort { target } => {
+                if target.session.as_deref().is_none_or(str::is_empty) {
+                    return Err(Error::StaleTarget);
+                }
                 self.target(&target)?;
                 return Ok(rc(id, target, "abort", json!({})));
             }

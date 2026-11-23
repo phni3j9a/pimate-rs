@@ -166,3 +166,10 @@ impl Core {
         Ok(Connection::start(host, token, listener, self.store.clone()))
     }
 }
+// Fail closed if a future version/feature combination changes the static filter.
+const _: () = assert!(matches!(log::STATIC_MAX_LEVEL, log::LevelFilter::Off));
+const _: () = assert!(
+    tracing::level_filters::STATIC_MAX_LEVEL
+        .into_level()
+        .is_none()
+);

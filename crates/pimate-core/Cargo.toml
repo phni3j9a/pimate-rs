@@ -16,3 +16,6 @@ indexmap = "2"
 thiserror = "2"
 serde.workspace = true
 base64.workspace = true
+# Both debug and release: downstream runtime filters must never enable raw HTTP/WS frames.
+log = { version = "0.4", features = ["max_level_off", "release_max_level_off"] }
+tracing = { version = "0.1", default-features = false, features = ["max_level_off", "release_max_level_off"] }

@@ -255,3 +255,280 @@ fn image_receipts_reject_garbage() {
         );
     }
 }
+
+#[test]
+fn stop_before_or_after_steer_ack_preserves_only_unconsumed_input() {
+    for ack_first in [true, false] {
+        for consumed in [true, false] {
+            let mut s = view();
+            s.prepare("p", send("direction", vec![]), true).unwrap();
+            if ack_first {
+                s.prompt_ack("p", &json!("steer"))
+            }
+            if consumed {
+                event(
+                    &mut s,
+                    6,
+                    json!({"type":"message_end","item":{"kind":"user","entryId":"u","text":"direction"}}),
+                );
+            }
+            event(&mut s, 7, json!({"type":"agent_settled","aborted":true}));
+            if !ack_first {
+                s.prompt_ack("p", &json!("steer"))
+            }
+            event(&mut s, 9, json!({"type":"agent_settled","aborted":false}));
+            assert_eq!(
+                s.get("draft", "p")["status"],
+                if consumed {
+                    Value::Null
+                } else {
+                    json!("unconfirmed")
+                }
+            );
+        }
+    }
+}
+#[test]
+fn pc_history_cannot_confirm_a_rejected_request_or_unlock_a_pending_send() {
+    let mut s = view();
+    s.prepare("p", send("yes", vec![]), true).unwrap();
+    event(
+        &mut s,
+        6,
+        json!({"type":"message_end","item":{"kind":"user","entryId":"pc","text":"yes"}}),
+    );
+    assert_eq!(
+        s.prepare("q", send("next", vec![]), true),
+        Err(Error::Blocked)
+    );
+    s.draft_status("p", "rejected");
+    sync(&mut s, json!([{"kind":"user","entryId":"pc","text":"yes"}]));
+    assert_eq!(s.get("draft", "p")["status"], "rejected");
+    for status in ["unknown", "accepted"] {
+        let mut s = view();
+        s.prepare("p", send("yes", vec![]), true).unwrap();
+        event(
+            &mut s,
+            6,
+            json!({"type":"message_end","item":{"kind":"user","entryId":"new","text":"yes"}}),
+        );
+        if status == "unknown" {
+            s.draft_status("p", "unconfirmed")
+        } else {
+            s.prompt_ack("p", &json!("steer"))
+        }
+        assert!(s.get("draft", "p").is_null())
+    }
+}
+#[test]
+fn multiple_stopped_images_are_independent_of_manual_retry() {
+    let mut s = view();
+    for (id, data) in [("first", "YQ=="), ("second", "Yg==")] {
+        s.prepare(
+            id,
+            send(
+                id,
+                vec![Image {
+                    mime_type: "image/png".into(),
+                    data: data.into(),
+                }],
+            ),
+            true,
+        )
+        .unwrap();
+        s.prompt_ack(id, &json!("steer"));
+    }
+    event(&mut s, 6, json!({"type":"agent_settled","aborted":true}));
+    s.prepare("other", send("unrelated", vec![]), true).unwrap();
+    s.prompt_ack("other", &json!("prompt"));
+    s.prepare(
+        "retry",
+        send(
+            "first",
+            vec![Image {
+                mime_type: "image/png".into(),
+                data: "YQ==".into(),
+            }],
+        ),
+        true,
+    )
+    .unwrap();
+    s.prompt_ack("retry", &json!("prompt"));
+    assert_eq!(s.drafts.len(), 1);
+    assert_eq!(s.get("draft", "second")["status"], "unconfirmed");
+}
+#[test]
+fn published_instance_edits_reconstruct_every_snapshot() {
+    let mut s = view();
+    let mut mirror: Vec<(String, String)> = vec![];
+    let mut seed = 5u32;
+    let mut rand = || {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        seed >> 16
+    };
+    for _ in 0..1000 {
+        let list=(0..12).filter_map(|id|{let r=rand();(r%5!=0).then(||json!({"instanceId":id.to_string(),"updatedAt":r%8,"origin":if r%2==0{"grok-bot"}else{"pc"},"status":if r%3==0{"waiting_input"}else{"idle"}}))}).collect::<Vec<_>>();
+        s.apply(&json!({"type":"instances","instances":list}));
+        for change in s.changes.drain(..) {
+            match change {
+                Change::Remove { collection, id } if collection == "instance" => {
+                    mirror.retain(|(k, _)| k != &id)
+                }
+                Change::Upsert(i) if i.collection == "instance" => {
+                    mirror.retain(|(k, _)| k != &i.id);
+                    mirror.insert(i.position as usize, (i.id, i.json))
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            mirror,
+            s.snapshot()
+                .into_iter()
+                .filter(|i| i.collection == "instance")
+                .map(|i| (i.id, i.json))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+#[test]
+fn sync_forwards_only_matching_operation_results_and_keeps_them_after_snapshot() {
+    for changed in [true, false] {
+        for (op, session) in [("tree", "s"), ("new", "new")] {
+            let mut s = view();
+            s.prepare(
+                "op",
+                rc(
+                    pimate_protocol::RcMethod::SessionOp,
+                    json!({"op":op,"arg":"node"}),
+                ),
+                true,
+            )
+            .unwrap();
+            if changed {
+                event(
+                    &mut s,
+                    6,
+                    json!({"type":"session_changed","reason":op,"session":{"id":session}}),
+                );
+            }
+            event(&mut s, 7, json!({"type":"session_op_done","op":"fork"}));
+            assert_eq!(s.get("busy", "operation")["id"], "op");
+            let e = json!({"type":"session_op_done","op":op,"cancelled":false,"editorText":"kept"});
+            s.apply(
+                &json!({"type":"event","instanceId":"i","sessionId":session,"seq":8,"event":e}),
+            );
+            assert!(s.get("busy", "operation").is_null());
+            sync(&mut s, json!([]));
+            assert_eq!(s.get("operationResult", "latest")["event"], e);
+        }
+    }
+}
+#[test]
+fn unknown_session_cannot_be_aborted_and_old_rc_has_no_command_candidates() {
+    let mut s = view();
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":5,"session":null},"history":{"items":[]}}));
+    assert_eq!(
+        s.prepare(
+            "x",
+            Operation::Abort {
+                target: Target {
+                    instance: "i".into(),
+                    session: None
+                }
+            },
+            true
+        ),
+        Err(Error::StaleTarget)
+    );
+    assert!(s.suggestions("/new").is_empty());
+    let msg = s
+        .prepare(
+            "p",
+            Operation::Send {
+                target: Target {
+                    instance: "i".into(),
+                    session: None,
+                },
+                text: "/new".into(),
+                images: vec![],
+            },
+            true,
+        )
+        .unwrap();
+    assert_eq!(msg["request"]["params"]["text"], "/new");
+}
+#[test]
+fn model_preference_receipts_publish_only_changed_rows() {
+    let mut s = view();
+    let i = json!("i");
+    s.receipt(
+        "models",
+        &i,
+        &mut json!({"models":[{"id":"a","provider":"p"},{"id":"b","provider":"p"}]}),
+    )
+    .unwrap();
+    s.changes.clear();
+    s.receipt(
+        "set_scoped_models",
+        &i,
+        &mut json!({"scoped":[{"id":"a","provider":"p"}]}),
+    )
+    .unwrap();
+    assert!(matches!(&s.changes[..],[Change::Upsert(i)] if i.id==r#"["p","a"]"#));
+    assert_eq!(s.get("model", r#"["p","a"]"#)["favorite"], true);
+    let default = json!({"model":{"id":"b","provider":"p"}});
+    s.receipt("set_default_model", &i, &mut json!({"default":default}))
+        .unwrap();
+    assert_eq!(s.get("view", "defaultModel"), &default);
+}
+#[test]
+fn buffered_compaction_error_and_notification_survive_subscription_retry() {
+    let mut s = view();
+    s.prepare(
+        "compact",
+        rc(pimate_protocol::RcMethod::Compact, json!({})),
+        true,
+    )
+    .unwrap();
+    s.apply(&json!({"type":"subscribe_error","instanceId":"i","code":"unreachable"}));
+    event(&mut s, 7, json!({"type":"compact_error","error":"failed"}));
+    event(
+        &mut s,
+        8,
+        json!({"type":"notify","message":"hi","level":"info"}),
+    );
+    sync(&mut s, json!([]));
+    assert_eq!(
+        s.get("operationResult", "latest")["event"]["error"],
+        "failed"
+    );
+    assert_eq!(s.get("notice", "latest")["event"]["message"], "hi");
+}
+#[test]
+fn only_observed_session_arrival_is_proof_of_a_missing_result() {
+    for (op, dest, expected) in [
+        ("reload", "s", "done"),
+        ("fork", "next", "done"),
+        ("fork", "another", "unknown"),
+    ] {
+        let mut s = view();
+        s.prepare(
+            "op",
+            rc(
+                pimate_protocol::RcMethod::SessionOp,
+                json!({"op":op,"arg":"u"}),
+            ),
+            true,
+        )
+        .unwrap();
+        event(
+            &mut s,
+            6,
+            json!({"type":"session_changed","reason":op,"session":{"id":if op=="reload"{"s"}else{"next"}}}),
+        );
+        s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":8,"session":{"id":dest}},"history":{"items":[]}}));
+        assert_eq!(s.get("operationResult", "latest")["outcome"], expected);
+        assert!(s.get("busy", "operation").is_null());
+    }
+}

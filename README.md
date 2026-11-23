@@ -135,3 +135,9 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 - プロバイダーの設定は `open_login(hold_id)` が専用 Pi を保持し、`hello` と `auth_list` で機能を確認します。認証はこの target へ `Rc`、進捗取得は `follow_login`、画面を閉じたら `EndAuthSession`。`session_stats` / `allowances(now_ms)` / `command_suggestions(text)` で UI 用の集計と候補を取得できます。
 
 `cargo test -p pimate-core` は状態・ガードの単体試験、`cargo test -p pimate-host paired_core_recovers` は一時 Host＋Unix socket 模擬 RC の結合試験です。後者はプロンプト受理直後にループバックの TCP 中継を切り、復帰後も送信が一度だけであることと、履歴照合・質問への回答・失効を確認します。Android は NDK のパスを `ANDROID_NDK_HOME` に設定して `cargo ndk -t arm64-v8a check -p pimate-core`。UniFFI と iOS のビルド検証は [#14](https://github.com/phni3j9a/pimate-rs/issues/14)。
+
+### ログと通知配送の契約
+
+- WS の生フレームには端末トークン・プロバイダーの回答が入ります。中核が依存する `log` と `tracing` の静的上限を **debug / release の両方で Off** に固定し、ビルド時にも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、tungstenite の生フレームログは生成されません。Cargo の feature 統合により、同じ Rust バイナリでこのバージョンの facade を共有する他の crate のログも無効です。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
+- `Listener::changed` は接続ごとの専用スレッドで実行されます。配送待ちは最大8バッチです。UI が追いつかず `Change::ResyncRequired` が届いたら、部分適用せず `snapshot()` で全体を置換し、その snapshot の revision 以下の配送済み／配送待ち通知は無視してください。通常の Upsert は同じ ID があれば一度外し、指定位置に挿入します。
+- `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。`session_changed` 後、履歴取得中の結果も照合します。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
