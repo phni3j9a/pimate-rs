@@ -198,6 +198,9 @@ ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/27.1.12297006" scripts/build-android.sh
 
 `target/mobile/android/{jniLibs,kotlin}` を Android の source set に加え、JNA（Android 用 AAR、5.17.0）と kotlinx-coroutines-core を依存に追加します。
 
+Kotlin の suspend API は Main 限定ではありません。生成時にすべての JNA コールバックへ `CallbackThreadInitializer(true, false)` を設定します。Rust ワーカーで継続がその場で再開して再び poll しても、内側のコールバックからは detach せず、ワーカー終了時に JNA が detach します。Java 所有スレッドは再 attach しません。`FutureContract` は模擬 Host 不要で、この再入と Main / Default / IO / 計装スレッドからの呼び出しを検査します。Swift は直接 C コールバックを使うのでこの設定は不要です。
+
+
 **iOS**（Xcode のある macOS）:
 
 ```sh
