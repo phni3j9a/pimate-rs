@@ -8,7 +8,14 @@ use pimate_protocol::relay::HostFrame;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep, sleep_until, timeout};
-pub async fn forward(links: Arc<Links>, dir: &Path, id: &str, req: Value, out: Out) {
+pub fn forward(
+    links: &Links,
+    dir: &Path,
+    id: &str,
+    req: Value,
+    out: Out,
+) -> impl Future<Output = ()> + use<> {
+    let id = id.to_owned();
     let rid = req["id"].clone();
     let wait = match req["method"].as_str() {
         Some("auth_wait") => pimate_protocol::AUTH_MAX_WAIT_MS + 2000,
@@ -23,25 +30,28 @@ pub async fn forward(links: Arc<Links>, dir: &Path, id: &str, req: Value, out: O
         Some("subagent_control") => 17000,
         _ => 5000,
     };
-    let op = async {
-        let mut c = timeout(Duration::from_secs(5), async {
-            let mut c = links.client(dir, id, &out, false).await?;
-            c.hello(|_| Ok(())).await?;
-            Ok::<_, anyhow::Error>(c)
-        })
-        .await??;
-        timeout(Duration::from_millis(wait), c.send(req, |_| Ok(()))).await?
-    };
-    let response = match op.await {
-        Ok(v) => v,
-        _ => {
-            json!({"type":"response","id":rid,"ok":false,"error":{"code":"internal","message":"RC transport failed; outcome unknown, not retried"}})
-        }
-    };
-    out.send(&HostFrame::RcResult {
-        instance_id: id,
-        response: &response,
+    // Enqueue before returning the future: the WS reader determines write order, not task scheduling.
+    let client = links.client(dir, &id, &out, false).and_then(|c| {
+        c.enqueue(req)?;
+        Ok(c)
     });
+    async move {
+        let response = match async {
+            let mut c = client?;
+            timeout(Duration::from_millis(wait), c.next()).await?
+        }
+        .await
+        {
+            Ok(v) => v,
+            _ => {
+                json!({"type":"response","id":rid,"ok":false,"error":{"code":"internal","message":"RC transport failed; outcome unknown, not retried"}})
+            }
+        };
+        out.send(&HostFrame::RcResult {
+            instance_id: &id,
+            response: &response,
+        });
+    }
 }
 pub async fn subscribe(links: Arc<Links>, dir: &Path, id: &str, out: Out) {
     let mut retry = 250;
@@ -73,7 +83,7 @@ async fn stream(
         Ok(())
     };
     let (mut c, s, h) = timeout(Duration::from_secs(10), async {
-        let mut c = links.client(dir, id, out, true).await?;
+        let mut c = links.client(dir, id, out, true)?;
         let s = c.hello(&mut save).await?;
         let mut req = rc::request("history");
         if !s["session"].is_null() {

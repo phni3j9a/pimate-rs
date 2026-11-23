@@ -2,7 +2,7 @@ use crate::config::private;
 use anyhow::{Result, anyhow, ensure};
 use futures_util::{SinkExt, StreamExt};
 use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
-use pimate_protocol::{InstanceMeta, PROTOCOL_VERSION, Received, decode_json};
+use pimate_protocol::{PROTOCOL_VERSION, decode_json};
 use serde_json::{Value, json};
 use std::{fs, path::Path, time::Duration};
 use tokio::{net::UnixStream, time::timeout};
@@ -101,17 +101,29 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
             incompatible.insert(id.to_owned(), v["protocol"].clone());
             continue;
         }
-        let Ok(m) = serde_json::from_value::<InstanceMeta>(v.clone()) else {
+        let Some(pid) = v["pid"]
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .filter(|n| *n > 0)
+        else {
             continue;
         };
-        let Ok(pid) = i32::try_from(m.pid) else {
-            continue;
-        };
-        if pid <= 0
-            || m.instance_id != id
-            || m.protocol != PROTOCOL_VERSION
-            || !matches!(m.origin, Received::Known(_))
-            || !matches!(m.status, Received::Known(_))
+        if v["instanceId"] != id
+            || v["protocol"] != PROTOCOL_VERSION
+            || !v["cwd"].is_string()
+            || !matches!(v["origin"].as_str(), Some("pc" | "mobile" | "grok-bot"))
+            || !v
+                .get("abducoSession")
+                .is_some_and(|a| a.is_null() || a.is_string())
+            || !v["startedAt"].is_number()
+            || !matches!(
+                v["status"].as_str(),
+                Some("idle" | "running" | "waiting_input")
+            )
+            || !v
+                .get("session")
+                .is_some_and(|s| s.is_null() || s["id"].is_string())
+            || v.get("purpose").is_some_and(|p| p != "auth")
         {
             continue;
         }
@@ -120,7 +132,7 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
             let _ = fs::remove_file(p);
             continue;
         }
-        if m.purpose.is_some() {
+        if v.get("purpose").is_some() {
             continue;
         }
         let probe = async { Rc::open(dir, id).await?.hello(|_| Ok(())).await };
@@ -164,7 +176,7 @@ mod tests {
             ("broken", i32::MAX, "bad"),
             ("live", std::process::id() as i32, "grok-bot"),
         ] {
-            fs::write(dir.join(format!("{id}.json")),json!({"protocol":1,"instanceId":id,"pid":pid,"origin":origin,"socket":victim,"cwd":".","status":"idle","session":null,"abducoSession":null,"startedAt":1,"updatedAt":1}).to_string())?
+            fs::write(dir.join(format!("{id}.json")),json!({"protocol":1,"instanceId":id,"pid":pid,"origin":origin,"socket":victim,"cwd":".","status":"idle","session":null,"abducoSession":null,"startedAt":1}).to_string())?
         }
         fs::write(dir.join("stale.sock"), "")?;
         let v = list(&dir).await?.instances;

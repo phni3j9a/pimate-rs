@@ -145,6 +145,24 @@ pub fn format_pairing_link(l: &PairingLink) -> String {
         encode_component(&l.host_id)
     )
 }
+/// v1 address syntax; a Host issuing a new link must also require a usable port.
+pub fn valid_pairing_address(address: &str) -> bool {
+    let Some((host, port)) = address.rsplit_once(':') else {
+        return false;
+    };
+    let valid_host = if let Some(ip) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        !ip.is_empty()
+            && ip
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+    } else {
+        !host.is_empty()
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+    };
+    valid_host && (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit())
+}
 pub fn parse_pairing_link(s: &str) -> Option<PairingLink> {
     let q = s.trim_matches(js_space).strip_prefix("pimate://pair?")?;
     if q.contains(['\n', '\r', '\u{2028}', '\u{2029}']) {
@@ -160,21 +178,7 @@ pub fn parse_pairing_link(s: &str) -> Option<PairingLink> {
     let address = fields.remove("h")?;
     let code = fields.remove("c")?;
     let host_id = fields.remove("id")?;
-    let (host, port) = address.rsplit_once(':')?;
-    let valid_host = if let Some(ip) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
-        !ip.is_empty()
-            && ip
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
-    } else {
-        !host.is_empty()
-            && host
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
-    };
-    if !valid_host
-        || !(1..=5).contains(&port.len())
-        || !port.bytes().all(|b| b.is_ascii_digit())
+    if !valid_pairing_address(&address)
         || host_id.is_empty()
         || code.len() < 16
         || !code

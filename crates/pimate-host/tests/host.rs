@@ -254,6 +254,7 @@ async fn relay_sync_reconnect_and_unknown_fields() -> Result<()> {
             let count = count.clone();
             tokio::spawn(async move {
                 let mut io = Framed::new(sock, LinesCodec::new());
+                let mut batch = vec![];
                 let snap = json!({"instanceId":"stub","protocol":1,"seq":2,"session":{"id":"s"},"newField":true});
                 let event = |seq: u64, kind: &str, delta: &str| json!({"type":"event","instanceId":"stub","sessionId":"s","seq":seq,"extra":1,"event":{"type":kind,"delta":delta}});
                 while let Some(Ok(l)) = io.next().await {
@@ -270,6 +271,19 @@ async fn relay_sync_reconnect_and_unknown_fields() -> Result<()> {
                         Some("future_op") => {
                             count.fetch_add(1, Ordering::SeqCst);
                             return Ok::<_, anyhow::Error>(());
+                        }
+                        Some("ordered") => {
+                            batch.push(r["id"].clone());
+                            if batch.len() == 30 {
+                                for id in batch.iter().rev() {
+                                    io.send(
+                                        json!({"type":"response","id":id,"ok":true,"result":batch})
+                                            .to_string(),
+                                    )
+                                    .await?
+                                }
+                            }
+                            continue;
                         }
                         Some("echo") => r.clone(),
                         _ => bail!("unexpected RC request"),
@@ -293,6 +307,20 @@ async fn relay_sync_reconnect_and_unknown_fields() -> Result<()> {
     let token = s.paired().await?["token"].clone();
     let mut ws = s.auth(&token).await?;
     until(&mut ws, |m| m["instances"][0]["instanceId"] == "stub").await?;
+    let order: Vec<_> = (0..30).map(|i| i.to_string()).collect();
+    for id in &order {
+        send(
+            &mut ws,
+            json!({"type":"rc","instanceId":"stub","request":{"id":id,"method":"ordered"}}),
+        )
+        .await?
+    }
+    let mut replies = std::collections::HashSet::new();
+    for _ in &order {
+        let m = next(&mut ws).await?;
+        assert_eq!(m["response"]["result"], json!(order));
+        assert!(replies.insert(m["response"]["id"].as_str().unwrap().to_owned()));
+    }
     let r = json!({"id":"raw","method":"echo","params":{"future":{}},"expectSessionId":"original","expectInstanceId":"stub","future_flag":true});
     send(
         &mut ws,
@@ -390,5 +418,163 @@ async fn reject_public_bind() -> Result<()> {
     .await??;
     assert!(!out.status.success());
     assert!(String::from_utf8(out.stderr)?.contains("not loopback or a local Tailscale address"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn lock_contention_and_unreadable_db_are_not_revocation() -> Result<()> {
+    let s = Server::start().await?;
+    let paired = s.paired().await?;
+    let cfg = s.dir.path().join("config");
+    let db = cfg.join("devices.json");
+    let lock = cfg.join("devices.lock");
+    let mut devices: Value = serde_json::from_slice(&std::fs::read(&db)?)?;
+    devices[0]["lastSeenAt"] = json!(0);
+    std::fs::write(&db, devices.to_string())?;
+    std::fs::write(&lock, "")?;
+    let mut ws = s.auth(&paired["token"]).await?;
+    until(&mut ws, |v| v["type"] == "instances").await?;
+    send(&mut ws, json!({"type":"ping","t":1})).await?;
+    assert_eq!(next(&mut ws).await?["type"], "pong");
+    std::fs::remove_file(lock)?;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let ds: Value = serde_json::from_slice(&std::fs::read(&db)?)?;
+            if ds[0]["lastSeenAt"] != 0 {
+                return Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await
+        }
+    })
+    .await??;
+    std::fs::write(&db, "broken")?;
+    closed(&mut s.auth(&paired["token"]).await?, 1011).await?;
+    closed(&mut ws, 1011).await
+}
+#[tokio::test]
+async fn ws_revoke_immediately_closes_all_target_peers() -> Result<()> {
+    let s = Server::start().await?;
+    let a = s.paired().await?;
+    let b = s.paired().await?;
+    let mut owner = s.auth(&a["token"]).await?;
+    until(&mut owner, |m| m["type"] == "instances").await?;
+    for target in [&b, &a] {
+        let mut peers = vec![];
+        for _ in 0..2 {
+            let mut w = s.auth(&target["token"]).await?;
+            until(&mut w, |m| m["type"] == "instances").await?;
+            peers.push(w)
+        }
+        send(
+            &mut owner,
+            json!({"type":"device_revoke","requestId":"x","deviceId":target["deviceId"]}),
+        )
+        .await?;
+        assert_eq!(next(&mut owner).await?["ok"], true);
+        timeout(Duration::from_millis(750), async {
+            for w in &mut peers {
+                closed(w, 4403).await?
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await??;
+    }
+    closed(&mut owner, 4403).await
+}
+#[tokio::test]
+async fn pair_rejects_unusable_ports_before_issuing_code() -> Result<()> {
+    let t = tempfile::tempdir()?;
+    for args in [
+        ["--port", "0"],
+        ["--port", "65536"],
+        ["--address", "localhost:0"],
+        ["--address", "localhost:65536"],
+    ] {
+        assert!(
+            !cli(t.path())
+                .arg("pair")
+                .args(args)
+                .output()
+                .await?
+                .status
+                .success()
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(t.path().join("config/pairing"))?.count(),
+        0
+    );
+    assert!(
+        cli(t.path())
+            .args(["pair", "--address", "[::1]:65535"])
+            .output()
+            .await?
+            .status
+            .success()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn normal_stop_finishes_locked_pair_update() -> Result<()> {
+    use nix::{
+        sys::signal::{Signal, kill},
+        unistd::Pid,
+    };
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    for sig in [Signal::SIGINT, Signal::SIGTERM] {
+        let mut s = Server::start().await?;
+        let dir = s.dir.path();
+        let cfg = dir.join("config");
+        let db = cfg.join("devices.json");
+        let o = cli(dir)
+            .args(["pair", "--address", &s.addr])
+            .output()
+            .await?;
+        let code = pimate_protocol::parse_pairing_link(
+            std::str::from_utf8(&o.stdout)?.lines().next().unwrap(),
+        )
+        .unwrap()
+        .code;
+        // A FIFO holds the read inside Config::update after devices.lock is acquired.
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&db)
+                .status()?
+                .success()
+        );
+        let mut tcp = TcpStream::connect(&s.addr).await?;
+        let body = json!({"code":code,"deviceName":"signal"}).to_string();
+        tcp.write_all(format!("POST /pair HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",s.addr,body.len()).as_bytes()).await?;
+        let mut writer = timeout(Duration::from_secs(4), async {
+            loop {
+                if let Ok(f) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(nix::libc::O_NONBLOCK)
+                    .open(&db)
+                {
+                    break f;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await?;
+        assert!(cfg.join("devices.lock").exists());
+        kill(Pid::from_raw(s._child.id().unwrap() as i32), sig)?;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(s._child.try_wait()?.is_none());
+        writer.write_all(b"[]")?;
+        drop(writer);
+        assert!(
+            timeout(Duration::from_secs(4), s._child.wait())
+                .await??
+                .success()
+        );
+        assert!(!cfg.join("devices.lock").exists());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(db)?)?[0]["name"],
+            "signal"
+        );
+    }
     Ok(())
 }

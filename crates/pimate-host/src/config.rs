@@ -34,7 +34,7 @@ pub fn config_dir() -> Result<PathBuf> {
 pub fn run_dir() -> PathBuf {
     var("PIMATE_RUN_DIR")
         .or_else(|| var("XDG_RUNTIME_DIR").map(|p| p.join("pimate")))
-        .unwrap_or_else(|| PathBuf::from(format!("/tmp/pimate-{}", Uid::current())))
+        .unwrap_or_else(|| env::temp_dir().join(format!("pimate-{}", Uid::current())))
 }
 pub fn private(p: &Path) -> Result<()> {
     fs::DirBuilder::new()
@@ -178,7 +178,7 @@ impl Config {
             return Ok(false);
         };
         if now().saturating_sub(d.last_seen_at) >= 60000 {
-            return self.update(|ds| {
+            let touched = self.update(|ds| {
                 if let Some(d) = ds.iter_mut().find(|d| d.device_id == id) {
                     d.last_seen_at = now();
                     Ok(true)
@@ -186,6 +186,15 @@ impl Config {
                     Ok(false)
                 }
             });
+            return match touched {
+                Err(e)
+                    if e.downcast_ref::<std::io::Error>()
+                        .is_some_and(|e| e.kind() == ErrorKind::AlreadyExists) =>
+                {
+                    Ok(true)
+                }
+                result => result,
+            };
         }
         Ok(true)
     }
@@ -200,6 +209,29 @@ impl Config {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn tmpdir_fallback() {
+        // Check the path only; even a regression must not scan or clean a real runDir.
+        if let Some(tmp) = env::var_os("PIMATE_TEST_EXPECT_TMPDIR") {
+            assert_eq!(
+                run_dir(),
+                PathBuf::from(tmp).join(format!("pimate-{}", Uid::current()))
+            );
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            std::process::Command::new(env::current_exe().unwrap())
+                .args(["--exact", "config::tests::tmpdir_fallback"])
+                .env_remove("PIMATE_RUN_DIR")
+                .env_remove("XDG_RUNTIME_DIR")
+                .env("TMPDIR", tmp.path())
+                .env("PIMATE_TEST_EXPECT_TMPDIR", tmp.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
     #[test]
     fn ts_files_and_lock() -> Result<()> {
         let tmp = tempfile::tempdir()?;

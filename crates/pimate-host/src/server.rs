@@ -2,7 +2,7 @@ use crate::{
     config::{self, Config},
     rc, relay,
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, bail};
 use axum::{
     Json, Router,
     body::to_bytes,
@@ -57,6 +57,7 @@ impl Out {
 struct App {
     addresses: Vec<Value>,
     incompatible: watch::Receiver<serde_json::Map<String, Value>>,
+    revoked: tokio::sync::broadcast::Sender<String>,
     links: Arc<crate::link::Links>,
     config: Config,
     dir: PathBuf,
@@ -85,6 +86,9 @@ fn summaries(list: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
     let dir = config::run_dir();
     let discovery = rc::list(&dir).await?;
     let (tx, instances) = watch::channel(summaries(discovery.instances));
@@ -102,6 +106,7 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     let app = Arc::new(App {
         addresses,
         incompatible,
+        revoked: tokio::sync::broadcast::channel(128).0,
         links: Default::default(),
         config,
         dir: dir.clone(),
@@ -134,7 +139,8 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
             }
         }
     });
-    tasks.join_next().await.unwrap()??;
+    // Returning from main drops the runtime, which waits for synchronous DB updates (and their lock guards).
+    tokio::select! {_=terminate.recv()=>(),_=interrupt.recv()=>(),result=tasks.join_next()=>result.unwrap()??}
     Ok(())
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
@@ -238,6 +244,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
             return;
         }
     };
+    let mut revoked = a.revoked.subscribe();
     let auth = if m["type"] != "auth"
         || !m["token"].is_string()
         || !m["app"]["version"].is_string()
@@ -247,11 +254,13 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
     } else if m["protocol"] != VERSION {
         Err(("protocol_mismatch", Code::Protocol))
     } else {
-        a.config
-            .authenticate(m["token"].as_str().unwrap())
-            .ok()
-            .flatten()
-            .ok_or(("invalid_token", Code::AuthFailed))
+        match a.config.authenticate(m["token"].as_str().unwrap()) {
+            Ok(id) => id.ok_or(("invalid_token", Code::AuthFailed)),
+            Err(_) => {
+                close(&mut ws, 1011).await;
+                return;
+            }
+        }
     };
     let device = match auth {
         Ok(id) => id,
@@ -283,9 +292,10 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
     let mut ops = JoinSet::new();
     let mut inflight = std::collections::HashSet::new();
     let end = loop {
-        let m = tokio::select! {
+        let m = tokio::select! {biased;
+            notice=revoked.recv()=>{match notice{Ok(id) if id==device=>break Code::Revoked as u16,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>tick.reset_immediately(),_=>()}continue},
             _=out.slow.cancelled()=>break 1009,
-            _=tick.tick()=>{if !c.active(&device).unwrap_or(false){break Code::Revoked as u16}continue},
+            _=tick.tick()=>{match c.active(&device){Ok(false)=>break Code::Revoked as u16,Err(_)=>break 1011,Ok(true)=>continue}},
             Some((text,_permit,generation))=rx.recv()=>{if generation.is_cancelled(){continue}match timeout(Duration::from_secs(5),ws.send(Message::Text(text.into()))).await{Ok(Ok(()))=>continue,Ok(Err(_))=>return,Err(_)=>break 1009}},
             Ok(())=list.changed()=>{
                 current=list.borrow_and_update().clone();
@@ -308,16 +318,25 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         match kind {
             "ping" if m["t"].is_number() => out.send(&json!({"type":"pong","t":m["t"]})),
             "devices" | "device_revoke" => {
-                let Ok(reply) = settings(c, &device, &m) else {
-                    break Code::Protocol as u16;
+                let reply = match settings(c, &device, &m) {
+                    Ok(reply) => reply,
+                    Err(code) => break code,
                 };
-                if kind == "device_revoke" && m["deviceId"] == device && reply["ok"] == true {
-                    let _ = timeout(
+                if kind == "device_revoke" && reply["ok"] == true {
+                    let sent = timeout(
                         Duration::from_secs(2),
                         ws.send(Message::Text(reply.to_string().into())),
                     )
                     .await;
-                    break Code::Revoked as u16;
+                    let target = m["deviceId"].as_str().unwrap();
+                    let _ = a.revoked.send(target.into());
+                    if target == device {
+                        break Code::Revoked as u16;
+                    }
+                    if !matches!(sent, Ok(Ok(()))) {
+                        return;
+                    }
+                    continue;
                 }
                 out.send(&reply)
             }
@@ -363,10 +382,9 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                             continue;
                         }
                         inflight.insert(key.clone());
-                        let links = a.links.clone();
-                        let (dir, r, out) = (a.dir.clone(), r.clone(), out.clone());
+                        let response = relay::forward(&a.links, &a.dir, id, r.clone(), out.clone());
                         ops.spawn(async move {
-                            relay::forward(links, &dir, &key.0, r, out).await;
+                            response.await;
                             key
                         });
                     }
@@ -389,17 +407,21 @@ fn valid_req(r: &Value) -> bool {
             .iter()
             .all(|k| r.get(k).is_none_or(Value::is_string))
 }
-fn settings(c: &Config, device: &str, m: &Value) -> Result<Value> {
+fn settings(c: &Config, device: &str, m: &Value) -> Result<Value, u16> {
     let revoke = m["type"] == "device_revoke";
-    ensure!(short(&m["requestId"]) && m.as_object().unwrap().len() == if revoke { 3 } else { 2 });
+    let invalid = Code::Protocol as u16;
+    if !short(&m["requestId"]) || m.as_object().unwrap().len() != if revoke { 3 } else { 2 } {
+        return Err(invalid);
+    }
     if revoke {
         let id = m["deviceId"].as_str().unwrap_or("");
-        let u = Uuid::parse_str(id)?;
-        ensure!(
-            u.get_version_num() == 4
-                && u.get_variant() == uuid::Variant::RFC4122
-                && u.to_string().eq_ignore_ascii_case(id)
-        );
+        let u = Uuid::parse_str(id).map_err(|_| invalid)?;
+        if u.get_version_num() != 4
+            || u.get_variant() != uuid::Variant::RFC4122
+            || !u.to_string().eq_ignore_ascii_case(id)
+        {
+            return Err(invalid);
+        }
         let ok = c.revoke(id).is_ok();
         let mut r = json!({"type":"device_revoke_result","requestId":m["requestId"],"ok":ok});
         if !ok {
@@ -408,7 +430,8 @@ fn settings(c: &Config, device: &str, m: &Value) -> Result<Value> {
         Ok(r)
     } else {
         let ds = c
-            .devices()?
+            .devices()
+            .map_err(|_| 1011u16)?
             .into_iter()
             .map(|d| {
                 let mut v = d.public();

@@ -6,7 +6,7 @@ mod server;
 use anyhow::{Result, bail, ensure};
 use config::Config;
 use nix::ifaddrs::getifaddrs;
-use pimate_protocol::{PairingLink, format_pairing_link, parse_pairing_link};
+use pimate_protocol::{PairingLink, format_pairing_link};
 use std::{
     env,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -121,13 +121,21 @@ async fn main() -> Result<()> {
                 let address = address.unwrap_or_else(|| {
                     SocketAddr::new(*ips.get(1).unwrap_or(&ips[0]), port).to_string()
                 });
+                ensure!(port != 0, "invalid pairing port");
+                ensure!(
+                    pimate_protocol::valid_pairing_address(&address)
+                        && address
+                            .rsplit_once(':')
+                            .and_then(|(_, p)| p.parse::<u16>().ok())
+                            .is_some_and(|p| p > 0),
+                    "invalid address"
+                );
                 let link = format_pairing_link(&PairingLink {
                     address,
                     code: config.code()?,
                     host_name: config.host.name,
                     host_id: config.host.host_id,
                 });
-                ensure!(parse_pairing_link(&link).is_some(), "invalid address");
                 println!(
                     "{link}\n{}",
                     qrcode::QrCode::new(&link)?

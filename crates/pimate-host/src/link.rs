@@ -52,7 +52,7 @@ pub struct Client {
     id: String,
 }
 impl Links {
-    pub async fn client(&self, dir: &Path, id: &str, out: &Out, events: bool) -> Result<Client> {
+    pub fn client(&self, dir: &Path, id: &str, out: &Out, events: bool) -> Result<Client> {
         let tx = {
             let mut map = self.0.lock().unwrap();
             map.retain(|_, s| s.upgrade().is_some_and(|s| !s.is_closed()));
@@ -72,7 +72,8 @@ impl Links {
             out: out.clone(),
         };
         if events {
-            tx.send(Command::Watch(mail.clone())).await?
+            tx.try_send(Command::Watch(mail.clone()))
+                .map_err(|_| anyhow!("RC busy or closed"))?
         }
         Ok(Client {
             tx,
@@ -85,6 +86,7 @@ impl Links {
 async fn run(dir: PathBuf, id: String, mut cmds: mpsc::Receiver<Command>) -> Result<()> {
     let mut rc = timeout(Duration::from_secs(5), Rc::open(&dir, &id)).await??;
     let mut watchers: Vec<Mail> = vec![];
+    let mut verified = false;
     let mut pending = HashMap::<String, Mail>::new();
     loop {
         let cmd = tokio::select! {
@@ -110,6 +112,25 @@ async fn run(dir: PathBuf, id: String, mut cmds: mpsc::Receiver<Command>) -> Res
             Some(Command::Send(req, mail)) => {
                 if mail.tx.is_closed() {
                     continue;
+                }
+                if !verified {
+                    let snapshot = timeout(
+                        Duration::from_secs(5),
+                        rc.hello(|v| {
+                            let len = v.to_string().len();
+                            let v = Arc::new(v);
+                            for w in &watchers {
+                                w.deliver(&v, len)
+                            }
+                            Ok(())
+                        }),
+                    )
+                    .await??;
+                    ensure!(snapshot["purpose"].is_null(), "reserved RC instance");
+                    verified = true;
+                    if mail.tx.is_closed() {
+                        continue;
+                    }
                 }
                 let key = req["id"]
                     .as_str()
@@ -139,13 +160,18 @@ impl Client {
             packet.ok_or_else(|| anyhow!("RC closed"))?.0,
         ))
     }
+    pub fn enqueue(&self, req: Value) -> Result<()> {
+        self.tx
+            .try_send(Command::Send(req, self.mail.clone()))
+            .map_err(|_| anyhow!("RC busy or closed"))
+    }
     pub async fn send(
         &mut self,
         req: Value,
         mut event: impl FnMut(Value) -> Result<()>,
     ) -> Result<Value> {
         let id = req["id"].clone();
-        self.tx.send(Command::Send(req, self.mail.clone())).await?;
+        self.enqueue(req)?;
         loop {
             let v = self.next().await?;
             if v["type"] == "response" && v["id"] == id {
