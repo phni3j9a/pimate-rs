@@ -1,4 +1,6 @@
 //! Owned, presentation-neutral Markdown. IDs are unique among sibling blocks of one message.
+mod compat;
+mod diff;
 mod image;
 mod parse;
 mod table;
@@ -102,6 +104,7 @@ pub struct Changes {
 impl Document {
     /// Apply removals/upserts to top-level blocks keyed (and ordered) by id.
     pub fn changes_since(&self, previous: &Self) -> Changes {
+        let mut eq = diff::Equality::default();
         let mut old = previous.blocks.iter().peekable();
         let mut upsert = Vec::new();
         let mut removed = Vec::new();
@@ -109,7 +112,10 @@ impl Document {
             while let Some(obsolete) = old.next_if(|o| o.id < b.id) {
                 removed.push(obsolete.id);
             }
-            if old.next_if(|o| o.id == b.id) != Some(b) {
+            if !old
+                .next_if(|o| o.id == b.id)
+                .is_some_and(|o| eq.block(o, b))
+            {
                 upsert.push(b.clone());
             }
         }

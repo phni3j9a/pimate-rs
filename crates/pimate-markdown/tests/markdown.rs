@@ -407,3 +407,116 @@ fn tight_item_spans_keep_real_byte_ranges() {
         assert_eq!(&md[b.id as usize..b.end as usize], raw);
     }
 }
+#[test]
+fn loose_tasks() {
+    let d = parse("- [x] first\n\n- [ ] second", false);
+    let Content::List { items, .. } = &d.blocks[0].content else {
+        panic!()
+    };
+    for (b, ok) in items.iter().zip([true, false]) {
+        assert!(matches!(b.content,Content::Item{checked:Some(v),..} if v==ok));
+    }
+}
+#[test]
+fn pipeless_single_column() {
+    for md in ["項目\n|:--|\nりんご", "項目\r\n:--\r\nりんご"] {
+        let d = parse(md, false);
+        let Content::Table(t) = &d.blocks[0].content else {
+            panic!()
+        };
+        assert_eq!(t.align, [Alignment::Left]);
+        assert_eq!(d.blocks[0].plain_text(), "項目\nりんご");
+        assert_eq!(t.markdown, md.replace("\r\n", "\n"));
+    }
+}
+#[test]
+fn malformed_table_is_a_formatted_paragraph() {
+    let d = parse("a|b\n--:--|--\n**1**|2", false);
+    assert_eq!(d.blocks[0].plain_text(), "a|b\n--:--|--\n1|2");
+    let Content::Paragraph(p) = &d.blocks[0].content else {
+        panic!()
+    };
+    assert!(
+        p.iter()
+            .any(|v| matches!(v,Inline::Text{text,style} if text=="1"&&style.bold))
+    );
+}
+#[test]
+fn invalid_link_label_does_not_autolink() {
+    let d = parse("[https://a.test](javascript:bad) https://b.test", false);
+    assert_eq!(d.links, ["https://b.test"]);
+}
+#[test]
+fn crlf_list_codespan() {
+    for n in ["\r\n", "\n"] {
+        let d = parse(&format!("- `aa{n}  bb`"), false);
+        assert_eq!(d.blocks[0].plain_text(), "aa bb");
+    }
+}
+#[test]
+fn tight_escape_range() {
+    let md = "- \\*x";
+    let d = parse(md, false);
+    let Content::List { items, .. } = &d.blocks[0].content else {
+        panic!()
+    };
+    let Content::Item { children, .. } = &items[0].content else {
+        panic!()
+    };
+    let b = &children[0];
+    assert_eq!(&md[b.id as usize..b.end as usize], "\\*x");
+}
+#[test]
+fn table_copy_indentation() {
+    let md = "  | a | b |\n  | - | - |\n  | 1 | 2 |";
+    let d = parse(md, false);
+    let Content::Table(t) = &d.blocks[0].content else {
+        panic!()
+    };
+    assert_eq!(t.markdown, md);
+}
+#[test]
+fn trimmed_html() {
+    let d = parse("<div>hi</div>\n\n次", false);
+    assert_eq!(d.blocks[0].plain_text(), "<div>hi</div>");
+}
+#[test]
+fn single_column_mid_paragraph_unicode_ranges() {
+    let md = "前\r\n**項目**\r\n|:--|\r\nりんご\r\n\r\n# 次";
+    let d = parse(md, false);
+    assert_eq!(d.blocks.len(), 3);
+    for b in &d.blocks {
+        assert!(md.get(b.id as usize..b.end as usize).is_some());
+    }
+    let Content::Table(t) = &d.blocks[1].content else {
+        panic!()
+    };
+    assert_eq!(t.markdown, "**項目**\n|:--|\nりんご");
+    assert_eq!(d.blocks[1].plain_text(), "項目\nりんご");
+    assert_eq!(
+        &md[d.blocks[2].id as usize..d.blocks[2].end as usize],
+        "# 次"
+    );
+}
+#[test]
+fn table_copy_keeps_only_inner_indent() {
+    let d = parse(">   | a |\n>   |---|\n>    | b |", false);
+    let Content::Quote(q) = &d.blocks[0].content else {
+        panic!()
+    };
+    let Content::Table(t) = &q[0].content else {
+        panic!()
+    };
+    assert_eq!(t.markdown, "  | a |\n  |---|\n   | b |");
+    let d = parse("- item\n\n    | h |\n    |---|\n    | x |", false);
+    let Content::List { items, .. } = &d.blocks[0].content else {
+        panic!()
+    };
+    let Content::Item { children, .. } = &items[0].content else {
+        panic!()
+    };
+    let Content::Table(t) = &children[1].content else {
+        panic!()
+    };
+    assert_eq!(t.markdown, "  | h |\n  |---|\n  | x |");
+}
