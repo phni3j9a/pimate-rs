@@ -142,6 +142,32 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
     }
 }
 
+internal fun webUrl(url: String): String? =
+    try {
+        java.net
+            .URI(url)
+            .takeIf {
+                it.scheme?.lowercase() in setOf("http", "https") &&
+                    !it.host.isNullOrEmpty() &&
+                    it.userInfo == null
+            }
+            ?.toString()
+    } catch (_: java.net.URISyntaxException) {
+        null
+    }
+
+internal fun ChatEdits.insertGithub(
+    at: EditorKey,
+    target: uniffi.pimate_ffi.Target?,
+    item: JSONObject,
+): Boolean {
+    if (at != current || at.target != target) return false
+    val url = webUrl(item.str("url"))
+    val ref = "#${item.getLong("number")}「${item.str("title")}」" + (url?.let { " $it" } ?: "")
+    text(at, if (body.text.isEmpty()) ref else "${body.text}\n$ref")
+    return true
+}
+
 @Composable
 internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf("issue") }
@@ -188,6 +214,8 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                         v.optJSONArray("checks").objects().forEach {
                             Hint("${it.str("name")} · ${it.str("state")}")
                         }
+                        if (v.optBoolean("checksTruncated"))
+                            Hint("CI チェックの一部を省略しています。続きは GitHub で確認してください。")
                         Markdown(v.str("body").ifEmpty { "本文はありません" })
                         if (v.optBoolean("bodyTruncated")) Hint("本文の一部を省略しています")
                         Label("コメント")
@@ -198,6 +226,15 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                             if (it.optBoolean("bodyTruncated")) Hint("一部を省略しています")
                         }
                         if (v.optBoolean("commentsTruncated")) Hint("最新のコメントのみ表示しています")
+                        webUrl(v.str("url"))?.let { External("GitHub で開く", it) }
+                        PrimaryButton(
+                            "Pi に依頼",
+                            {
+                                if (m.edits.insertGithub(at, m.target, v)) close()
+                                else error = "Pi が切り替わりました。下書きは変更していません。"
+                            },
+                            Modifier.fillMaxWidth(),
+                        )
                     }
                 }
         }
@@ -227,6 +264,12 @@ private fun agentAction(id: String) =
         "interrupt" -> "実行全体を一時停止"
         else -> "実行全体を停止"
     }
+
+internal fun resumedChild(runs: List<JSONObject>, next: String?, index: Int): String? {
+    if (next == null) return null
+    val children = runs.find { it.str("id") == next }?.optJSONArray("children").objects()
+    return (children.find { it.optInt("index", -1) == index } ?: children.firstOrNull())?.str("id")
+}
 
 @Composable
 internal fun AgentsPage(
@@ -296,6 +339,16 @@ internal fun AgentsPage(
         key(rid, cid) {
             val run = runs.find { it.str("id") == rid }
             val child = run?.optJSONArray("children").objects().find { it.str("id") == cid }
+            var resumedTo by rememberSaveable { mutableStateOf<String?>(null) }
+            var resumedIndex by rememberSaveable { mutableIntStateOf(-1) }
+            val resolved = resumedChild(runs, resumedTo, resumedIndex)
+            LaunchedEffect(resumedTo, resolved) {
+                val next = resumedTo
+                if (next != null && resolved != null) {
+                    rid = next
+                    cid = resolved
+                }
+            }
             Page(
                 child?.str("title").orEmpty().ifEmpty { "サブエージェント" },
                 {
@@ -304,6 +357,10 @@ internal fun AgentsPage(
                     else cid = ""
                 },
             ) {
+                if (resumedTo != null) {
+                    Hint("再開先の作業記録を待っています…")
+                    return@Page
+                }
                 if (child == null || run == null) {
                     Hint("この実行は一覧にありません")
                     return@Page
@@ -415,8 +472,12 @@ internal fun AgentsPage(
                                             val r = m.control(at, rid, cid, mode, text)
                                             text = ""
                                             retry++
-                                            if (mode == "resume" && r.str("newRunId").isNotEmpty())
-                                                rid = r.str("newRunId")
+                                            if (
+                                                mode == "resume" && r.str("newRunId").isNotEmpty()
+                                            ) {
+                                                resumedIndex = child.optInt("index", -1)
+                                                resumedTo = r.str("newRunId")
+                                            }
                                         }
                                     } finally {
                                         busy = false
@@ -432,50 +493,77 @@ internal fun AgentsPage(
         }
 }
 
+internal data class StopTarget(val run: String, val viewedChild: String?, val action: String) {
+    val child
+        get() = viewedChild.takeIf { action == "stop_child" }
+}
+
+internal fun JSONObject.stopTarget(childId: String?): StopTarget? {
+    if (!optBoolean("active")) return null
+    val action =
+        if (childId == null) str("stopAction")
+        else {
+            val c =
+                optJSONArray("children").objects().find { it.str("id") == childId } ?: return null
+            if (c.str("state") !in setOf("running", "waiting", "queued")) return null
+            if ("stop_child" in c.optJSONArray("actions").strings()) "stop_child"
+            else str("stopAction")
+        }
+    return if (action.isEmpty()) null else StopTarget(str("id"), childId, action)
+}
+
 @Composable
 private fun StopAgent(m: SessionModel, at: EditorKey, run: JSONObject, child: JSONObject?) {
-    val action =
-        if (child?.optJSONArray("actions").strings().contains("stop_child")) "stop_child"
-        else run.str("stopAction")
-    if (action.isEmpty() || !run.optBoolean("active")) return
-    var confirm by remember { mutableStateOf(false) }
+    val runId = run.str("id")
+    StopAgentAction(
+        at,
+        run.stopTarget(child?.str("id")),
+        latest = {
+            m.rows.groups["run"]
+                .orEmpty()
+                .find { it.id == runId }
+                ?.let { JSONObject(it.json).stopTarget(child?.str("id")) }
+        },
+    ) { approved ->
+        m.control(at, approved.run, approved.child, approved.action)
+    }
+}
+
+@Composable
+internal fun StopAgentAction(
+    at: EditorKey,
+    target: StopTarget?,
+    latest: () -> StopTarget?,
+    send: suspend (StopTarget) -> Unit,
+) {
+    if (target == null) return
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    TextAction(
-        agentAction(action) + "…",
-        { confirm = true },
+    val label = agentAction(target.action)
+    ConfirmAction(
+        at to target,
+        label,
+        when (target.action) {
+            "abort_parent" -> "親の Pi のターンも停止します。"
+            "stop_child" -> "選択した子だけが対象です。"
+            else -> "この実行に含まれるすべての子が対象です。"
+        },
+        button = "$label…",
         enabled = !busy,
-        color = pi.failedText,
-    )
-    SheetError(error)
-    if (confirm)
-        Confirm(
-            agentAction(action),
-            when (action) {
-                "abort_parent" -> "親の Pi のターンも停止します。"
-                "stop_child" -> "選択した子だけが対象です。"
-                else -> "この実行に含まれるすべての子が対象です。"
-            },
-            { confirm = false },
-        ) {
-            confirm = false
+    ) {
+        scope.launch {
+            // A revision can arrive between the last composition and dispatch.
+            if (target != latest()) return@launch
             busy = true
-            scope.launch {
-                try {
-                    checked({ error = it }) {
-                        m.control(
-                            at,
-                            run.str("id"),
-                            if (action == "stop_child") child?.str("id") else null,
-                            action,
-                        )
-                    }
-                } finally {
-                    busy = false
-                }
+            try {
+                checked({ error = it }) { send(target) }
+            } finally {
+                busy = false
             }
         }
+    }
+    SheetError(error)
 }
 
 @Composable

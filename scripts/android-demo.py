@@ -1022,8 +1022,8 @@ async def demo(lab, binary):
         loop.add_signal_handler(signal.SIGUSR2, hooks["attach"][1])
         print(f"pid {os.getpid()}（kill -USR1: edge で PC の /resume、kill -USR2: attach の PC の画面を閉じる）", flush=True)
         if mode := os.environ.get("PIMATE_DEMO_SCREENS"):
-            if mode not in {"list", "empty"}:
-                raise ValueError("PIMATE_DEMO_SCREENS must be list or empty")
+            if mode not in {"list", "empty", "reconnect"}:
+                raise ValueError("PIMATE_DEMO_SCREENS must be list, empty or reconnect")
             fixture = await asyncio.create_subprocess_exec(
                 "node", ROOT / "scripts/android-screen-fixture.cjs", str(port), mode,
                 stdout=asyncio.subprocess.PIPE,

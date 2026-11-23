@@ -58,6 +58,19 @@ class RemainingJourney {
     }
 
     @Test
+    fun loginHoldRecoversAfterDisconnect() {
+        pair(link("reconnect-link"))
+        find(hasText("選ぶとチャットを開きます。"))
+        tap("一覧を開く")
+        icon("設定")
+        tap("デモ PC")
+        tap("プロバイダーのログイン")
+        find(hasText("openai"))
+        find(hasText("anthropic"))
+        find(hasText("API キーを設定"))
+    }
+
+    @Test
     fun firstEmpty() {
         pair(link("empty-link"))
         find(hasText("まだ起動中", substring = true))
@@ -139,10 +152,16 @@ class RemainingJourney {
             tap("PR")
             tap("#20", true)
             find(hasText("画面の動作と表示", substring = true))
+            find(hasText("CI チェックの一部を省略", substring = true))
+            find(hasText("GitHub で開く"))
             shot("GitHub-PR")
-            icon("戻る")
-        }
-        icon("戻る")
+            tap("Pi に依頼")
+            find(
+                hasSetTextAction() and
+                    hasText("このセッションの変更", substring = true) and
+                    hasText("#20「画面の実装」", substring = true)
+            )
+        } else icon("戻る")
         icon("Instance 一覧を開く")
         tap("認証まわりのレビュー")
         find(hasText("レビュアーをバックグラウンドで起動しました。", substring = true))

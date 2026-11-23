@@ -51,16 +51,40 @@ internal fun Hint(text: String) {
     Text(text, color = pi.textSecondary, style = Type.caption)
 }
 
+/** Approval belongs to the action that opened the dialog, not the next occupant of this row. */
 @Composable
-internal fun Confirm(label: String, detail: String, cancel: () -> Unit, yes: () -> Unit) {
-    AlertDialog(
-        cancel,
-        title = { Text(label, style = Type.sheet) },
-        text = { Text(detail) },
-        confirmButton = { TextAction(label, yes, color = pi.failedText) },
-        dismissButton = { TextAction("キャンセル", cancel) },
-        containerColor = pi.background,
-    )
+internal fun ConfirmAction(
+    identity: Any,
+    label: String,
+    detail: String,
+    button: String = label,
+    enabled: Boolean = true,
+    title: String = label,
+    modifier: Modifier = Modifier,
+    onConfirm: () -> Unit,
+) {
+    var pending by
+        remember(identity, label, detail, enabled) { mutableStateOf<(() -> Unit)?>(null) }
+    TextAction(button, { pending = onConfirm }, modifier, enabled = enabled, color = pi.failedText)
+    pending?.let { approved ->
+        AlertDialog(
+            { pending = null },
+            title = { Text(title, style = Type.sheet) },
+            text = { Text(detail) },
+            confirmButton = {
+                TextAction(
+                    label,
+                    {
+                        pending = null
+                        approved()
+                    },
+                    color = pi.failedText,
+                )
+            },
+            dismissButton = { TextAction("キャンセル", { pending = null }) },
+            containerColor = pi.background,
+        )
+    }
 }
 
 internal suspend fun checked(error: (String) -> Unit, task: suspend () -> Unit) {

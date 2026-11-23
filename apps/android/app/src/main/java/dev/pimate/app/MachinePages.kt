@@ -286,8 +286,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
     var error by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var confirm by remember { mutableStateOf("") }
-    var device by remember { mutableStateOf<JSONObject?>(null) }
+
     val scope = rememberCoroutineScope()
     suspend fun request(op: Operation) = JSONObject(m.machineRequest(id, op))
     LaunchedEffect(id, online, retry, caps.toString()) {
@@ -310,6 +309,19 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
                     launch { checked({ error = it }) { check = request(Operation.UpdateCheck) } }
             }
     }
+    fun operate(action: suspend () -> Unit) {
+        if (busy || m.hosts.none { it.id == host.id && it.deviceId == host.deviceId }) return
+        busy = true
+        note = ""
+        error = ""
+        scope.launch {
+            try {
+                checked({ error = it }, action)
+            } finally {
+                busy = false
+            }
+        }
+    }
     Page(host.name, close) {
         Label("状態")
         Text(rows.summary())
@@ -329,27 +341,38 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
             check?.str("reason") == "not_package" -> Hint("開発版は PC で更新してください")
             latest == "" -> Hint("最新版は未確認です")
             latest == current -> Hint("最新です")
-            check?.optBoolean("canUpdate") == true ->
-                TextAction("$latest に更新", { confirm = "更新" }, enabled = !busy)
+            online && caps.optBoolean("packageUpdate") && check?.optBoolean("canUpdate") == true ->
+                ConfirmAction(
+                    host to latest,
+                    "更新",
+                    "${host.name} を $latest に更新します。接続が一時的に切れる場合があります。",
+                    button = "$latest に更新",
+                    enabled = !busy,
+                ) {
+                    operate {
+                        val r = request(Operation.Update)
+                        note = "${r.getString("to")} に更新しました"
+                        retry++
+                    }
+                }
             else -> {
                 Hint("PC のターミナルで更新してください")
                 CommandPill("pi update npm:@phni3j9a/pimate")
             }
         }
         if (online && caps.optBoolean("hostRestart"))
-            TextAction("Host を再起動", { confirm = "Host を再起動" }, enabled = !busy)
+            ConfirmAction(host, "Host を再起動", "${host.name} との接続が一時的に切れる場合があります。", enabled = !busy) {
+                operate {
+                    request(Operation.Restart)
+                    note = "再起動を受け付けました"
+                }
+            }
         Label("プロバイダー")
         MenuRow("プロバイダーのログイン", "", online && caps.optBoolean("authSession") && !busy, next = true) {
             login = true
         }
         Label("GitHub")
-        Text(
-            when {
-                gh == null -> "ログイン状態は未確認です"
-                gh?.optBoolean("loggedIn") == true -> "${gh!!.str("login")} でログイン中"
-                else -> "PC で gh auth login を実行してください"
-            }
-        )
+        Text(githubStatusText(gh))
         Label("ペアリング済みの端末")
         if (devices == null) Hint("端末一覧は未確認です")
         devices.orEmpty().forEach { d ->
@@ -360,76 +383,74 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
                         android.text.format.DateFormat.format("yyyy/MM/dd", d.optLong("lastSeenAt"))
                 )
             if (d.optBoolean("current")) Hint("このスマホ")
-            else
-                TextAction(
-                    "取り消し",
-                    {
-                        device = d
-                        confirm = "端末の取り消し"
-                    },
+            else if (online && caps.optBoolean("pairedDevices")) {
+                val deviceId = d.getString("deviceId")
+                ConfirmAction(
+                    host to deviceId,
+                    "端末の取り消し",
+                    "${d.str("name")} はこの PC に接続できなくなります。",
+                    button = "取り消し",
                     enabled = !busy,
-                    color = pi.failedText,
-                )
+                ) {
+                    operate {
+                        request(Operation.Revoke(deviceId))
+                        retry++
+                        note = "登録を取り消しました"
+                    }
+                }
+            }
         }
         SheetError(error)
         if (note.isNotEmpty()) Hint(note)
         TextAction("状態を再読み込み", { retry++ }, enabled = online && !busy)
-        TextAction("このマシンを削除", { confirm = "このマシンを削除" }, enabled = !busy, color = pi.failedText)
-    }
-    if (confirm.isNotEmpty())
-        Confirm(
-            confirm,
-            when (confirm) {
-                "端末の取り消し" -> "${device?.str("name")} はこの PC に接続できなくなります。"
-                "このマシンを削除" -> "このスマホに保存した ${host.name} の登録と下書きを削除します。"
-                else -> "${host.name} との接続が一時的に切れる場合があります。"
-            },
-            { confirm = "" },
-        ) {
-            val action = confirm
-            confirm = ""
-            busy = true
-            note = ""
-            scope.launch {
-                try {
-                    checked({ error = it }) {
-                        when (action) {
-                            "このマシンを削除" -> {
-                                m.forget(id)
-                                close()
-                            }
-                            "端末の取り消し" -> {
-                                request(Operation.Revoke(device!!.getString("deviceId")))
-                                retry++
-                                note = "登録を取り消しました"
-                            }
-                            "更新" -> {
-                                val r = request(Operation.Update)
-                                note = "${r.getString("to")} に更新しました"
-                                retry++
-                            }
-                            else -> {
-                                request(Operation.Restart)
-                                note = "再起動を受け付けました"
-                            }
-                        }
-                    }
-                } finally {
-                    busy = false
-                }
+        ConfirmAction(host, "このマシンを削除", "このスマホに保存した ${host.name} の登録と下書きを削除します。", enabled = !busy) {
+            operate {
+                m.forget(id)
+                close()
             }
         }
+    }
 }
+
+internal fun githubStatusText(gh: JSONObject?): String =
+    when {
+        gh == null -> "ログイン状態は未確認です"
+        !gh.optBoolean("installed") -> "PC に GitHub CLI（gh）がインストールされていません"
+        gh.optBoolean("loggedIn") -> "${gh.str("login")} でログイン中"
+        else -> "PC で gh auth login を実行してください"
+    }
+
+internal fun authResultText(flow: JSONObject): String =
+    when (flow.str("status")) {
+        "succeeded" ->
+            if (flow.optBoolean("refreshRequired"))
+                "認証情報は保存されました。反映するには PC の Pi で /reload または再起動してください。再入力は不要です。"
+            else "ログインしました"
+        "failed" ->
+            if (flow.str("error") == "storage_failed") "認証情報が保存されたか不明です。再入力する前にプロバイダーの一覧を確認してください。"
+            else "ログインできませんでした"
+        "expired" -> "期限が切れました"
+        else -> "ログイン操作は終了しました"
+    }
 
 @Composable
 private fun ProviderPage(m: SessionModel, id: String, close: () -> Unit) {
+    if (m.rowsFor(id).hostValue("connection") != "\"connected\"") {
+        Page("プロバイダーのログイン", close) { Hint("PC に接続していません。再接続後にログイン状態を読み直します。") }
+        return
+    }
+    var retry by remember { mutableIntStateOf(0) }
+    key(id, retry) { OnlineProviderPage(m, id, close) { retry++ } }
+}
+
+@Composable
+private fun OnlineProviderPage(m: SessionModel, id: String, close: () -> Unit, reload: () -> Unit) {
     var session by remember { mutableStateOf<LoginSession?>(null) }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
-    var retry by remember { mutableIntStateOf(0) }
-    var logout by remember { mutableStateOf("") }
+    var message by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    LaunchedEffect(id, retry) {
+    LaunchedEffect(id) {
         checked({ error = it }) {
             m.withLogin(id) { login ->
                 try {
@@ -473,7 +494,11 @@ private fun ProviderPage(m: SessionModel, id: String, close: () -> Unit) {
         scope.launch {
             try {
                 checked({ error = it }) {
-                    login.request(method, body)
+                    val result = JSONObject(login.request(method, body))
+                    message =
+                        if (method == RcMethod.AUTH_LOGOUT && result.optBoolean("refreshRequired"))
+                            "保存した認証情報を削除しました。反映するには PC の Pi で /reload または再起動してください。"
+                        else ""
                     login.request(RcMethod.AUTH_LIST)
                 }
             } finally {
@@ -483,14 +508,12 @@ private fun ProviderPage(m: SessionModel, id: String, close: () -> Unit) {
     }
     Page("プロバイダーのログイン", close) {
         SheetError(error)
-        if (error.isNotEmpty())
-            TextAction(
-                "再読み込み",
-                {
-                    error = ""
-                    retry++
-                },
-            )
+        if (message.isNotEmpty()) Hint(message)
+        if (
+            error.isNotEmpty() ||
+                login != null && (providers.isEmpty() || flow?.str("error") == "storage_failed")
+        )
+            TextAction("再読み込み", reload, enabled = !busy)
         if (login == null && error.isEmpty()) Hint("専用の Pi を開いています…")
         if (active && flow != null) {
             Label(flow.str("provider"))
@@ -536,15 +559,7 @@ private fun ProviderPage(m: SessionModel, id: String, close: () -> Unit) {
                 enabled = !busy,
             )
         } else {
-            if (flow != null)
-                Hint(
-                    when (flow.str("status")) {
-                        "succeeded" -> "ログインしました"
-                        "failed" -> "ログインできませんでした"
-                        "expired" -> "期限が切れました"
-                        else -> "ログイン操作は終了しました"
-                    }
-                )
+            if (flow != null) Hint(authResultText(flow))
             providers.forEach { p ->
                 Label(p.str("id"))
                 Hint(if (p.optBoolean("configured")) "設定済み" else "未設定")
@@ -560,19 +575,18 @@ private fun ProviderPage(m: SessionModel, id: String, close: () -> Unit) {
                         enabled = !busy,
                     )
                 }
-                if (p.str("stored").isNotEmpty())
-                    TextAction(
+                if (login != null && p.str("stored").isNotEmpty()) {
+                    val provider = p.str("id")
+                    ConfirmAction(
+                        login to provider,
                         "ログアウト",
-                        { logout = p.str("id") },
+                        "PC に保存した $provider の認証を削除します。",
                         enabled = !busy,
-                        color = pi.failedText,
-                    )
+                    ) {
+                        send(RcMethod.AUTH_LOGOUT, JSONObject().put("provider", provider))
+                    }
+                }
             }
         }
     }
-    if (logout.isNotEmpty())
-        Confirm("ログアウト", "PC に保存した $logout の認証を削除します。", { logout = "" }) {
-            send(RcMethod.AUTH_LOGOUT, JSONObject().put("provider", logout))
-            logout = ""
-        }
 }

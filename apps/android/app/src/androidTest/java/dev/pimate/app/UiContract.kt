@@ -21,6 +21,50 @@ class UiContract {
         ui.runOnUiThread { ui.activity.setContent { PiTheme(1f) { content() } } }
 
     @Test
+    fun stopConfirmationNeverExpandsOrTransfersItsTarget() {
+        val editor = EditorKey("host", uniffi.pimate_ffi.Target("pi", "s"))
+        val original = StopTarget("parallel", "a", "stop_child")
+        var offered by mutableStateOf<StopTarget?>(original)
+        var live: StopTarget? = original
+        val sent = mutableListOf<StopTarget>()
+        show { StopAgentAction(editor, offered, { live }) { sent += it } }
+        ui.onNodeWithText("この子を停止…").performClick()
+        ui.runOnIdle {
+            live = original.copy(action = "stop")
+            offered = live
+        }
+        ui.onNodeWithText("キャンセル").assertDoesNotExist()
+        ui.onNodeWithText("実行全体を停止…").assertExists()
+        ui.runOnIdle {
+            live = original
+            offered = live
+        }
+        ui.onNodeWithText("この子を停止…").performClick()
+        ui.runOnIdle {
+            live = null
+            offered = null
+        }
+        ui.onNodeWithText("キャンセル").assertDoesNotExist()
+        ui.onNodeWithText("実行全体を停止…").assertDoesNotExist()
+        ui.runOnIdle {
+            live = original
+            offered = original
+        }
+        ui.onNodeWithText("この子を停止…").performClick()
+        // Simulate a delivery already received, before the next composition.
+        ui.runOnIdle { live = null }
+        ui.onNode(hasText("この子を停止") and hasClickAction()).performClick()
+        ui.runOnIdle {
+            assertTrue(sent.isEmpty())
+            live = original
+            offered = original
+        }
+        ui.onNodeWithText("この子を停止…").performClick()
+        ui.onNode(hasText("この子を停止") and hasClickAction()).performClick()
+        ui.runOnIdle { assertEquals(listOf(original), sent) }
+    }
+
+    @Test
     fun drawerIsCappedOnWideScreens() {
         var width by mutableStateOf(800.dp)
         show {

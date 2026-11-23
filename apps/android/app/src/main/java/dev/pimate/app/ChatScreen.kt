@@ -92,6 +92,10 @@ internal data class SwitchId(val target: EditorKey, val move: ChatMove)
 
 private fun EditorKey.scope() = "$host/${target.instance}/${target.session}"
 
+internal fun originalRunsByToolCall(runs: List<JSONObject>) = buildMap {
+    for (run in runs) run.str("toolCallId").takeIf(String::isNotEmpty)?.let { putIfAbsent(it, run) }
+}
+
 /**
  * チャット（docs/design/html/Main.html・Chat-Waiting.html・Chat-Edge.html・Chat-Attach.html）。見出し・会話・入力欄と、
  * そこから開くシート・全画面の画像。
@@ -245,11 +249,7 @@ internal fun ChatScreen(
     val runLinks =
         remember(entries, groups["run"]) {
             val runs =
-                groups["run"]
-                    .orEmpty()
-                    .map { JSONObject(it.json) }
-                    .filter { it.str("toolCallId").isNotEmpty() }
-                    .associateBy { it.str("toolCallId") }
+                groups["run"].orEmpty().map { JSONObject(it.json) }.let(::originalRunsByToolCall)
             buildMap {
                 runs.forEach { (id, r) -> put("running:$id", r.str("id")) }
                 entries.forEach { e ->

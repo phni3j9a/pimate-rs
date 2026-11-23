@@ -40,6 +40,8 @@ const issue = (kind) => ({
 	labels: [],
 	url: "https://github.com/example/demo",
 });
+// Opt-in connection-loss test: a second auth_list must come from a newly acquired hold.
+let dropLogin = process.argv[3] === "reconnect";
 new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 	const pc = new WS(`ws://${host}:${upstream}/ws`);
 	let authed = false,
@@ -130,6 +132,9 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 									kind: "detail",
 									item: {
 										...issue(m.query.kind),
+										...(m.query.kind === "pr"
+											? { checksTruncated: true, checks: [] }
+											: {}),
 										body: "画面の動作と表示を確認します。",
 										bodyTruncated: false,
 										createdAt: "2026-11-20",
@@ -172,11 +177,19 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 								seq: 1,
 							},
 						});
-					if (method === "auth_list")
+					if (method === "auth_list") {
+						const provider =
+							process.argv[3] === "reconnect" && !dropLogin
+								? "anthropic"
+								: "openai";
+						if (dropLogin) {
+							dropLogin = false;
+							setTimeout(() => phone.close(), 1200);
+						}
 						return reply(id, {
 							providers: [
 								{
-									id: "openai",
+									id: provider,
 									methods: ["api_key"],
 									stored: stored ? "api_key" : null,
 									configured: stored,
@@ -184,6 +197,7 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 							],
 							...(flow ? { flow } : {}),
 						});
+					}
 					if (method === "auth_wait") {
 						if (m.request.params.afterRevision === flow?.revision) waiting = id;
 						else reply(id, { flow });

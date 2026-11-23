@@ -628,35 +628,17 @@ internal fun SessionSheet(
                     pi.textSecondary,
                     style = Type.caption,
                 )
-                var confirm by rememberSaveable { mutableStateOf(false) }
-                TextAction(
-                    if (ops.busy == "shutdown") "終了しています…" else "この Pi を終了…",
-                    { confirm = true },
-                    Modifier.padding(top = 10.dp).offset(x = (-14).dp),
+                ConfirmAction(
+                    key,
+                    "終了する",
+                    "作業中の処理は止まります。会話はセッションに保存され、あとで開き直せます。",
+                    title = "この Pi を終了しますか？",
+                    button = if (ops.busy == "shutdown") "終了しています…" else "この Pi を終了…",
                     enabled = ops.ready,
-                    color = pi.failedText,
-                )
-                if (confirm)
-                    AlertDialog(
-                        { confirm = false },
-                        confirmButton = {
-                            TextAction(
-                                "終了する",
-                                {
-                                    confirm = false
-                                    ops.run("shutdown", RcMethod.SHUTDOWN) { close() }
-                                },
-                                color = pi.failedText,
-                            )
-                        },
-                        dismissButton = {
-                            TextAction("キャンセル", { confirm = false }, color = pi.textSecondary)
-                        },
-                        title = { Text("この Pi を終了しますか？", style = Type.sheet) },
-                        text = { Text("作業中の処理は止まります。会話はセッションに保存され、あとで開き直せます。") },
-                        containerColor = pi.background,
-                        tonalElevation = 0.dp,
-                    )
+                    modifier = Modifier.padding(top = 10.dp).offset(x = (-14).dp),
+                ) {
+                    if (ops.ready) ops.run("shutdown", RcMethod.SHUTDOWN) { close() }
+                }
             }
         }
     }
