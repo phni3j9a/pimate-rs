@@ -475,17 +475,8 @@ internal fun subject(name: String, args: JSONObject?): String {
     }
 }
 
-// shortcut: 1ファイルの unified diff の行頭だけを数える。複数ファイルの差分を出す Review 画面で本物の解析に替える。
-private fun change(patch: String): String {
-    var add = 0
-    var del = 0
-    var body = false
-    for (line in patch.lineSequence()) {
-        if (line.startsWith("@@")) body = true
-        else if (body && line.startsWith("+")) add++ else if (body && line.startsWith("-")) del++
-    }
-    return if (del > 0) "+$add −$del" else "+$add"
-}
+private fun change(patch: String): String =
+    parsePatch(patch).run { if (del > 0) "+$add −$del" else "+$add" }
 
 internal fun count(n: Double): String =
     when {

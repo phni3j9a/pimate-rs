@@ -345,6 +345,7 @@ struct Pending {
     hold: Option<String>,
     method: Option<String>,
     session: Value,
+    host_models: bool,
     thumbnail: bool,
 }
 async fn attempt(
@@ -441,6 +442,7 @@ async fn attempt(
                     continue;
                 }
                 let id = uuid::Uuid::new_v4().to_string();
+                let host_models = matches!(&op, Operation::HostModels { .. });
                 let m = match s.edit(|st| st.prepare(&id, op, true)) {
                     Ok(v) => v,
                     Err(e) => {
@@ -471,6 +473,7 @@ async fn attempt(
                             hold,
                             method,
                             session,
+                            host_models,
                             thumbnail,
                         },
                     );
@@ -596,6 +599,10 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     }
     if method == "prompt" {
         st.prompt_ack(id, &body["deliveredAs"]);
+    }
+    if p.host_models {
+        // The spawn picker must not overwrite the selected chat’s model catalog.
+        return Ok(body.to_string());
     }
     let dedicated = st.auth_targets.values().any(|i| p.instance == *i);
     if !(dedicated
@@ -862,6 +869,7 @@ mod regressions {
                 hold: None,
                 method: Some("abort".into()),
                 session: json!("s"),
+                host_models: false,
                 thumbnail: false,
             };
             let _ = resolve(&mut s, &p, "stop", &result);
@@ -896,6 +904,7 @@ mod regressions {
                     hold: None,
                     method: Some("compact".into()),
                     session: json!("s"),
+                    host_models: false,
                     thumbnail: false,
                 };
                 assert_eq!(

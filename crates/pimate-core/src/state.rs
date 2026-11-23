@@ -284,6 +284,7 @@ impl State {
             "question",
             "quota",
             "run",
+            "runWatch",
             "tool",
             "stream",
             "view",
@@ -804,6 +805,13 @@ impl State {
                         }
                     }
                     "message_end" => {
+                        if e["item"]["kind"] == "user"
+                            && e["item"]["entryId"]
+                                .as_str()
+                                .is_some_and(|id| self.get("entry", id).is_null())
+                        {
+                            self.prune_watch(true);
+                        }
                         if e["item"]["kind"] == "assistant" {
                             if let Some(start) = self.get("stream", "thinkingSince").as_u64()
                                 && let Some(id) = e["item"]["entryId"].as_str()
@@ -1097,6 +1105,23 @@ impl State {
         for r in v["runs"].as_array().into_iter().flatten() {
             self.run(r)
         }
+        self.prune_watch(false);
+    }
+    fn prune_watch(&mut self, finished: bool) {
+        let stale: Vec<_> = self
+            .rows
+            .get("runWatch")
+            .into_iter()
+            .flat_map(|r| r.keys())
+            .filter(|id| {
+                let run = self.get("run", id);
+                run.is_null() || finished && run["active"] != true
+            })
+            .cloned()
+            .collect();
+        for id in stale {
+            self.remove("runWatch", &id);
+        }
     }
     fn run(&mut self, r: &Value) {
         if self.get("view", "backends").as_array().is_some_and(|b| {
@@ -1114,6 +1139,9 @@ impl State {
         };
         let children = r["children"].as_array().cloned().unwrap_or_default();
         let is_active = active(&r) || children.iter().any(active);
+        if is_active && let Some(id) = r["id"].as_str() {
+            self.put("runWatch", id, json!(true));
+        }
         r["active"] = json!(is_active);
         r["open"] = json!(
             is_active || r["state"] == "paused" || children.iter().any(|c| c["state"] == "paused")

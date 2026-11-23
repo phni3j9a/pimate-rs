@@ -103,6 +103,9 @@ private val Dark =
     )
 
 internal val LocalPalette = staticCompositionLocalOf { Light }
+internal val darkPalette: Boolean
+    @Composable get() = LocalPalette.current === Dark
+
 internal val pi: Palette
     @Composable @ReadOnlyComposable get() = LocalPalette.current
 
@@ -140,9 +143,9 @@ internal object Type {
 internal val fontScales = listOf("小" to .875f, "標準" to 1f, "大" to 1.15f)
 
 @Composable
-fun PiTheme(scale: Float, content: @Composable () -> Unit) {
+fun PiTheme(scale: Float, mode: ThemeMode = ThemeMode.SYSTEM, content: @Composable () -> Unit) {
     val density = LocalDensity.current
-    val dark = isSystemInDarkTheme()
+    val dark = mode.dark(isSystemInDarkTheme())
     val p = if (dark) Dark else Light
     // Material の部品（シート・メニュー・選択ハンドル）も同じ役割の色を引く。面の色付けと影は使わない。
     val base = if (dark) darkColorScheme() else lightColorScheme()

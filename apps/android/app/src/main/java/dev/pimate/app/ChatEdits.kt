@@ -24,6 +24,10 @@ internal class ChatEdits {
         if (key == current) update(key, body.copy(text = text))
     }
 
+    fun forget(host: String) {
+        bodies.keys.filter { it.host == host }.forEach(bodies::remove)
+    }
+
     fun accepted(key: EditorKey, sent: RestoredDraft) {
         if (bodies[key] == sent) bodies.remove(key)
     }
@@ -39,6 +43,10 @@ internal class AnswerEdit(initial: String) {
 
 internal class AnswerEdits {
     private val edits = mutableMapOf<Pair<EditorKey, String>, AnswerEdit>()
+
+    fun forget(host: String) {
+        edits.keys.removeAll { it.first.host == host }
+    }
 
     fun sync(key: EditorKey, pending: List<uniffi.pimate_ffi.Item>) {
         val ids = pending.mapTo(mutableSetOf()) { it.id }

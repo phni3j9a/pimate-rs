@@ -46,6 +46,9 @@ pub enum Operation {
         method: p::RcMethod,
         params: String,
     },
+    HostModels {
+        instance: String,
+    },
     Folders,
     Dirs {
         path: String,
@@ -307,6 +310,20 @@ impl State {
                     }
                 }
                 return Ok(rc(id, target, name, params));
+            }
+            HostModels { instance } => {
+                if self.get("instance", &instance).is_null() {
+                    return Err(Error::StaleTarget);
+                }
+                return Ok(rc(
+                    id,
+                    Target {
+                        instance,
+                        session: None,
+                    },
+                    "models",
+                    json!({}),
+                ));
             }
             Folders => json!({"type":"folders"}),
             Dirs { path } => json!({"type":"dirs","path":path}),

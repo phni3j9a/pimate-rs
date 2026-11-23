@@ -1191,3 +1191,97 @@ fn live_update_after_oversized_preview_rebuilds_only_open_history_call() {
     event(&mut s, 8, update("late"));
     assert!(s.get("tool", "t").is_null());
 }
+
+#[test]
+fn machine_screen_operations_do_not_require_a_chat_subscription() {
+    let mut s = State::default();
+    s.caps = json!({"dirs":true,"github":true,"pairedDevices":true,"githubStatus":true,"hostRestart":true,"packageUpdate":true});
+    let spawn = json!({"cwd":"/tmp/mock","trust":true,"askTool":true,"model":{"provider":"demo","id":"small"},"thinking":"low","message":"hello"});
+    for (op, ty) in [
+        (Operation::Folders, "folders"),
+        (Operation::Dirs { path: "~/".into() }, "dirs"),
+        (
+            Operation::Spawn {
+                params: spawn.to_string(),
+            },
+            "spawn",
+        ),
+        (Operation::GithubStatus, "github_status"),
+        (Operation::Devices, "devices"),
+        (
+            Operation::Revoke {
+                device_id: "other".into(),
+            },
+            "device_revoke",
+        ),
+        (Operation::UpdateCheck, "update_check"),
+        (Operation::Update, "update"),
+        (Operation::Restart, "host_restart"),
+    ] {
+        let frame = s.prepare("r", op, false).unwrap();
+        assert_eq!(frame["type"], ty);
+        if ty == "spawn" {
+            assert_eq!(frame["params"], spawn);
+        }
+    }
+    for query in [
+        json!({"kind":"list"}),
+        json!({"kind":"issue","number":3}),
+        json!({"kind":"pr","number":2}),
+    ] {
+        let frame = s
+            .prepare(
+                "r",
+                Operation::Github {
+                    instance: "pi".into(),
+                    query: query.to_string(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(frame["query"], query);
+        assert_eq!(frame["instanceId"], "pi");
+    }
+    let models = || Operation::HostModels {
+        instance: "pi".into(),
+    };
+    assert_eq!(s.prepare("r", models(), false), Err(Error::StaleTarget));
+    s.apply(&json!({"type":"instances","instances":[{"instanceId":"pi"}]}));
+    assert_eq!(
+        s.prepare("r", models(), true).unwrap()["request"],
+        json!({"id":"r","method":"models","params":{},"expectInstanceId":"pi"})
+    );
+    assert_eq!(s.selected, None);
+}
+
+#[test]
+fn finished_child_stays_watched_until_a_new_user_entry() {
+    let mut s = view();
+    for (seq, state) in [(3, "running"), (4, "paused")] {
+        event(
+            &mut s,
+            seq,
+            json!({"type":"subagent_run","run":{"id":"r","state":state,"actions":["interrupt"],"children":[]}}),
+        );
+        assert_eq!(s.get("runWatch", "r"), true);
+    }
+    assert_eq!(s.get("run", "r")["open"], true);
+    assert_eq!(
+        s.prepare(
+            "a",
+            rc(
+                pimate_protocol::RcMethod::SubagentControl,
+                json!({"runId":"r","action":"interrupt"})
+            ),
+            false
+        )
+        .unwrap()["request"]["params"]["action"],
+        "interrupt"
+    );
+    event(
+        &mut s,
+        5,
+        json!({"type":"message_end","item":{"kind":"user","entryId":"next"}}),
+    );
+    assert!(s.get("runWatch", "r").is_null());
+}

@@ -40,14 +40,18 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val prefs = getSharedPreferences("display", MODE_PRIVATE)
         setContent {
-            var scale by remember { mutableFloatStateOf(prefs.getFloat("scale", 1f)) }
-            PiTheme(scale) {
-                Screen(model, chat, scale) {
-                    scale = it
-                    prefs.edit().putFloat("scale", it).apply()
+            val settings = model.settings
+            PiTheme(settings.scale, settings.theme) {
+                val dark = darkPalette
+                SideEffect {
+                    androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                        .run {
+                            isAppearanceLightStatusBars = !dark
+                            isAppearanceLightNavigationBars = !dark
+                        }
                 }
+                Screen(model, chat, settings.scale, settings::chooseScale)
             }
         }
     }
@@ -58,21 +62,21 @@ class MainActivity : ComponentActivity() {
 private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float) -> Unit) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var pairing by rememberSaveable { mutableStateOf(false) }
+    val pairing = m.pairing
     var sheet by rememberSaveable { mutableStateOf("") }
     val host = m.host
     val showPair = pairing || host == null
-    BackHandler(pairing && host != null) { pairing = false }
+    BackHandler(pairing && host != null) { m.showPairing(false) }
     BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
     // 再接続をやめた接続の立て直し: 再ペアリングの画面へ。バージョン不一致は更新後につなぎ直す。
     val recover = { stop: Stop ->
-        if (stop.repair) pairing = true else host?.let(m::switchHost)
+        if (stop.repair) m.showPairing(true) else host?.let(m::switchHost)
         scope.launch { drawer.close() }
         Unit
     }
     LaunchedEffect(m.openList) {
         if (m.openList) {
-            pairing = false
+            m.showPairing(false)
             drawer.open()
             m.listed()
         }
@@ -90,7 +94,7 @@ private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float
                         scope.launch { drawer.close() }
                     },
                     pair = {
-                        pairing = true
+                        m.showPairing(true)
                         scope.launch { drawer.close() }
                     },
                     open = { sheet = it },
@@ -98,7 +102,7 @@ private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float
             }
         },
     ) {
-        if (showPair) PairScreen(m, if (host != null) ({ pairing = false }) else null)
+        if (showPair) PairScreen(m, if (host != null) ({ m.showPairing(false) }) else null)
         else key(host?.id) { ChatScreen(m, chat, { scope.launch { drawer.open() } }, recover) }
     }
     if (sheet.isNotEmpty())
@@ -155,7 +159,7 @@ private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float
                         "マシンを追加（ペアリング）",
                         {
                             sheet = ""
-                            pairing = true
+                            m.showPairing(true)
                             scope.launch { drawer.close() }
                         },
                         Modifier.padding(top = 4.dp).offset(x = (-14).dp),

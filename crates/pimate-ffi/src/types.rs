@@ -125,6 +125,9 @@ pub enum Operation {
         method: RcMethod,
         params: String,
     },
+    HostModels {
+        instance: String,
+    },
     Folders,
     Dirs {
         path: String,
