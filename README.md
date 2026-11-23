@@ -41,6 +41,22 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 
 `host_restart`・`github_status`・端末管理・更新・GitHub 要求などの余分なキーを拒否する検査は、Host が生の JSON を受け取った時点で行います。型への変換は、認証・権限・要求内容の検査の代わりにはなりません。要求は自動再送しません。
 
+### 会話の Markdown
+
+[`pimate-markdown`](crates/pimate-markdown) の `parse(source, file_images)` は描画用の `Document` を返します。見出し・段落・表のセルは装飾付きテキストと画像の列、引用とリストは子 block を持ちます。`Block::plain_text()` は選択用の本文、`id..end` は元 Markdown の UTF-8 バイト範囲、`Table::markdown` は「表を Markdown でコピー」用です。`cell_width` / `table_widths` で TS 版と同じ列幅を計算できます。
+
+`Document::images` は表示順の画像、`links` は http(s) リンクです。PC パスは `file_images` が true の場合だけ画像になります。解析自体は通信もファイルアクセスもしません。逐次表示では新しい全文を解析して `new.changes_since(&old)` を呼び、最上位 block の削除と追加・更新を ID 順に反映します（ID は同一メッセージ・同じ親の中で安定）。後から届く参照定義も反映するため全文を読み直す方式です。長い会話はチャンクをまとめて UI スレッドの外で解析してください。計測: `cargo run --release -p pimate-markdown --example stream_time`。
+
+選択範囲の `id..end` は UTF-8 のバイト位置で、UTF-16 の添字ではありません。Swift/Kotlin で必要な変換はバインディング側（#14）が担当します。コード全体のコピーには `Content::Code.text`、表示と部分選択にはタブを空白2個にした `plain_text()` を使います。欠けた表セルは格納しないため、UI では空として描きます。参照定義の画像はソースを共有し、分類は同じ定義につき一度だけ行います。
+
+`pulldown-cmark` のイベントから描画用の木を作ります。記号・行数・入力バイト数では装飾を打ち切りません。実際の入れ子が **32 段**に達した部分、またはヘッダーを含む **行数×列数が 8,192 を超える表**だけを原文で表示します。これはネイティブのスタックと UI のセル数を保護するためです。パーサが疎な表に空セルを補う前に、幅の大きな表候補は少数列で実際の行範囲を確認します。これと別に、長い参照リンクや画像の代替文字列を繰り返し展開する追加メモリは文書あたり概算 **4 MiB** までとし、超過した参照だけを原文に戻します。ストレス計測は `cargo run --release -p pimate-markdown --example stress_time` です。
+
+**TS 版（marked）との既知の差:** 表は `pulldown-cmark` の GFM 表拡張で認識します。marked に合わせて本文にパイプを補ったり、区切り行をマスクしたりしません。以下の `\n` は改行を表します。
+
+- `項目\n|:--|\nりんご` は marked では1列表、Rust では段落です。1列でもヘッダーを `| 項目 |` と書けば両方で表になります。
+- `- h\n  |:--|\n  a` は marked ではリスト内の1列表、Rust ではリスト項目の本文です。
+- `a|b\n--:--|--\n1|2` は marked では段落ですが、`pulldown-cmark` 0.13.6 は途中にコロンのある区切りセルも受理し、2列表にします。双方で右揃えにするには `---:` と書いてください。
+
 ## Host を試す（Linux / macOS）
 
 [`crates/pimate-host`](crates/pimate-host) は `pimate` 単一バイナリです。既存 Host と並べて試す場合、**両方の端末で同じ一時ディレクトリと別ポート**を指定してください。`list` / `serve` は runDir の古い登録を掃除します。
