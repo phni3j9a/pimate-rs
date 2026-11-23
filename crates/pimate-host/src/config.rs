@@ -34,7 +34,13 @@ pub fn config_dir() -> Result<PathBuf> {
 pub fn run_dir() -> PathBuf {
     var("PIMATE_RUN_DIR")
         .or_else(|| var("XDG_RUNTIME_DIR").map(|p| p.join("pimate")))
-        .unwrap_or_else(|| env::temp_dir().join(format!("pimate-{}", Uid::current())))
+        .unwrap_or_else(|| {
+            ["TMPDIR", "TMP", "TEMP"]
+                .into_iter()
+                .find_map(var)
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join(format!("pimate-{}", Uid::current()))
+        })
 }
 pub fn private(p: &Path) -> Result<()> {
     fs::DirBuilder::new()
@@ -220,17 +226,25 @@ mod tests {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
-        assert!(
-            std::process::Command::new(env::current_exe().unwrap())
-                .args(["--exact", "config::tests::tmpdir_fallback"])
+        for (i, key) in ["TMPDIR", "TMP", "TEMP"].iter().enumerate() {
+            let mut cmd = std::process::Command::new(env::current_exe().unwrap());
+            cmd.args(["--exact", "config::tests::tmpdir_fallback"])
                 .env_remove("PIMATE_RUN_DIR")
-                .env_remove("XDG_RUNTIME_DIR")
-                .env("TMPDIR", tmp.path())
-                .env("PIMATE_TEST_EXPECT_TMPDIR", tmp.path())
-                .status()
-                .unwrap()
-                .success()
-        );
+                .env_remove("XDG_RUNTIME_DIR");
+            for (j, k) in ["TMPDIR", "TMP", "TEMP"].iter().enumerate() {
+                if j < i {
+                    cmd.env_remove(k);
+                } else {
+                    cmd.env(k, tmp.path().join(k));
+                }
+            }
+            assert!(
+                cmd.env("PIMATE_TEST_EXPECT_TMPDIR", tmp.path().join(key))
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
     }
     #[test]
     fn ts_files_and_lock() -> Result<()> {

@@ -578,3 +578,32 @@ async fn normal_stop_finishes_locked_pair_update() -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn stop_during_initial_probe_never_starts_listening() -> Result<()> {
+    use nix::{
+        sys::signal::{Signal, kill},
+        unistd::Pid,
+    };
+    use std::os::unix::fs::DirBuilderExt;
+    for signal in [Signal::SIGINT, Signal::SIGTERM] {
+        let tmp = tempfile::tempdir()?;
+        let run = tmp.path().join("run");
+        std::fs::DirBuilder::new().mode(0o700).create(&run)?;
+        let listener = tokio::net::UnixListener::bind(run.join("slow.sock"))?;
+        std::fs::write(run.join("slow.json"),json!({"instanceId":"slow","pid":std::process::id(),"protocol":1,"cwd":".","startedAt":1,"abducoSession":null,"session":null,"status":"idle","origin":"pc"}).to_string())?;
+        let child = cli(tmp.path())
+            .args(["serve", "--listen", "127.0.0.1", "--port", "0"])
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let (socket, _) = timeout(Duration::from_secs(4), listener.accept()).await??;
+        let mut hello = String::new();
+        let mut reader = BufReader::new(socket);
+        reader.read_line(&mut hello).await?;
+        kill(Pid::from_raw(child.id().unwrap() as i32), signal)?;
+        let o = timeout(Duration::from_secs(3), child.wait_with_output()).await??;
+        assert!(o.status.success());
+        assert!(o.stdout.is_empty(), "started listening after stop");
+    }
+    Ok(())
+}

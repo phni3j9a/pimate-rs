@@ -7,7 +7,7 @@ use anyhow::{Result, ensure};
 use pimate_protocol::relay::HostFrame;
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
-use tokio::time::{Instant, sleep, sleep_until, timeout};
+use tokio::time::{Instant, sleep, sleep_until};
 pub fn forward(
     links: &Links,
     dir: &Path,
@@ -31,14 +31,12 @@ pub fn forward(
         _ => 5000,
     };
     // Enqueue before returning the future: the WS reader determines write order, not task scheduling.
-    let client = links.client(dir, &id, &out, false).and_then(|c| {
-        c.enqueue(req)?;
-        Ok(c)
-    });
+    let mut c = links.client(dir, &id, &out, false);
+    let written = c.enqueue(req);
     async move {
         let response = match async {
-            let mut c = client?;
-            timeout(Duration::from_millis(wait), c.next()).await?
+            let sent_at = written?.await?;
+            tokio::time::timeout_at(sent_at + Duration::from_millis(wait), c.next()).await?
         }
         .await
         {
@@ -53,19 +51,27 @@ pub fn forward(
         });
     }
 }
-pub async fn subscribe(links: Arc<Links>, dir: &Path, id: &str, out: Out) {
-    let mut retry = 250;
-    let mut last = None;
-    loop {
-        let _ = stream(&links, dir, id, &out, &mut retry, &mut last).await;
-        out.send(&json!({"type":"subscribe_error","instanceId":id,"code":"unreachable"}));
-        sleep(Duration::from_millis(retry)).await;
-        retry = (retry * 2).min(5000)
+pub fn subscribe(
+    links: Arc<Links>,
+    dir: std::path::PathBuf,
+    id: String,
+    out: Out,
+) -> impl Future<Output = ()> {
+    let mut c = links.client(&dir, &id, &out, true);
+    async move {
+        let mut retry = 250;
+        let mut last = None;
+        loop {
+            let _ = stream(c, &id, &out, &mut retry, &mut last).await;
+            out.send(&json!({"type":"subscribe_error","instanceId":id,"code":"unreachable"}));
+            sleep(Duration::from_millis(retry)).await;
+            retry = (retry * 2).min(5000);
+            c = links.client(&dir, &id, &out, true);
+        }
     }
 }
 async fn stream(
-    links: &Links,
-    dir: &Path,
+    mut c: crate::link::Client,
     id: &str,
     out: &Out,
     retry: &mut u64,
@@ -82,20 +88,15 @@ async fn stream(
         saved.push(v);
         Ok(())
     };
-    let (mut c, s, h) = timeout(Duration::from_secs(10), async {
-        let mut c = links.client(dir, id, out, true)?;
-        let s = c.hello(&mut save).await?;
-        let mut req = rc::request("history");
-        if !s["session"].is_null() {
-            req["expectSessionId"] = s["session"]["id"].clone()
-        }
-        let r = c.send(req, &mut save).await?;
-        ensure!(r["ok"] == true);
-        let h = r["result"].clone();
-        ensure!(s["session"]["id"] == h["session"]["id"]);
-        Ok::<_, anyhow::Error>((c, s, h))
-    })
-    .await??;
+    let s = c.hello(&mut save).await?;
+    let mut req = rc::request("history");
+    if !s["session"].is_null() {
+        req["expectSessionId"] = s["session"]["id"].clone()
+    }
+    let r = c.send(req, &mut save).await?;
+    ensure!(r["ok"] == true);
+    let h = &r["result"];
+    ensure!(s["session"]["id"] == h["session"]["id"]);
     let mut seq = s["seq"]
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("missing seq"))?;
@@ -115,7 +116,7 @@ async fn stream(
     out.send(&HostFrame::Subscribed {
         instance_id: id,
         snapshot: &s,
-        history: &h,
+        history: h,
     });
     for v in saved {
         if let Some(n) = v["seq"].as_u64()

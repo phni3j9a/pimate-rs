@@ -5,16 +5,17 @@ use crate::{
     server::{LIMIT, Out},
 };
 use anyhow::{Result, anyhow, ensure};
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 use tokio::{
-    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
-    time::timeout,
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
+    time::{Instant, timeout, timeout_at},
 };
 type Packet = (Arc<Value>, OwnedSemaphorePermit);
 #[derive(Clone)]
@@ -39,131 +40,150 @@ impl Mail {
         }
     }
 }
-enum Command {
-    Watch(Mail),
-    Send(Value, Mail),
+struct Command {
+    req: Value,
+    mail: Mail,
+    written: oneshot::Sender<Instant>,
+}
+struct Link {
+    tx: mpsc::Sender<Command>,
+    watchers: Arc<Mutex<Vec<Mail>>>,
 }
 #[derive(Default)]
-pub struct Links(Mutex<HashMap<String, mpsc::WeakSender<Command>>>);
+pub struct Links(Mutex<HashMap<String, Weak<Link>>>);
 pub struct Client {
-    tx: mpsc::Sender<Command>,
+    link: Arc<Link>,
     mail: Mail,
     rx: mpsc::Receiver<Packet>,
     id: String,
 }
 impl Links {
-    pub fn client(&self, dir: &Path, id: &str, out: &Out, events: bool) -> Result<Client> {
-        let tx = {
-            let mut map = self.0.lock().unwrap();
-            map.retain(|_, s| s.upgrade().is_some_and(|s| !s.is_closed()));
-            if let Some(tx) = map.get(id).and_then(|s| s.upgrade()) {
-                tx
-            } else {
-                let (tx, rx) = mpsc::channel(128);
-                map.insert(id.into(), tx.downgrade());
-                tokio::spawn(run(dir.into(), id.into(), rx));
-                tx
-            }
-        };
+    pub fn client(&self, dir: &Path, id: &str, out: &Out, events: bool) -> Client {
         let (send, rx) = mpsc::channel(8192);
         let mail = Mail {
             tx: send,
             budget: Arc::new(Semaphore::new(LIMIT)),
             out: out.clone(),
         };
+        let mut map = self.0.lock().unwrap();
+        map.retain(|_, weak| weak.upgrade().is_some_and(|l| !l.tx.is_closed()));
+        let mut start = None;
+        let link = map.get(id).and_then(Weak::upgrade).unwrap_or_else(|| {
+            let (tx, cmds) = mpsc::channel(128);
+            let link = Arc::new(Link {
+                tx,
+                watchers: Default::default(),
+            });
+            map.insert(id.into(), Arc::downgrade(&link));
+            start = Some(cmds);
+            link
+        });
         if events {
-            tx.try_send(Command::Watch(mail.clone()))
-                .map_err(|_| anyhow!("RC busy or closed"))?
+            let mut watchers = link.watchers.lock().unwrap();
+            watchers.retain(|m| !m.tx.is_closed());
+            watchers.push(mail.clone())
         }
-        Ok(Client {
-            tx,
+        if let Some(cmds) = start {
+            tokio::spawn(run(dir.into(), id.into(), cmds, link.watchers.clone()));
+        }
+        Client {
+            link,
             rx,
             mail,
             id: id.into(),
-        })
+        }
     }
 }
-async fn run(dir: PathBuf, id: String, mut cmds: mpsc::Receiver<Command>) -> Result<()> {
+async fn run(
+    dir: PathBuf,
+    id: String,
+    mut cmds: mpsc::Receiver<Command>,
+    watchers: Arc<Mutex<Vec<Mail>>>,
+) -> Result<()> {
+    let fanout = |frame: Value| {
+        let len = frame.to_string().len();
+        let frame = Arc::new(frame);
+        let mut watchers = watchers.lock().unwrap();
+        watchers.retain(|m| !m.tx.is_closed());
+        for m in watchers.iter() {
+            m.deliver(&frame, len)
+        }
+        Ok(())
+    };
     let mut rc = timeout(Duration::from_secs(5), Rc::open(&dir, &id)).await??;
-    let mut watchers: Vec<Mail> = vec![];
-    let mut verified = false;
-    let mut pending = HashMap::<String, Mail>::new();
-    loop {
-        let cmd = tokio::select! {
-            cmd=cmds.recv()=>cmd,
-            frame=rc.next()=>{
-                let v=Arc::new(frame?);
-                if v["type"]=="event" && v["instanceId"]==id {
-                    let bytes=v.to_string().len();
-                    watchers.retain(|m| !m.tx.is_closed());
-                    for m in &watchers { m.deliver(&v,bytes); }
-                } else if v["type"]=="response" && let Some(mail)=v["id"].as_str().and_then(|k|pending.remove(k)) {
-                    mail.deliver(&v,v.to_string().len());
-                }
-                continue
-            }
-        };
-        match cmd {
-            None => return Ok(()),
-            Some(Command::Watch(mail)) => {
-                watchers.retain(|m| !m.tx.is_closed());
-                watchers.push(mail)
-            }
-            Some(Command::Send(req, mail)) => {
-                if mail.tx.is_closed() {
-                    continue;
-                }
-                if !verified {
-                    let snapshot = timeout(
-                        Duration::from_secs(5),
-                        rc.hello(|v| {
-                            let len = v.to_string().len();
-                            let v = Arc::new(v);
-                            for w in &watchers {
-                                w.deliver(&v, len)
-                            }
-                            Ok(())
-                        }),
-                    )
-                    .await??;
-                    ensure!(snapshot["purpose"].is_null(), "reserved RC instance");
-                    verified = true;
-                    if mail.tx.is_closed() {
-                        continue;
-                    }
-                }
-                let key = req["id"]
+    let snapshot = timeout(Duration::from_secs(5), rc.hello(&fanout)).await??;
+    ensure!(snapshot["purpose"].is_null(), "reserved RC instance");
+    let (mut sink, mut stream) = rc.io.split();
+    let pending = Mutex::new(HashMap::<String, Mail>::new());
+    let read = async {
+        while let Some(line) = stream.next().await {
+            let frame = pimate_protocol::decode_json(&line?)?;
+            if frame["type"] == "event" && frame["instanceId"] == id {
+                fanout(frame)?
+            } else if frame["type"] == "response"
+                && let Some(mail) = frame["id"]
                     .as_str()
-                    .ok_or_else(|| anyhow!("missing id"))?
-                    .to_owned();
+                    .and_then(|k| pending.lock().unwrap().remove(k))
+            {
+                let len = frame.to_string().len();
+                mail.deliver(&Arc::new(frame), len)
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let write = async {
+        while let Some(Command { req, mail, written }) = cmds.recv().await {
+            if mail.tx.is_closed() {
+                continue;
+            }
+            let key = req["id"]
+                .as_str()
+                .ok_or_else(|| anyhow!("missing id"))?
+                .to_owned();
+            {
+                let mut pending = pending.lock().unwrap();
                 if pending.contains_key(&key) {
                     let err = Arc::new(
                         json!({"type":"response","id":key,"ok":false,"error":{"code":"bad_request","message":"RC request id already in flight"}}),
                     );
                     mail.deliver(&err, err.to_string().len());
+                    let _ = written.send(Instant::now());
                     continue;
                 }
-                // Reserve timed-out IDs until their replies arrive; reset a wedged link rather than grow forever.
                 ensure!(pending.len() < 1024, "too many unanswered RC requests");
-                timeout(Duration::from_secs(5), rc.write(req)).await??;
                 pending.insert(key, mail);
             }
+            timeout(
+                Duration::from_secs(5),
+                sink.send(rc::request_line(req, &id)?),
+            )
+            .await??;
+            let _ = written.send(Instant::now());
         }
-    }
+        Ok(())
+    };
+    tokio::select! {r=read=>r,r=write=>r}
 }
 impl Client {
     pub async fn next(&mut self) -> Result<Value> {
         // The actor owns the only inbound route. Its exit also invalidates queued synchronization.
         // Drain already received frames before propagating EOF.
-        let packet = tokio::select! {biased;p=self.rx.recv()=>p,_=self.tx.closed()=>None};
+        let packet = tokio::select! {biased;p=self.rx.recv()=>p,_=self.link.tx.closed()=>None};
         Ok(Arc::unwrap_or_clone(
             packet.ok_or_else(|| anyhow!("RC closed"))?.0,
         ))
     }
-    pub fn enqueue(&self, req: Value) -> Result<()> {
-        self.tx
-            .try_send(Command::Send(req, self.mail.clone()))
-            .map_err(|_| anyhow!("RC busy or closed"))
+    pub fn enqueue(&self, req: Value) -> Result<oneshot::Receiver<Instant>> {
+        let (written, rx) = oneshot::channel();
+        self.link
+            .tx
+            .try_send(Command {
+                req,
+                mail: self.mail.clone(),
+                written,
+            })
+            .map_err(|_| anyhow!("RC busy or closed"))?;
+        Ok(rx)
     }
     pub async fn send(
         &mut self,
@@ -171,9 +191,9 @@ impl Client {
         mut event: impl FnMut(Value) -> Result<()>,
     ) -> Result<Value> {
         let id = req["id"].clone();
-        self.enqueue(req)?;
+        let deadline = self.enqueue(req)?.await? + Duration::from_secs(5);
         loop {
-            let v = self.next().await?;
+            let v = timeout_at(deadline, self.next()).await??;
             if v["type"] == "response" && v["id"] == id {
                 return Ok(v);
             }

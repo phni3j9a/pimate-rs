@@ -15,7 +15,7 @@ pub fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
 }
 pub struct Rc {
-    io: Framed<UnixStream, LinesCodec>,
+    pub(super) io: Framed<UnixStream, LinesCodec>,
     id: String,
 }
 impl Rc {
@@ -32,20 +32,12 @@ impl Rc {
         let s = self.io.next().await.ok_or_else(|| anyhow!("RC closed"))??;
         Ok(decode_json(&s)?)
     }
-    pub async fn write(&mut self, mut req: Value) -> Result<()> {
-        req.as_object_mut()
-            .ok_or_else(|| anyhow!("request"))?
-            .entry("expectInstanceId")
-            .or_insert(json!(self.id));
-        self.io.send(req.to_string()).await?;
-        Ok(())
-    }
     pub async fn send(
         &mut self,
         req: Value,
         mut event: impl FnMut(Value) -> Result<()>,
     ) -> Result<Value> {
-        self.write(req.clone()).await?;
+        self.io.send(request_line(req.clone(), &self.id)?).await?;
         loop {
             let v = self.next().await?;
             if v["type"] == "response" && v["id"] == req["id"] {
@@ -65,6 +57,13 @@ impl Rc {
         );
         Ok(s.clone())
     }
+}
+pub fn request_line(mut req: Value, id: &str) -> Result<String> {
+    req.as_object_mut()
+        .ok_or_else(|| anyhow!("request"))?
+        .entry("expectInstanceId")
+        .or_insert(json!(id));
+    Ok(req.to_string())
 }
 pub fn request(method: &str) -> Value {
     json!({"id":Uuid::new_v4().to_string(),"method":method,"params":{}})

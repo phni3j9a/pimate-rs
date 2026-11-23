@@ -89,6 +89,10 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
+    // Stop even during discovery/bind. Runtime shutdown waits for synchronous DB updates and lock guards.
+    tokio::select! {biased;_=terminate.recv()=>Ok(()),_=interrupt.recv()=>Ok(()),result=listen(config,ips,port)=>result}
+}
+async fn listen(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     let dir = config::run_dir();
     let discovery = rc::list(&dir).await?;
     let (tx, instances) = watch::channel(summaries(discovery.instances));
@@ -139,8 +143,7 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
             }
         }
     });
-    // Returning from main drops the runtime, which waits for synchronous DB updates (and their lock guards).
-    tokio::select! {_=terminate.recv()=>(),_=interrupt.recv()=>(),result=tasks.join_next()=>result.unwrap()??}
+    tasks.join_next().await.unwrap()??;
     Ok(())
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
@@ -323,13 +326,16 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                     Err(code) => break code,
                 };
                 if kind == "device_revoke" && reply["ok"] == true {
-                    let sent = timeout(
-                        Duration::from_secs(2),
-                        ws.send(Message::Text(reply.to_string().into())),
+                    let target = m["deviceId"].as_str().unwrap();
+                    let sent = notify_and_reply(
+                        &a.revoked,
+                        target,
+                        timeout(
+                            Duration::from_secs(2),
+                            ws.send(Message::Text(reply.to_string().into())),
+                        ),
                     )
                     .await;
-                    let target = m["deviceId"].as_str().unwrap();
-                    let _ = a.revoked.send(target.into());
                     if target == device {
                         break Code::Revoked as u16;
                     }
@@ -362,9 +368,9 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                             id.clone(),
                             (
                                 guard,
-                                AbortOnDropHandle::new(tokio::spawn(async move {
-                                    relay::subscribe(links, &dir, &id, out).await
-                                })),
+                                AbortOnDropHandle::new(tokio::spawn(relay::subscribe(
+                                    links, dir, id, out,
+                                ))),
                             ),
                         );
                     }
@@ -394,6 +400,14 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         }
     };
     close(&mut ws, end).await;
+}
+async fn notify_and_reply<F: Future>(
+    revoked: &tokio::sync::broadcast::Sender<String>,
+    target: &str,
+    reply: F,
+) -> F::Output {
+    let _ = revoked.send(target.into());
+    reply.await
 }
 fn short(v: &Value) -> bool {
     v.as_str()
@@ -445,6 +459,121 @@ fn settings(c: &Config, device: &str, m: &Value) -> Result<Value, u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn revoke_notifies_while_reply_is_blocked() {
+        let (tx, mut peer) = tokio::sync::broadcast::channel(1);
+        let (release, blocked) = tokio::sync::oneshot::channel::<()>();
+        let sender = tokio::spawn(async move { notify_and_reply(&tx, "target", blocked).await });
+        assert_eq!(
+            timeout(Duration::from_secs(1), peer.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            "target"
+        );
+        assert!(!sender.is_finished());
+        release.send(()).unwrap();
+        sender.await.unwrap().unwrap();
+    }
+    #[tokio::test]
+    async fn delayed_hello_keeps_new_subscriber_events_and_full_operation_deadline() -> Result<()> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio::net::UnixListener;
+        use tokio_util::codec::{Framed, LinesCodec};
+        let tmp = tempfile::tempdir()?;
+        let dir = tmp.path().join("run");
+        config::private(&dir)?;
+        let listener = UnixListener::bind(dir.join("test.sock"))?;
+        let links = Arc::new(crate::link::Links::default());
+        let (q, mut rx) = mpsc::channel(8);
+        let out = Out {
+            q,
+            budget: Arc::new(Semaphore::new(LIMIT)),
+            slow: CancellationToken::new(),
+            generation: CancellationToken::new(),
+        };
+        let op = tokio::spawn(relay::forward(
+            &links,
+            &dir,
+            "test",
+            json!({"id":"op","method":"abort"}),
+            out.clone(),
+        ));
+        let mut io = Framed::new(
+            timeout(Duration::from_secs(1), listener.accept()).await??.0,
+            LinesCodec::new(),
+        );
+        let response = |id: &Value, result: Value| {
+            json!({"id":id,"type":"response","ok":true,"result":result}).to_string()
+        };
+        let snapshot =
+            json!({"snapshot":{"protocol":1,"instanceId":"test","session":null,"seq":1}});
+        let first: Value = serde_json::from_str(&io.next().await.unwrap()?)?;
+        assert_eq!(first["method"], "hello");
+        let sub = AbortOnDropHandle::new(tokio::spawn(relay::subscribe(
+            links.clone(),
+            dir.clone(),
+            "test".into(),
+            out.clone(),
+        )));
+        sleep(Duration::from_secs(3)).await;
+        let notify = json!({"type":"event","instanceId":"test","seq":1,"event":{"type":"notify"}});
+        io.send(notify.to_string()).await?;
+        io.send(response(&first["id"], snapshot.clone())).await?;
+        // Hold the operation response but let the concurrent subscriber complete its hello/history.
+        for method in ["abort", "hello", "history"] {
+            let line = timeout(Duration::from_secs(2), io.next()).await?.unwrap()?;
+            let req: Value = serde_json::from_str(&line)?;
+            assert_eq!(req["method"], method);
+            match method {
+                "hello" => io.send(response(&req["id"], snapshot.clone())).await?,
+                "history" => {
+                    io.send(response(&req["id"], json!({"session":null,"items":[]})))
+                        .await?
+                }
+                _ => (),
+            }
+        }
+        for expected in ["event", "subscribed"] {
+            let v: Value = serde_json::from_str(
+                &timeout(Duration::from_secs(1), rx.recv()).await?.unwrap().0,
+            )?;
+            assert_eq!(v["type"], expected);
+            if expected == "event" {
+                assert_eq!(v, notify)
+            }
+        }
+        sleep(Duration::from_secs(3)).await;
+        io.send(response(&json!("op"), json!({"done":true})))
+            .await?;
+        let v: Value =
+            serde_json::from_str(&timeout(Duration::from_secs(1), rx.recv()).await?.unwrap().0)?;
+        assert_eq!(v["response"]["result"]["done"], true);
+        // Stop reading on the RC side: inbound events must still reach the subscriber.
+        let client = links.client(&dir, "test", &out, false);
+        let mut written = Vec::new();
+        for n in 0..8 {
+            written.push(client.enqueue(
+                json!({"id":n.to_string(),"method":"test","params":{"text":"x".repeat(900_000)}}),
+            )?);
+        }
+        timeout(Duration::from_secs(1), io.get_ref().readable()).await??;
+        assert!(matches!(
+            written.last_mut().unwrap().try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let later = json!({"type":"event","instanceId":"test","seq":2,"event":{"type":"notify"}});
+        io.send(later.to_string()).await?;
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &timeout(Duration::from_secs(2), rx.recv()).await?.unwrap().0
+            )?,
+            later
+        );
+        drop(sub);
+        op.await?;
+        Ok(())
+    }
     #[test]
     fn slow_consumer_budget_includes_inflight_frames() {
         let (q, mut rx) = mpsc::channel(2);
