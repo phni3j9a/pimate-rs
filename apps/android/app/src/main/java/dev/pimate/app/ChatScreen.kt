@@ -64,19 +64,17 @@ internal class ChatUi : ViewModel() {
     /** 添付や / コマンドの操作で起きたこと（入力欄の上で案内する）。失敗なら赤。 */
     var problem by mutableStateOf<Triple<String, String, Boolean>?>(null)
 
-    /** 案内を閉じた、または下書きに入れた操作結果の ID。null は「まだ何も見ていない」。 */
-    var seenResult by mutableStateOf<String?>(null)
-    var usedResult: String? = null
-
     /** 書きかけの本文がある対象（中身は持たない）。切り替えで下書きが元の会話に残ったことを伝えるのに使う。 */
     val drafted = mutableSetOf<EditorKey>()
 
-    /** 「送信先が変わりました」を確認した切り替え（from>to）。 */
-    var confirmed by mutableStateOf("")
+    /** 「送信先が変わりました」を確認した移動先と通知。 */
+    var confirmed by mutableStateOf<SwitchId?>(null)
 
     /** 切り替え（from>to）を最初に見たときの、履歴の最後の発言。切り替えの行をその後ろに置く。 */
-    var switched by mutableStateOf<Pair<String, String?>?>(null)
+    var switched by mutableStateOf<Pair<SwitchId, String?>?>(null)
 }
+
+internal data class SwitchId(val target: EditorKey, val move: ChatMove)
 
 private fun EditorKey.scope() = "$host/${target.instance}/${target.session}"
 
@@ -195,20 +193,19 @@ internal fun ChatScreen(
         groups["notice"].orEmpty().find { it.id == "sessionChanged" }?.let { JSONObject(it.json) }
     val busyOp =
         groups["busy"].orEmpty().find { it.id == "operation" }?.let { JSONObject(it.json) }
-    val result =
-        groups["operationResult"].orEmpty().find { it.id == "latest" }?.let { JSONObject(it.json) }
+    val latest = groups["operationResult"].orEmpty().find { it.id == "latest" }
+    var result by remember(m.host?.id, m.selected) { mutableStateOf<JSONObject?>(null) }
+    val receipt = m.rows.notices.receipt
+    LaunchedEffect(latest, receipt, m.host?.id, m.selected) {
+        val r = latest?.let { JSONObject(it.json) }
+        if (r != null && receipt?.take(r.str("id"), m.selected) == true) result = r
+        else if (result?.str("id") != r?.str("id")) result = null
+    }
     val fromId = changed?.optJSONObject("from")?.str("id").orEmpty()
     val toId = changed?.optJSONObject("to")?.str("id").orEmpty()
-    // このスマホの操作で切り替わったか。状態の層は「誰が」を持たないので、自分の操作の進行・結果と突き合わせる。
-    val byPhone =
-        changed != null &&
-            (busyOp?.str("method") == "session_op" && busyOp.str("sessionId") == fromId ||
-                result != null &&
-                    result.str("sessionId") == toId &&
-                    result.str("outcome") != "unknown" &&
-                    result.optJSONObject("event")?.let {
-                        !it.optBoolean("cancelled") && !it.has("error")
-                    } != false)
+    val move = m.rows.notices.move
+    val switchId = if (key != null && move != null) SwitchId(key, move) else null
+    val byPhone = move?.byPhone == true
     // 書きかけがある対象を覚える（中身は ChatEdits が持つ）。
     val body = m.edits.body
     SideEffect {
@@ -222,20 +219,19 @@ internal fun ChatScreen(
             changed != null &&
             !byPhone &&
             session?.str("id") == toId &&
-            ui.confirmed != "$fromId>$toId" &&
+            switchId != null && ui.confirmed != switchId &&
             editor.copy(target = Target(editor.target.instance, fromId)) in ui.drafted
-    // 開いたときにすでにあった結果は、もう一度案内しない。
-    LaunchedEffect(Unit) { if (ui.seenResult == null) ui.seenResult = result?.str("id").orEmpty() }
     // 分岐・ツリーの移動で選んだ文は、入力欄が空なら入れる（直してから送れる）。1 回だけ。
     val resultText =
         result?.takeIf { it.str("sessionId") == target?.session }?.let {
             it.str("forkText").ifEmpty { it.optJSONObject("event")?.str("editorText").orEmpty() }
         }
+    var usedResult by remember(m.host?.id, m.selected) { mutableStateOf<String?>(null) }
     LaunchedEffect(result?.str("id"), key) {
         val id = result?.str("id") ?: return@LaunchedEffect
-        if (key == null || id == ui.usedResult || ui.seenResult == null || id == ui.seenResult) return@LaunchedEffect
+        if (key == null || id == usedResult) return@LaunchedEffect
         if (!resultText.isNullOrEmpty() && body.text.isEmpty() && body.images.isEmpty()) {
-            ui.usedResult = id
+            usedResult = id
             m.edits.text(key, resultText)
         }
     }
@@ -280,10 +276,9 @@ internal fun ChatScreen(
                 else -> {
                     val shown = rows.filter { it.fold == null || "+${it.fold}" in open }
                     // 会話が切り替わったことは、切り替えを見た位置（その時点の履歴の後ろ）に残す。
-                    val switchId = "$fromId>$toId"
                     val here = changed != null && session?.str("id") == toId
                     SideEffect {
-                        if (here && key != null && ui.switched?.first != switchId)
+                        if (here && switchId != null && ui.switched?.first != switchId)
                             ui.switched = switchId to entries.lastOrNull()?.id
                     }
                     val visible =
@@ -376,9 +371,10 @@ internal fun ChatScreen(
                     c.optJSONObject("from")?.str("name").orEmpty() to
                         title(session, view["cwd"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty())
                 },
-                { ui.confirmed = "$fromId>$toId" },
+                { ui.confirmed = switchId },
                 busyOp,
-                result?.takeIf { ui.seenResult != null && it.str("id") != ui.seenResult },
+                result,
+                { result = null },
                 commandsFailed,
                 { commandsTry++ },
                 show,
@@ -591,7 +587,7 @@ private fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
     when (row) {
         is ChatRow.User ->
             Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
-                if (row.pics.isNotEmpty()) PicGrid(row.pics)
+                if (row.pics.size > 0) PicGrid(row.pics)
                 val accent = SpanStyle(color = pi.accentText, fontFamily = Mono, fontSize = 13.sp)
                 if (row.text.isNotEmpty())
                     SelectionContainer {
@@ -654,7 +650,7 @@ private fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
             Column {
                 ToolRow(row, open, toggle)
                 // ツールが返した画像は、出力を畳んでいても見える。
-                if (row.pics.isNotEmpty())
+                if (row.pics.size > 0)
                     PicGrid(row.pics, Modifier.padding(start = 22.dp, top = 4.dp, bottom = 6.dp))
             }
         is ChatRow.Note -> Note(row.text, error = row.error)

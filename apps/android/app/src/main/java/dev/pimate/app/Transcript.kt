@@ -22,7 +22,12 @@ internal sealed interface Pic {
     /** PC のファイル。file_image で取りに行く。 */
     data class File(val path: String) : Pic {
         override val id
-            get() = "f:$path"
+            get() = "" // PC のファイルは回答間で上書きされる。
+    }
+
+    /** Markdown は表示領域に入るまで大きな共有文字列を展開しない。 */
+    class Shared(val kind: uniffi.pimate_ffi.ImageKind, val source: uniffi.pimate_ffi.SharedTextInterface) : Pic {
+        override val id = ""
     }
 
     /** http(s)。スマホから直接取りに行く。 */
@@ -48,7 +53,7 @@ internal data class Entry(
     val change: String = "", // edit / write の「+6 −2」
     val time: Long? = null,
     /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
-    val pics: List<Pic> = emptyList(),
+    val pics: ImageSlots = ImageSlots.Empty,
 )
 
 /** 実行中のツール（"tool" の行）。履歴に結果が載るまでの表示に使う。 */
@@ -77,7 +82,7 @@ internal sealed interface ChatRow {
     data class User(
         override val key: String,
         val text: String,
-        val pics: List<Pic> = emptyList(),
+        val pics: ImageSlots = ImageSlots.Empty,
     ) : ChatRow {
         override val fold: String?
             get() = null
@@ -112,7 +117,7 @@ internal sealed interface ChatRow {
         val output: String,
         val meta: String,
         override val fold: String? = null,
-        val pics: List<Pic> = emptyList(),
+        val pics: ImageSlots = ImageSlots.Empty,
         /** 実行中のツールの開始時刻（epoch ms）。分からなければ秒数を出さない。 */
         val since: Long? = null,
     ) : ChatRow
@@ -218,7 +223,7 @@ internal fun buildRows(
             state,
             result?.text ?: now?.output.orEmpty(),
             meta,
-            pics = result?.pics.orEmpty(),
+            pics = result?.pics ?: ImageSlots.Empty,
             since = now?.startedAt?.takeIf { state == ToolState.Running },
         )
     }
@@ -235,7 +240,7 @@ internal fun buildRows(
                 val folded: ChatRow? =
                     when {
                         row is ChatRow.Thinking -> row.copy(fold = key)
-                        row is ChatRow.Tool -> row.copy(fold = key)
+                        row is ChatRow.Tool && row.pics.size == 0 -> row.copy(fold = key)
                         row is ChatRow.Text && row.key != finalKey -> row.copy(fold = key)
                         else -> null
                     }
@@ -506,11 +511,12 @@ internal fun entry(o: JSONObject): Entry {
  * プレビューの配列の位置は、元の画像の位置とは限らない（省かれた画像がある）。imageIndices で元の位置に置き、 省かれた位置は取りに行く画像にする（TS 版の
  * imageSlots と同じ）。
  */
-private fun pics(entryId: String, o: JSONObject): List<Pic> {
+private fun pics(entryId: String, o: JSONObject): ImageSlots {
     val images = o.optJSONArray("images")
     val shown = images?.length() ?: 0
-    val count = o.optInt("imageCount", shown).takeIf { it in 0..64 } ?: shown
-    val slots = MutableList<Pic>(count) { Pic.Entry(entryId, it) }
+    val count = o.optLong("imageCount", shown.toLong()).coerceIn(shown.toLong(), Int.MAX_VALUE.toLong()).toInt()
+    if (count == 0) return ImageSlots.Empty
+    val slots = sortedMapOf<Int, Pic>()
     val indices = o.optJSONArray("imageIndices")
     for (i in 0 until shown) {
         val image = images!!.optJSONObject(i) ?: continue
@@ -518,12 +524,23 @@ private fun pics(entryId: String, o: JSONObject): List<Pic> {
         if (at in 0 until count)
             slots[at] = Pic.Inline("e:$entryId:$at", image.str("mimeType"), image.str("data"))
     }
-    return slots
+    return ImageSlots(entryId, count, slots)
 }
 
-/** 会話に並べる画像。取りに行けない RC では、届いているプレビューだけ。 */
-internal fun gallery(pics: List<Pic>, canLoad: Boolean): List<Pic> =
-    if (canLoad) pics else pics.filter { it !is Pic.Entry }
+/** プレビューだけを保持し、欠番の参照はページを開いたときに作る。 */
+internal class ImageSlots(private val entryId: String, val size: Int, private val previews: Map<Int, Pic>) {
+    fun gallery(canLoad: Boolean): List<Pic> {
+        if (!canLoad) return previews.values.toList()
+        return object : AbstractList<Pic>() {
+            override val size get() = this@ImageSlots.size
+            override fun get(index: Int): Pic {
+                if (index !in indices) throw IndexOutOfBoundsException()
+                return previews[index] ?: Pic.Entry(entryId, index)
+            }
+        }
+    }
+    companion object { val Empty = ImageSlots("", 0, emptyMap()) }
+}
 
 internal fun live(id: String, o: JSONObject): Live {
     // partial / 結果は { content: [{ type: "text", text }] }。

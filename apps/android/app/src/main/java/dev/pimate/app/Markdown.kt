@@ -33,7 +33,7 @@ private val empty = Doc(emptyList(), emptyList())
 
 // files: PC のパスを画像として扱う（file_image が使える Pi だけ。使えなければ文字のまま）。
 private fun doc(source: String, files: Boolean) =
-    parse(source, files).use { d -> Doc(d.blocks(), d.images().map { pic(it.kind, it.src.value()) }) }
+    parse(source, files).use { d -> Doc(d.blocks(), d.images().map { Pic.Shared(it.kind, it.src) }) }
 
 // 解析済みの回答。スクロールで戻った回答を解析し直さずにすぐ出す。
 private val parsed = android.util.LruCache<Pair<Boolean, String>, Doc>(64)
@@ -160,8 +160,11 @@ private fun Spans(
 
 /** 段落。画像は文字の途中で分け、出てくる順にタイルで置く（タップで、その回答の画像を全画面で送って見られる）。 */
 @Composable
-private fun Paragraph(spans: List<Inline>) {
-    if (spans.none { it is Inline.Image }) return Spans(spans)
+private fun Paragraph(
+    spans: List<Inline>, style: TextStyle = LocalTextStyle.current, modifier: Modifier = Modifier,
+    align: TextAlign? = null, links: Boolean = true,
+) {
+    if (spans.none { it is Inline.Image }) return Spans(spans, style, modifier, align, links)
     val pics = LocalPics.current
     val all = LocalDocPics.current
     // 画像で区切った文字の列と、画像を、元の順に並べる。
@@ -179,21 +182,21 @@ private fun Paragraph(spans: List<Inline>) {
             if (run.any { it is Inline.Text && it.text.isNotBlank() }) out.add(run)
             out
         }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
         parts.forEach { part ->
             if (part is MarkdownImage) {
                 val index = part.index.toInt()
                 // 選択の対象にしない（長押しはタイルの上では何もしない）。
                 DisableSelection {
                     PicTile(
-                        all.getOrNull(index) ?: pic(part.kind, part.src.value()),
+                        all[index],
                         part.alt.ifEmpty { "画像" },
                         compact = false,
                         { if (index in all.indices) pics.open(all, index) },
                     )
                 }
             } else {
-                @Suppress("UNCHECKED_CAST") Spans(part as List<Inline>)
+                @Suppress("UNCHECKED_CAST") Spans(part as List<Inline>, style, align = align, links = links)
             }
         }
     }
@@ -204,7 +207,7 @@ private fun BlockView(block: Block) {
     when (val c = block.content) {
         is Content.Paragraph -> Paragraph(c.v1)
         is Content.Heading ->
-            Spans(
+            Paragraph(
                 c.spans,
                 when (c.level.toInt()) {
                     1 -> Type.sheet
@@ -364,7 +367,7 @@ private fun TableBody(
                 else Modifier
             ) {
                 widths.forEachIndexed { col, width ->
-                    Spans(
+                    Paragraph(
                         row.getOrElse(col) { emptyList() },
                         if (index == 0) Type.body.copy(fontWeight = FontWeight.SemiBold)
                         else Type.body,

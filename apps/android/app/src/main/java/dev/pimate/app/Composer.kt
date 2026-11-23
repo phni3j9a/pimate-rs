@@ -148,6 +148,7 @@ internal fun Composer(
     busyOp: JSONObject?,
     /** まだ案内していない操作結果。 */
     result: JSONObject?,
+    dismissResult: () -> Unit,
     commandsFailed: Boolean,
     retryCommands: () -> Unit,
     show: (String) -> Unit,
@@ -180,10 +181,11 @@ internal fun Composer(
             // 縮小は回転をまたいで続ける（結果は ChatEdits に入る）。
             ui.viewModelScope.launch {
                 try {
+                    val previous = m.edits.body.images
                     m.attach(at, uris)
-                    if (m.edits.current != at)
-                        ui.problem =
-                            Triple("画像を添付しませんでした", "送信先が変わりました。もう一度選んでください。", true)
+                    attachmentRejection(at, m.edits.current, m.target, previous, m.edits.body.images, uris.size)?.let {
+                        ui.problem = Triple("画像を添付しませんでした", it, true)
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -259,15 +261,16 @@ internal fun Composer(
                 else ->
                     scope.launch {
                         try {
-                            if (n == "compact") m.ask(key, RcMethod.COMPACT, JSONObject())
-                            else m.ask(key, RcMethod.SESSION_OP, JSONObject().put("op", n))
-                            m.edits.text(key, "")
+                            m.edits.runBuiltin(key, body) {
+                                if (n == "compact") m.ask(key, RcMethod.COMPACT, JSONObject())
+                                else m.ask(key, RcMethod.SESSION_OP, JSONObject().put("op", n))
+                            }
                         } catch (e: CoreException) {
                             ui.problem = Triple("/$n を実行できませんでした", failure(e), true)
                         }
                     }
             }
-        if (n in listOf("model", "resume", "fork", "tree")) key?.let { m.edits.text(it, "") }
+        if (n in listOf("model", "resume", "fork", "tree")) key?.let { m.edits.accepted(it, body) }
     }
     val canSend =
         when {
@@ -410,7 +413,7 @@ internal fun Composer(
                         text,
                         tone,
                         if (tone == Tone.Normal) Icons.Check else Icons.Clock,
-                        dismiss = { ui.seenResult = r.str("id") },
+                        dismiss = dismissResult,
                     )
                 }
             }
@@ -753,4 +756,19 @@ private fun CommandPalette(
                 )
         }
     }
+}
+
+internal fun attachmentRejection(
+    at: EditorKey, current: EditorKey?, target: uniffi.pimate_ffi.Target?, before: List<uniffi.pimate_ffi.Image>,
+    after: List<uniffi.pimate_ffi.Image>, picked: Int,
+): String? = when {
+    current != at -> "送信先が変わりました。もう一度選んでください。"
+    target != at.target -> "送信先に接続できません。接続後にもう一度選んでください。"
+    after.size != before.size + picked || after.take(before.size) != before -> "変換中に添付が変わりました。もう一度選んでください。"
+    else -> null
+}
+
+internal suspend fun ChatEdits.runBuiltin(key: EditorKey, command: RestoredDraft, request: suspend () -> Unit) {
+    request()
+    accepted(key, command)
 }

@@ -61,5 +61,6 @@ dependencies {
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4:1.7.8")
     androidTestImplementation("androidx.test:runner:1.6.2")
+    testImplementation("org.json:json:20240303") // Exercise the Android rows JSON in local JVM tests.
     testImplementation("junit:junit:4.13.2")
 }

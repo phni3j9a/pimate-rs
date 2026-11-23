@@ -23,6 +23,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
@@ -107,6 +109,10 @@ internal class Pics(
         val image =
             try {
                 when (pic) {
+                    is Pic.Shared -> {
+                        val resolved = withContext(Dispatchers.Default) { pic(pic.kind, pic.source.value()) }
+                        load(resolved, tile)
+                    }
                     is Pic.Inline -> inline(pic.data, edge)
                     is Pic.Web ->
                         withContext(Dispatchers.IO) { decode(fetch(pic.url), edge) }
@@ -172,22 +178,29 @@ internal fun PicTile(
     more: Int = 0,
 ) {
     val pics = LocalPics.current
+    // 一つの回答全体が Column に載る。画面外の参照画像は base64 も Bitmap も展開しない。
+    var visible by remember(pic) { mutableStateOf(false) }
+    val needed = pic !is Pic.Shared || visible
+    var measured by remember(pic) { mutableStateOf(IntSize.Zero) }
     val image by
-        produceState<Any?>(pics.cached(pic), pic, pics) {
+        produceState<Any?>(pics.cached(pic), pic, pics, needed) {
             value = pics.cached(pic)
-            if (value == null && more == 0) value = pics.load(pic, true) ?: Failed
+            if (needed && value == null && more == 0) value = pics.load(pic, true) ?: Failed
+            // 画面外で Bitmap を解放しても位置が飛ばないよう、幅と高さだけ残す。
+            (value as? ImageBitmap)?.let { measured = IntSize(it.width, it.height) }
         }
     val shown = image as? ImageBitmap
     // 1 枚だけのときは、画像の縦横比のまま 220×160dp に収める。
     val size =
-        if (compact || shown == null) Modifier.size(if (compact) 64.dp else 180.dp, if (compact) 64.dp else 140.dp)
+        if (compact || measured.width == 0) Modifier.size(if (compact) 64.dp else 180.dp, if (compact) 64.dp else 140.dp)
         else {
-            val scale = minOf(220f / shown.width, 160f / shown.height)
-            Modifier.size((shown.width * scale).dp, (shown.height * scale).dp)
+            val scale = minOf(220f / measured.width, 160f / measured.height)
+            Modifier.size((measured.width * scale).dp, (measured.height * scale).dp)
         }
     Box(
         modifier
             .then(size)
+            .then(if (pic is Pic.Shared) Modifier.onGloballyPositioned { visible = !it.boundsInWindow().isEmpty } else Modifier)
             .clip(RoundedCornerShape(if (compact) 12.dp else 16.dp))
             .background(pi.surfaceStrong)
             .clickable(onClickLabel = "全画面で開く", role = Role.Image, onClick = onClick)
@@ -224,9 +237,9 @@ internal fun PicTile(
 
 /** 発言・ツール結果の画像。最大 2×2 に並べ、5 枚以上は 4 枚目を「+N」にして全画面で見る。 */
 @Composable
-internal fun PicGrid(all: List<Pic>, modifier: Modifier = Modifier) {
+internal fun PicGrid(all: ImageSlots, modifier: Modifier = Modifier) {
     val pics = LocalPics.current
-    val shown = remember(all, pics.entries) { gallery(all, pics.entries) }
+    val shown = remember(all, pics.entries) { all.gallery(pics.entries) }
     Column(modifier, Arrangement.spacedBy(8.dp)) {
         shown.take(4).chunked(2).forEachIndexed { row, pair ->
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
