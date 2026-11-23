@@ -1,11 +1,14 @@
 //! One `Connection` per paired host. Only `SecretStore` sees credentials.
+mod catalog;
 mod connection;
 mod operation;
 mod state;
 pub use connection::Connection;
 pub use operation::{Image, Operation, Target};
 use pimate_protocol::{PairRequest, PairResponse, parse_pairing_link};
-pub use state::{Change, Item, Listener};
+pub use state::{Allowance, Change, Item, Listener, QuotaWindow, SessionStats, Snapshot};
+#[cfg(test)]
+mod tests;
 use std::{
     sync::{Arc, OnceLock},
     time::Duration,
@@ -15,6 +18,8 @@ use tokio::runtime::Runtime;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("{self:?}")]
 pub enum Error {
+    BuiltinCommand,
+    Rejected,
     InvalidLink,
     InvalidCode,
     ExpiredCode,
@@ -39,12 +44,19 @@ pub struct Host {
     pub name: String,
     pub address: String,
     pub device_id: String,
+    pub needs_pairing: bool,
 }
 /// Implement with platform secure storage. Replace metadata and token atomically by host ID.
+pub struct Credential {
+    pub host: Host,
+    pub token: String,
+}
 pub trait SecretStore: Send + Sync {
     fn hosts(&self) -> Result<Vec<Host>, Error>;
     fn save(&self, host: Host, token: String) -> Result<(), Error>;
-    fn token(&self, id: String) -> Result<String, Error>;
+    fn load(&self, id: String) -> Result<Credential, Error>;
+    /// Mark only the matching device; a late close must not invalidate a replacement pairing.
+    fn invalidate(&self, id: String, device_id: String) -> Result<(), Error>;
     fn forget(&self, id: String) -> Result<(), Error>;
 }
 fn runtime() -> &'static Runtime {
@@ -82,7 +94,7 @@ impl Core {
                     .build()
                     .map_err(|_| Error::Offline)?;
                 let name = name.trim().chars().take(200).collect::<String>();
-                let res = client
+                let mut res = client
                     .post(format!("http://{}/pair", link.address))
                     .json(&PairRequest {
                         code: link.code,
@@ -108,7 +120,18 @@ impl Core {
                     410 => return Err(Error::ExpiredCode),
                     _ => return Err(Error::InvalidMessage),
                 };
-                let p: PairResponse = res.json().await.map_err(|_| Error::InvalidMessage)?;
+                let mut bytes = Vec::new();
+                while let Some(chunk) = res.chunk().await.map_err(|_| Error::InvalidMessage)? {
+                    if bytes.len() + chunk.len() > 16 * 1024 {
+                        return Err(Error::InvalidMessage);
+                    }
+                    bytes.extend_from_slice(&chunk)
+                }
+                let p: PairResponse =
+                    serde_json::from_slice(&bytes).map_err(|_| Error::InvalidMessage)?;
+                if p.token.is_empty() || p.device_id.is_empty() {
+                    return Err(Error::InvalidMessage);
+                }
                 if p.host_id != link.host_id {
                     return Err(Error::HostMismatch);
                 }
@@ -117,6 +140,7 @@ impl Core {
                     name: p.host_name,
                     address: link.address,
                     device_id: p.device_id,
+                    needs_pairing: false,
                 };
                 store.save(host.clone(), p.token)?;
                 Ok(host)
@@ -129,14 +153,16 @@ impl Core {
         id: String,
         listener: Arc<dyn Listener>,
     ) -> Result<Arc<Connection>, Error> {
-        let host = self
-            .hosts()?
-            .into_iter()
-            .find(|h| h.id == id)
-            .ok_or(Error::Storage)?;
+        let Credential { host, token } = self.store.load(id.clone())?;
+        if host.id != id {
+            return Err(Error::Storage);
+        }
+        if host.needs_pairing {
+            return Err(Error::Revoked);
+        }
         if !pimate_protocol::valid_pairing_address(&host.address) {
             return Err(Error::InvalidLink);
         }
-        Ok(Connection::start(host, self.store.token(id)?, listener))
+        Ok(Connection::start(host, token, listener, self.store.clone()))
     }
 }

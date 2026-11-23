@@ -16,8 +16,11 @@ pub struct Image {
     pub data: String,
 }
 /// Complex parameters are JSON records of the corresponding protocol method (not envelopes).
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Operation {
+    DismissDraft {
+        id: String,
+    },
     Send {
         target: Target,
         text: String,
@@ -70,9 +73,32 @@ fn checked<T: serde::de::DeserializeOwned + serde::Serialize>(p: Value) -> Resul
         .map_err(|_| Error::BadRequest)
 }
 impl State {
-    pub fn prepare(&mut self, id: &str, op: Operation) -> Result<Value, Error> {
+    pub fn prepare(&mut self, id: &str, op: Operation, commit: bool) -> Result<Value, Error> {
+        let msg = self.build(id, op, commit)?;
+        let method = &msg["request"]["method"];
+        let lock = match method.as_str() {
+            Some("ui_respond") => "answer",
+            Some("compact" | "session_op" | "set_model" | "set_thinking" | "shutdown") => {
+                "operation"
+            }
+            _ => return Ok(msg),
+        };
+        if !self.get("busy", lock).is_null() {
+            return Err(Error::Blocked);
+        }
+        if commit {
+            self.put(
+                "busy",
+                lock,
+                json!({"id":id,"requestId":msg["request"]["params"]["requestId"],"method":method}),
+            )
+        }
+        Ok(msg)
+    }
+    fn build(&mut self, id: &str, op: Operation, commit: bool) -> Result<Value, Error> {
         use Operation::*;
         let mut m = match op {
+            DismissDraft { .. } => return Err(Error::BadRequest),
             Send {
                 target,
                 text,
@@ -82,7 +108,9 @@ impl State {
                 if self.questions()
                     || !self.get("view", "pcPrompt").is_null()
                     || self.drafts.iter().any(|d| {
-                        d.instance == target.instance && d.session == json!(target.session)
+                        d.instance == target.instance
+                            && d.session == json!(target.session)
+                            && self.get("draft", &d.id)["status"] != "queued"
                     })
                 {
                     return Err(Error::Blocked);
@@ -107,14 +135,28 @@ impl State {
                 } else if text.trim().is_empty() {
                     return Err(Error::BadRequest);
                 }
-                self.drafts.push(Draft {
-                    id: id.into(),
-                    instance: target.instance.clone(),
-                    session: json!(target.session),
-                    params: params.clone(),
-                    known: self.known(),
-                });
-                self.put("draft",id,json!({"instanceId":target.instance,"sessionId":target.session,"params":params,"status":"sending"}));
+                if self.get("view", "slashCommands") == true
+                    && let Some(name) = p::slash_command_name(&text)
+                {
+                    match self.get("command", name)["source"].as_str() {
+                        None => return Err(Error::Unsupported),
+                        Some("builtin") => return Err(Error::BuiltinCommand),
+                        Some("extension") if !params["images"].is_null() => {
+                            return Err(Error::BadRequest);
+                        }
+                        _ => params["expandTemplates"] = json!(true),
+                    }
+                }
+                if commit {
+                    self.drafts.push(Draft {
+                        id: id.into(),
+                        instance: target.instance.clone(),
+                        session: json!(target.session),
+                        params: params.clone(),
+                        known: self.known(),
+                    });
+                    self.put("draft",id,json!({"instanceId":target.instance,"sessionId":target.session,"params":params,"status":"sending"}));
+                }
                 return Ok(rc(id, target, "prompt", params));
             }
             Abort { target } => {
@@ -139,14 +181,18 @@ impl State {
             } => {
                 let key = serde_json::to_value(method).unwrap();
                 let name = key.as_str().unwrap();
-                let dedicated = name.starts_with("auth_")
+                let dedicated = (name.starts_with("auth_") || name == "hello")
                     && self.auth_targets.values().any(|s| s == &target.instance);
                 if !dedicated {
                     self.target(&target)?
                 }
                 if name.starts_with("auth_")
                     && (self.caps["providerAuth"] != true
-                        || (!dedicated && self.get("view", "providerAuth") != true))
+                        || if dedicated {
+                            self.get("loginCapability", &target.instance) != true
+                        } else {
+                            self.get("view", "providerAuth") != true
+                        })
                 {
                     return Err(Error::Unsupported);
                 }
@@ -161,6 +207,70 @@ impl State {
                     return Err(Error::Unsupported);
                 }
                 let params = rc_params(method, record(&params)?)?;
+                if name == "hello" && !dedicated {
+                    return Err(Error::BadRequest);
+                }
+                if name == "session_op"
+                    && matches!(params["op"].as_str(), Some("reload" | "tree"))
+                    && (self.get("view", "status") != "idle"
+                        || self.get("view", "agentActive") == true)
+                {
+                    return Err(Error::Blocked);
+                }
+                if name == "session_op"
+                    && params["op"] == "tree"
+                    && self.get("view", "sessionTree") != true
+                {
+                    return Err(Error::Unsupported);
+                }
+                if name == "subagent_control" {
+                    let run = self.get("run", params["runId"].as_str().unwrap_or_default());
+                    let unit = if let Some(cid) = params["childId"].as_str() {
+                        run["children"]
+                            .as_array()
+                            .and_then(|cs| cs.iter().find(|c| c["id"] == cid))
+                            .ok_or(Error::StaleTarget)?
+                    } else {
+                        run
+                    };
+                    if !unit["actions"]
+                        .as_array()
+                        .is_some_and(|a| a.contains(&params["action"]))
+                    {
+                        return Err(Error::Unsupported);
+                    }
+                }
+                if name.starts_with("auth_") {
+                    let flow = self.get("auth", &target.instance);
+                    let active = matches!(
+                        flow["status"].as_str(),
+                        Some("input" | "saving" | "working")
+                    );
+                    if matches!(name, "auth_begin" | "auth_logout") && active
+                        || name == "auth_cancel" && (!active || flow["status"] == "saving")
+                    {
+                        return Err(Error::Blocked);
+                    }
+                    if !params["flowId"].is_null() && params["flowId"] != flow["id"] {
+                        return Err(Error::StaleTarget);
+                    }
+                    if name == "auth_begin"
+                        && params["provider"] == "openai"
+                        && params["method"] == "oauth"
+                    {
+                        return Err(Error::Unsupported);
+                    }
+                    if name == "auth_respond"
+                        && (flow["status"] != "input"
+                            || params["promptId"] != flow["prompt"]["id"]
+                            || params["value"].as_str().is_none_or(|s| {
+                                s.trim().is_empty()
+                                    || s.encode_utf16().count() > p::AUTH_MAX_INPUT_LENGTH
+                            }))
+                    {
+                        return Err(Error::BadRequest);
+                    }
+                }
                 return Ok(rc(id, target, name, params));
             }
             Folders => json!({"type":"folders"}),
@@ -168,7 +278,12 @@ impl State {
             Spawn { params } => {
                 json!({"type":"spawn","params":checked::<p::SpawnParams>(record(&params)?)?})
             }
-            AuthSession { hold_id } => json!({"type":"auth_session","holdId":hold_id}),
+            AuthSession { hold_id } => {
+                if self.caps["providerAuth"] != true {
+                    return Err(Error::Unsupported);
+                }
+                json!({"type":"auth_session","holdId":hold_id})
+            }
             EndAuthSession { hold_id } => json!({"type":"auth_session_end","holdId":hold_id}),
             Github { instance, query } => {
                 json!({"type":"github","instanceId":instance,"query":checked::<p::GitHubQuery>(record(&query)?)?})
@@ -195,7 +310,7 @@ impl State {
         }
         if m["type"] != "auth_session_end" {
             m["requestId"] = json!(id)
-        } else if let Some(hold) = m["holdId"].as_str() {
+        } else if commit && let Some(hold) = m["holdId"].as_str() {
             self.auth_targets.remove(hold);
         }
         Ok(m)
@@ -226,7 +341,7 @@ fn rc_params(m: p::RcMethod, v: Value) -> Result<Value, Error> {
         p::RcMethod::AuthRespond => checked::<p::AuthRespondParams>(v),
         p::RcMethod::AuthCancel => checked::<p::AuthCancelParams>(v),
         p::RcMethod::AuthLogout => checked::<p::AuthLogoutParams>(v),
-        p::RcMethod::Hello => Err(Error::BadRequest),
+        p::RcMethod::Hello => checked::<p::Empty>(v),
         p::RcMethod::History => Err(Error::BadRequest),
         p::RcMethod::EntryImage => checked::<p::EntryImageParams>(v),
         p::RcMethod::FileImage => checked::<p::FileImageParams>(v),
@@ -249,4 +364,38 @@ fn rc_params(m: p::RcMethod, v: Value) -> Result<Value, Error> {
         p::RcMethod::SubagentControl => checked::<p::SubagentControlParams>(v),
         p::RcMethod::SubagentsRpc => checked::<p::SubagentsRpcParams>(v),
     }
+}
+pub(crate) fn rc_result(method: &str, v: &Value) -> Result<Value, Error> {
+    let out = match method {
+        "auth_list" => checked::<p::AuthListResult>(v.clone()),
+        "auth_begin" => checked::<p::AuthBeginResult>(v.clone()),
+        "auth_wait" => checked::<p::AuthWaitResult>(v.clone()),
+        "auth_respond" => checked::<p::AuthRespondResult>(v.clone()),
+        "auth_cancel" => checked::<p::AuthCancelResult>(v.clone()),
+        "auth_logout" => checked::<p::AuthLogoutResult>(v.clone()),
+        "hello" => checked::<p::HelloResult>(v.clone()),
+        "history" => checked::<p::HistoryResult>(v.clone()),
+        "entry_image" => checked::<p::EntryImageResult>(v.clone()),
+        "file_image" => checked::<p::FileImageResult>(v.clone()),
+        "prompt" => checked::<p::PromptResult>(v.clone()),
+        "abort" => checked::<p::Empty>(v.clone()),
+        "ui_respond" => checked::<p::Empty>(v.clone()),
+        "set_thinking" => checked::<p::SetThinkingResult>(v.clone()),
+        "set_model" => checked::<p::SetModelResult>(v.clone()),
+        "compact" => checked::<p::Empty>(v.clone()),
+        "session_op" => checked::<p::Empty>(v.clone()),
+        "session_tree" => checked::<p::SessionTree>(v.clone()),
+        "set_label" => checked::<p::Empty>(v.clone()),
+        "commands" => checked::<p::CommandsResult>(v.clone()),
+        "models" => checked::<p::ModelsResult>(v.clone()),
+        "set_default_model" => checked::<p::SetDefaultModelResult>(v.clone()),
+        "set_scoped_models" => checked::<p::SetScopedModelsResult>(v.clone()),
+        "sessions" => checked::<p::SessionsResult>(v.clone()),
+        "shutdown" => checked::<p::Empty>(v.clone()),
+        "subagent_transcript" => checked::<p::SubagentTranscript>(v.clone()),
+        "subagent_control" => checked::<p::SubagentControlResult>(v.clone()),
+        "subagents_rpc" => checked::<p::SubagentsRpcResult>(v.clone()),
+        _ => Err(Error::InvalidMessage),
+    };
+    out.map_err(|_| Error::InvalidMessage)
 }

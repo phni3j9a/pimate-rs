@@ -34,3 +34,4 @@ chrono = "0.4"
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
+pimate-core = { path = "../pimate-core" }
