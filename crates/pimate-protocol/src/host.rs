@@ -41,7 +41,7 @@ pub enum PairErrorError {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct PairError {
-    pub error: PairErrorError,
+    pub error: Received<PairErrorError>,
 }
 
 #[derive(Clone, Copy, Eq, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -67,7 +67,7 @@ pub struct PiAlert {
     pub id: String,
     pub instance_id: String,
     pub session_id: String,
-    pub kind: PiAlertKind,
+    pub kind: Received<PiAlertKind>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -158,7 +158,7 @@ pub struct HostInfo {
 pub struct InstanceSummary {
     pub instance_id: String,
     pub cwd: String,
-    pub origin: Origin,
+    pub origin: Received<Origin>,
     #[serde(
         rename = "abducoSession",
         deserialize_with = "Deserialize::deserialize"
@@ -169,7 +169,7 @@ pub struct InstanceSummary {
     pub pc_attached: Option<bool>,
     #[serde(deserialize_with = "Deserialize::deserialize")]
     pub session: Option<SessionRef>,
-    pub status: InstanceStatus,
+    pub status: Received<InstanceStatus>,
     pub started_at: u64,
     pub updated_at: u64,
     /// Subagent counts (M4); absent when the RC does not report them.
@@ -299,7 +299,7 @@ pub enum GitHubCheckState {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct GitHubCheck {
     pub name: String,
-    pub state: GitHubCheckState,
+    pub state: Received<GitHubCheckState>,
 }
 
 #[derive(Clone, Copy, Eq, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -313,7 +313,7 @@ pub enum GitHubSummaryKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubSummary {
-    pub kind: GitHubSummaryKind,
+    pub kind: Received<GitHubSummaryKind>,
     pub number: u64,
     pub title: String,
     pub state: String,
@@ -457,7 +457,7 @@ pub enum GitHubResult {
     },
     Failure {
         ok: False,
-        code: GitHubErrorCode,
+        code: Received<GitHubErrorCode>,
         message: String,
     },
 }
@@ -502,7 +502,7 @@ pub enum HostOperationResult {
     },
     Failure {
         ok: False,
-        code: HostOperationResultFalseCode,
+        code: Received<HostOperationResultFalseCode>,
     },
 }
 
@@ -521,7 +521,7 @@ pub enum GitHubStatusResult {
     },
     Failure {
         ok: False,
-        code: GitHubStatusResultFalseCode,
+        code: Received<GitHubStatusResultFalseCode>,
     },
 }
 
@@ -558,7 +558,7 @@ pub struct PackageUpdateCheck {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub reason: Option<PackageUpdateCheckReason>,
+    pub reason: Option<Received<PackageUpdateCheckReason>>,
 }
 
 #[derive(Clone, Copy, Eq, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -582,7 +582,7 @@ pub enum PackageUpdateResult {
     },
     Failure {
         ok: False,
-        code: PackageUpdateResultFalseCode,
+        code: Received<PackageUpdateResultFalseCode>,
         #[serde(
             default,
             deserialize_with = "present",
@@ -628,7 +628,7 @@ pub enum AppMessage {
         request: Request,
     },
     #[serde(rename = "ping")]
-    Ping { t: u64 },
+    Ping { t: Number },
     #[serde(rename = "folders")]
     Folders {
         #[serde(rename = "requestId")]
@@ -748,7 +748,7 @@ pub enum SpawnResultOutcome {
     },
     Failure {
         ok: False,
-        code: SpawnErrorCode,
+        code: Received<SpawnErrorCode>,
         #[serde(
             default,
             deserialize_with = "present",
@@ -775,7 +775,7 @@ pub enum AuthSessionResultOutcome {
     },
     Failure {
         ok: False,
-        code: AuthSessionResultOutcomeFalseCode,
+        code: Received<AuthSessionResultOutcomeFalseCode>,
         #[serde(
             default,
             deserialize_with = "present",
@@ -798,7 +798,9 @@ pub enum HostMessage {
         device_id: String,
     },
     #[serde(rename = "auth_error")]
-    AuthError { code: HostMessageAuthErrorCode },
+    AuthError {
+        code: Received<HostMessageAuthErrorCode>,
+    },
     #[serde(rename = "instances")]
     Instances { instances: Vec<InstanceSummary> },
     #[serde(rename = "subscribed")]
@@ -812,7 +814,7 @@ pub enum HostMessage {
     SubscribeError {
         #[serde(rename = "instanceId")]
         instance_id: String,
-        code: HostMessageSubscribeErrorCode,
+        code: Received<HostMessageSubscribeErrorCode>,
         #[serde(
             default,
             deserialize_with = "present",
@@ -843,7 +845,7 @@ pub enum HostMessage {
         instance_id: String,
     },
     #[serde(rename = "pong")]
-    Pong { t: u64 },
+    Pong { t: Number },
     #[serde(rename = "folders_result")]
     FoldersResult {
         #[serde(rename = "requestId")]

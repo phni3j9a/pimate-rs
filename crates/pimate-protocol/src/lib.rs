@@ -17,3 +17,23 @@ pub use {auth::*, domain::*, helpers::*, host::*, images::*, rpc::*, subagents::
 fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error> {
     T::deserialize(d).map(Some)
 }
+
+/// Open only on receive: a new string value must not invalidate the rest of a report.
+/// The generated v1 TS types and typed outbound requests still use the known vocabulary.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(untagged)]
+pub enum Received<T> {
+    Known(T),
+    #[ts(skip)]
+    Unknown(String),
+}
+
+fn known_values<'de, D: Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Vec<T>, D::Error> {
+    Ok(Vec::<Received<T>>::deserialize(d)?
+        .into_iter()
+        .filter_map(|v| match v {
+            Received::Known(x) => Some(x),
+            Received::Unknown(_) => None,
+        })
+        .collect())
+}

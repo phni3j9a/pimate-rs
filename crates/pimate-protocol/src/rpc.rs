@@ -61,8 +61,13 @@ pub struct WireRequest<M, P> {
     )]
     #[ts(optional)]
     pub expect_session_id: Option<String>,
+    /// Forward future guards/metadata unchanged along with the params.
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub extra: std::collections::BTreeMap<String, Value>,
 }
-pub type Request<P = Value> = WireRequest<RcMethod, P>;
+/// The Host routes this envelope without interpreting the Extension method.
+pub type Request<P = Value> = WireRequest<String, P>;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub enum ResponseType {
     #[serde(rename = "response")]
@@ -139,7 +144,7 @@ macro_rules! methods {
     (auth { $($auth:ident : $an:ident ($ap:ident, $ar:ident)),+ } rc { $($rc:ident : $rn:ident ($p:ident, $r:ident)),+ }) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
         #[serde(rename_all="snake_case")]
-        pub enum RcMethod { $($an,)+ $($rn,)+ #[serde(other, skip_serializing)] #[ts(skip)] Unknown }
+        pub enum RcMethod { $($an,)+ $($rn,)+ }
         pub mod method {
             use super::*;
             $(one_method!($an, super::$ap, super::$ar);)+

@@ -11,6 +11,7 @@ fn main() {
     }
     macro_rules! export { ($($t:ty),* $(,)?)=>{ $(export::<$t>(&cfg);)* }; }
     export!(
+        Received<()>,
         PromptImageType,
         PromptImageMimeType,
         PromptImage,

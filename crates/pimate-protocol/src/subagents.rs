@@ -57,14 +57,14 @@ pub struct SubagentUsage {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub input: Option<u64>,
+    pub input: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub output: Option<u64>,
+    pub output: Option<Number>,
     /// Total tokens as reported by the backend (no double counting of cache).
     #[serde(
         default,
@@ -72,7 +72,7 @@ pub struct SubagentUsage {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub total: Option<u64>,
+    pub total: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -107,7 +107,7 @@ pub struct SubagentActivity {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub started_at: Option<u64>,
+    pub started_at: Option<Number>,
 }
 
 /// Operations the RC can perform right now for a run/child. Only these may be shown in the app.
@@ -139,7 +139,7 @@ pub enum SubagentAction {
 pub struct SubagentChild {
     /// Stable within the run (backend child id such as "step:0", or the index).
     pub id: String,
-    pub index: u64,
+    pub index: Number,
     pub agent: String,
     /// Short human title (e.g. from the pi-subagents session name), without the agent prefix.
     #[serde(
@@ -170,14 +170,14 @@ pub struct SubagentChild {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub started_at: Option<u64>,
+    pub started_at: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub ended_at: Option<u64>,
+    pub ended_at: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -205,7 +205,7 @@ pub struct SubagentChild {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub exit_code: Option<Option<i32>>,
+    pub exit_code: Option<Option<Number>>,
     /// Question text while `waiting`, when readable.
     #[serde(
         default,
@@ -217,13 +217,14 @@ pub struct SubagentChild {
     /// Whether `subagent_transcript` can return the child's work record.
     pub has_transcript: bool,
     /// Child-scoped actions (steer, follow_up, stop_child, resume).
+    #[serde(deserialize_with = "known_values")]
     pub actions: Vec<SubagentAction>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct SubagentRunStage {
-    pub index: u64,
-    pub count: u64,
+    pub index: Number,
+    pub count: Number,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -231,7 +232,7 @@ pub struct SubagentRunStage {
 pub struct SubagentRun {
     /// RC key: pi-subagents runId, or `tool:<toolCallId>` for runs only known through a tool call.
     pub id: String,
-    pub backend: SubagentBackend,
+    pub backend: Received<SubagentBackend>,
     /// Keeps running after the parent turn ends (pi-subagents async).
     pub background: bool,
     pub mode: SubagentMode,
@@ -250,21 +251,21 @@ pub struct SubagentRun {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub started_at: Option<u64>,
+    pub started_at: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub updated_at: Option<u64>,
+    pub updated_at: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub ended_at: Option<u64>,
+    pub ended_at: Option<Number>,
     /// Chain progress (0-based index).
     #[serde(
         default,
@@ -304,6 +305,7 @@ pub struct SubagentRun {
     #[ts(optional)]
     pub resumed_as: Option<String>,
     /// Run-scoped actions (interrupt, stop, abort_parent).
+    #[serde(deserialize_with = "known_values")]
     pub actions: Vec<SubagentAction>,
 }
 
@@ -322,8 +324,10 @@ pub struct SubagentsStateBackendsItem {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct SubagentsState {
+    #[serde(deserialize_with = "known_backend_rows")]
     pub runs: Vec<SubagentRun>,
     /// Backends seen in this Pi, with the version when known. `supported: false` → app shows plain tool rows only.
+    #[serde(deserialize_with = "known_backend_rows")]
     pub backends: Vec<SubagentsStateBackendsItem>,
 }
 
@@ -359,4 +363,24 @@ pub struct SubagentTranscript {
     )]
     #[ts(optional)]
     pub truncated: Option<bool>,
+}
+
+// Check the discriminator before parsing the payload: a new backend can have a different shape.
+fn known_backend_rows<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
+    d: D,
+) -> Result<Vec<T>, D::Error> {
+    Vec::<Value>::deserialize(d)?
+        .into_iter()
+        .filter_map(|row| {
+            if let Some(Value::String(name)) = row.get("backend")
+                && SubagentBackend::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(
+                    name,
+                ))
+                .is_err()
+            {
+                return None;
+            }
+            Some(serde_json::from_value(row).map_err(serde::de::Error::custom))
+        })
+        .collect()
 }

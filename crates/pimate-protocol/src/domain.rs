@@ -70,28 +70,28 @@ pub struct ModelDefault {
     #[serde(deserialize_with = "Deserialize::deserialize")]
     pub model: Option<ModelRef>,
     #[serde(deserialize_with = "Deserialize::deserialize")]
-    pub thinking: Option<ThinkingLevel>,
+    pub thinking: Option<Received<ThinkingLevel>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct Usage {
-    pub input: u64,
-    pub output: u64,
+    pub input: Number,
+    pub output: Number,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub cache_read: Option<u64>,
+    pub cache_read: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub cache_write: Option<u64>,
+    pub cache_write: Option<Number>,
     #[serde(
         default,
         deserialize_with = "present",
@@ -203,7 +203,7 @@ pub enum TranscriptItem {
             skip_serializing_if = "Option::is_none"
         )]
         #[ts(optional)]
-        timestamp: Option<u64>,
+        timestamp: Option<Number>,
         #[serde(flatten)]
         images: TranscriptImages,
     },
@@ -257,7 +257,7 @@ pub enum TranscriptItem {
             skip_serializing_if = "Option::is_none"
         )]
         #[ts(optional)]
-        timestamp: Option<u64>,
+        timestamp: Option<Number>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
@@ -298,7 +298,7 @@ pub enum TranscriptItem {
             skip_serializing_if = "Option::is_none"
         )]
         #[ts(optional)]
-        timestamp: Option<u64>,
+        timestamp: Option<Number>,
         #[serde(flatten)]
         images: TranscriptImages,
     },
@@ -320,7 +320,7 @@ pub enum TranscriptItem {
             skip_serializing_if = "Option::is_none"
         )]
         #[ts(optional)]
-        timestamp: Option<u64>,
+        timestamp: Option<Number>,
     },
     #[serde(other, skip_serializing)]
     #[ts(skip)]
@@ -386,7 +386,7 @@ pub struct UIQuestionAnswer {
 #[serde(rename_all = "camelCase")]
 pub struct UIRequest {
     pub request_id: String,
-    pub kind: UIRequestKind,
+    pub kind: Received<UIRequestKind>,
     pub title: String,
     #[serde(
         default,
@@ -470,7 +470,7 @@ pub enum QuotaSource {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionQuota {
-    pub source: QuotaSource,
+    pub source: Received<QuotaSource>,
     /// Shortest window first.
     pub windows: Vec<QuotaWindow>,
     /// RC clock (epoch ms) when the response carrying it arrived.
@@ -505,6 +505,7 @@ pub struct ModelInfo {
     #[ts(optional)]
     pub context_window: Option<u64>,
     /// Thinking levels this model accepts; ["off"] for non-reasoning models.
+    #[serde(deserialize_with = "known_values")]
     pub thinking_levels: Vec<ThinkingLevel>,
 }
 
@@ -524,8 +525,8 @@ pub struct SessionListItem {
     pub name: Option<String>,
     pub first_message: String,
     pub message_count: u64,
-    pub created: u64,
-    pub modified: u64,
+    pub created: i64,
+    pub modified: i64,
     /// The instance's current session.
     pub current: bool,
 }
@@ -552,7 +553,7 @@ pub struct SessionTreeItem {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub timestamp: Option<u64>,
+    pub timestamp: Option<Number>,
     pub on_branch: bool,
     pub is_current: bool,
     pub is_leaf: bool,
@@ -587,7 +588,7 @@ pub struct InstanceSnapshot {
     pub instance_id: String,
     pub pid: u64,
     pub cwd: String,
-    pub origin: Origin,
+    pub origin: Received<Origin>,
     /// abduco session name when started by the Host; null for a Pi started directly in a terminal.
     #[serde(
         rename = "abducoSession",
@@ -597,7 +598,7 @@ pub struct InstanceSnapshot {
     pub started_at: u64,
     #[serde(deserialize_with = "Deserialize::deserialize")]
     pub session: Option<SessionRef>,
-    pub status: InstanceStatus,
+    pub status: Received<InstanceStatus>,
     /// A Pi run is between agent_start and agent_settled, including extension dialogs after agent_end.
     #[serde(
         default,
@@ -665,7 +666,7 @@ pub struct InstanceSnapshot {
     #[serde(deserialize_with = "Deserialize::deserialize")]
     pub model: Option<ModelRef>,
     #[serde(deserialize_with = "Deserialize::deserialize")]
-    pub thinking: Option<ThinkingLevel>,
+    pub thinking: Option<Received<ThinkingLevel>>,
     #[serde(rename = "pendingUI")]
     pub pending_ui: Vec<UIRequest>,
     /// TUI-only prompt currently open on the PC, if any.
@@ -739,7 +740,7 @@ pub struct InstanceMeta {
     pub instance_id: String,
     pub pid: u64,
     pub cwd: String,
-    pub origin: Origin,
+    pub origin: Received<Origin>,
     #[serde(
         rename = "abducoSession",
         deserialize_with = "Deserialize::deserialize"
@@ -748,7 +749,7 @@ pub struct InstanceMeta {
     pub started_at: u64,
     #[serde(deserialize_with = "Deserialize::deserialize")]
     pub session: Option<SessionRef>,
-    pub status: InstanceStatus,
+    pub status: Received<InstanceStatus>,
     pub updated_at: u64,
     #[serde(
         default,
@@ -764,7 +765,7 @@ pub struct InstanceMeta {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub purpose: Option<InstanceMetaPurpose>,
+    pub purpose: Option<Received<InstanceMetaPurpose>>,
 }
 
 #[derive(Clone, Copy, Eq, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -815,10 +816,10 @@ pub enum InstanceEventNotifyLevel {
 #[serde(tag = "type")]
 pub enum InstanceEvent {
     #[serde(rename = "status")]
-    Status { status: InstanceStatus },
+    Status { status: Received<InstanceStatus> },
     #[serde(rename = "session_changed")]
     SessionChanged {
-        reason: InstanceEventSessionChangedReason,
+        reason: Received<InstanceEventSessionChangedReason>,
         session: SessionRef,
     },
     #[serde(rename = "session_info")]
@@ -895,23 +896,23 @@ pub enum InstanceEvent {
             skip_serializing_if = "Option::is_none"
         )]
         #[ts(optional)]
-        duration_ms: Option<u64>,
+        duration_ms: Option<Number>,
     },
     #[serde(rename = "model")]
     Model { model: ModelRef },
     #[serde(rename = "thinking")]
-    Thinking { level: ThinkingLevel },
+    Thinking { level: Received<ThinkingLevel> },
     #[serde(rename = "ui_request")]
     UiRequest { request: UIRequest },
     #[serde(rename = "ui_request_end")]
     UiRequestEnd {
         #[serde(rename = "requestId")]
         request_id: String,
-        by: InstanceEventUiRequestEndBy,
+        by: Received<InstanceEventUiRequestEndBy>,
     },
     #[serde(rename = "ui_prompt")]
     UiPrompt {
-        phase: InstanceEventUiPromptPhase,
+        phase: Received<InstanceEventUiPromptPhase>,
         kind: String,
         #[serde(
             default,
@@ -924,7 +925,7 @@ pub enum InstanceEvent {
     #[serde(rename = "notify")]
     Notify {
         message: String,
-        level: InstanceEventNotifyLevel,
+        level: Received<InstanceEventNotifyLevel>,
     },
     #[serde(rename = "context")]
     Context {
@@ -933,7 +934,7 @@ pub enum InstanceEvent {
     },
     #[serde(rename = "session_op_done")]
     SessionOpDone {
-        op: SessionOp,
+        op: Received<SessionOp>,
         cancelled: bool,
         #[serde(
             default,
@@ -1154,7 +1155,7 @@ pub enum PromptResultDeliveredAs {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptResult {
-    pub delivered_as: PromptResultDeliveredAs,
+    pub delivered_as: Received<PromptResultDeliveredAs>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -1198,7 +1199,7 @@ pub struct SetThinkingParams {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct SetThinkingResult {
-    pub thinking: ThinkingLevel,
+    pub thinking: Received<ThinkingLevel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -1383,7 +1384,7 @@ pub struct SubagentsRpcParams {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub timeout_ms: Option<u64>,
+    pub timeout_ms: Option<Number>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -1421,7 +1422,7 @@ pub enum ErrorCode {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProtocolError {
-    pub code: ErrorCode,
+    pub code: Received<ErrorCode>,
     #[serde(
         default,
         deserialize_with = "present",

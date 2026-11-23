@@ -40,12 +40,13 @@ pub enum AuthProviderInfoSource {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct AuthProviderInfo {
-    pub id: AuthProviderId,
+    pub id: Received<AuthProviderId>,
     /// OpenAI and OpenCode (Zen / Go) support API keys only; OAuth is available for Codex and Anthropic.
+    #[serde(deserialize_with = "known_values")]
     pub methods: Vec<ProviderAuthType>,
     /// Stored credential metadata only; not proof that it is valid.
     #[serde(deserialize_with = "Deserialize::deserialize")]
-    pub stored: Option<ProviderAuthType>,
+    pub stored: Option<Received<ProviderAuthType>>,
     /// Active registry snapshot; environment/models.json/runtime auth can survive logout.
     pub configured: bool,
     #[serde(
@@ -54,7 +55,7 @@ pub struct AuthProviderInfo {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub source: Option<AuthProviderInfoSource>,
+    pub source: Option<Received<AuthProviderInfoSource>>,
 }
 
 #[derive(Clone, Copy, Eq, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -99,7 +100,7 @@ pub enum AuthFlowPromptKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct AuthFlowPrompt {
     pub id: String,
-    pub kind: AuthFlowPromptKind,
+    pub kind: Received<AuthFlowPromptKind>,
 }
 
 #[derive(Clone, Copy, Eq, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -115,12 +116,12 @@ pub enum AuthFlowError {
 #[serde(rename_all = "camelCase")]
 pub struct AuthFlow {
     pub id: String,
-    pub provider: AuthProviderId,
-    pub method: ProviderAuthType,
+    pub provider: Received<AuthProviderId>,
+    pub method: Received<ProviderAuthType>,
     pub revision: u64,
     /// Interactive deadline; an already-started commit/refresh can finish up to 60s later.
     pub expires_at: u64,
-    pub status: AuthFlowStatus,
+    pub status: Received<AuthFlowStatus>,
     /// Public authorization URL and optional user-facing device code, never tokens.
     #[serde(
         default,
@@ -143,7 +144,7 @@ pub struct AuthFlow {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub error: Option<AuthFlowError>,
+    pub error: Option<Received<AuthFlowError>>,
     /// Credential saved but local registry refresh failed. Reopen models/reload Pi; do not resend credentials.
     #[serde(
         default,

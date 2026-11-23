@@ -220,7 +220,7 @@ impl LineDecoder {
         for next in lines {
             self.buf.push_str(part);
             if !self.buf.trim_matches(js_space).is_empty() {
-                receive(serde_json::from_str(&self.buf).map_err(|_| self.buf.as_str()))
+                receive(decode_json(&self.buf).map_err(|_| self.buf.as_str()))
             }
             self.buf.clear();
             self.units = 0;
@@ -249,4 +249,42 @@ pub fn encode_line(value: &impl Serialize) -> serde_json::Result<String> {
     let mut line = serde_json::to_string(value)?;
     line.push('\n');
     Ok(line)
+}
+
+/// JSON.parse accepts lone UTF-16 surrogates in string values and keys. Rust strings
+/// cannot hold them; replace only those escapes, never valid pairs or literal backslashes.
+pub fn decode_json(text: &str) -> serde_json::Result<Value> {
+    serde_json::from_str(text).or_else(|err| {
+        let bytes = text.as_bytes();
+        let unit = |i: usize| -> Option<u16> {
+            let hex = bytes.get(i..i + 6)?.strip_prefix(b"\\u")?;
+            hex.iter().try_fold(0u16, |acc, &b| {
+                Some(acc * 16 + (b as char).to_digit(16)? as u16)
+            })
+        };
+        let mut fixed = String::new();
+        let mut start = 0;
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] != b'\\' {
+                i += 1;
+                continue;
+            }
+            match unit(i) {
+                Some(0xd800..=0xdbff) if matches!(unit(i + 6), Some(0xdc00..=0xdfff)) => i += 12,
+                Some(0xd800..=0xdfff) => {
+                    fixed.push_str(&text[start..i]);
+                    fixed.push('\u{fffd}');
+                    i += 6;
+                    start = i;
+                }
+                _ => i += 2,
+            }
+        }
+        if start == 0 {
+            return Err(err);
+        }
+        fixed.push_str(&text[start..]);
+        serde_json::from_str(&fixed)
+    })
 }
