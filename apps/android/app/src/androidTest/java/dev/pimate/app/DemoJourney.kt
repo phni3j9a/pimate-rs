@@ -54,6 +54,10 @@ class DemoJourney {
             ui.onNodeWithText("リンクを貼り付ける").performClick()
             ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
             press(ui.onNodeWithText("接続"))
+            if (i == 0) {
+                waitFor("一覧を開く")
+                press(ui.onNodeWithText("一覧を開く"))
+            }
             waitFor("ログイン画面の改修")
         }
         ui.waitUntil(20000) { ui.onAllNodesWithText("ログイン画面の改修").fetchSemanticsNodes().size == 2 }
@@ -94,6 +98,8 @@ class DemoJourney {
         ui.onNodeWithText("リンクを貼り付ける").performClick()
         ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
         press(ui.onNodeWithText("接続"))
+        waitFor("一覧を開く")
+        press(ui.onNodeWithText("一覧を開く"))
         waitFor("/demo/android")
         shot("drawer")
         ui.onNodeWithContentDescription("設定").performClick()

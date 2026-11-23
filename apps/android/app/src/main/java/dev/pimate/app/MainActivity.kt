@@ -9,7 +9,6 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -51,7 +50,7 @@ class MainActivity : ComponentActivity() {
                             isAppearanceLightNavigationBars = !dark
                         }
                 }
-                Screen(model, chat, settings.scale, settings::chooseScale)
+                Screen(model, chat)
             }
         }
     }
@@ -59,11 +58,13 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float) -> Unit) {
+private fun Screen(m: SessionModel, chat: ChatUi) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val pairing = m.pairing
     var sheet by rememberSaveable { mutableStateOf("") }
+    var machine by rememberSaveable { mutableStateOf("") }
+    var first by rememberSaveable { mutableStateOf("") }
     val host = m.host
     val showPair = pairing || host == null
     BackHandler(pairing && host != null) { m.showPairing(false) }
@@ -77,7 +78,10 @@ private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float
     LaunchedEffect(m.openList) {
         if (m.openList) {
             m.showPairing(false)
-            drawer.open()
+            if (m.pairedHostId != null) {
+                first = m.pairedHostId!!
+                m.consumePairedHost()
+            } else drawer.open()
             m.listed()
         }
     }
@@ -97,7 +101,10 @@ private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float
                         m.showPairing(true)
                         scope.launch { drawer.close() }
                     },
-                    open = { sheet = it },
+                    open = {
+                        sheet = it
+                        scope.launch { drawer.close() }
+                    },
                 )
             }
         },
@@ -105,74 +112,44 @@ private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float
         if (showPair) PairScreen(m, if (host != null) ({ m.showPairing(false) }) else null)
         else key(host?.id) { ChatScreen(m, chat, { scope.launch { drawer.open() } }, recover) }
     }
-    if (sheet.isNotEmpty())
-        PiSheet({ sheet = "" }) {
-            Column {
-                if (sheet == "new") {
-                    Text("新しい Pi", Modifier.semantics { heading() }, style = Type.sheet)
-                    Text(
-                        "スマホからの起動は準備中です。PC で pi を起動すると、一覧に表示されます。",
-                        Modifier.padding(top = 8.dp),
-                        pi.textSecondary,
-                    )
-                } else {
-                    Text("設定", Modifier.semantics { heading() }, style = Type.sheet)
-                    Row(
-                        Modifier.heightIn(min = 52.dp).padding(top = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("文字サイズ", Modifier.weight(1f))
-                        // セグメント: 濃い塗りの台に、選択中だけ背景色の面（Tokens）。
-                        Row(
-                            Modifier.background(pi.surfaceStrong, CircleShape)
-                                .padding(3.dp)
-                                .selectableGroup()
-                        ) {
-                            fontScales.forEach { (label, value) ->
-                                val on =
-                                    fontScales
-                                        .minBy { kotlin.math.abs(it.second - scale) }
-                                        .second == value
-                                Box(
-                                    Modifier.clip(CircleShape)
-                                        .background(if (on) pi.background else pi.surfaceStrong)
-                                        .selectable(on, role = Role.RadioButton) { setScale(value) }
-                                        .heightIn(min = 42.dp)
-                                        .padding(horizontal = 16.dp),
-                                    Alignment.Center,
-                                ) {
-                                    Text(
-                                        label,
-                                        color = if (on) pi.text else pi.textSecondary,
-                                        style =
-                                            Type.caption.copy(
-                                                fontWeight =
-                                                    if (on) FontWeight.SemiBold
-                                                    else FontWeight.Normal
-                                            ),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    TextAction(
-                        "マシンを追加（ペアリング）",
-                        {
-                            sheet = ""
-                            m.showPairing(true)
-                            scope.launch { drawer.close() }
-                        },
-                        Modifier.padding(top = 4.dp).offset(x = (-14).dp),
-                    )
-                    Text(
-                        "ほかの設定は今後の更新で追加します。",
-                        Modifier.padding(top = 4.dp),
-                        pi.textSecondary,
-                        style = Type.caption,
-                    )
-                }
+    val firstHost = m.hosts.find { it.id == first }
+    if (!showPair && sheet.isEmpty() && firstHost != null)
+        FirstPage(
+            m,
+            firstHost,
+            {
+                first = ""
+                scope.launch { drawer.open() }
+            },
+            { sheet = "new" },
+            {
+                first = ""
+                m.select(firstHost, it)
+            },
+        )
+    when (sheet) {
+        "settings" ->
+            SettingsPage(
+                m,
+                { sheet = "" },
+                {
+                    machine = it
+                    sheet = "machine"
+                },
+                {
+                    sheet = ""
+                    m.showPairing(true)
+                },
+            )
+        "machine" ->
+            m.hosts.find { it.id == machine }?.let { MachinePage(m, it) { sheet = "settings" } }
+        "new" ->
+            NewPage(m, firstHost ?: host, { sheet = "" }) { h, id ->
+                first = ""
+                sheet = ""
+                m.select(h, id)
             }
-        }
+    }
 }
 
 /** ドロワーの面。幅は画面の 85%、広い画面でも 330dp まで。 */
@@ -491,7 +468,7 @@ private fun OtherHost(host: Host, enabled: Boolean, onClick: () -> Unit) {
 
 /** Instance の行（60dp 以上）。状態は印の色だけでなく、文字（入力待ち・作業中・経過）でも示す。 */
 @Composable
-private fun InstanceRow(
+internal fun InstanceRow(
     o: JSONObject,
     selected: Boolean,
     attention: String?,

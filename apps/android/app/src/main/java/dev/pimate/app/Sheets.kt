@@ -26,9 +26,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.*
 import uniffi.pimate_ffi.CoreException
 import uniffi.pimate_ffi.RcMethod
@@ -47,8 +47,8 @@ internal fun failure(e: CoreException): String =
     }
 
 /**
- * 結果を返す RC 操作。待ち合わせは必ずメインスレッドで再開する: 画面の coroutine の文脈によっては、中核（Rust）のスレッドの上で
- * そのまま続きを走らせてしまう（計装試験の Compose の文脈がそうで、続きから中核を呼び直すと落ちる）。
+ * 結果を返す RC 操作。待ち合わせは必ずメインスレッドで再開する: 画面の coroutine の文脈によっては、中核（Rust）のスレッドの上で そのまま続きを走らせてしまう（計装試験の
+ * Compose の文脈がそうで、続きから中核を呼び直すと落ちる）。
  */
 internal suspend fun SessionModel.ask(key: EditorKey, method: RcMethod, params: JSONObject) =
     withContext(Dispatchers.Main.immediate) { request(key, method, params) }
@@ -103,7 +103,7 @@ internal fun rememberOps(m: SessionModel, key: EditorKey): Ops {
 }
 
 @Composable
-private fun SheetError(text: String) {
+internal fun SheetError(text: String) {
     if (text.isNotEmpty())
         Text(
             text,
@@ -144,9 +144,10 @@ internal fun ModelSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
         }
     }
     val current =
-        view["model"]?.takeIf { it != "null" }?.let(::JSONObject)?.let { ref ->
-            models.find { same(it, ref) }
-        }
+        view["model"]
+            ?.takeIf { it != "null" }
+            ?.let(::JSONObject)
+            ?.let { ref -> models.find { same(it, ref) } }
     val thinking = view["thinking"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty()
     val favorites = models.filter { it.optBoolean("favorite") }
     var tab by rememberSaveable { mutableStateOf("") }
@@ -199,10 +200,8 @@ internal fun ModelSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
         val shown =
             (if (scope == "all") models else favorites).filter {
                 query.isBlank() ||
-                    "${it.str("provider")}/${it.str("id")} ${it.str("name")}".contains(
-                        query.trim(),
-                        true,
-                    )
+                    "${it.str("provider")}/${it.str("id")} ${it.str("name")}"
+                        .contains(query.trim(), true)
             }
         when {
             !loaded && loadError.isNotEmpty() ->
@@ -251,9 +250,7 @@ internal fun ModelSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
                                     model,
                                     model === current,
                                     ops.ready,
-                                    select = {
-                                        ops.run("model", RcMethod.SET_MODEL, model.ref())
-                                    },
+                                    select = { ops.run("model", RcMethod.SET_MODEL, model.ref()) },
                                 ) {
                                     val next =
                                         if (model.optBoolean("favorite"))
@@ -297,7 +294,8 @@ internal fun ModelSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
             val ref = default.optJSONObject("model")
             val level = default.str("thinking")
             // Thinking は、段階のあるモデルのときだけ一緒に保存する。
-            val toSave = thinking.takeIf { levels != null && levels.length() > 1 && it.isNotEmpty() }
+            val toSave =
+                thinking.takeIf { levels != null && levels.length() > 1 && it.isNotEmpty() }
             val isDefault = same(current, ref) && (toSave == null || toSave == level)
             Text(
                 ref?.let { r ->
@@ -396,9 +394,12 @@ internal fun UsageSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
     val ops = rememberOps(m, key)
     val groups = m.rows.groups
     val context =
-        groups["view"].orEmpty().find { it.id == "context" }?.json?.takeIf { it != "null" }?.let(
-            ::JSONObject
-        )
+        groups["view"]
+            .orEmpty()
+            .find { it.id == "context" }
+            ?.json
+            ?.takeIf { it != "null" }
+            ?.let(::JSONObject)
     // 「あと◯分」を進める。
     val now by
         produceState(System.currentTimeMillis()) {
@@ -440,12 +441,7 @@ internal fun UsageSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
             )
             if (compacting) {
                 Spinner()
-                Text(
-                    "圧縮中…",
-                    Modifier.padding(start = 6.dp),
-                    pi.textSecondary,
-                    style = Type.caption,
-                )
+                Text("圧縮中…", Modifier.padding(start = 6.dp), pi.textSecondary, style = Type.caption)
             } else
                 TextAction(
                     "圧縮する",
@@ -527,7 +523,7 @@ internal fun SessionSheet(
     m: SessionModel,
     key: EditorKey,
     start: String,
-    openTree: () -> Unit,
+    open: (String) -> Unit,
     close: () -> Unit,
 ) {
     val ops = rememberOps(m, key)
@@ -536,7 +532,8 @@ internal fun SessionSheet(
     val view = groups["view"].orEmpty().associate { it.id to it.json }
     PiSheet(close) {
         when (page) {
-            "sessions" -> SessionsPage(m, ops, if (start == page) null else ({ page = start }), close)
+            "sessions" ->
+                SessionsPage(m, ops, if (start == page) null else ({ page = start }), close)
             "fork" -> ForkPage(m, ops, if (start == page) null else ({ page = start }), close)
             else -> {
                 val session = view["session"]?.takeIf { it != "null" }?.let(::JSONObject)
@@ -584,11 +581,16 @@ internal fun SessionSheet(
                 MenuRow("過去のセッションを開く", "/resume", ops.ready, next = true) { page = "sessions" }
                 // 旧 RC にはツリーがない。押しても開けない入口は出さない。
                 if (view["sessionTree"] == "true")
-                    MenuRow("セッションツリー", "/tree", ops.ready, next = true, onClick = openTree)
+                    MenuRow("セッションツリー", "/tree", ops.ready, next = true, onClick = { open("tree") })
                 MenuRow("ここから分岐", "/fork", ops.ready && users, next = true) { page = "fork" }
                 MenuRow("コンテキストを圧縮", "/compact", ops.ready, ops.busy == "compact") {
                     ops.run("compact", RcMethod.COMPACT) { close() }
                 }
+
+                MenuRow("変更レビュー", "", ops.ready, next = true) { open("review") }
+                MenuRow("GitHub の Issue / PR", "", ops.ready, next = true) { open("github") }
+                if (!groups["run"].isNullOrEmpty())
+                    MenuRow("サブエージェント", "", ops.ready, next = true) { open("agents") }
 
                 Label("この Pi")
                 val origin =
@@ -606,7 +608,10 @@ internal fun SessionSheet(
                         ?.let { JSONObject(it.json).opt("pcAttached") as? Boolean }
                         ?.let { if (it) "PC から接続中" else "PC から未接続" }
                 if (origin != null)
-                    Row(Modifier.heightIn(min = tap), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.heightIn(min = tap),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text("起動元", Modifier.weight(1f), style = Type.lead)
                         Text(
                             listOfNotNull(origin, attached).joinToString(" · "),
@@ -658,7 +663,7 @@ internal fun SessionSheet(
 }
 
 @Composable
-private fun Label(text: String) {
+internal fun Label(text: String) {
     Text(
         text,
         Modifier.padding(top = 28.dp, bottom = 2.dp).semantics { heading() },
@@ -670,7 +675,7 @@ private fun Label(text: String) {
 
 /** メニューの行（52dp）。右は、同じ操作の PC のコマンド名。 */
 @Composable
-private fun MenuRow(
+internal fun MenuRow(
     label: String,
     command: String,
     enabled: Boolean,
@@ -755,9 +760,8 @@ private fun SessionsPage(m: SessionModel, ops: Ops, back: (() -> Unit)?, close: 
     LaunchedEffect(ops.key) {
         try {
             list =
-                JSONObject(m.ask(ops.key, RcMethod.SESSIONS, JSONObject())).optJSONArray(
-                    "sessions"
-                ) ?: JSONArray()
+                JSONObject(m.ask(ops.key, RcMethod.SESSIONS, JSONObject())).optJSONArray("sessions")
+                    ?: JSONArray()
         } catch (e: CoreException) {
             error = failure(e)
         }
@@ -811,7 +815,11 @@ private fun ForkPage(m: SessionModel, ops: Ops, back: (() -> Unit)?, close: () -
     val entries = m.rows.groups["entry"]
     val users =
         remember(entries) {
-            entries.orEmpty().map { JSONObject(it.json) }.filter { it.str("kind") == "user" }.asReversed()
+            entries
+                .orEmpty()
+                .map { JSONObject(it.json) }
+                .filter { it.str("kind") == "user" }
+                .asReversed()
         }
     val now = remember { System.currentTimeMillis() }
     PageHeader("どのメッセージから分岐しますか", back)

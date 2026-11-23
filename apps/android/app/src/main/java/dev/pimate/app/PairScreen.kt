@@ -33,8 +33,28 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
     // リンクは 1 回限りの秘密なので、保存される状態（SavedState）には載せない。
     var link by remember { mutableStateOf("") }
     var paste by rememberSaveable { mutableStateOf(false) }
+    var guide by rememberSaveable { mutableIntStateOf(0) }
+    var invalid by remember { mutableStateOf(false) }
+    fun submitLink(candidate: String) {
+        invalid = uniffi.pimate_ffi.previewPair(candidate) == null
+        if (!invalid) m.pair(candidate)
+    }
     val scanner =
-        rememberLauncherForActivityResult(ScanContract()) { r -> r.contents?.let { m.pair(it) } }
+        rememberLauncherForActivityResult(ScanContract()) { r -> r.contents?.let(::submitLink) }
+    if (guide != 0)
+        SetupGuide(
+            guide,
+            { guide = 0 },
+            { guide = 2 },
+            {
+                guide = 0
+                scanner.launch(
+                    ScanOptions()
+                        .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                        .setBeepEnabled(false)
+                )
+            },
+        )
     val code = pi.textCode
     Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
         if (onBack != null)
@@ -70,7 +90,9 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
             }
             PiTerminal(Modifier.padding(top = if (onBack == null) 24.dp else 8.dp))
             Column(Modifier.padding(top = 20.dp)) {
-                Step(1, "スマホと PC を Tailscale でつなぐ", AnnotatedString("両方で同じアカウントにログイン"))
+                Step(1, "スマホと PC を Tailscale でつなぐ", AnnotatedString("両方で同じアカウントにログイン")) {
+                    guide = 1
+                }
                 Step(
                     2,
                     "PC に PiMate を入れる",
@@ -81,12 +103,14 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                         }
                         append(" を実行")
                     },
-                )
+                ) {
+                    guide = 2
+                }
                 Step(3, "QR コードを読み取る", AnnotatedString("コードは 10 分間、1 回だけ使えます"))
             }
             if (paste) {
                 val focus = remember { FocusRequester() }
-                val submit = { if (link.isNotBlank() && !m.busy) m.pair(link) }
+                val submit = { if (link.isNotBlank() && !m.busy) submitLink(link) }
                 LaunchedEffect(Unit) { focus.requestFocus() }
                 // 欄そのものをカプセルにする（フォーカスで欄の全体がキーボードの上に出る）。
                 BasicTextField(
@@ -126,6 +150,7 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                     },
                 )
             }
+            SheetError(if (invalid) "ペアリング用のリンクを確認してください" else "")
             if (m.error.isNotEmpty())
                 Text(
                     m.error,
@@ -206,9 +231,15 @@ private fun PiTerminal(modifier: Modifier = Modifier) {
 
 /** 等幅の番号タイルの手順。済み・未済はアプリから分からないので、チェックは付けない。 */
 @Composable
-private fun Step(number: Int, title: String, detail: AnnotatedString) {
+private fun Step(number: Int, title: String, detail: AnnotatedString, open: (() -> Unit)? = null) {
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 64.dp).semantics(mergeDescendants = true) {},
+        Modifier.fillMaxWidth()
+            .then(
+                if (open != null) Modifier.clickable(role = Role.Button, onClick = open)
+                else Modifier
+            )
+            .heightIn(min = 64.dp)
+            .semantics(mergeDescendants = true) {},
         Arrangement.spacedBy(14.dp),
         Alignment.CenterVertically,
     ) {
@@ -226,5 +257,6 @@ private fun Step(number: Int, title: String, detail: AnnotatedString) {
             Text(title, style = Type.lead.copy(lineBreak = Type.phrase))
             Text(detail, color = pi.textSecondary, style = Type.caption)
         }
+        if (open != null) Icon(Icons.Right, null, Modifier.size(16.dp), pi.textSecondary)
     }
 }
