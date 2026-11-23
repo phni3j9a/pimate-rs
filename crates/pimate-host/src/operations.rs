@@ -37,7 +37,20 @@ pub fn dirs(path: &str) -> Vec<String> {
         .filter(|e| e.path().is_dir())
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
-    names.sort();
+    let locale = ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .find_map(|key| env::var(key).ok().filter(|s| !s.is_empty()))
+        .and_then(|s| {
+            s.split(['.', '@'])
+                .next()?
+                .replace('_', "-")
+                .parse::<icu_locale_core::Locale>()
+                .ok()
+        })
+        .unwrap_or(icu_locale_core::locale!("en-US"));
+    let collator = icu_collator::Collator::try_new(locale.into(), Default::default())
+        .expect("compiled ICU collation data");
+    names.sort_by(|a, b| collator.compare(a, b));
     names.truncate(1000);
     names
 }

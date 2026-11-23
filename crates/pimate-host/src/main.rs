@@ -72,8 +72,9 @@ async fn main() -> Result<()> {
     }
     if cmd == "list" {
         ensure!(args.next().is_none());
-        let mut rows = rc::list(&config::run_dir()).await?.instances;
-        terminal::Terminal::resolve().refresh(&mut rows).await;
+        let run = config::run_dir();
+        let mut rows = rc::list(&run).await?.instances;
+        terminal::Terminal::resolve().refresh(&run, &mut rows).await;
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }

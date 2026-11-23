@@ -654,8 +654,13 @@ impl Drop for Cleanup {
                 if let Some(hex) = n.strip_prefix("pimate-")
                     && hex.len() == 8
                     && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                    && let Ok(pid) = cols[2].parse::<i32>()
+                    && pid > 0
                 {
                     if cfg!(target_os = "linux")
+                        && std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(
+                            |groups| groups.lines().any(|g| g.ends_with(&format!("/{n}.scope"))),
+                        )
                         && std::process::Command::new("systemctl")
                             .args(["--user", "stop", &format!("{n}.scope")])
                             .status()
@@ -663,11 +668,7 @@ impl Drop for Cleanup {
                     {
                         continue;
                     }
-                    if let Ok(pid) = cols[2].parse::<i32>()
-                        && pid > 0
-                    {
-                        let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
-                    }
+                    let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
                 }
             }
         }
@@ -927,5 +928,203 @@ async fn reject_modified_bundle_even_if_on_path() -> Result<()> {
             .status
             .success()
     );
+    Ok(())
+}
+
+fn script(path: &Path, body: &str) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n"))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn scoped_spawn_uses_host_path_and_finishes_prompt_after_disconnect() -> Result<()> {
+    use tokio_util::codec::{Framed, LinesCodec};
+    let t = std::sync::Arc::new(tempfile::tempdir()?);
+    let root = t.path();
+    let project = root.join("project");
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin)?;
+    std::fs::create_dir_all(project.join("bin"))?;
+    script(&bin.join("systemctl"), "exit 0")?;
+    script(
+        &bin.join("systemd-run"),
+        r#"if [ "$1" = --help ]; then echo "$0" > "$HOME/help"; echo --expand-environment=; exit 0; fi
+ echo "$0" > "$HOME/runner"; echo "$PATH" > "$HOME/child-path"
+ while [ "$1" != -- ]; do shift; done; shift; exec "$@""#,
+    )?;
+    script(&project.join("bin/systemd-run"), "exit 42")?;
+    script(&bin.join("pi"), "exit 1")?;
+    script(
+        &bin.join("abduco"),
+        r#"if [ "$#" -eq 0 ]; then exit 0; fi
+ printf '%s\n' "$@" > "$HOME/args"; echo "$PIMATE_INSTANCE_ID" > "$HOME/started""#,
+    )?;
+    let s = Server::with(
+        t.clone(),
+        &[
+            ("PATH", Path::new("bin")),
+            ("PIMATE_EXTENSION", Path::new("npm:@phni3j9a/pimate")),
+            ("PIMATE_ABDUCO", Path::new("abduco")),
+        ],
+    )
+    .await?;
+    let mut ws = s.auth(&s.paired().await?["token"]).await?;
+    send(&mut ws,json!({"type":"spawn","requestId":"launch","params":{"cwd":project,"message":"deliver once"}})).await?;
+    let id = timeout(Duration::from_secs(4), async {
+        loop {
+            if let Ok(s) = std::fs::read_to_string(root.join("started"))
+                && !s.trim().is_empty()
+            {
+                break s.trim().to_owned();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await
+        }
+    })
+    .await?;
+    ws.close(None).await?;
+    drop(ws);
+    for file in ["help", "runner"] {
+        assert_eq!(
+            Path::new(std::fs::read_to_string(root.join(file))?.trim()),
+            bin.join("systemd-run")
+        );
+    }
+    assert_eq!(
+        Path::new(std::fs::read_to_string(root.join("child-path"))?.trim()),
+        bin
+    );
+    let args = std::fs::read_to_string(root.join("args"))?;
+    let args: Vec<_> = args.lines().collect();
+    assert_eq!(Path::new(args[2]), bin.join("pi"));
+    assert_eq!(&args[3..], &["-e", "npm:@phni3j9a/pimate"]);
+    let listener = tokio::net::UnixListener::bind(root.join("run").join(format!("{id}.sock")))?;
+    let mut io = Framed::new(
+        timeout(Duration::from_secs(4), listener.accept()).await??.0,
+        LinesCodec::new(),
+    );
+    let hello: Value = serde_json::from_str(&io.next().await.unwrap()?)?;
+    io.send(json!({"type":"response","id":hello["id"],"ok":true,"result":{"snapshot":{"instanceId":id,"protocol":1}}}).to_string()).await?;
+    let prompt: Value =
+        serde_json::from_str(&timeout(Duration::from_secs(3), io.next()).await?.unwrap()?)?;
+    assert_eq!(prompt["method"], "prompt");
+    assert_eq!(prompt["params"]["text"], "deliver once");
+    io.send(json!({"type":"response","id":prompt["id"],"ok":true}).to_string())
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_only_reaps_matching_keeper_from_own_run_dir() -> Result<()> {
+    let t = tempfile::tempdir()?;
+    let root = t.path();
+    let first = root.join("a");
+    let second = root.join("b");
+    let fake = root.join("abduco");
+    let mut own = Command::new("sleep").arg("60").kill_on_drop(true).spawn()?;
+    let mut foreign = Command::new("sleep").arg("60").kill_on_drop(true).spawn()?;
+    let mut replaced = Command::new("sleep").arg("60").kill_on_drop(true).spawn()?;
+    let ids = [
+        own.id().unwrap(),
+        foreign.id().unwrap(),
+        replaced.id().unwrap(),
+    ];
+    script(
+        &fake,
+        &format!(
+            "printf '+ Mon\\tdate\\t{}\\tpimate-aaaaaaaa\\n+ Mon\\tdate\\t{}\\tpimate-bbbbbbbb\\n+ Mon\\tdate\\t{}\\tpimate-cccccccc\\n'",
+            ids[0], ids[1], ids[2]
+        ),
+    )?;
+    for (dir, name, pid) in [
+        (&first, "pimate-aaaaaaaa", ids[0]),
+        (&second, "pimate-bbbbbbbb", ids[1]),
+        (&first, "pimate-cccccccc", ids[1]),
+    ] {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir.join("terminals"))?;
+        std::fs::write(dir.join("terminals").join(name), pid.to_string())?;
+    }
+    ensure!(
+        cli(root)
+            .env("PIMATE_ABDUCO", fake)
+            .env("PIMATE_RUN_DIR", first)
+            .arg("list")
+            .output()
+            .await?
+            .status
+            .success()
+    );
+    timeout(Duration::from_secs(2), own.wait()).await??;
+    ensure!(foreign.try_wait()?.is_none() && replaced.try_wait()?.is_none());
+    foreign.kill().await?;
+    replaced.kill().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn orphan_wait_does_not_block_discovery_or_repeat_shutdown() -> Result<()> {
+    use tokio_util::codec::{Framed, LinesCodec};
+    let s = Server::start().await?;
+    let run = s.dir.path().join("run");
+    let meta = |id: &str| json!({"protocol":1,"instanceId":id,"pid":std::process::id(),"cwd":"/test","origin":"mobile","abducoSession":null,"session":null,"startedAt":1,"status":"idle"});
+    let mut orphan = meta("orphan");
+    orphan["purpose"] = "auth".into();
+    let listener = tokio::net::UnixListener::bind(run.join("orphan.sock"))?;
+    std::fs::write(run.join("orphan.json"), orphan.to_string())?;
+    let mut ws = s.auth(&s.paired().await?["token"]).await?;
+    let mut io = Framed::new(
+        timeout(Duration::from_secs(4), listener.accept()).await??.0,
+        LinesCodec::new(),
+    );
+    let hello: Value = serde_json::from_str(&io.next().await.unwrap()?)?;
+    io.send(json!({"type":"response","id":hello["id"],"ok":true,"result":{"snapshot":{"instanceId":"orphan","protocol":1}}}).to_string()).await?;
+    let list: Value = serde_json::from_str(&io.next().await.unwrap()?)?;
+    assert_eq!(list["method"], "auth_list");
+    std::fs::write(run.join("normal.json"), meta("normal").to_string())?;
+    timeout(
+        Duration::from_secs(5),
+        until(&mut ws, |v| {
+            v["instances"]
+                .as_array()
+                .is_some_and(|a| a.iter().any(|i| i["instanceId"] == "normal"))
+        }),
+    )
+    .await??;
+    assert!(
+        timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn completion_collates_before_cutoff() -> Result<()> {
+    let t = std::sync::Arc::new(tempfile::tempdir()?);
+    let root = t.path();
+    let folder = root.join("complete");
+    std::fs::create_dir(&folder)?;
+    for n in 0..1000 {
+        std::fs::create_dir(folder.join(format!("Zebra{n:04}")))?;
+    }
+    std::fs::create_dir(folder.join("äpple"))?;
+    for (locale, first) in [("en_US.UTF-8", "äpple"), ("sv_SE.UTF-8", "Zebra0000")] {
+        let s = Server::with(t.clone(), &[("LANG", Path::new(locale))]).await?;
+        let mut ws = s.auth(&s.paired().await?["token"]).await?;
+        send(
+            &mut ws,
+            json!({"type":"dirs","requestId":"d","path":folder}),
+        )
+        .await?;
+        let v = until(&mut ws, |v| v["type"] == "dirs_result").await?;
+        assert_eq!(v["dirs"][0], first);
+        assert_eq!(v["dirs"].as_array().unwrap().len(), 1000);
+    }
     Ok(())
 }

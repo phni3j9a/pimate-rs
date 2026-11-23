@@ -19,6 +19,7 @@ struct State {
     holders: usize,
     deadline: Option<Instant>,
     closed: bool,
+    orphans: std::collections::HashSet<String>,
 }
 #[derive(Default)]
 pub struct Login {
@@ -89,7 +90,7 @@ impl Login {
             .map(nix::unistd::Pid::from_raw);
         Ok(id)
     }
-    pub async fn refresh(&self, dir: &Path, observed: &[String]) {
+    pub fn observe(self: &Arc<Self>, dir: &Path, observed: Vec<String>) {
         let Ok(_lock) = self.transition.try_lock() else {
             return;
         };
@@ -106,15 +107,36 @@ impl Login {
                 s.deadline.is_some_and(|t| Instant::now() >= t),
             )
         };
-        for orphan in observed.iter().filter(|o| Some(*o) != id.as_ref()) {
-            let _ = shutdown(dir, orphan).await;
+        for orphan in observed.into_iter().filter(|o| Some(o) != id.as_ref()) {
+            if self.state.lock().unwrap().orphans.insert(orphan.clone()) {
+                let login = self.clone();
+                let dir = dir.to_owned();
+                tokio::spawn(async move {
+                    shutdown(&dir, &orphan).await;
+                    login.state.lock().unwrap().orphans.remove(&orphan);
+                });
+            }
         }
         if due
             && self.state.lock().unwrap().holders == 0
             && let Some(id) = id
-            && shutdown(dir, &id).await
         {
-            self.state.lock().unwrap().id = None
+            let login = self.clone();
+            let dir = dir.to_owned();
+            tokio::spawn(async move {
+                let Ok(_lock) = login.transition.try_lock() else {
+                    return;
+                };
+                let due = {
+                    let s = login.state.lock().unwrap();
+                    s.id.as_ref() == Some(&id)
+                        && !s.closed
+                        && s.deadline.is_some_and(|t| Instant::now() >= t)
+                };
+                if due && shutdown(&dir, &id).await {
+                    login.state.lock().unwrap().id = None;
+                }
+            });
         }
     }
     pub async fn close(&self, dir: &Path) {

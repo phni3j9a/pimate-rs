@@ -164,7 +164,7 @@ async fn listen(
     let dir = config::run_dir();
     let mut discovery = rc::list(&dir).await?;
     let terminal = crate::terminal::Terminal::resolve();
-    terminal.refresh(&mut discovery.instances).await;
+    terminal.refresh(&dir, &mut discovery.instances).await;
     let (tx, instances) = watch::channel(summaries(discovery.instances));
     let (versions, incompatible) = watch::channel(discovery.incompatible);
     let mut listeners = vec![];
@@ -205,8 +205,8 @@ async fn listen(
         loop {
             sleep(Duration::from_millis(1500)).await;
             if let Ok(mut v) = rc::list(&dir).await {
-                app.terminal.refresh(&mut v.instances).await;
-                app.login.refresh(&dir, &v.login).await;
+                app.terminal.refresh(&dir, &mut v.instances).await;
+                app.login.observe(&dir, v.login);
                 versions.send_replace(v.incompatible);
                 let next = summaries(v.instances);
                 tx.send_if_modified(|prev| {
@@ -435,8 +435,20 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 }
                 let a = a.clone();
                 let out = out.clone();
+                // Accept launch operations independently of the reply connection. A
+                // dropped JoinHandle detaches the operation; the join set bounds waiters.
+                let host_owned = matches!(kind, "spawn" | "auth_session");
+                let operation = async move { a.operation(m).await };
+                let launch = if host_owned {
+                    Ok(tokio::spawn(operation))
+                } else {
+                    Err(operation)
+                };
                 admin.spawn(async move {
-                    let reply = a.operation(m).await;
+                    let reply = match launch {
+                        Ok(handle) => handle.await.ok()?,
+                        Err(operation) => operation.await,
+                    };
                     out.send(&reply);
                     release_on_error.filter(|_| reply["ok"] == false)
                 });
