@@ -58,6 +58,7 @@ pub enum Content {
         text: String,
     },
     Quote(Vec<Block>),
+    #[uniffi(name = "BlockList")]
     List {
         start: Option<u32>,
         items: Vec<Block>,
