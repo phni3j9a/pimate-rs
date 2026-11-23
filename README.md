@@ -100,7 +100,7 @@ Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘ�
 
 ### 管理と常駐登録
 
-認証済み WS の `github` は対象の Pi の作業ディレクトリに限り Issue / PR を読みます。`github_status` は github.com のログイン名だけを取得します。`update_check` は npmjs.org の最新版を確認し、`update` は公開 npm パッケージに同梱され、かつ `pimate-host.service` で稼働する場合だけ固定引数で更新します。`host_restart` はこの常駐サービスだけが対象です。
+認証済み WS の `github` は対象の Pi の作業ディレクトリに限り Issue / PR を読みます。`github_status` は github.com のログイン名だけを取得します。`update_check` は npmjs.org の最新版を確認し、`update` は公開 npm パッケージに同梱され、かつ `pimate-host.service` で稼働する場合だけ固定引数で更新します。`host_restart` はこの常駐サービスだけが対象です。比較元は起動時の npm 版（パッケージ外は crate の版・更新不可）です。更新と再起動は端末をまたいで排他し、競合時は更新に `busy`、再起動に `failed` を返します。`gh` の stderr には認証情報が含まれ得るため、TS 版とは異なり、失敗は分類コードと固定文言のみを返します。
 
 Linux の user systemd の登録・確認・削除は `pimate service install|status|uninstall`。`start|stop|health|has-systemd` と `command-status|command-install|command-remove` も `service` のサブコマンドです。登録・削除は実際にサービス状態を変えます。**稼働中の TS Host と同じポート・サービス名で試さないでください。** `XDG_CONFIG_HOME` を変えても systemd の user manager は分離されません。Rust の管理印・設定ディレクトリと異なる unit は上書きしません。linger の設定は行いません。
 

@@ -210,6 +210,9 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
         t.held = Some(t.result("waiting_input"))
     }
     for v in early {
+        if cmd == "wait" && t.held.is_some() {
+            break;
+        }
         t.event(v)
     }
     if cmd == "watch" {

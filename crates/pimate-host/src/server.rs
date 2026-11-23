@@ -55,7 +55,8 @@ impl Out {
     }
 }
 struct App {
-    alerts: tokio::sync::broadcast::Sender<Value>,
+    monitor: std::sync::Mutex<crate::alerts::Monitor>,
+    package: crate::update::Package,
     terminal: crate::terminal::Terminal,
     login: Arc<crate::login::Login>,
     folder_cache: tokio::sync::Mutex<Option<(tokio::time::Instant, Vec<Value>)>>,
@@ -83,16 +84,8 @@ impl App {
                     .map(String::from);
                 crate::github::query(cwd, &m["query"]).await
             }
-            "update" | "update_check" => crate::update::run(kind == "update_check").await,
-            "host_restart" => {
-                if !crate::service::managed() {
-                    json!({"ok":false,"code":"unsupported"})
-                } else if crate::service::restart().await.is_ok() {
-                    json!({"ok":true})
-                } else {
-                    json!({"ok":false,"code":"failed"})
-                }
-            }
+            "update" | "update_check" => self.package.run(kind == "update_check").await,
+            "host_restart" => crate::update::restart(crate::service::managed()).await,
             "dirs" => {
                 let path = m["path"].as_str().unwrap().to_owned();
                 let dirs = tokio::task::spawn_blocking(move || crate::operations::dirs(&path))
@@ -202,7 +195,8 @@ async fn listen(
     let mut monitor = crate::alerts::Monitor::new()?;
     monitor.refresh(&dir, &instances.borrow());
     let app = Arc::new(App {
-        alerts: monitor.tx.clone(),
+        monitor: std::sync::Mutex::new(monitor),
+        package: crate::update::Package::running(),
         terminal,
         login,
         last_spawn: Default::default(),
@@ -234,6 +228,7 @@ async fn listen(
                 app.login.observe(&dir, v.login);
                 versions.send_replace(v.incompatible);
                 let next = summaries(v.instances);
+                let mut monitor = app.monitor.lock().unwrap();
                 monitor.refresh(&dir, &next);
                 tx.send_if_modified(|prev| {
                     if *prev == next {
@@ -250,7 +245,7 @@ async fn listen(
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
+        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":a.package.current()}),
     )
 }
 async fn pair(State(a): State<Arc<App>>, req: Request) -> (StatusCode, Json<Value>) {
@@ -387,7 +382,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         generation: CancellationToken::new(),
     };
     let c = &a.config;
-    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true,"alerts":true,"githubStatus":true,"github":true,"packageUpdate":true,"hostRestart":crate::service::managed()}}));
+    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":a.package.current(),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true,"alerts":true,"githubStatus":true,"github":true,"packageUpdate":true,"hostRestart":crate::service::managed()}}));
     let mut list = a.instances.clone();
     let mut current = list.borrow_and_update().clone();
     out.send(&json!({"type":"instances","instances":current}));
@@ -427,10 +422,16 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         let kind = m["type"].as_str().unwrap_or("");
         match kind {
             "watch_alerts" if m["enabled"].is_boolean() => {
-                alerts = m["enabled"]
-                    .as_bool()
-                    .unwrap()
-                    .then(|| a.alerts.subscribe());
+                if m["enabled"] == true && alerts.is_none() {
+                    alerts = Some(
+                        a.monitor
+                            .lock()
+                            .unwrap()
+                            .subscribe(&a.dir, &a.instances.borrow()),
+                    );
+                } else if m["enabled"] == false {
+                    alerts = None;
+                }
             }
             "ping" if m["t"].is_number() => out.send(&json!({"type":"pong","t":m["t"]})),
             "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders"

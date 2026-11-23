@@ -25,11 +25,7 @@ async fn ctl(args: &[&str]) -> Result<String> {
         command("systemctl")?.arg("--user").args(args).output(),
     )
     .await??;
-    ensure!(
-        o.status.success(),
-        "systemctl failed: {}",
-        String::from_utf8_lossy(&o.stderr).trim()
-    );
+    ensure!(o.status.success(), "systemctl failed");
     Ok(String::from_utf8(o.stdout)?.trim().into())
 }
 // The manager can search different XDG paths than this CLI. Never stop or enable a namesake.
@@ -275,8 +271,10 @@ pub async fn run(action: &str) -> Result<Value> {
             )
             .await
             && o.status.success()
+            && let Ok(value) = std::str::from_utf8(&o.stdout)
+            && matches!(value.trim(), "yes" | "no")
         {
-            linger = String::from_utf8_lossy(&o.stdout).trim().into()
+            linger = value.trim().into();
         }
         return Ok(
             json!({"installed":path.exists(),"active":systemd&&ctl(&["is-active",SERVICE]).await.is_ok_and(|s|s=="active"),"linger":linger}),
@@ -309,7 +307,14 @@ pub async fn run(action: &str) -> Result<Value> {
                         regex::Regex::new(r"^pimate-host-[0-9]+-[0-9]+$")?.is_match(unit),
                         "invalid transient unit"
                     );
-                    ctl(&["stop", unit]).await?;
+                    if let Err(e) = ctl(&["stop", unit]).await {
+                        let mut c = command("systemctl")?;
+                        c.args(["--user", "show", "--property=LoadState", "--value", unit]);
+                        let (code, state, _) = output(c, 15, 65536).await?;
+                        if !matches!(code, Some(0 | 4)) || state.trim() != "not-found" {
+                            return Err(e);
+                        }
+                    }
                 } else if let Some(pid) = saved["pid"]
                     .as_i64()
                     .and_then(|n| i32::try_from(n).ok())
@@ -356,6 +361,7 @@ pub async fn run(action: &str) -> Result<Value> {
                     runner
                         .arg(env::current_exe()?)
                         .args(["serve", "--port", &port()?.to_string()]);
+                    runner.stdout(Stdio::null()).stderr(Stdio::null());
                     ensure!(
                         timeout(Duration::from_secs(15), runner.status())
                             .await??

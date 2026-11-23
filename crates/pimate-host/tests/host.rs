@@ -1487,7 +1487,7 @@ async fn github_admin_fixed_commands_and_rejection() -> Result<()> {
         &bin.join("gh"),
         r#"printf '%s\n' "$PWD $*" >> "$HOME/calls"
 [ "$GH_PROMPT_DISABLED" = 1 ] && [ -z "$GH_REPO" ] || exit 4
-case "$1 $2" in 'api --hostname') echo dev;; 'pr view') echo '{"number":2,"title":"PR"}';; *) exit 1;; esac"#,
+case "$1 $2" in 'api --hostname') echo dev;; 'issue view') echo 'could not find https://secret@example.invalid' >&2; exit 1;; 'pr view') echo '{"number":2,"title":"PR"}';; *) exit 1;; esac"#,
     )?;
     let s = Server::with(t.clone(), &[("PATH", &bin)]).await?;
     let repo = root.join("repo");
@@ -1521,6 +1521,11 @@ case "$1 $2" in 'api --hostname') echo dev;; 'pr view') echo '{"number":2,"title
     send(&mut ws,json!({"type":"github","requestId":"q","instanceId":"gh-pi","query":{"kind":"pr","number":2}})).await?;
     let r = until(&mut ws, |m| m["requestId"] == "q").await?;
     assert_eq!(r["data"]["item"]["author"], "（削除済み）");
+    send(&mut ws,json!({"type":"github","requestId":"err","instanceId":"gh-pi","query":{"kind":"issue","number":1}})).await?;
+    assert_eq!(
+        until(&mut ws, |m| m["requestId"] == "err").await?,
+        json!({"type":"github_result","requestId":"err","ok":false,"code":"not_found","message":"Issue or pull request not found"})
+    );
     let calls = std::fs::read_to_string(root.join("calls"))?;
     assert!(calls.contains(&format!("{} pr view 2 --json", repo.display())));
     send(
@@ -1689,6 +1694,19 @@ case "$2" in enable) echo enabled > "$HOME/enabled";;stop) /bin/rm -f "$HOME/ena
     ] {
         assert!(log.lines().any(|l| l == cmd))
     }
+    let record = d.join("config/host-process.json");
+    std::fs::write(
+        &record,
+        json!({"owner":"pimate-rs","unit":"pimate-host-1-2"}).to_string(),
+    )?;
+    for (load, ok) in [("loaded", false), ("not-found", true)] {
+        script(
+            &bin.join("systemctl"),
+            &format!("case \"$2\" in stop) exit 5;; show) echo {load};exit 4;; esac"),
+        )?;
+        assert_eq!(command("stop").status().await?.success(), ok);
+        assert_eq!(record.exists(), !ok);
+    }
     Ok(())
 }
 
@@ -1723,6 +1741,10 @@ async fn agent_cli_contract() -> Result<()> {
                 json!({"outcome":"waiting_input","pending":[{"kind":"confirm","requestId":"R"}]}),
             ),
             (
+                vec!["wait", "i", "--timeout", "2"],
+                json!({"outcome":"done","reply":"first"}),
+            ),
+            (
                 vec!["wait", "i", "--timeout", "1"],
                 json!({"outcome":"timeout"}),
             ),
@@ -1743,6 +1765,7 @@ async fn agent_cli_contract() -> Result<()> {
         ] {
             let l = UnixListener::bind(run.join("i.sock"))?;
             let pending = args == ["wait", "i"];
+            let raced = args == ["wait", "i", "--timeout", "2"];
             let job = tokio::spawn(async move {
                 let (sock, _) = l.accept().await?;
                 let mut io = Framed::new(sock, LinesCodec::new());
@@ -1751,6 +1774,16 @@ async fn agent_cli_contract() -> Result<()> {
                     let mut close = false;
                     let result = match r["method"].as_str() {
                         Some("hello") => {
+                            if raced {
+                                let events = [
+                                    json!({"type":"message_end","item":{"kind":"assistant","text":"first"}}),
+                                    json!({"type":"agent_settled"}),
+                                    json!({"type":"agent_start"}),
+                                ];
+                                for (n, e) in events.into_iter().enumerate() {
+                                    io.send(json!({"type":"event","instanceId":"i","seq":n+1,"event":e}).to_string()).await?;
+                                }
+                            }
                             json!({"snapshot":{"protocol":1,"seq":0,"instanceId":"i","status":"running","pendingUI":if pending{json!([{"kind":"confirm","requestId":"R"}])}else{json!([])}}})
                         }
                         Some("prompt") => {
@@ -1855,7 +1888,18 @@ async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result
                         .to_string(),
                 )
                 .await?;
-                for (i,e)in [json!({"type":"ui_request_end","requestId":"r","by":"tui"}),json!({"type":"agent_start"}),json!({"type":"message_end","item":{"kind":"assistant","stopReason":"stop","text":"token=secret123"}}),json!({"type":"agent_settled","aborted":false})].into_iter().enumerate(){io.send(json!({"type":"event","instanceId":"pi","sessionId":"s","seq":11+i,"event":e}).to_string()).await?;}
+                let events = [
+                    json!({"type":"ui_request_end","requestId":"r","by":"tui"}),
+                    json!({"type":"session_changed","session":{"id":"s2","name":"New title"}}),
+                    json!({"type":"agent_start"}),
+                    json!({"type":"message_end","item":{"kind":"assistant","stopReason":"stop","text":"token=secret123"}}),
+                    json!({"type":"agent_settled","aborted":false}),
+                ];
+                for (i, e) in events.into_iter().enumerate() {
+                    let session = if i == 0 { "s" } else { "s2" };
+                    io.send(json!({"type":"event","instanceId":"pi","sessionId":session,"seq":11+i,"event":e}).to_string()).await?;
+                }
+
                 let _ = io.next().await;
                 Ok::<_, anyhow::Error>(())
             });
@@ -1865,7 +1909,7 @@ async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result
     let a = until(&mut ws, |m| m["type"] == "alert").await?;
     assert_eq!(
         a["alert"],
-        json!({"id":"pi:14","kind":"complete","instanceId":"pi","sessionId":"s"})
+        json!({"id":"pi:15","kind":"complete","instanceId":"pi","sessionId":"s2"})
     );
     let mut kinds = vec![];
     for _ in 0..3 {
@@ -1878,7 +1922,11 @@ async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result
                 assert!(kinds.contains(&json!("request.opened")));
                 assert_eq!(v["by"], "tui")
             }
-            Some("pi.finished") => assert_eq!(v["lastReply"], "[redacted]"),
+            Some("pi.finished") => {
+                assert_eq!(v["lastReply"], "[redacted]");
+                assert_eq!(v["sessionId"], "s2");
+                assert_eq!(v["title"], "New title");
+            }
             _ => bail!("unexpected {v}"),
         };
         kinds.push(v["event"].clone());
@@ -1890,5 +1938,36 @@ async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result
     assert!(p.join("webhook-state.json").exists());
     task.abort();
     web.abort();
+    Ok(())
+}
+
+// Once discovery publishes the Pi there is no further discovery tick in the first second.
+#[tokio::test]
+async fn subscribe_starts_monitor_for_already_discovered_pi() -> Result<()> {
+    use tokio_util::codec::{Framed, LinesCodec};
+    let s = Server::start().await?;
+    let dir = s.dir.path().join("run");
+    let l = tokio::net::UnixListener::bind(dir.join("known.sock"))?;
+    let mut ws = s.auth(&s.paired().await?["token"]).await?;
+    std::fs::write(dir.join("known.json"),json!({"instanceId":"known","pid":std::process::id(),"origin":"pc","cwd":s.dir.path(),"startedAt":1,"status":"idle","session":null,"protocol":1,"abducoSession":null}).to_string())?;
+    let hello = async || -> Result<_> {
+        let (sock, _) = l.accept().await?;
+        let mut io = Framed::new(sock, LinesCodec::new());
+        let r: Value = serde_json::from_str(&io.next().await.context("hello")??)?;
+        io.send(json!({"id":r["id"],"type":"response","ok":true,"result":{"snapshot":{"protocol":1,"instanceId":"known","seq":0,"session":{"id":"s"}}}}).to_string()).await?;
+        Ok(io)
+    };
+    drop(timeout(Duration::from_secs(6), hello()).await??);
+    until(&mut ws, |v| {
+        v["instances"].as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await?;
+    send(&mut ws, json!({"type":"watch_alerts","enabled":true})).await?;
+    let mut io = timeout(Duration::from_secs(1), hello()).await??;
+    io.send(json!({"type":"event","instanceId":"known","sessionId":"s","seq":1,"event":{"type":"status","status":"waiting_input"}}).to_string()).await?;
+    assert_eq!(
+        until(&mut ws, |v| v["type"] == "alert").await?["alert"]["kind"],
+        "input"
+    );
     Ok(())
 }

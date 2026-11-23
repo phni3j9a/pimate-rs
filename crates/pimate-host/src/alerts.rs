@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    sync::{Semaphore, broadcast},
+    sync::{Semaphore, broadcast, watch},
     time::timeout,
 };
 use tokio_util::task::AbortOnDropHandle;
@@ -131,11 +131,12 @@ struct State {
 struct Delivery {
     dir: PathBuf,
     state: Mutex<State>,
-    limit: Arc<Semaphore>,
+    initial: Arc<Semaphore>,
+    retries: Semaphore,
 }
 impl Delivery {
     fn send(self: &Arc<Self>, v: Value, k: Option<String>) {
-        let Ok(slot) = self.limit.clone().try_acquire_owned() else {
+        let Ok(slot) = self.initial.clone().try_acquire_owned() else {
             eprintln!("webhook queue full");
             if let Some(k) = k {
                 self.state.lock().unwrap().pending.remove(&k);
@@ -144,8 +145,7 @@ impl Delivery {
         };
         let this = self.clone();
         tokio::spawn(async move {
-            let _slot = slot;
-            let ok = hook::deliver(&this.dir, v).await;
+            let ok = hook::deliver(&this.dir, v, slot, &this.retries).await;
             if let Some(k) = k {
                 let next = {
                     let mut s = this.state.lock().unwrap();
@@ -177,7 +177,7 @@ impl Delivery {
                     && !hook::answered(&this.dir, &k)
                     && let Some(v) = next
                 {
-                    hook::deliver(&this.dir, v).await;
+                    this.send(v, None);
                 }
             }
         });
@@ -207,17 +207,33 @@ impl Delivery {
 struct Stream<'a> {
     tx: &'a broadcast::Sender<Value>,
     delivery: &'a Arc<Delivery>,
-    row: &'a Value,
+    row: Value,
+    latest: watch::Receiver<Value>,
     c: Option<Value>,
     requests: HashMap<String, Value>,
     user: String,
     last: String,
     error: String,
 }
+fn refresh_session(row: &mut Value, latest: &mut watch::Receiver<Value>, m: &Value) {
+    if latest.has_changed().unwrap_or(false) {
+        let latest = latest.borrow_and_update();
+        // An in-flight discovery may still describe the session before an RC switch.
+        if latest["session"]["id"] == m["sessionId"] {
+            *row = latest.clone()
+        }
+    }
+    if m["event"]["type"] == "session_changed" {
+        row["session"] = m["event"]["session"].clone()
+    }
+    if row["session"]["id"] != m["sessionId"] {
+        row["session"] = Value::Null
+    }
+}
 impl Stream<'_> {
     fn hook(&mut self, event: &str, session: &Value, r: &str, d: Value) {
         if let Some(c) = &self.c {
-            let v = hook::payload(c, event, self.row, session, r, d);
+            let v = hook::payload(c, event, &self.row, session, r, d);
             let k = hook::key(json!([self.row["instanceId"], r]));
             match event {
                 "request.opened" => self.delivery.open(k, v),
@@ -250,6 +266,7 @@ impl Stream<'_> {
         {
             return;
         }
+        refresh_session(&mut self.row, &mut self.latest, m);
         let a = t.next(m);
         if let Some(a) = &a {
             let _ = self.tx.send(a.clone());
@@ -312,10 +329,15 @@ impl Stream<'_> {
         }
     }
 }
+struct Task {
+    handle: AbortOnDropHandle<Result<()>>,
+    config: Option<Value>,
+    row: watch::Sender<Value>,
+}
 pub struct Monitor {
-    pub tx: broadcast::Sender<Value>,
+    tx: broadcast::Sender<Value>,
     delivery: Arc<Delivery>,
-    tasks: HashMap<String, (AbortOnDropHandle<Result<()>>, Option<Value>)>,
+    tasks: HashMap<String, Task>,
 }
 impl Monitor {
     pub fn new() -> Result<Self> {
@@ -332,17 +354,24 @@ impl Monitor {
                     opened,
                     ..Default::default()
                 }),
-                limit: Arc::new(Semaphore::new(100)),
+                initial: Arc::new(Semaphore::new(100)),
+                retries: Semaphore::new(100),
             }),
             tasks: Default::default(),
         })
+    }
+    pub fn subscribe(&mut self, run: &Path, rows: &[Value]) -> broadcast::Receiver<Value> {
+        let rx = self.tx.subscribe();
+        self.refresh(run, rows);
+        rx
     }
     pub fn refresh(&mut self, run: &Path, rows: &[Value]) {
         let d = &self.delivery.dir;
         let c = hook::saved(d);
         let watched: HashSet<_> = hook::watches(d).into_iter().collect();
-        self.tasks
-            .retain(|id, (h, _)| !h.is_finished() && rows.iter().any(|r| r["instanceId"] == *id));
+        self.tasks.retain(|id, task| {
+            !task.handle.is_finished() && rows.iter().any(|r| r["instanceId"] == *id)
+        });
         for row in rows {
             let Some(id) = row["instanceId"].as_str() else {
                 continue;
@@ -352,11 +381,20 @@ impl Monitor {
                 self.tasks.remove(id);
                 continue;
             }
-            if self.tasks.get(id).is_some_and(|(_, prev)| prev == &c) {
+            if let Some(task) = self.tasks.get(id).filter(|task| task.config == c) {
+                task.row.send_if_modified(|prev| {
+                    if prev != row {
+                        *prev = row.clone();
+                        true
+                    } else {
+                        false
+                    }
+                });
                 continue;
             }
             let config = c.clone();
-            let row = row.clone();
+            let (latest_tx, latest) = watch::channel(row.clone());
+            let mut row = row.clone();
             let tx = self.tx.clone();
             let delivery = self.delivery.clone();
             let dir = run.to_owned();
@@ -377,8 +415,10 @@ impl Monitor {
                 .await??;
                 ensure!(s["purpose"].is_null());
                 let mut t = Tracker::new(&s);
+                row["session"] = s["session"].clone();
                 let mut stream = Stream {
-                    row: &row,
+                    row,
+                    latest,
                     tx: &tx,
                     delivery: &delivery,
                     c: config,
@@ -397,14 +437,32 @@ impl Monitor {
                     stream.event(&mut t, &rc.next().await?)
                 }
             });
-            self.tasks
-                .insert(id.into(), (AbortOnDropHandle::new(task), c));
+            self.tasks.insert(
+                id.into(),
+                Task {
+                    handle: AbortOnDropHandle::new(task),
+                    config: c,
+                    row: latest_tx,
+                },
+            );
         }
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_rename_updates_a_live_stream() {
+        let mut row = json!({"session":{"id":"s","name":"before"}});
+        let (tx, mut rx) = watch::channel(row.clone());
+        tx.send_replace(json!({"session":{"id":"s","name":"after"}}));
+        refresh_session(
+            &mut row,
+            &mut rx,
+            &json!({"sessionId":"s","event":{"type":"ui_request"}}),
+        );
+        assert_eq!(row["session"]["name"], "after");
+    }
     #[test]
     fn live_only_edges_and_seq() {
         let mut t = Tracker::new(

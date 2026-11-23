@@ -292,22 +292,22 @@ async fn post(c: &Value, v: &Value) -> Result<(u16, bool)> {
             }
         }
     }
-    let s = String::from_utf8_lossy(&body).to_lowercase();
-    Ok((
-        code.as_u16(),
-        [
-            "rate limit",
-            "rate-limit",
-            "ratelimit",
-            "too many",
-            "try again",
-        ]
-        .iter()
-        .any(|p| s.contains(p)),
-    ))
+    Ok((code.as_u16(), rate_limited(&body)))
+}
+fn rate_limited(body: &[u8]) -> bool {
+    static RATE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new("(?i)rate.?limit|too many|try again").unwrap());
+    RATE.is_match(&String::from_utf8_lossy(body))
 }
 // shortcut: retries live in memory only; durable delivery would need an outbox.
-pub async fn deliver(dir: &Path, v: Value) -> bool {
+pub async fn deliver(
+    dir: &Path,
+    v: Value,
+    initial: tokio::sync::OwnedSemaphorePermit,
+    retries: &tokio::sync::Semaphore,
+) -> bool {
+    let mut initial = Some(initial);
+    let mut retry_slot = None;
     let start = tokio::time::Instant::now();
     let mut rounds = 0;
     loop {
@@ -324,18 +324,32 @@ pub async fn deliver(dir: &Path, v: Value) -> bool {
         if (200..300).contains(&status) {
             return true;
         }
-        let retry = status == 0 || matches!(status, 408 | 429) || status >= 500 || rate;
-        if start.elapsed() >= Duration::from_secs(86400) || !retry && rounds >= 10 {
-            return false;
+        drop(initial.take());
+        if retry_slot.is_none() {
+            let Ok(slot) = retries.try_acquire() else {
+                eprintln!("webhook retry queue full");
+                return false;
+            };
+            retry_slot = Some(slot)
         }
-        let delay = if retry && rounds < 2 {
-            (if rate { 20 } else { 2 }) * (if rounds == 1 { 3 } else { 1 })
-        } else {
-            60
+        let Some(delay) = retry_delay(status, rate, rounds, start.elapsed()) else {
+            return false;
         };
         rounds += 1;
         tokio::time::sleep(Duration::from_secs(delay)).await
     }
+}
+fn retry_delay(status: u16, rate: bool, rounds: u32, age: Duration) -> Option<u64> {
+    let retry = status == 0 || matches!(status, 408 | 429) || status >= 500 || rate;
+    if age >= Duration::from_secs(86400) || !retry && rounds >= 10 {
+        return None;
+    }
+    let delay = if retry && rounds < 2 {
+        (if rate { 20 } else { 2 }) * (if rounds == 1 { 3 } else { 1 })
+    } else {
+        60
+    };
+    Some(delay)
 }
 pub async fn cli(args: Vec<String>) -> Result<()> {
     let dir = config::config_dir()?;
@@ -450,6 +464,63 @@ pub async fn cli(args: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rate_limit_uses_transient_window() {
+        let limited = rate_limited(br#"{"error":"RATE_LIMITED"}"#);
+        assert_eq!(
+            retry_delay(403, limited, 11, Duration::from_secs(1500)),
+            Some(60)
+        );
+        assert_eq!(
+            retry_delay(403, limited, 11, Duration::from_secs(86400)),
+            None
+        );
+        assert_eq!(retry_delay(403, false, 10, Duration::from_secs(600)), None);
+    }
+    #[tokio::test]
+    async fn fresh_event_posts_with_retry_queue_full() -> Result<()> {
+        use std::sync::Arc;
+        use tokio::sync::Semaphore;
+        let dir = tempfile::tempdir()?;
+        let d = dir.path();
+        config::private(&d.join("webhook-watch"))?;
+        fs::write(d.join("webhook-watch/i"), "")?;
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        fs::write(
+            d.join("webhook.json"),
+            json!({"machine":"test","headers":{},"url":format!("http://{}/",l.local_addr()?)})
+                .to_string(),
+        )?;
+        let req = axum::Router::new().route(
+            "/",
+            axum::routing::post(|axum::Json(v): axum::Json<Value>| async move {
+                if v["eventId"] == "1" {
+                    axum::http::StatusCode::FORBIDDEN
+                } else {
+                    axum::http::StatusCode::OK
+                }
+            }),
+        );
+        let srv = tokio::spawn(async move { axum::serve(l, req).await });
+        let initial = Arc::new(Semaphore::new(1));
+        let retries = Semaphore::new(1);
+        let first = deliver(
+            d,
+            json!({"instanceId":"i","eventId":"1"}),
+            initial.clone().try_acquire_owned()?,
+            &retries,
+        );
+        tokio::pin!(first);
+        let second = async {
+            let slot = initial.acquire_owned().await?;
+            assert_eq!(retries.available_permits(), 0);
+            assert!(deliver(d, json!({"instanceId":"i","eventId":"2"}), slot, &retries).await);
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::select! {_=&mut first=>panic!("expected pending retry"),r=tokio::time::timeout(Duration::from_secs(3),second)=>r??};
+        srv.abort();
+        Ok(())
+    }
     #[test]
     fn redaction_preserves_ids_and_refuses_unsafe_urls() {
         let mut v = json!({"id":"token=secret123","requestId":"/home/u/r","value":["/home/u/hello token=secret123","Authorization: Bearer secretsecretsecret"]});

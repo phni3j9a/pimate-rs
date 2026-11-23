@@ -250,7 +250,14 @@ pub async fn query(cwd: Option<String>, q: &Value) -> Value {
             } else {
                 "failed"
             };
-            json!({"ok":false,"code":code,"message":text(&json!(e.root_cause().to_string()),500)})
+            let message = match code {
+                "gh_missing" => "GitHub CLI is not installed",
+                "gh_auth" => "GitHub login required",
+                "not_github" => "Not a GitHub repository",
+                "not_found" => "Issue or pull request not found",
+                _ => "GitHub query failed",
+            };
+            json!({"ok":false,"code":code,"message":message})
         }
     }
 }
