@@ -118,7 +118,8 @@ internal class ChildInstructions {
 
     fun forChild(key: ChildKey, resumedFrom: String?): List<SentInstruction> {
         val previous = resumedFrom?.let { key.copy(run = it) }
-        return sent.filter { it.key == key || it.key == previous }.map { it.value }
+        return sent.filter { it.key == key }.map { it.value } +
+            sent.filter { previous != key && it.key == previous }.map { it.value }
     }
 
     fun forget(host: String) {

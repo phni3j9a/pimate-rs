@@ -92,6 +92,10 @@ internal data class SwitchId(val target: EditorKey, val move: ChatMove)
 
 private fun EditorKey.scope() = "$host/${target.instance}/${target.session}"
 
+internal fun originalRunsByToolCall(runs: List<JSONObject>) = buildMap {
+    for (run in runs) run.str("toolCallId").takeIf(String::isNotEmpty)?.let { putIfAbsent(it, run) }
+}
+
 /**
  * チャット（docs/design/html/Main.html・Chat-Waiting.html・Chat-Edge.html・Chat-Attach.html）。見出し・会話・入力欄と、
  * そこから開くシート・全画面の画像。
@@ -205,8 +209,7 @@ internal fun ChatScreen(
     // ---- セッションの切り替え（PC の /resume など）と、操作の結果 ----
     val changed =
         groups["notice"].orEmpty().find { it.id == "sessionChanged" }?.let { JSONObject(it.json) }
-    val busyOp =
-        groups["busy"].orEmpty().find { it.id == "operation" }?.let { JSONObject(it.json) }
+    val busyOp = groups["busy"].orEmpty().find { it.id == "operation" }?.let { JSONObject(it.json) }
     val latest = groups["operationResult"].orEmpty().find { it.id == "latest" }
     val hostId = m.host?.id
     val instance = m.selected
@@ -243,6 +246,19 @@ internal fun ChatScreen(
             ui.confirmed != switchId &&
             editor.copy(target = Target(editor.target.instance, fromId)) in ui.drafted
     // 対象が変わったら、前の対象のシートと画像は閉じる。
+    val runLinks =
+        remember(entries, groups["run"]) {
+            val runs =
+                groups["run"].orEmpty().map { JSONObject(it.json) }.let(::originalRunsByToolCall)
+            buildMap {
+                runs.forEach { (id, r) -> put("running:$id", r.str("id")) }
+                entries.forEach { e ->
+                    e.calls.forEach { c ->
+                        runs[c.id]?.let { put("tool:${e.id}:${c.id}", it.str("id")) }
+                    }
+                }
+            }
+        }
     val sheet = ui.sheet?.takeIf { it.second == editor }
     val viewer = ui.viewer?.takeIf { it.first == null || it.first == editor }
     SideEffect {
@@ -317,9 +333,7 @@ internal fun ChatScreen(
                     ) {
                         item("bottom") { Spacer(Modifier.height(10.dp)) }
                         if (pcPrompt != null && questions.isEmpty())
-                            item("pcPrompt") {
-                                PcCard(pcPrompt.str("title"), m.attachCommand())
-                            }
+                            item("pcPrompt") { PcCard(pcPrompt.str("title"), m.attachCommand()) }
                         items(questions.asReversed(), key = { "question:${it.id}" }) { item ->
                             val edit = editor?.let { m.answers[it, item.id] }
                             if (edit != null && target != null)
@@ -352,9 +366,7 @@ internal fun ChatScreen(
                         ) { n ->
                             val index = visible.size - 1 - n
                             val row = visible[index]
-                            Box(
-                                Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)
-                            ) {
+                            Box(Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)) {
                                 RowView(
                                     row,
                                     if (row is ChatRow.Summary) "+${row.key}" in open
@@ -362,13 +374,23 @@ internal fun ChatScreen(
                                 ) {
                                     if (row is ChatRow.Summary) {
                                         if (!open.remove("+${row.key}")) open.add("+${row.key}")
-                                    } else toggle(row)
+                                    } else if (runLinks.containsKey(row.key) && key != null)
+                                        show("agents:" + runLinks.getValue(row.key))
+                                    else toggle(row)
                                 }
                             }
                         }
                     }
                 }
             }
+            val counts = remember(m.rows) { m.rows.subagentCounts() }
+            if (counts.isNotEmpty())
+                TextAction(
+                    "サブエージェント  " +
+                        counts.entries.joinToString(" · ") { "${it.value} ${agentState(it.key)}" },
+                    { show("agents") },
+                    enabled = key != null,
+                )
             Composer(
                 m,
                 ui,
@@ -380,7 +402,10 @@ internal fun ChatScreen(
                 left,
                 changed?.let { c ->
                     c.optJSONObject("from")?.str("name").orEmpty() to
-                        title(session, view["cwd"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty())
+                        title(
+                            session,
+                            view["cwd"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty(),
+                        )
                 },
                 { ui.confirmed = switchId },
                 busyOp,
@@ -397,7 +422,13 @@ internal fun ChatScreen(
                 "model" -> ModelSheet(m, at, close)
                 "usage" -> UsageSheet(m, at, close)
                 "tree" -> TreeScreen(m, at, close)
-                else -> SessionSheet(m, at, name, { ui.sheet = "tree" to at }, close)
+                "review" -> ReviewPage(m, at, close)
+                "github" -> GithubPage(m, at, close)
+                "agents" -> AgentsPage(m, at, close)
+                else ->
+                    if (name.startsWith("agents:"))
+                        AgentsPage(m, at, close, name.removePrefix("agents:"))
+                    else SessionSheet(m, at, name, { ui.sheet = it to at }, close)
             }
         }
         viewer?.let { (_, list, index) -> ImageViewer(list, index) { ui.viewer = null } }
@@ -533,7 +564,10 @@ private fun SwitchNote(
         Arrangement.spacedBy(4.dp),
         Alignment.CenterHorizontally,
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Icon(Icons.Swap, null, Modifier.size(14.dp), pi.textSecondary)
             Text(
                 buildAnnotatedString {
@@ -594,7 +628,7 @@ internal fun PcCard(title: String, command: String?) {
 }
 
 @Composable
-private fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
+internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
     when (row) {
         is ChatRow.User ->
             Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
@@ -749,8 +783,7 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (row.state == ToolState.Failed)
-                Text(meta, color = pi.failedText, style = Type.meta)
+            if (row.state == ToolState.Failed) Text(meta, color = pi.failedText, style = Type.meta)
             else if (meta.startsWith("+"))
                 meta.split(" ").forEach {
                     Text(

@@ -11,9 +11,8 @@ import java.io.File
 import org.junit.*
 
 /**
- * シートと画像の操作を、模擬 Host（scripts/android-demo.py）で結果が返るところまで確かめる。 DemoJourney
- * と同じく、アプリのデータが空で、模擬 Host を起動し直した直後に実行する（リンクは cache/demo-link）。Pi の終了や セッションの切り替えを行うので、1
- * 回の模擬 Host につき 1 回だけ。
+ * シートと画像の操作を、模擬 Host（scripts/android-demo.py）で結果が返るところまで確かめる。 DemoJourney と同じく、アプリのデータが空で、模擬 Host
+ * を起動し直した直後に実行する（リンクは cache/demo-link）。Pi の終了や セッションの切り替えを行うので、1 回の模擬 Host につき 1 回だけ。
  */
 class SheetJourney {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
@@ -84,6 +83,9 @@ class SheetJourney {
         ui.onNodeWithText("リンクを貼り付ける").performClick()
         ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
         press(ui.onNodeWithText("接続"))
+        press(ui.onNodeWithText("ペアリングする"))
+        waitFor("一覧を開く")
+        press(ui.onNode(hasText("一覧を開く") and hasAnyAncestor(isDialog())))
         waitFor("スクリーンショットの確認")
 
         // ---- 画像: 発言・ツール結果・Markdown、省かれたプレビューの取得、全画面 ----
@@ -119,13 +121,20 @@ class SheetJourney {
         waitFor("お気に入り 3")
         shot("sheet-model")
         press(ui.onNodeWithText("すべて 8"))
-        press(ui.onNode(hasText("Claude Sonnet 5.5") and hasText("anthropic/claude-sonnet-5-5 · 1M")))
+        press(
+            ui.onNode(hasText("Claude Sonnet 5.5") and hasText("anthropic/claude-sonnet-5-5 · 1M"))
+        )
         ui.waitUntil(20000) {
-            exists(hasText("Claude Sonnet 5.5") and SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+            exists(
+                hasText("Claude Sonnet 5.5") and
+                    SemanticsMatcher.expectValue(SemanticsProperties.Selected, true)
+            )
         }
         press(ui.onNodeWithText("low"))
         ui.waitUntil(20000) {
-            exists(hasText("low") and SemanticsMatcher.expectValue(SemanticsProperties.Selected, true))
+            exists(
+                hasText("low") and SemanticsMatcher.expectValue(SemanticsProperties.Selected, true)
+            )
         }
         press(ui.onNodeWithContentDescription("GPT-5 をお気に入りに追加"))
         waitFor("お気に入り 4")

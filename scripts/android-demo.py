@@ -152,6 +152,7 @@ async def pi(
         os.chmod(run / "t" / abduco, 0o600)
         terminal.listen()
         pi.keep.append(terminal)
+    instructions = {}
     clients, history, pending, queued = set(), [], list(pending), []
     seq, ids, task, partial = 1, itertools.count(1), None, ""
     model, thinking = dict(MODEL), "high"
@@ -530,6 +531,23 @@ async def pi(
                         by="remote",
                     )
                     set_status("idle")
+                elif method == "subagent_transcript":
+                    key = (params["runId"], params["childId"])
+                    items = [dict(kind="assistant", entryId="analysis", text="期限切れ判定とトークン更新の呼び出しを確認しました。", toolCalls=[])] + instructions.get(key, [])
+                    reply = dict(task="認証の期限切れ判定と、エラー時の処理を調べてください。", items=items[int(params.get("cursor", "0")):], cursor=str(len(items)))
+                elif method == "subagent_control":
+                    run_info = next(r for r in runs if r["id"] == params["runId"])
+                    cid = params.get("childId")
+                    if params.get("text"):
+                        records = instructions.setdefault((run_info["id"], cid), [])
+                        records.append(dict(kind="user", entryId=f"hint-{len(records)}", text=params["text"]))
+                    else:
+                        for unit in run_info["children"]:
+                            if cid is None or unit["id"] == cid:
+                                unit.update(state="paused", actions=[])
+                        if cid is None:
+                            run_info.update(state="paused", actions=[])
+                    event("subagent_run", run=run_info)
                 elif method == "commands":
                     reply = dict(commands=COMMANDS)
                 elif method == "models":
@@ -629,8 +647,8 @@ def child(index, agent, title):
         agent=agent,
         title=title,
         state="running",
-        hasTranscript=False,
-        actions=[],
+        hasTranscript=True,
+        actions=["steer", "follow_up", "stop_child"],
     )
 
 
@@ -824,6 +842,7 @@ async def demo(lab, binary):
             "api",
             "/home/me/work/api",
             name="認証まわりのレビュー",
+            seed=[("user", "認証を並列にレビューしてください。", {}), ("assistant", "レビュアーをバックグラウンドで起動しました。", dict(stopReason="stop"))],
             age=5 * 60_000,
             runs=[
                 dict(
@@ -836,8 +855,9 @@ async def demo(lab, binary):
                         child(0, "reviewer", "認証"),
                         child(1, "reviewer", "セッション"),
                     ],
-                    actions=[],
-                )
+                    actions=["stop"],
+                ),
+                dict(id="scout", backend="example", background=True, mode="chain", state="complete", stage=dict(index=0,count=3), children=[dict(child(0,"scout","ログイン処理の調査"), state="complete", actions=[])], actions=[]),
             ],
         ),
         await pi(
@@ -982,6 +1002,7 @@ async def demo(lab, binary):
     host = await asyncio.create_subprocess_exec(
         binary, "serve", *args, "--listen", "127.0.0.1", env=env
     )
+    fixture = None
     try:
         for _ in range(100):
             if host.returncode is not None:
@@ -1000,6 +1021,14 @@ async def demo(lab, binary):
         loop.add_signal_handler(signal.SIGUSR1, hooks["edge"][0])
         loop.add_signal_handler(signal.SIGUSR2, hooks["attach"][1])
         print(f"pid {os.getpid()}（kill -USR1: edge で PC の /resume、kill -USR2: attach の PC の画面を閉じる）", flush=True)
+        if mode := os.environ.get("PIMATE_DEMO_SCREENS"):
+            if mode not in {"list", "empty", "reconnect"}:
+                raise ValueError("PIMATE_DEMO_SCREENS must be list, empty or reconnect")
+            fixture = await asyncio.create_subprocess_exec(
+                "node", ROOT / "scripts/android-screen-fixture.cjs", str(port), mode,
+                stdout=asyncio.subprocess.PIPE,
+            )
+            port = int(await asyncio.wait_for(fixture.stdout.readline(), timeout=5))
         print(f"adb -s SERIAL reverse tcp:{port} tcp:{port}", flush=True)
         subprocess.run(
             [binary, "pair", *args, "--address", f"127.0.0.1:{port}"],
@@ -1008,6 +1037,9 @@ async def demo(lab, binary):
         )
         await host.wait()
     finally:
+        if fixture is not None and fixture.returncode is None:
+            fixture.terminate()
+            await fixture.wait()
         if host.returncode is None:
             host.terminate()
             await host.wait()

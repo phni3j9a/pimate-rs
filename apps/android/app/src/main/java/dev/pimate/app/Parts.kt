@@ -82,6 +82,7 @@ internal object Icons {
     val Search = icon(circle(11f, 11f, 6.5f) + "M20 20l-4.2-4.2")
     val Bell =
         icon("M12 3a6 6 0 0 0-6 6c0 5-2 7-2 7h16s-2-2-2-7a6 6 0 0 0-6-6zM10 20a2 2 0 0 0 4 0")
+    val Phone = icon(rect(6f, 2f, 12f, 20f, 2f) + "M11 19h2")
     val Laptop = icon(rect(4f, 5f, 16f, 11f, 1.5f) + "M2 19h20", 1.9f)
     val Server =
         icon(rect(3f, 4f, 18f, 7f, 2f) + rect(3f, 13f, 18f, 7f, 2f) + "M7 7.5h.01M7 16.5h.01", 1.9f)
