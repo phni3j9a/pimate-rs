@@ -8,7 +8,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
     env, fs,
-    os::unix::process::CommandExt,
+    os::unix::{fs::MetadataExt, process::CommandExt},
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -17,6 +17,9 @@ use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
 fn executable(name: &Path) -> Option<PathBuf> {
+    search(name, None)
+}
+fn search(name: &Path, rejected: Option<&fs::Metadata>) -> Option<PathBuf> {
     let dirs = if name.components().count() > 1 || name.is_absolute() {
         vec![PathBuf::new()]
     } else {
@@ -24,7 +27,12 @@ fn executable(name: &Path) -> Option<PathBuf> {
     };
     dirs.into_iter()
         .map(|d| d.join(name))
-        .find(|p| p.is_file() && access(p, AccessFlags::X_OK).is_ok())
+        .find(|p| {
+            p.metadata().is_ok_and(|m| {
+                m.is_file()
+                    && rejected.is_none_or(|bad| (m.dev(), m.ino()) != (bad.dev(), bad.ino()))
+            }) && access(p, AccessFlags::X_OK).is_ok()
+        })
         .and_then(|p| std::path::absolute(p).ok())
 }
 #[derive(Default)]
@@ -47,8 +55,8 @@ fn parse(s: &str) -> Vec<Session> {
             (pid > 0 && !name.is_empty()).then(|| Session {
                 name: name.into(),
                 pid,
-                attached: mark == "*",
-                terminated: mark == "+",
+                attached: mark.starts_with('*'),
+                terminated: mark.starts_with('+'),
             })
         })
         .collect()
@@ -70,17 +78,18 @@ impl Terminal {
             .and_then(|p| Some(p.parent()?.join("abduco")))
             .and_then(|p| executable(&p));
         if cfg!(all(target_os = "linux", target_arch = "x86_64"))
-            && let Some(p) = bundled
-            && let Ok(b) = fs::read(&p)
+            && let Some(ref p) = bundled
+            && let Ok(b) = fs::read(p)
         {
             let sums: serde_json::Value =
                 serde_json::from_str(include_str!("../../../bin/SHA256SUMS.json")).unwrap();
             if sums["bin/linux-x64/abduco"] == format!("{:x}", Sha256::digest(b)) {
-                return Self(Some(p));
+                return Self(Some(p.clone()));
             }
         }
         eprintln!("Bundled abduco unavailable or checksum mismatch; trying PATH");
-        Self(executable(Path::new("abduco")))
+        let rejected = bundled.and_then(|p| p.metadata().ok());
+        Self(search(Path::new("abduco"), rejected.as_ref()))
     }
     pub async fn sessions(&self) -> Result<Vec<Session>> {
         let output = timeout(
@@ -133,11 +142,22 @@ impl Terminal {
         .context("pi not found")?;
         let id = Uuid::new_v4().to_string();
         let name = format!("pimate-{}", &id[..8]);
+        let mut probe = Command::new("systemctl");
+        probe
+            .args(["--user", "show-environment"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
         let scoped = cfg!(target_os = "linux")
             && executable(Path::new("systemd-run")).is_some()
-            && matches!(timeout(Duration::from_secs(2),Command::new("systemctl").args(["--user","show-environment"]).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).status()).await,Ok(Ok(s)) if s.success());
+            && matches!(timeout(Duration::from_secs(2),probe.status()).await,Ok(Ok(s)) if s.success());
         let mut c = if scoped {
             let mut c = Command::new("systemd-run");
+            // Older systemd never expands scope argv; newer versions offer an explicit opt-out.
+            let help = Command::new("systemd-run").arg("--help").output().await?;
+            if String::from_utf8_lossy(&help.stdout).contains("--expand-environment=") {
+                c.arg("--expand-environment=no");
+            }
             c.args([
                 "--user",
                 "--scope",
@@ -184,5 +204,21 @@ impl Terminal {
         }
         ensure!(c.status().await?.success(), "Pi launcher failed");
         Ok((id, name))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn real_list_markers_and_cleanup_boundary() {
+        let sessions = parse(
+            "Active sessions (on host test)\n* Mon\t 2026-11-23 00:00:00\t100\tpimate-0123abcd\n+ Mon\t 2026-11-23 00:01:00\t101\tother\n+ invalid\tdate\t-1\tpimate-deadbeef",
+        );
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions[0].attached && !sessions[0].terminated);
+        assert!(sessions[1].terminated && !managed(&sessions[1].name));
+        assert!(managed(&sessions[0].name));
+        assert!(!managed("pimate-0123abcd@other-host"));
     }
 }

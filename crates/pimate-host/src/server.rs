@@ -57,6 +57,7 @@ impl Out {
 struct App {
     terminal: crate::terminal::Terminal,
     login: Arc<crate::login::Login>,
+    folder_cache: tokio::sync::Mutex<Option<(tokio::time::Instant, Vec<Value>)>>,
     last_spawn: tokio::sync::Mutex<Option<tokio::time::Instant>>,
     addresses: Vec<Value>,
     incompatible: watch::Receiver<serde_json::Map<String, Value>>,
@@ -65,6 +66,62 @@ struct App {
     config: Config,
     dir: PathBuf,
     instances: watch::Receiver<Vec<Value>>,
+}
+impl App {
+    async fn operation(&self, m: Value) -> Value {
+        let kind = m["type"].as_str().unwrap();
+        let mut reply = match kind {
+            "dirs" => {
+                let path = m["path"].as_str().unwrap().to_owned();
+                let dirs = tokio::task::spawn_blocking(move || crate::operations::dirs(&path))
+                    .await
+                    .unwrap_or_default();
+                json!({"dirs":dirs})
+            }
+            "folders" => {
+                let mut cache = self.folder_cache.lock().await;
+                if cache
+                    .as_ref()
+                    .is_none_or(|(t, _)| t.elapsed() >= Duration::from_secs(5))
+                {
+                    let rows = self.instances.borrow().clone();
+                    let folders =
+                        tokio::task::spawn_blocking(move || crate::operations::folders(&rows))
+                            .await
+                            .unwrap_or_default();
+                    *cache = Some((tokio::time::Instant::now(), folders));
+                }
+                json!({"home":crate::operations::home().ok(),"folders":cache.as_ref().unwrap().1})
+            }
+            _ => {
+                let result = if kind == "auth_session" {
+                    self.login
+                        .acquire(&self.terminal, &self.dir)
+                        .await
+                        .map(|id| json!({"ok":true,"instanceId":id}))
+                } else {
+                    crate::operations::spawn(
+                        &self.terminal,
+                        &self.dir,
+                        &m["params"],
+                        &self.last_spawn,
+                    )
+                    .await
+                };
+                result.unwrap_or_else(|e| {
+                    let msg = e.to_string();
+                    let code = match msg.as_str() {
+                        "not_found" | "not_directory" | "bad_request" => msg.as_str(),
+                        _ => "spawn_failed",
+                    };
+                    json!({"ok":false,"code":code,"message":format!("{msg}; not retried")})
+                })
+            }
+        };
+        reply["type"] = format!("{kind}_result").into();
+        reply["requestId"] = m["requestId"].clone();
+        reply
+    }
 }
 fn summaries(list: Vec<Value>) -> Vec<Value> {
     list.into_iter()
@@ -124,6 +181,7 @@ async fn listen(
         terminal,
         login,
         last_spawn: Default::default(),
+        folder_cache: Default::default(),
         addresses,
         incompatible,
         revoked: tokio::sync::broadcast::channel(128).0,
@@ -312,7 +370,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         HashMap::new();
     let mut ops = JoinSet::new();
     let mut inflight = std::collections::HashSet::new();
-    let mut holds = HashMap::new();
+    let mut holds: HashMap<String, (Uuid, crate::login::Hold)> = HashMap::new();
     let mut admin = JoinSet::new();
     let end = loop {
         let m = tokio::select! {biased;
@@ -329,7 +387,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 });
                 out.send(&json!({"type":"instances","instances":current}));continue
             },
-            Some(_)=admin.join_next()=>continue,
+            Some(result)=admin.join_next()=>{if let Ok(Some((key,generation)))=result && holds.get(&key).is_some_and(|h|h.0==generation){holds.remove(&key);}continue},
             Some(Ok(key))=ops.join_next()=>{inflight.remove(&key);continue},
             m=read(&mut ws)=>m,
         };
@@ -345,6 +403,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 if kind != "auth_session_end" && !short(&m["requestId"]) {
                     break Code::Protocol as u16;
                 }
+                let mut release_on_error = None;
                 if kind.starts_with("auth_session") {
                     if !short(&m["holdId"]) {
                         break Code::Protocol as u16;
@@ -357,12 +416,17 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                     if !holds.contains_key(h) && holds.len() >= 16 {
                         break Code::Protocol as u16;
                     }
-                    holds.entry(h.to_string()).or_insert_with(|| a.login.hold());
+                    let generation = Uuid::new_v4();
+                    holds
+                        .entry(h.to_string())
+                        .or_insert_with(|| (generation, a.login.hold()))
+                        .0 = generation;
+                    release_on_error = Some((h.to_owned(), generation));
                 }
                 if kind == "dirs"
-                    && !m["path"]
+                    && m["path"]
                         .as_str()
-                        .is_some_and(|s| s.encode_utf16().count() <= 4096)
+                        .is_none_or(|s| s.encode_utf16().count() > 4096)
                 {
                     break Code::Protocol as u16;
                 }
@@ -371,11 +435,11 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 }
                 let a = a.clone();
                 let out = out.clone();
-                admin.spawn(async move{let kind=m["type"].as_str().unwrap();let mut reply=match kind{
-                  "auth_session"=>match a.login.acquire(&a.terminal,&a.dir).await{Ok(id)=>json!({"ok":true,"instanceId":id}),Err(e)=>json!({"ok":false,"code":"spawn_failed","message":format!("{e}; not retried")})},
-                  "spawn"=>match crate::operations::spawn(&a.terminal,&a.dir,&m["params"],&a.last_spawn).await{Ok(v)=>v,Err(e)=>{let msg=e.to_string();json!({"ok":false,"code":match msg.as_str(){"not_found"|"not_directory"|"bad_request"=>msg.as_str(),_=>"spawn_failed"},"message":format!("{msg}; not retried")})}},
-                  "dirs"=>{let p=m["path"].as_str().unwrap().to_owned();json!({"dirs":tokio::task::spawn_blocking(move||crate::operations::dirs(&p)).await.unwrap_or_default()})},
-                  _=>{let rows=a.instances.borrow().clone();json!({"home":crate::operations::home().ok(),"folders":tokio::task::spawn_blocking(move||crate::operations::folders(&rows)).await.unwrap_or_default()})}};reply["type"]=format!("{kind}_result").into();reply["requestId"]=m["requestId"].clone();out.send(&reply);});
+                admin.spawn(async move {
+                    let reply = a.operation(m).await;
+                    out.send(&reply);
+                    release_on_error.filter(|_| reply["ok"] == false)
+                });
             }
             "devices" | "device_revoke" => {
                 let reply = match settings(c, &device, &m) {

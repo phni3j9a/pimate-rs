@@ -15,6 +15,7 @@ const GRACE: Duration = Duration::from_secs(60);
 #[derive(Default)]
 struct State {
     id: Option<String>,
+    pid: Option<nix::unistd::Pid>,
     holders: usize,
     deadline: Option<Instant>,
     closed: bool,
@@ -78,7 +79,14 @@ impl Login {
             .launch(dir, &operations::home()?, false, true, &args)
             .await?;
         self.state.lock().unwrap().id = Some(id.clone());
-        operations::ready(dir, &id).await?;
+        let ready = operations::ready(dir, &id).await;
+        let mut state = self.state.lock().unwrap();
+        let (_, snapshot) = ready.inspect_err(|_| state.id = None)?;
+        state.pid = snapshot["pid"]
+            .as_i64()
+            .and_then(|n| i32::try_from(n).ok())
+            .filter(|&p| p > 0)
+            .map(nix::unistd::Pid::from_raw);
         Ok(id)
     }
     pub async fn refresh(&self, dir: &Path, observed: &[String]) {
@@ -86,7 +94,13 @@ impl Login {
             return;
         };
         let (id, due) = {
-            let s = self.state.lock().unwrap();
+            let mut s = self.state.lock().unwrap();
+            if s.pid
+                .is_some_and(|p| nix::sys::signal::kill(p, None) == Err(nix::errno::Errno::ESRCH))
+            {
+                s.id = None;
+                s.pid = None;
+            }
             (
                 s.id.clone(),
                 s.deadline.is_some_and(|t| Instant::now() >= t),
@@ -96,6 +110,7 @@ impl Login {
             let _ = shutdown(dir, orphan).await;
         }
         if due
+            && self.state.lock().unwrap().holders == 0
             && let Some(id) = id
             && shutdown(dir, &id).await
         {
@@ -147,4 +162,56 @@ pub fn allowed(method: &str) -> bool {
             | "auth_cancel"
             | "auth_logout"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_util::codec::{Framed, LinesCodec};
+    #[tokio::test]
+    async fn defer_while_saving_including_cancel_race() -> Result<()> {
+        for (status, busy, stopped) in [
+            ("saving", false, false),
+            ("working", true, false),
+            ("input", false, true),
+        ] {
+            let tmp = tempfile::tempdir()?;
+            let dir = tmp.path().join("run");
+            crate::config::private(&dir)?;
+            let listener = tokio::net::UnixListener::bind(dir.join("login.sock"))?;
+            let fake = tokio::spawn(async move {
+                let mut io = Framed::new(listener.accept().await?.0, LinesCodec::new());
+                let mut methods = vec![];
+                while let Some(line) = io.next().await {
+                    let req: serde_json::Value = serde_json::from_str(&line?)?;
+                    let method = req["method"].as_str().unwrap();
+                    methods.push(method.to_owned());
+                    let mut r = json!({"type":"response","id":req["id"],"ok":true});
+                    match method {
+                        "hello" => {
+                            r["result"] = json!({"snapshot":{"instanceId":"login","protocol":1}})
+                        }
+                        "auth_list" => r["result"] = json!({"flow":{"id":"flow","status":status}}),
+                        "auth_cancel" => {
+                            assert_eq!(req["params"]["flowId"], "flow");
+                            if busy {
+                                r["ok"] = false.into();
+                                r["error"] = json!({"code":"busy"})
+                            }
+                        }
+                        "shutdown" => (),
+                        _ => panic!(),
+                    };
+                    io.send(r.to_string()).await?;
+                }
+                Ok::<_, anyhow::Error>(methods)
+            });
+            assert_eq!(shutdown(&dir, "login").await, stopped);
+            let calls = fake.await??;
+            assert_eq!(calls.iter().any(|m| m == "auth_cancel"), status != "saving");
+            assert_eq!(calls.iter().any(|m| m == "shutdown"), stopped);
+        }
+        Ok(())
+    }
 }

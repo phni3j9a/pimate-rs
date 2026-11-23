@@ -165,8 +165,10 @@ pub async fn spawn(
     let mut args = vec![];
     if let Some(m) = p.model {
         ensure!(
-            [&m.provider, &m.id].iter().all(|s| !s.is_empty()
-                && !s.contains(|c: char| c.is_whitespace() || c == '/' || c == '\0')),
+            [&m.provider, &m.id]
+                .iter()
+                .all(|s| !s.is_empty() && !s.contains(|c: char| c.is_whitespace() || c == '\0'))
+                && !m.provider.contains('/'),
             "bad_request"
         );
         args.extend(["--model".into(), format!("{}/{}", m.provider, m.id)])

@@ -18,7 +18,21 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungsten
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 fn cli(dir: &Path) -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_pimate"));
+    c.env_clear();
+    for k in [
+        "PATH",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "LANG",
+    ] {
+        if let Some(v) = env::var_os(k) {
+            c.env(k, v);
+        }
+    }
     c.current_dir(dir)
+        .env("HOME", dir)
+        .env("ABDUCO_SOCKET_DIR", dir)
+        .env("PI_CODING_AGENT_DIR", dir.join("agent"))
         .env("PIMATE_CONFIG_DIR", dir.join("config"))
         .env("PIMATE_RUN_DIR", dir.join("run"))
         .kill_on_drop(true);
@@ -27,12 +41,15 @@ fn cli(dir: &Path) -> Command {
 struct Server {
     _child: Child,
     addr: String,
-    dir: tempfile::TempDir,
+    dir: std::sync::Arc<tempfile::TempDir>,
 }
 impl Server {
     async fn start() -> Result<Self> {
-        let dir = tempfile::tempdir()?;
+        Self::with(tempfile::tempdir()?.into(), &[]).await
+    }
+    async fn with(dir: std::sync::Arc<tempfile::TempDir>, vars: &[(&str, &Path)]) -> Result<Self> {
         let mut child = cli(dir.path())
+            .envs(vars.iter().copied())
             .args(["serve", "--listen", "127.0.0.1", "--port", "0"])
             .stdout(Stdio::piped())
             .spawn()?;
@@ -173,6 +190,7 @@ async fn real_pi() -> Result<()> {
     pi.current_dir(dir)
         .env_clear()
         .env("PATH", env::var_os("PATH").unwrap())
+        .env("ABDUCO_SOCKET_DIR", dir)
         .env("TERM", "xterm-256color")
         .env("HOME", dir)
         .env("PI_CODING_AGENT_DIR", dir.join("agent"))
@@ -605,5 +623,309 @@ async fn stop_during_initial_probe_never_starts_listening() -> Result<()> {
         assert!(o.status.success());
         assert!(o.stdout.is_empty(), "started listening after stop");
     }
+    Ok(())
+}
+
+// Test-owned socket tree only. Recover even when a WS assertion fails before spawn_result.
+struct Cleanup {
+    dir: PathBuf,
+    ab: PathBuf,
+}
+impl Drop for Cleanup {
+    fn drop(&mut self) {
+        use nix::{
+            sys::signal::{Signal, kill},
+            unistd::Pid,
+        };
+        if !self.dir.is_dir() {
+            return;
+        }
+        if let Ok(o) = std::process::Command::new(&self.ab)
+            .env("HOME", &self.dir)
+            .env("ABDUCO_SOCKET_DIR", &self.dir)
+            .output()
+        {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                let cols: Vec<_> = line.split('\t').collect();
+                if cols.len() != 4 {
+                    continue;
+                }
+                let n = cols[3].trim();
+                if let Some(hex) = n.strip_prefix("pimate-")
+                    && hex.len() == 8
+                    && hex.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    if cfg!(target_os = "linux")
+                        && std::process::Command::new("systemctl")
+                            .args(["--user", "stop", &format!("{n}.scope")])
+                            .status()
+                            .is_ok_and(|s| s.success())
+                    {
+                        continue;
+                    }
+                    if let Ok(pid) = cols[2].parse::<i32>()
+                        && pid > 0
+                    {
+                        let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
+                    }
+                }
+            }
+        }
+    }
+}
+#[tokio::test]
+#[ignore = "requires Pi, abduco and TS PiMate faux fixture"]
+async fn real_pi_spawn_attach_restart_login() -> Result<()> {
+    let tmp = std::sync::Arc::new(tempfile::tempdir()?);
+    let path = tmp.path().to_path_buf();
+    let pi = PathBuf::from(env::var("PIMATE_TEST_PI")?).canonicalize()?;
+    let pkg = PathBuf::from(env::var("PIMATE_TEST_TS")?)
+        .canonicalize()?
+        .join("packages/pimate");
+    let ab = env::var_os("PIMATE_TEST_ABDUCO")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| pkg.join("bin/linux-x64/abduco"))
+        .canonicalize()?;
+    let ext = pkg.join("test/fixtures/m2.ts");
+    let vars = [
+        ("PIMATE_ABDUCO", ab.as_path()),
+        ("PIMATE_PI", &pi),
+        ("PIMATE_EXTENSION", &ext),
+        ("HOME", &path),
+        ("PIMATE_E2E", Path::new("1")),
+        ("PI_OFFLINE", Path::new("1")),
+        ("TERM", Path::new("xterm-256color")),
+    ];
+    let mut s = Server::with(tmp.clone(), &vars).await?;
+    let _guard = Cleanup {
+        dir: path.clone(),
+        ab: ab.clone(),
+    };
+    let token = s.paired().await?["token"].clone();
+    let mut ws = s.auth(&token).await?;
+    send(&mut ws,json!({"type":"spawn","requestId":"s","params":{"cwd":path,"model":{"provider":"pimate-faux","id":"scripted"},"message":"say hello"}})).await?;
+    let reply = until(&mut ws, |v| v["type"] == "spawn_result").await?;
+    ensure!(
+        reply["ok"] == true && reply.get("messageError").is_none(),
+        "{reply}"
+    );
+    let id = &reply["instanceId"];
+    let name = reply["abducoSession"].as_str().unwrap();
+    let meta = path
+        .join("run")
+        .join(format!("{}.json", id.as_str().unwrap()));
+    let pid = serde_json::from_slice::<Value>(&std::fs::read(meta)?)?["pid"].clone();
+    if cfg!(target_os = "linux")
+        && std::process::Command::new("systemctl")
+            .args(["--user", "show-environment"])
+            .stdout(Stdio::null())
+            .status()?
+            .success()
+    {
+        ensure!(
+            std::fs::read_to_string(format!("/proc/{pid}/cgroup"))?
+                .contains(&format!("{name}.scope"))
+        )
+    }
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(s._child.id().unwrap() as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    )?;
+    ensure!(s._child.wait().await?.success());
+    drop(ws);
+    let s = Server::with(s.dir, &vars).await?;
+    let mut ws = s.auth(&token).await?;
+    until(&mut ws, |m| {
+        m["instances"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r["instanceId"] == *id))
+    })
+    .await?;
+    let pty = nix::pty::openpty(
+        Some(&nix::pty::Winsize {
+            ws_row: 40,
+            ws_col: 120,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        }),
+        None,
+    )?;
+    let slave = File::from(pty.slave);
+    let mut attach = cli(&path)
+        .envs(vars)
+        .args(["attach", name])
+        .stdin(slave.try_clone()?)
+        .stdout(slave.try_clone()?)
+        .stderr(slave)
+        .spawn()?;
+    let mut master = tokio::fs::File::from_std(File::from(pty.master));
+    timeout(Duration::from_secs(12), async {
+        let mut buf = [0; 8192];
+        let mut screen = vec![];
+        loop {
+            let n = master.read(&mut buf).await?;
+            ensure!(n > 0);
+            screen.extend_from_slice(&buf[..n]);
+            if String::from_utf8_lossy(&screen).contains("faux") {
+                break;
+            }
+            ensure!(screen.len() < 2 << 20)
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    master.write_all(&[0x1c]).await?;
+    timeout(Duration::from_secs(3), attach.wait()).await??;
+    send(
+        &mut ws,
+        json!({"type":"auth_session","requestId":"login","holdId":"one"}),
+    )
+    .await?;
+    let login = until(&mut ws, |m| m["type"] == "auth_session_result").await?;
+    ensure!(login["ok"] == true, "{login}");
+    let login = &login["instanceId"];
+    let loginmeta = path
+        .join("run")
+        .join(format!("{}.json", login.as_str().unwrap()));
+    ensure!(loginmeta.exists());
+    let mut other = s.auth(&token).await?;
+    let list = until(&mut other, |m| m["type"] == "instances").await?;
+    ensure!(
+        !list["instances"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["instanceId"] == *login)
+    );
+    send(
+        &mut other,
+        json!({"type":"auth_session","requestId":"again","holdId":"one"}),
+    )
+    .await?;
+    assert_eq!(
+        until(&mut other, |m| m["type"] == "auth_session_result").await?["instanceId"],
+        *login
+    );
+    drop(other);
+    for (method, ok) in [("auth_list", true), ("shutdown", false)] {
+        send(
+            &mut ws,
+            json!({"type":"rc","instanceId":login,"request":{"id":"auth","method":method}}),
+        )
+        .await?;
+        assert_eq!(
+            until(&mut ws, |m| m["type"] == "rc_result").await?["response"]["ok"],
+            ok
+        )
+    }
+    send(&mut ws, json!({"type":"auth_session_end","holdId":"one"})).await?;
+    send(
+        &mut ws,
+        json!({"type":"rc","instanceId":id,"request":{"id":"stop","method":"shutdown"}}),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_secs(58)).await;
+    ensure!(loginmeta.exists());
+    timeout(Duration::from_secs(15), async {
+        loop {
+            let o = cli(&path).envs(vars).arg("attach").output().await?;
+            if !loginmeta.exists() && serde_json::from_slice::<Value>(&o.stdout)? == json!([]) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn folders_and_spawn_validation() -> Result<()> {
+    let s = Server::start().await?;
+    let root = s.dir.path();
+    let project = root.join("project");
+    std::fs::create_dir(&project)?;
+    let saved = root.join("agent/sessions/example");
+    std::fs::create_dir_all(&saved)?;
+    std::fs::write(
+        saved.join("first.jsonl"),
+        format!(
+            "{}\nnot a session header",
+            json!({"type":"session","cwd":project})
+        ),
+    )?;
+    std::fs::write(
+        root.join("agent/trust.json"),
+        json!({root.to_str().unwrap():false}).to_string(),
+    )?;
+    let mut ws = s.auth(&s.paired().await?["token"]).await?;
+    send(&mut ws, json!({"type":"folders","requestId":"f"})).await?;
+    let folders = until(&mut ws, |v| v["type"] == "folders_result").await?;
+    assert_eq!(folders["folders"][0]["path"], json!(project));
+    assert_eq!(folders["folders"][0]["trusted"], false);
+    send(&mut ws, json!({"type":"dirs","requestId":"d","path":root})).await?;
+    assert!(
+        until(&mut ws, |v| v["type"] == "dirs_result").await?["dirs"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("project"))
+    );
+    for (params, code) in [
+        (json!({"cwd":"relative"}), "bad_request"),
+        (json!({"cwd":root,"trust":null}), "bad_request"),
+        (json!({"cwd":root.join("missing")}), "not_found"),
+        (json!({"cwd":saved.join("first.jsonl")}), "not_directory"),
+    ] {
+        send(
+            &mut ws,
+            json!({"type":"spawn","requestId":"s","params":params}),
+        )
+        .await?;
+        let v = until(&mut ws, |v| v["type"] == "spawn_result").await?;
+        assert_eq!(v["code"], code)
+    }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[tokio::test]
+async fn reject_modified_bundle_even_if_on_path() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir()?;
+    let root = t.path();
+    let bin = root.join("bin/linux-x64");
+    std::fs::create_dir_all(&bin)?;
+    let host = bin.join("pimate");
+    std::fs::copy(env!("CARGO_BIN_EXE_pimate"), &host)?;
+    let ab = bin.join("abduco");
+    std::fs::copy(
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../bin/linux-x64/abduco"),
+        &ab,
+    )?;
+    let attach = || {
+        let mut c = Command::new(&host);
+        c.env_clear()
+            .env("HOME", root)
+            .env("ABDUCO_SOCKET_DIR", root)
+            .env("PIMATE_RUN_DIR", root.join("run"))
+            .env("PI_CODING_AGENT_DIR", root.join("agent"))
+            .env("PIMATE_CONFIG_DIR", root.join("config"))
+            .env("PATH", &bin)
+            .arg("attach");
+        c
+    };
+    ensure!(attach().output().await?.status.success());
+    std::fs::write(&ab, "#!/bin/sh\nexit 0\n")?;
+    std::fs::set_permissions(&ab, std::fs::Permissions::from_mode(0o755))?;
+    ensure!(!attach().output().await?.status.success());
+    ensure!(
+        attach()
+            .env("PIMATE_ABDUCO", &ab)
+            .output()
+            .await?
+            .status
+            .success()
+    );
     Ok(())
 }
