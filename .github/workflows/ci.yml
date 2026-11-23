@@ -1,0 +1,17 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - name: TS の型が最新か確かめる
+        run: |
+          cargo run --locked --quiet --example bindings > "$RUNNER_TEMP/index.ts"
+          diff -u bindings/ts/index.ts "$RUNNER_TEMP/index.ts"
