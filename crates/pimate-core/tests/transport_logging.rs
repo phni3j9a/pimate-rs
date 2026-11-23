@@ -3,13 +3,15 @@ use futures_util::{SinkExt, StreamExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::Message};
+/// Counts records that leak a secret. DEBUG/INFO diagnostics are allowed; secrets never.
 struct TraceAll(AtomicUsize);
 impl log::Log for TraceAll {
     fn enabled(&self, _: &log::Metadata) -> bool {
         true
     }
     fn log(&self, record: &log::Record) {
-        if record.target().contains("tungstenite") {
+        let line = format!("{} {}", record.target(), record.args());
+        if line.contains("fake-bearer") || line.contains("fake-key") {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }

@@ -138,6 +138,6 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 
 ### ログと通知配送の契約
 
-- WS の生フレームには端末トークン・プロバイダーの回答が入ります。中核が依存する `log` と `tracing` の静的上限を **debug / release の両方で Off** に固定し、ビルド時にも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、tungstenite の生フレームログは生成されません。Cargo の feature 統合により、同じ Rust バイナリでこのバージョンの facade を共有する他の crate のログも無効です。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
+- WS の生フレームには端末トークン・プロバイダーの回答が入ります。tungstenite が生フレームを出すのは TRACE だけなので、中核が依存する `log` と `tracing` の静的上限を **debug ビルドで DEBUG、release ビルドで INFO** にして TRACE をコンパイル時に取り除き、ビルド時と試験でも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、生フレームのログは生成されません。Cargo の feature 統合により、同じ Rust バイナリの他の crate の TRACE も出ません。DEBUG / INFO は診断のために残します。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
 - `Listener::changed` は接続ごとの専用スレッドで実行されます。配送待ちは最大8バッチです。UI が追いつかず `Change::ResyncRequired` が届いたら、部分適用せず `snapshot()` で全体を置換し、その snapshot の revision 以下の配送済み／配送待ち通知は無視してください。通常の Upsert は同じ ID があれば一度外し、指定位置に挿入します。
 - `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。`session_changed` 後、履歴取得中の結果も照合します。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。

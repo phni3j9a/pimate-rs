@@ -166,10 +166,12 @@ impl Core {
         Ok(Connection::start(host, token, listener, self.store.clone()))
     }
 }
-// Fail closed if a future version/feature combination changes the static filter.
-const _: () = assert!(matches!(log::STATIC_MAX_LEVEL, log::LevelFilter::Off));
-const _: () = assert!(
-    tracing::level_filters::STATIC_MAX_LEVEL
-        .into_level()
-        .is_none()
-);
+// Raw WS frames (tokens, provider answers) are only logged at TRACE (tungstenite 0.29
+// protocol/mod.rs:475,768), so TRACE is compiled out; DEBUG/INFO stay for diagnostics.
+// Fail closed if a future version/feature combination re-enables TRACE.
+const _: () = assert!(!matches!(log::STATIC_MAX_LEVEL, log::LevelFilter::Trace));
+#[cfg(test)]
+#[test]
+fn trace_is_compiled_out() {
+    assert!(tracing::level_filters::STATIC_MAX_LEVEL < tracing::level_filters::LevelFilter::TRACE);
+}
