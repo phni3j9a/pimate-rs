@@ -692,8 +692,7 @@ fn late_v1_completion_never_credits_the_next_request() {
         for ack_first in [true, false] {
             for round_trip in [true, false] {
                 let mut s = view();
-                s.prepare("A", rc(method.clone(), params.clone()), true)
-                    .unwrap();
+                s.prepare("A", rc(method, params.clone()), true).unwrap();
                 s.accept_op("A");
                 sync(&mut s, json!([]));
                 s.expire_result(s.result_deadline.unwrap());
@@ -702,8 +701,7 @@ fn late_v1_completion_never_credits_the_next_request() {
                         s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":2,"session":{"id":dst},"status":"idle","sessionTree":true},"history":{"items":[]}}));
                     }
                 }
-                s.prepare("B", rc(method.clone(), params.clone()), true)
-                    .unwrap();
+                s.prepare("B", rc(method, params.clone()), true).unwrap();
                 if ack_first {
                     s.accept_op("B");
                 }
@@ -719,8 +717,7 @@ fn late_v1_completion_never_credits_the_next_request() {
                 assert_eq!(result_count(&s, "B"), 1);
                 // The second terminal drains B's remaining mark, so C can complete normally.
                 event(&mut s, 4, terminal.clone());
-                s.prepare("C", rc(method.clone(), params.clone()), true)
-                    .unwrap();
+                s.prepare("C", rc(method, params.clone()), true).unwrap();
                 s.accept_op("C");
                 event(&mut s, 5, terminal.clone());
                 assert_eq!(s.get("operationResult", "latest")["event"], terminal);
