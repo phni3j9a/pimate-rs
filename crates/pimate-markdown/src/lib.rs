@@ -1,4 +1,5 @@
 //! Owned, presentation-neutral Markdown. IDs are unique among sibling blocks of one message.
+mod budget;
 mod image;
 mod parse;
 mod table;
@@ -8,7 +9,7 @@ pub use table::{Alignment, Table, cell_width, table_widths};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Image {
-    pub src: String,
+    pub src: std::sync::Arc<str>,
     pub alt: String,
     pub kind: ImageKind,
     pub index: u64,
@@ -19,7 +20,7 @@ pub struct Style {
     pub italic: bool,
     pub strike: bool,
     pub code: bool,
-    pub href: Option<String>,
+    pub href: Option<std::sync::Arc<str>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Inline {
@@ -70,7 +71,7 @@ impl Block {
     pub fn plain_text(&self) -> String {
         match &self.content {
             Content::Paragraph(s) | Content::Heading { spans: s, .. } => text(s),
-            Content::Code { text, .. } => text.clone(),
+            Content::Code { text, .. } => text.replace('\t', "  "),
             Content::Quote(c)
             | Content::List { items: c, .. }
             | Content::Item { children: c, .. } => c

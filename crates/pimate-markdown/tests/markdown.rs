@@ -47,7 +47,7 @@ fn tables_and_images() {
     assert_eq!(
         d.images
             .iter()
-            .map(|i| (i.index, i.src.as_str()))
+            .map(|i| (i.index, i.src.as_ref()))
             .collect::<Vec<_>>(),
         [
             (0, "a.png"),
@@ -217,4 +217,133 @@ fn table_cr_only_and_duplicate_image_identity() {
         before.images.iter().map(|i| i.index).collect::<Vec<_>>(),
         [0, 1]
     );
+}
+
+#[test]
+fn sparse_and_oversized_tables() {
+    let md = |n| {
+        format!(
+            "{}\n{}\n{}",
+            "|a".repeat(n),
+            "|-".repeat(n),
+            "|x\n".repeat(128)
+        )
+    };
+    let d = parse(&md(32), false);
+    let Content::Table(t) = &d.blocks[0].content else {
+        panic!()
+    };
+    assert_eq!(t.header.len(), 32);
+    assert!(t.rows.iter().all(|r| r.len() == 1));
+    let big = md(128);
+    let d = parse(&big, false);
+    assert_eq!(d.blocks[0].plain_text(), big);
+}
+#[test]
+fn complexity_fallback_preserves_text() {
+    let cases = [
+        ">".repeat(20000),
+        "- ".repeat(2000),
+        "[".repeat(30000),
+        "x\r\n".repeat(32769),
+        "字".repeat(400000),
+        format!("{}x{}", "*a ".repeat(1000), " a*".repeat(1000)),
+    ];
+    for tail in cases {
+        let md = format!("# keep\r\n\r\n{tail}");
+        let d = parse(&md, false);
+        assert!(matches!(d.blocks[0].content, Content::Heading { .. }));
+        assert_eq!(d.blocks[1].plain_text(), tail);
+    }
+}
+#[test]
+fn repeated_data_definition_shares_storage() {
+    let uri = format!("data:image/png;base64,{}", "AAAA".repeat(65536));
+    let md = format!("{}\n[r]: {uri}", "![alt][r]\n\n".repeat(100));
+    let d = parse(&md, true);
+    assert_eq!(d.images.len(), 100);
+    for (index, image) in d.images.iter().enumerate() {
+        assert_eq!(image.index, index as u64);
+        assert!(std::sync::Arc::ptr_eq(&image.src, &d.images[0].src));
+        let Content::Paragraph(p) = &d.blocks[index].content else {
+            panic!()
+        };
+        assert!(matches!(&p[0],Inline::Image(i) if std::sync::Arc::ptr_eq(&i.src,&image.src)));
+    }
+}
+#[test]
+fn image_entities_do_not_enable_remote_loading() {
+    for md in [
+        "![a](https&#58;//x.dev/i.png)",
+        "![a][r]\n\n[r]: https&#58;//x.dev/i.png",
+    ] {
+        assert!(parse(md, false).images.is_empty());
+        let d = parse(md, true);
+        assert_eq!(d.images[0].kind, ImageKind::File);
+        assert_eq!(d.images[0].src.as_ref(), "https&#58;//x.dev/i.png");
+    }
+}
+#[test]
+fn delimiter_with_variable_quote_prefix() {
+    let d = parse(">>H|H\n> > |-|-|\n>>a|b", false);
+    let Content::Quote(q) = &d.blocks[0].content else {
+        panic!()
+    };
+    let Content::Quote(q) = &q[0].content else {
+        panic!()
+    };
+    let Content::Table(t) = &q[0].content else {
+        panic!()
+    };
+    assert_eq!(t.markdown, "H|H\n|-|-|\na|b");
+}
+#[test]
+fn multiline_code_span() {
+    for newline in ["\r\n", "\n", "\r"] {
+        for (body, expected) in [
+            (format!("a{newline}b"), "a b"),
+            (format!("{newline}a{newline}"), "a"),
+            (format!(" {newline}a{newline} "), " a "),
+            (format!(" {newline} "), "   "),
+        ] {
+            assert_eq!(
+                parse(&format!("`{body}`"), false).blocks[0].plain_text(),
+                expected
+            );
+        }
+    }
+}
+#[test]
+fn cjk_bold_uses_literal_markers() {
+    let d = parse(r"\* &#42;&#42;x&#42;&#42;とこれは**「太字」**です", false);
+    assert_eq!(d.blocks[0].plain_text(), "* **x**とこれは「太字」です");
+    let Content::Paragraph(p) = &d.blocks[0].content else {
+        panic!()
+    };
+    assert!(
+        p.iter()
+            .any(|s| matches!(s,Inline::Text{text,style} if text=="「太字」" && style.bold))
+    );
+}
+#[test]
+fn code_selection_expands_tabs_but_full_copy_preserves_them() {
+    let d = parse("```\n\tx();\n```", false);
+    assert_eq!(d.blocks[0].plain_text(), "  x();");
+    assert!(matches!(&d.blocks[0].content,Content::Code{text,..} if text=="\tx();"));
+}
+#[test]
+fn encoded_image_uses_real_destination_not_code_in_alt() {
+    let md = "![`x](https://wrong.test/x)`](https&#58;//real.test/x)";
+    assert!(parse(md, false).images.is_empty());
+    let d = parse(md, true);
+    assert_eq!(d.images[0].src.as_ref(), "https&#58;//real.test/x");
+}
+#[test]
+fn expanded_link_budget_uses_literal_after_limit() {
+    let url = format!("https://e.test/{}", "a".repeat(64 * 1024));
+    let md = format!("{}[url]: {url}", "[x][url]\n\n".repeat(64));
+    let d = parse(&md, false);
+    assert_eq!(d.blocks[0].plain_text(), "x");
+    assert_eq!(d.blocks.last().unwrap().plain_text(), "[x][url]");
+    assert!(d.links.iter().map(String::len).sum::<usize>() <= 2 * 1024 * 1024);
 }
