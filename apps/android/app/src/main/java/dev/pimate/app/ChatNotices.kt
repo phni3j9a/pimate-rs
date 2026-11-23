@@ -99,7 +99,10 @@ internal data class ChatNotices(
             snap("busy", "operation")
             val notice = next.groups["notice"]?.find { it.id == "sessionChanged" }
             if (notice == null) move = null
-            else if (old.revision != next.revision || old.groups["notice"]?.find { it.id == "sessionChanged" } != notice)
+            else if (
+                old.revision != next.revision ||
+                    old.groups["notice"]?.find { it.id == "sessionChanged" } != notice
+            )
                 move = ChatMove(false) // 未観測の移動で以前の確認・操作元を再利用しない。
         }
         return ChatNotices(pending, receipt, move)

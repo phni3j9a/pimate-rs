@@ -33,7 +33,9 @@ private val empty = Doc(emptyList(), emptyList())
 
 // files: PC のパスを画像として扱う（file_image が使える Pi だけ。使えなければ文字のまま）。
 private fun doc(source: String, files: Boolean) =
-    parse(source, files).use { d -> Doc(d.blocks(), d.images().map { Pic.Shared(it.kind, it.src) }) }
+    parse(source, files).use { d ->
+        Doc(d.blocks(), d.images().map { Pic.Shared(it.kind, it.src) })
+    }
 
 // 解析済みの回答。スクロールで戻った回答を解析し直さずにすぐ出す。
 private val parsed = android.util.LruCache<Pair<Boolean, String>, Doc>(64)
@@ -161,8 +163,11 @@ private fun Spans(
 /** 段落。画像は文字の途中で分け、出てくる順にタイルで置く（タップで、その回答の画像を全画面で送って見られる）。 */
 @Composable
 private fun Paragraph(
-    spans: List<Inline>, style: TextStyle = LocalTextStyle.current, modifier: Modifier = Modifier,
-    align: TextAlign? = null, links: Boolean = true,
+    spans: List<Inline>,
+    style: TextStyle = LocalTextStyle.current,
+    modifier: Modifier = Modifier,
+    align: TextAlign? = null,
+    links: Boolean = true,
 ) {
     if (spans.none { it is Inline.Image }) return Spans(spans, style, modifier, align, links)
     val pics = LocalPics.current
@@ -196,7 +201,8 @@ private fun Paragraph(
                     )
                 }
             } else {
-                @Suppress("UNCHECKED_CAST") Spans(part as List<Inline>, style, align = align, links = links)
+                @Suppress("UNCHECKED_CAST")
+                Spans(part as List<Inline>, style, align = align, links = links)
             }
         }
     }

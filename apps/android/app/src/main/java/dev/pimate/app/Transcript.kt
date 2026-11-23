@@ -26,7 +26,10 @@ internal sealed interface Pic {
     }
 
     /** Markdown は表示領域に入るまで大きな共有文字列を展開しない。 */
-    class Shared(val kind: uniffi.pimate_ffi.ImageKind, val source: uniffi.pimate_ffi.SharedTextInterface) : Pic {
+    class Shared(
+        val kind: uniffi.pimate_ffi.ImageKind,
+        val source: uniffi.pimate_ffi.SharedTextInterface,
+    ) : Pic {
         override val id = ""
     }
 
@@ -514,7 +517,10 @@ internal fun entry(o: JSONObject): Entry {
 private fun pics(entryId: String, o: JSONObject): ImageSlots {
     val images = o.optJSONArray("images")
     val shown = images?.length() ?: 0
-    val count = o.optLong("imageCount", shown.toLong()).coerceIn(shown.toLong(), Int.MAX_VALUE.toLong()).toInt()
+    val count =
+        o.optLong("imageCount", shown.toLong())
+            .coerceIn(shown.toLong(), Int.MAX_VALUE.toLong())
+            .toInt()
     if (count == 0) return ImageSlots.Empty
     val slots = sortedMapOf<Int, Pic>()
     val indices = o.optJSONArray("imageIndices")
@@ -528,18 +534,27 @@ private fun pics(entryId: String, o: JSONObject): ImageSlots {
 }
 
 /** プレビューだけを保持し、欠番の参照はページを開いたときに作る。 */
-internal class ImageSlots(private val entryId: String, val size: Int, private val previews: Map<Int, Pic>) {
+internal class ImageSlots(
+    private val entryId: String,
+    val size: Int,
+    private val previews: Map<Int, Pic>,
+) {
     fun gallery(canLoad: Boolean): List<Pic> {
         if (!canLoad) return previews.values.toList()
         return object : AbstractList<Pic>() {
-            override val size get() = this@ImageSlots.size
+            override val size
+                get() = this@ImageSlots.size
+
             override fun get(index: Int): Pic {
                 if (index !in indices) throw IndexOutOfBoundsException()
                 return previews[index] ?: Pic.Entry(entryId, index)
             }
         }
     }
-    companion object { val Empty = ImageSlots("", 0, emptyMap()) }
+
+    companion object {
+        val Empty = ImageSlots("", 0, emptyMap())
+    }
 }
 
 internal fun live(id: String, o: JSONObject): Live {

@@ -195,11 +195,24 @@ internal fun ChatScreen(
         groups["busy"].orEmpty().find { it.id == "operation" }?.let { JSONObject(it.json) }
     val latest = groups["operationResult"].orEmpty().find { it.id == "latest" }
     var result by remember(m.host?.id, m.selected) { mutableStateOf<JSONObject?>(null) }
+    var usedResult by remember(m.host?.id, m.selected) { mutableStateOf<String?>(null) }
     val receipt = m.rows.notices.receipt
-    LaunchedEffect(latest, receipt, m.host?.id, m.selected) {
-        val r = latest?.let { JSONObject(it.json) }
-        if (r != null && receipt?.take(r.str("id"), m.selected) == true) result = r
-        else if (result?.str("id") != r?.str("id")) result = null
+    val latestResult = remember(latest) { latest?.let { JSONObject(it.json) } }
+    SideEffect {
+        val id = latestResult?.str("id")
+        if (id != null && receipt?.take(id, m.selected) == true) result = latestResult
+        else if (result?.str("id") != id) result = null
+        // 同じ結果の ID・文を一緒に取り出す。再同期中なら正しい編集先が戻るまで待つ。
+        val r = result
+        if (
+            r != null && key != null && r.str("sessionId") == key.target.session && id != usedResult
+        ) {
+            usedResult = id
+            val text =
+                r.str("forkText").ifEmpty { r.optJSONObject("event")?.str("editorText").orEmpty() }
+            if (text.isNotEmpty() && m.edits.body.text.isEmpty() && m.edits.body.images.isEmpty())
+                m.edits.text(key, text)
+        }
     }
     val fromId = changed?.optJSONObject("from")?.str("id").orEmpty()
     val toId = changed?.optJSONObject("to")?.str("id").orEmpty()
@@ -219,23 +232,9 @@ internal fun ChatScreen(
             changed != null &&
             !byPhone &&
             session?.str("id") == toId &&
-            switchId != null && ui.confirmed != switchId &&
+            switchId != null &&
+            ui.confirmed != switchId &&
             editor.copy(target = Target(editor.target.instance, fromId)) in ui.drafted
-    // 分岐・ツリーの移動で選んだ文は、入力欄が空なら入れる（直してから送れる）。1 回だけ。
-    val resultText =
-        result?.takeIf { it.str("sessionId") == target?.session }?.let {
-            it.str("forkText").ifEmpty { it.optJSONObject("event")?.str("editorText").orEmpty() }
-        }
-    var usedResult by remember(m.host?.id, m.selected) { mutableStateOf<String?>(null) }
-    LaunchedEffect(result?.str("id"), key) {
-        val id = result?.str("id") ?: return@LaunchedEffect
-        if (key == null || id == usedResult) return@LaunchedEffect
-        if (!resultText.isNullOrEmpty() && body.text.isEmpty() && body.images.isEmpty()) {
-            usedResult = id
-            m.edits.text(key, resultText)
-        }
-    }
-
     // 対象が変わったら、前の対象のシートと画像は閉じる。
     val sheet = ui.sheet?.takeIf { it.second == editor }
     val viewer = ui.viewer?.takeIf { it.first == null || it.first == editor }

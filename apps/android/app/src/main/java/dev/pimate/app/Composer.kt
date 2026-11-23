@@ -183,9 +183,15 @@ internal fun Composer(
                 try {
                     val previous = m.edits.body.images
                     m.attach(at, uris)
-                    attachmentRejection(at, m.edits.current, m.target, previous, m.edits.body.images, uris.size)?.let {
-                        ui.problem = Triple("画像を添付しませんでした", it, true)
-                    }
+                    attachmentRejection(
+                            at,
+                            m.edits.current,
+                            m.target,
+                            previous,
+                            m.edits.body.images,
+                            uris.size,
+                        )
+                        ?.let { ui.problem = Triple("画像を添付しませんでした", it, true) }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -759,16 +765,26 @@ private fun CommandPalette(
 }
 
 internal fun attachmentRejection(
-    at: EditorKey, current: EditorKey?, target: uniffi.pimate_ffi.Target?, before: List<uniffi.pimate_ffi.Image>,
-    after: List<uniffi.pimate_ffi.Image>, picked: Int,
-): String? = when {
-    current != at -> "送信先が変わりました。もう一度選んでください。"
-    target != at.target -> "送信先に接続できません。接続後にもう一度選んでください。"
-    after.size != before.size + picked || after.take(before.size) != before -> "変換中に添付が変わりました。もう一度選んでください。"
-    else -> null
-}
+    at: EditorKey,
+    current: EditorKey?,
+    target: uniffi.pimate_ffi.Target?,
+    before: List<uniffi.pimate_ffi.Image>,
+    after: List<uniffi.pimate_ffi.Image>,
+    picked: Int,
+): String? =
+    when {
+        current != at -> "送信先が変わりました。もう一度選んでください。"
+        target != at.target -> "送信先に接続できません。接続後にもう一度選んでください。"
+        after.size != before.size + picked || after.take(before.size) != before ->
+            "変換中に添付が変わりました。もう一度選んでください。"
+        else -> null
+    }
 
-internal suspend fun ChatEdits.runBuiltin(key: EditorKey, command: RestoredDraft, request: suspend () -> Unit) {
+internal suspend fun ChatEdits.runBuiltin(
+    key: EditorKey,
+    command: RestoredDraft,
+    request: suspend () -> Unit,
+) {
     request()
     accepted(key, command)
 }

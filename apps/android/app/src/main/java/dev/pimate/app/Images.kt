@@ -110,7 +110,8 @@ internal class Pics(
             try {
                 when (pic) {
                     is Pic.Shared -> {
-                        val resolved = withContext(Dispatchers.Default) { pic(pic.kind, pic.source.value()) }
+                        val resolved =
+                            withContext(Dispatchers.Default) { pic(pic.kind, pic.source.value()) }
                         load(resolved, tile)
                     }
                     is Pic.Inline -> inline(pic.data, edge)
@@ -192,7 +193,8 @@ internal fun PicTile(
     val shown = image as? ImageBitmap
     // 1 枚だけのときは、画像の縦横比のまま 220×160dp に収める。
     val size =
-        if (compact || measured.width == 0) Modifier.size(if (compact) 64.dp else 180.dp, if (compact) 64.dp else 140.dp)
+        if (compact || measured.width == 0)
+            Modifier.size(if (compact) 64.dp else 180.dp, if (compact) 64.dp else 140.dp)
         else {
             val scale = minOf(220f / measured.width, 160f / measured.height)
             Modifier.size((measured.width * scale).dp, (measured.height * scale).dp)
@@ -200,7 +202,11 @@ internal fun PicTile(
     Box(
         modifier
             .then(size)
-            .then(if (pic is Pic.Shared) Modifier.onGloballyPositioned { visible = !it.boundsInWindow().isEmpty } else Modifier)
+            .then(
+                if (pic is Pic.Shared)
+                    Modifier.onGloballyPositioned { visible = !it.boundsInWindow().isEmpty }
+                else Modifier
+            )
             .clip(RoundedCornerShape(if (compact) 12.dp else 16.dp))
             .background(pi.surfaceStrong)
             .clickable(onClickLabel = "全画面で開く", role = Role.Image, onClick = onClick)

@@ -16,7 +16,8 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
     internal var notices = ChatNotices()
         private set
 
-    internal fun snapshotRows(s: Snapshot) = from(s).also { it.notices = notices.advance(this, it, null) }
+    internal fun snapshotRows(s: Snapshot) =
+        from(s).also { it.notices = notices.advance(this, it, null) }
 
     fun apply(rev: ULong, changes: List<Change>, snapshot: () -> Snapshot): Rows {
         if (rev <= revision) return this
