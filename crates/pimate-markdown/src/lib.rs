@@ -1,8 +1,8 @@
 //! Owned, presentation-neutral Markdown. IDs are unique among sibling blocks of one message.
-mod budget;
 mod image;
 mod parse;
 mod table;
+mod table_guard;
 pub use image::{ImageKind, classify_image};
 pub use parse::parse;
 pub use table::{Alignment, Table, cell_width, table_widths};

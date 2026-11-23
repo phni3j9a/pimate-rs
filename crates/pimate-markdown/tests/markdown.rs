@@ -241,20 +241,46 @@ fn sparse_and_oversized_tables() {
 }
 #[test]
 fn complexity_fallback_preserves_text() {
-    let cases = [
-        ">".repeat(20000),
-        "- ".repeat(2000),
-        "[".repeat(30000),
-        "x\r\n".repeat(32769),
-        "字".repeat(400000),
-        format!("{}x{}", "*a ".repeat(1000), " a*".repeat(1000)),
-    ];
-    for tail in cases {
-        let md = format!("# keep\r\n\r\n{tail}");
-        let d = parse(&md, false);
-        assert!(matches!(d.blocks[0].content, Content::Heading { .. }));
-        assert_eq!(d.blocks[1].plain_text(), tail);
-    }
+    std::thread::Builder::new()
+        .stack_size(512 * 1024)
+        .spawn(|| {
+            for (marker, count) in [(">", 20000), ("- ", 2000)] {
+                let tail = format!("{}leaf", marker.repeat(count));
+                let md = format!("# keep\n\n{tail}\n\n## after");
+                let d = parse(&md, false);
+                assert_eq!(d.blocks[0].plain_text(), "keep");
+                assert_eq!(d.blocks.last().unwrap().plain_text(), "after");
+                let leaf = d.blocks[1].plain_text();
+                assert!(leaf.ends_with("leaf") && leaf.starts_with(marker));
+                assert!(tail.ends_with(&leaf));
+            }
+            for tail in ["[".repeat(30000), "*a ".repeat(30000), "字".repeat(400000)] {
+                let d = parse(&tail, false);
+                assert_eq!(d.blocks[0].plain_text(), tail.trim_end());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+#[test]
+fn dense_ordinary_answers_remain_formatted() {
+    let md = format!(
+        "{}\n```rs\n{}\n```\n\n## after",
+        "- **result** `a_b(x)`\n".repeat(1024),
+        "fn a_b(x: i32) { println!(\"{}\", x); }\n".repeat(2048)
+    );
+    let d = parse(&md, false);
+    let Content::List { items, .. } = &d.blocks[0].content else {
+        panic!()
+    };
+    assert_eq!(items.len(), 1024);
+    assert!(matches!(d.blocks[1].content, Content::Code { .. }));
+    assert!(matches!(d.blocks[2].content, Content::Heading { .. }));
+    let table = format!("|h|v|\n|-|-|\n{}", "|a|`b_c`|\n".repeat(2000));
+    assert!(
+        matches!(&parse(&table,false).blocks[0].content,Content::Table(t) if t.rows.len()==2000)
+    );
 }
 #[test]
 fn repeated_data_definition_shares_storage() {
@@ -341,9 +367,43 @@ fn encoded_image_uses_real_destination_not_code_in_alt() {
 #[test]
 fn expanded_link_budget_uses_literal_after_limit() {
     let url = format!("https://e.test/{}", "a".repeat(64 * 1024));
-    let md = format!("{}[url]: {url}", "[x][url]\n\n".repeat(64));
+    let md = format!("{}[url]: {url}\n\n## after", "[x][url]\n\n".repeat(64));
     let d = parse(&md, false);
     assert_eq!(d.blocks[0].plain_text(), "x");
-    assert_eq!(d.blocks.last().unwrap().plain_text(), "[x][url]");
+    assert_eq!(d.blocks[d.blocks.len() - 2].plain_text(), "[x][url]");
+    assert!(matches!(
+        d.blocks.last().unwrap().content,
+        Content::Heading { level: 2, .. }
+    ));
     assert!(d.links.iter().map(String::len).sum::<usize>() <= 2 * 1024 * 1024);
+}
+#[test]
+fn wide_tables_only_flatten_the_actual_overflow() {
+    let header = "|H".repeat(200);
+    let delimiter = "|-".repeat(200);
+    let sparse = "|x\n".repeat(80);
+    let big = format!("{header}\n{delimiter}\n{sparse}");
+    let md = format!("```\n{big}```\n\n{header}\n{delimiter}\n|x\n\n{big}\n# after");
+    let d = parse(&md, false);
+    assert!(matches!(&d.blocks[0].content,Content::Code{text,..} if text==big.trim_end()));
+    assert!(
+        matches!(&d.blocks[1].content,Content::Table(t) if t.header.len()==200 && t.rows.len()==1)
+    );
+    assert_eq!(d.blocks[2].plain_text(), big);
+    assert!(matches!(d.blocks[3].content, Content::Heading { .. }));
+}
+#[test]
+fn tight_item_spans_keep_real_byte_ranges() {
+    let md = "- **日本**と `x`\n- [x] 完了";
+    let d = parse(md, false);
+    let Content::List { items, .. } = &d.blocks[0].content else {
+        panic!()
+    };
+    for (item, raw) in items.iter().zip(["**日本**と `x`", "完了"]) {
+        let Content::Item { children, .. } = &item.content else {
+            panic!()
+        };
+        let b = &children[0];
+        assert_eq!(&md[b.id as usize..b.end as usize], raw);
+    }
 }

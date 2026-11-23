@@ -1,467 +1,583 @@
 use super::*;
-use markdown::{
-    ParseOptions,
-    mdast::{AlignKind, Node},
-};
+use pulldown_cmark::{CodeBlockKind, Event, LinkType, Options, Parser, Tag};
 use regex::Regex;
 use std::{
     collections::HashMap,
+    iter::Peekable,
+    ops::Range,
     sync::{Arc, LazyLock},
 };
 
+const DEPTH: usize = 32;
+use table_guard::CELLS;
+const OPTIONS: Options = Options::ENABLE_TABLES
+    .union(Options::ENABLE_STRIKETHROUGH)
+    .union(Options::ENABLE_TASKLISTS);
+type Events<'a> = Peekable<pulldown_cmark::OffsetIter<'a>>;
+
 pub fn parse(source: &str, file_images: bool) -> Document {
-    let limit = budget::prefix(source);
-    let mut doc = parse_bounded(&source[..limit], file_images);
-    if limit < source.len() {
-        doc.blocks.push(literal(source, limit, source.len()));
+    let (prepared, oversized) = table_guard::prepare(source);
+    let first = Parser::new_ext(&prepared, OPTIONS);
+    if first.reference_definitions().iter().next().is_none() {
+        return render(source, file_images, first, Default::default(), &oversized);
     }
-    doc
-}
-fn literal(source: &str, start: usize, end: usize) -> Block {
-    Block {
-        id: start as u64,
-        end: end as u64,
-        content: Content::Paragraph(vec![Inline::Text {
-            text: source[start..end].to_owned(),
-            style: Style::default(),
-        }]),
-    }
-}
-fn parse_bounded(source: &str, file_images: bool) -> Document {
-    // Later reference definitions can change already emitted links and images.
-    let mut options = ParseOptions::gfm();
-    options.constructs.gfm_footnote_definition = false;
-    options.constructs.gfm_label_start_footnote = false;
-    let mut root =
-        markdown::to_mdast(source, &options).expect("GFM without MDX cannot return syntax errors");
-    bound_tree(&mut root, source, 0);
-    let mut defs = HashMap::new();
-    definitions(&root, source, &mut defs);
-    let mut parser = Render {
-        source,
-        file_images,
-        defs,
-        image_refs: HashMap::new(),
-        expansion: 4 * 1024 * 1024,
-        doc: Document::default(),
-    };
-    parser.doc.blocks = parser.blocks(&root);
-    parser.doc
-}
-// A second, exact check bounds every recursive visitor and destructor after the syntax preflight.
-fn bound_tree(n: &mut Node, source: &str, depth: usize) {
-    if depth == budget::DEPTH && n.children().is_some() {
-        let literal = markdown::mdast::Html {
-            value: raw(source, n).to_owned(),
-            position: n.position().cloned(),
-        };
-        let mut pending = vec![std::mem::replace(n, Node::Html(literal))];
-        while let Some(mut old) = pending.pop() {
-            if let Some(children) = old.children_mut() {
-                pending.append(children);
+    let defs = first.reference_definitions().clone();
+    // Keep reference destinations out of the event stream: the parser's reference expansion
+    // budget would otherwise discard later uses of a large shared data URI. Preserve offsets.
+    let mut bytes = prepared.as_bytes().to_vec();
+    for (_, def) in defs.iter() {
+        if let Some(colon) = definition_colon(&source[def.span.clone()]) {
+            let value = &mut bytes[def.span.start + colon + 1..def.span.end];
+            if let Some((first, rest)) = value.split_first_mut() {
+                *first = b'x';
+                rest.fill(b' ');
             }
         }
-    } else if let Some(children) = n.children_mut() {
-        for child in children {
-            bound_tree(child, source, depth + 1);
-        }
     }
+    let compact = String::from_utf8(bytes).expect("replaced complete UTF-8 ranges");
+    render(
+        source,
+        file_images,
+        Parser::new_ext(&compact, OPTIONS),
+        defs,
+        &oversized,
+    )
 }
-fn definitions<'a>(n: &'a Node, source: &str, defs: &mut HashMap<&'a str, (&'a str, Arc<str>)>) {
-    if let Node::Definition(d) = n {
-        defs.entry(&d.identifier)
-            .or_insert_with(|| (&d.url, image_src(raw(source, n), &d.url, true)));
-    }
-    if let Some(children) = n.children() {
-        for c in children {
-            definitions(c, source, defs);
+fn render(
+    source: &str,
+    file_images: bool,
+    parser: Parser,
+    defs: pulldown_cmark::RefDefs,
+    oversized: &std::collections::HashSet<usize>,
+) -> Document {
+    let mut events = parser.into_offset_iter().peekable();
+    let mut render = Render {
+        source,
+        oversized,
+        defs,
+        file_images,
+        doc: Document::default(),
+        images: HashMap::new(),
+        links: HashMap::new(),
+        expansion: 4 * 1024 * 1024,
+    };
+    render.doc.blocks = render.blocks(&mut events, 0, source.len(), &mut None);
+    render.doc
+}
+fn definition_colon(s: &str) -> Option<usize> {
+    let mut it = s.char_indices();
+    while let Some((i, c)) = it.next() {
+        if c == '\\' {
+            it.next();
+        } else if c == ']' && s[i + 1..].starts_with(':') {
+            return Some(i + 1);
         }
     }
+    None
 }
 struct Render<'a> {
     source: &'a str,
+    oversized: &'a std::collections::HashSet<usize>,
+    defs: pulldown_cmark::RefDefs<'a>,
     file_images: bool,
-    defs: HashMap<&'a str, (&'a str, Arc<str>)>,
-    image_refs: HashMap<String, Option<ImageKind>>,
-    expansion: usize,
     doc: Document,
+    images: HashMap<usize, (Arc<str>, Option<ImageKind>)>,
+    links: HashMap<usize, Arc<str>>,
+    expansion: usize,
 }
-fn raw<'a>(source: &'a str, n: &Node) -> &'a str {
-    let p = n.position().expect("mdast source position");
-    &source[p.start.offset..p.end.offset]
-}
-fn children(n: &Node) -> &[Node] {
-    n.children().map_or(&[], Vec::as_slice)
-}
-impl Render<'_> {
-    fn blocks(&mut self, n: &Node) -> Vec<Block> {
-        let parent_end = n.position().expect("parsed node position").end.offset;
-        children(n)
-            .iter()
-            .filter_map(|c| self.block(c, parent_end))
-            .collect()
-    }
-    fn block(&mut self, n: &Node, parent_end: usize) -> Option<Block> {
-        let pos = n.position()?;
-        let start = pos.start.offset;
-        let end = pos.end.offset;
-        let content = match n {
-            Node::Paragraph(_) => Content::Paragraph(self.spans(n)),
-            Node::Heading(h) => Content::Heading {
-                level: h.depth,
-                spans: self.spans(n),
-            },
-            Node::ThematicBreak(_) => Content::Rule,
-            Node::Blockquote(_) => Content::Quote(self.blocks(n)),
-            Node::List(l) => Content::List {
-                start: l.start,
-                items: self.blocks(n),
-            },
-            Node::ListItem(i) => Content::Item {
-                checked: i.checked,
-                children: self.blocks(n),
-            },
-            Node::Code(c) => Content::Code {
-                language: c.lang.clone(),
-                text: c.value.replace("\r\n", "\n"),
-            },
-            Node::Table(t) => {
-                if t.children.len().saturating_mul(t.align.len()) > budget::CELLS {
-                    return Some(literal(self.source, start, end));
+fn skip(e: &mut Events) {
+    let mut depth = 1;
+    for (event, _) in e.by_ref() {
+        match event {
+            Event::Start(_) => depth += 1,
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
                 }
-                let align = t
-                    .align
-                    .iter()
-                    .map(|a| match a {
-                        AlignKind::None => Alignment::Default,
-                        AlignKind::Left => Alignment::Left,
-                        AlignKind::Center => Alignment::Center,
-                        AlignKind::Right => Alignment::Right,
-                    })
-                    .collect::<Vec<_>>();
-                let mut rows = t.children.iter().map(|row| {
-                    children(row)
-                        .iter()
-                        .take(align.len())
-                        .map(|c| self.spans(c))
-                        .collect()
-                });
-                let header = rows.next().unwrap_or_default();
-                let rows = rows.collect();
-                let markdown = table_markdown(self.source, &t.children, start, end, parent_end);
-                Content::Table(Table {
-                    align,
-                    header,
-                    rows,
-                    markdown,
-                })
-            }
-            Node::Definition(_) => return None,
-            _ => Content::Paragraph(vec![Inline::Text {
-                text: self.source[start..end].to_owned(),
-                style: Style::default(),
-            }]),
-        };
-        Some(Block {
-            id: start as u64,
-            end: end as u64,
-            content,
-        })
-    }
-    fn spans(&mut self, n: &Node) -> Vec<Inline> {
-        let mut out = vec![];
-        for c in children(n) {
-            self.inline(c, &Style::default(), &mut out);
-        }
-        out
-    }
-    fn charge(&mut self, bytes: usize) -> bool {
-        if let Some(left) = self.expansion.checked_sub(bytes) {
-            self.expansion = left;
-            true
-        } else {
-            false
-        }
-    }
-    fn charge_link(&mut self, url: &str) -> bool {
-        !image::web(url) || self.charge(url.len() * 2)
-    }
-    fn link(&mut self, url: &str) -> Option<Arc<str>> {
-        image::web(url).then(|| {
-            self.doc.links.push(url.to_owned());
-            Arc::from(url)
-        })
-    }
-    fn inline(&mut self, n: &Node, base: &Style, out: &mut Vec<Inline>) {
-        let mut style = base.clone();
-        match n {
-            Node::Image(_) | Node::ImageReference(_) => {
-                let (src, alt, kind) = match n {
-                    Node::Image(i) => {
-                        let src = image_src(raw(self.source, n), &i.url, false);
-                        let kind = classify_image(&src);
-                        (src, &i.alt, kind)
-                    }
-                    Node::ImageReference(i) => {
-                        let Some((_, src)) = self.defs.get(i.identifier.as_str()) else {
-                            return;
-                        };
-                        let kind = *self
-                            .image_refs
-                            .entry(i.identifier.clone())
-                            .or_insert_with(|| classify_image(src));
-                        (src.clone(), &i.alt, kind)
-                    }
-                    _ => unreachable!(),
-                };
-                if let Some(kind) = kind.filter(|k| *k != ImageKind::File || self.file_images) {
-                    let img = Image {
-                        kind,
-                        src,
-                        alt: alt.clone(),
-                        index: self.doc.images.len() as u64,
-                    };
-                    self.doc.images.push(img.clone());
-                    out.push(Inline::Image(img));
-                } else {
-                    if (alt.is_empty() || image::web(&src)) && !self.charge(src.len() * 3) {
-                        push(out, raw(self.source, n), base);
-                        return;
-                    }
-                    style.href = self.link(&src).or(style.href);
-                    out.push(Inline::Text {
-                        text: if alt.is_empty() {
-                            src.to_string()
-                        } else {
-                            alt.clone()
-                        },
-                        style,
-                    });
-                }
-                return;
-            }
-            Node::Strong(_) => style.bold = true,
-            Node::Emphasis(_) => style.italic = true,
-            Node::Delete(_) => style.strike = true,
-            Node::Link(l) => {
-                if !self.charge_link(&l.url) {
-                    push(out, raw(self.source, n), base);
-                    return;
-                }
-                style.href = self.link(&l.url);
-            }
-            Node::LinkReference(l) => {
-                if let Some(&(url, _)) = self.defs.get(l.identifier.as_str()) {
-                    if !self.charge_link(url) {
-                        push(out, raw(self.source, n), base);
-                        return;
-                    }
-                    style.href = self.link(url);
-                }
-            }
-            Node::Text(t) => {
-                let text = t.value.replace("\r\n", "\n");
-                static BOLD: LazyLock<Regex> =
-                    LazyLock::new(|| Regex::new(r"\*\*([^*\n]+)\*\*").unwrap());
-                let mut last = 0;
-                if text.contains("**") {
-                    let mask = bold_mask(raw(self.source, n), &text);
-                    for m in BOLD.captures_iter(&mask) {
-                        let whole = m.get(0).unwrap();
-                        push(out, &text[last..whole.start()], &style);
-                        push(
-                            out,
-                            &text[m.get(1).unwrap().range()],
-                            &Style {
-                                bold: true,
-                                ..style.clone()
-                            },
-                        );
-                        last = whole.end();
-                    }
-                }
-                push(out, &text[last..], &style);
-                return;
-            }
-            Node::Break(_) => {
-                push(out, "\n", &style);
-                return;
-            }
-            Node::InlineCode(c) => {
-                style.code = true;
-                let raw = raw(self.source, n);
-                let inner = raw.trim_matches('`');
-                let mut value = c.value.replace("\r\n", " ").replace(['\r', '\n'], " ");
-                if c.value.contains(['\n', '\r']) {
-                    // mdast trims literal edge spaces before newline normalization; marked does it after.
-                    if inner.starts_with(' ')
-                        && inner.ends_with(' ')
-                        && !inner.bytes().all(|b| b == b' ')
-                    {
-                        value = format!(" {value} ");
-                    }
-                    if value.starts_with(' ')
-                        && value.ends_with(' ')
-                        && !value.trim_matches(' ').is_empty()
-                    {
-                        value = value[1..value.len() - 1].to_owned();
-                    }
-                }
-                push(out, &value, &style);
-                return;
-            }
-            Node::Html(h) => {
-                push(out, &h.value, &style);
-                return;
             }
             _ => {}
         }
-        for c in children(n) {
-            self.inline(c, &style, out);
-        }
     }
 }
-fn push(out: &mut Vec<Inline>, text: &str, style: &Style) {
-    if !text.is_empty() {
+fn block_tag(t: &Tag) -> bool {
+    matches!(
+        t,
+        Tag::Paragraph
+            | Tag::Heading { .. }
+            | Tag::BlockQuote(_)
+            | Tag::List(_)
+            | Tag::Item
+            | Tag::CodeBlock(_)
+            | Tag::Table(_)
+            | Tag::HtmlBlock
+    )
+}
+fn trim_eol(s: &str) -> &str {
+    s.trim_end_matches(['\r', '\n'])
+}
+fn literal(s: &str) -> Content {
+    Content::Paragraph(vec![Inline::Text {
+        text: s.into(),
+        style: Style::default(),
+    }])
+}
+impl Render<'_> {
+    fn blocks(
+        &mut self,
+        e: &mut Events,
+        depth: usize,
+        parent_end: usize,
+        checked: &mut Option<bool>,
+    ) -> Vec<Block> {
+        let mut out = Vec::new();
+        while let Some((ev, r)) = e.peek().cloned() {
+            let raw = &self.source[r.clone()];
+            let start = r.start;
+            let mut end = start + trim_eol(raw).len();
+            let content = match ev {
+                Event::End(_) => {
+                    e.next();
+                    break;
+                }
+                Event::TaskListMarker(v) => {
+                    *checked = Some(v);
+                    e.next();
+                    continue;
+                }
+                Event::Rule => {
+                    e.next();
+                    Content::Rule
+                }
+                Event::Start(t) if block_tag(&t) => {
+                    e.next();
+                    if depth >= DEPTH {
+                        skip(e);
+                        literal(trim_eol(raw))
+                    } else {
+                        match t {
+                            Tag::Paragraph | Tag::Heading { .. } | Tag::HtmlBlock => {
+                                let spans = self.spans(e, false).0;
+                                if let Tag::Heading { level, .. } = t {
+                                    Content::Heading {
+                                        level: level as u8,
+                                        spans,
+                                    }
+                                } else {
+                                    Content::Paragraph(spans)
+                                }
+                            }
+                            Tag::BlockQuote(_) => {
+                                Content::Quote(self.blocks(e, depth + 1, end, &mut None))
+                            }
+                            Tag::List(num) => Content::List {
+                                start: num.map(|n| n as u32),
+                                items: self.blocks(e, depth + 1, end, &mut None),
+                            },
+                            Tag::Item => {
+                                let mut checked = None;
+                                let children = self.blocks(e, depth + 1, end, &mut checked);
+                                Content::Item { checked, children }
+                            }
+                            Tag::CodeBlock(kind) => {
+                                let mut text = String::new();
+                                for (ev, _) in e.by_ref() {
+                                    match ev {
+                                        Event::Text(v) => text.push_str(&v),
+                                        Event::End(_) => break,
+                                        _ => {}
+                                    }
+                                }
+                                if text.ends_with('\n') {
+                                    text.pop();
+                                }
+                                let language = match kind {
+                                    CodeBlockKind::Fenced(info) => {
+                                        info.split_whitespace().next().map(str::to_owned)
+                                    }
+                                    _ => None,
+                                };
+                                Content::Code { language, text }
+                            }
+                            Tag::Table(align) => {
+                                if self.oversized.contains(&start)
+                                    || table_guard::rows(raw).saturating_mul(align.len()) > CELLS
+                                {
+                                    skip(e);
+                                    literal(raw)
+                                } else {
+                                    Content::Table(self.table(e, r.clone(), parent_end, align))
+                                }
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+                _ => {
+                    let (spans, inline_end) = self.spans(e, true);
+                    end = inline_end;
+                    Content::Paragraph(spans)
+                }
+            };
+            out.push(Block {
+                id: start as u64,
+                end: end as u64,
+                content,
+            });
+        }
+        out
+    }
+    fn table(
+        &mut self,
+        e: &mut Events,
+        r: Range<usize>,
+        parent_end: usize,
+        align: Vec<pulldown_cmark::Alignment>,
+    ) -> Table {
+        let mut header = Vec::new();
+        let mut rows = Vec::new();
+        let mut markdown = String::new();
+        while let Some((ev, row)) = e.next() {
+            if matches!(ev, Event::End(_)) {
+                break;
+            }
+            let head = matches!(ev, Event::Start(Tag::TableHead));
+            let mut cells = Vec::new();
+            while let Some((ev, cell)) = e.next() {
+                if matches!(ev, Event::End(_)) {
+                    break;
+                }
+                let spans = self.spans(e, false).0;
+                if cell.start != row.end || !spans.is_empty() {
+                    cells.push(spans);
+                }
+            }
+            if head {
+                header = cells;
+                markdown.push_str(trim_eol(&self.source[row.clone()]));
+                markdown.push('\n');
+                let delim = self.source[row.end..r.end]
+                    .split(['\r', '\n'])
+                    .next()
+                    .unwrap_or("");
+                let mut prefix = self.source[..row.start]
+                    .rsplit(['\r', '\n'])
+                    .next()
+                    .unwrap_or("");
+                let mut delim = delim;
+                while let Some((_, tail)) = prefix.split_once('>') {
+                    if let Some((_, s)) = delim.split_once('>') {
+                        delim = s.strip_prefix([' ', '\t']).unwrap_or(s);
+                    }
+                    prefix = tail.strip_prefix([' ', '\t']).unwrap_or(tail);
+                }
+                let indent = delim
+                    .bytes()
+                    .take_while(|b| matches!(b, b' ' | b'\t'))
+                    .take(prefix.len())
+                    .count();
+                markdown.push_str(&delim[indent..]);
+            } else {
+                rows.push(cells);
+                markdown.push('\n');
+                markdown.push_str(trim_eol(&self.source[row]));
+            }
+        }
+        if r.end <= parent_end
+            && self.source[r.clone()].ends_with(['\r', '\n'])
+            && !self.source[r.end..].starts_with(['\r', '\n'])
+        {
+            markdown.push('\n');
+        }
+        Table {
+            align: align
+                .into_iter()
+                .map(|a| match a {
+                    pulldown_cmark::Alignment::None => Alignment::Default,
+                    pulldown_cmark::Alignment::Left => Alignment::Left,
+                    pulldown_cmark::Alignment::Center => Alignment::Center,
+                    pulldown_cmark::Alignment::Right => Alignment::Right,
+                })
+                .collect(),
+            header,
+            rows,
+            markdown,
+        }
+    }
+    fn spans(&mut self, e: &mut Events, tight: bool) -> (Vec<Inline>, usize) {
+        let mut end = 0;
+        let mut out = Vec::new();
+        let mut styles = vec![Style::default()];
+        while let Some((ev, r)) = e.peek().cloned() {
+            if tight
+                && styles.len() == 1
+                && (matches!(ev, Event::End(_) | Event::Rule)
+                    || matches!(&ev,Event::Start(t) if block_tag(t)))
+            {
+                break;
+            }
+            e.next();
+            end = r.end;
+            let mut style = styles.last().unwrap().clone();
+            let raw = &self.source[r.clone()];
+            match ev {
+                Event::Start(_) if styles.len() >= DEPTH => {
+                    skip(e);
+                    push(&mut out, raw, &style)
+                }
+                Event::Start(Tag::Image {
+                    dest_url,
+                    id,
+                    link_type,
+                    ..
+                }) => {
+                    let mut alt = String::new();
+                    let mut depth = 1;
+                    for (ev, _) in e.by_ref() {
+                        match ev {
+                            Event::Start(_) => depth += 1,
+                            Event::End(_) => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            Event::Text(s) | Event::Code(s) => alt.push_str(&s),
+                            Event::SoftBreak | Event::HardBreak => alt.push('\n'),
+                            _ => {}
+                        }
+                    }
+                    let reference = (link_type != LinkType::Inline)
+                        .then(|| self.defs.get(&id))
+                        .flatten();
+                    let (src, kind) = if let Some(d) = reference {
+                        self.images
+                            .entry(d.span.start)
+                            .or_insert_with(|| {
+                                let s = image_src(&self.source[d.span.clone()], &d.dest, true);
+                                let k = classify_image(&s);
+                                (s, k)
+                            })
+                            .clone()
+                    } else {
+                        let s = image_src(raw, &dest_url, false);
+                        let k = classify_image(&s);
+                        (s, k)
+                    };
+                    if let Some(kind) = kind.filter(|k| *k != ImageKind::File || self.file_images) {
+                        let image = Image {
+                            src,
+                            kind,
+                            alt,
+                            index: self.doc.images.len() as u64,
+                        };
+                        self.doc.images.push(image.clone());
+                        out.push(Inline::Image(image));
+                    } else if (!alt.is_empty() && !image::web(&src))
+                        || reference.is_none()
+                        || self.charge(src.len() * 3)
+                    {
+                        if image::web(&src) {
+                            style.href = self.link(&src);
+                        }
+                        push(&mut out, if alt.is_empty() { &src } else { &alt }, &style);
+                    } else {
+                        push(&mut out, raw, &style)
+                    }
+                }
+                Event::Start(t) => {
+                    match t {
+                        Tag::Emphasis => style.italic = true,
+                        Tag::Strong => style.bold = true,
+                        Tag::Strikethrough => style.strike = true,
+                        Tag::Link {
+                            dest_url,
+                            id,
+                            link_type,
+                            ..
+                        } => {
+                            let reference = matches!(
+                                link_type,
+                                LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut
+                            )
+                            .then(|| self.defs.get(&id))
+                            .flatten();
+                            let url = if let Some(d) = reference {
+                                self.links
+                                    .entry(d.span.start)
+                                    .or_insert_with(|| Arc::from(d.dest.as_ref()))
+                                    .clone()
+                            } else {
+                                Arc::from(dest_url.as_ref())
+                            };
+                            if reference.is_some()
+                                && image::web(&url)
+                                && !self.charge(url.len() * 2)
+                            {
+                                skip(e);
+                                push(&mut out, raw, &style);
+                                continue;
+                            }
+                            style.href = self.link(&url);
+                        }
+                        _ => {}
+                    }
+                    styles.push(style);
+                }
+                Event::End(_) => {
+                    if styles.len() == 1 {
+                        break;
+                    }
+                    styles.pop();
+                }
+                Event::Text(v) => {
+                    let mut text = v.into_string();
+                    let mut mask = String::new();
+                    mask_part(&mut mask, &text, raw, self.source, r.start);
+                    while let Some((Event::Text(_), _)) = e.peek() {
+                        let Some((Event::Text(v), r)) = e.next() else {
+                            unreachable!()
+                        };
+                        mask_part(&mut mask, &v, &self.source[r.clone()], self.source, r.start);
+                        text.push_str(&v);
+                        end = r.end;
+                    }
+                    self.plain(&mut out, &text, &mask, &style);
+                }
+                Event::Code(v) => {
+                    style.code = true;
+                    let text = if raw.contains("\r\n") {
+                        let norm = raw.replace("\r\n", "\n");
+                        Parser::new(&norm)
+                            .find_map(|e| {
+                                if let Event::Code(c) = e {
+                                    Some(c.into_string())
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or_else(|| v.into_string())
+                    } else {
+                        v.into_string()
+                    };
+                    push(&mut out, &text, &style)
+                }
+                Event::SoftBreak | Event::HardBreak => push(&mut out, "\n", &style),
+                Event::Html(v) | Event::InlineHtml(v) => push(&mut out, &v, &style),
+                _ => {}
+            }
+        }
+        (out, end)
+    }
+    fn charge(&mut self, n: usize) -> bool {
+        if n > self.expansion {
+            return false;
+        }
+        self.expansion -= n;
+        true
+    }
+    fn link(&mut self, url: &str) -> Option<Arc<str>> {
+        image::web(url).then(|| {
+            self.doc.links.push(url.into());
+            Arc::from(url)
+        })
+    }
+    fn plain(&mut self, out: &mut Vec<Inline>, s: &str, mask: &str, style: &Style) {
+        static BOLD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\*\*([^*\n]+)\*\*").unwrap());
+        let mut last = 0;
+        for m in BOLD.captures_iter(mask) {
+            let all = m.get(0).unwrap();
+            self.urls(out, &s[last..all.start()], style);
+            self.urls(
+                out,
+                &s[m.get(1).unwrap().range()],
+                &Style {
+                    bold: true,
+                    ..style.clone()
+                },
+            );
+            last = all.end();
+        }
+        self.urls(out, &s[last..], style);
+    }
+    fn urls(&mut self, out: &mut Vec<Inline>, s: &str, style: &Style) {
+        static FIND: LazyLock<linkify::LinkFinder> = LazyLock::new(|| {
+            let mut finder = linkify::LinkFinder::new();
+            finder.url_must_have_scheme(false);
+            finder
+        });
+        let mut last = 0;
+        if style.href.is_none() {
+            for link in FIND.links(s) {
+                let uri = link.as_str();
+                let url = if uri.starts_with("www.") {
+                    format!("http://{uri}")
+                } else if image::web(uri) {
+                    uri.into()
+                } else {
+                    continue;
+                };
+                push(out, &s[last..link.start()], style);
+                push(
+                    out,
+                    uri,
+                    &Style {
+                        href: self.link(&url),
+                        ..style.clone()
+                    },
+                );
+                last = link.end();
+            }
+        }
+        push(out, &s[last..], style);
+    }
+}
+fn push(out: &mut Vec<Inline>, s: &str, style: &Style) {
+    if !s.is_empty() {
         out.push(Inline::Text {
-            text: text.to_owned(),
+            text: s.into(),
             style: style.clone(),
         });
     }
 }
-
-/// Row positions omit outer list/quote markers; the delimiter is the only line without a row node.
-fn table_markdown(
-    source: &str,
-    rows: &[Node],
-    start: usize,
-    end: usize,
-    parent_end: usize,
-) -> String {
-    let row = |node: &Node| {
-        let p = node.position().expect("table row position");
-        &source[p.start.offset..p.end.offset]
-    };
-    let mut raw = row(&rows[0]).to_owned();
-    let prefix = source[..start].rsplit(['\n', '\r']).next().unwrap_or("");
-    let after_header = &source[start + raw.len()..end];
-    let delimiter = after_header
-        .trim_start_matches(['\r', '\n'])
-        .split(['\r', '\n'])
-        .next()
-        .unwrap_or("");
-    let mut delim = delimiter;
-    let mut prefix_tail = prefix;
-    while let Some((_, tail)) = prefix_tail.split_once('>') {
-        if let Some((_, remaining)) = delim.split_once('>') {
-            delim = remaining.strip_prefix([' ', '\t']).unwrap_or(remaining);
-        }
-        prefix_tail = tail.strip_prefix([' ', '\t']).unwrap_or(tail);
-    }
-    let indent = delim
-        .bytes()
-        .take_while(|b| matches!(b, b' ' | b'\t' | b'>'))
-        .take(prefix_tail.len())
-        .count();
-    raw.push('\n');
-    raw.push_str(&delim[indent..]);
-    for node in &rows[1..] {
-        raw.push('\n');
-        raw.push_str(row(node));
-    }
-    // marked includes a single line ending before EOF or another block, not a blank separator.
-    let tail = &source[end..parent_end];
-    if tail
-        .strip_prefix("\r\n")
-        .or_else(|| tail.strip_prefix(['\r', '\n']))
-        .is_some_and(|s| !s.starts_with(['\n', '\r']))
+fn mask_part(mask: &mut String, v: &str, raw: &str, source: &str, start: usize) {
+    if raw != v {
+        mask.push_str(&v.replace('*', "!"));
+    } else if v.starts_with('*')
+        && source[..start]
+            .bytes()
+            .rev()
+            .take_while(|b| *b == b'\\')
+            .count()
+            % 2
+            == 1
     {
-        raw.push('\n');
+        mask.push('!');
+        mask.push_str(&v[1..]);
+    } else {
+        mask.push_str(v);
     }
-    raw
 }
-
-// mdast decodes entities in URLs, whereas marked only unescapes punctuation. Recover the
-// destination token from the source; never use an entity-decoded scheme for auto-loading.
-fn image_src(raw: &str, decoded: &str, definition: bool) -> Arc<str> {
+fn image_src(raw: &str, decoded: &str, def: bool) -> Arc<str> {
     if !raw.contains('&') {
-        return Arc::from(decoded);
+        return decoded.into();
     }
-    // Let the same lexer find the real destination (a label or title can itself contain `](`).
-    // A non-entity prefix after every ampersand preserves literal and backslash-escaped ampersands.
     let protected = raw.replace('&', "&pimate.");
-    if budget::prefix(&protected) != protected.len() {
-        return Arc::from("");
-    }
-    let Ok(mut root) = markdown::to_mdast(&protected, &ParseOptions::gfm()) else {
-        return Arc::from("");
-    };
-    bound_tree(&mut root, &protected, 0);
-    let url = match children(&root) {
-        [Node::Definition(d)] if definition => Some(&d.url),
-        [p @ Node::Paragraph(_)] if !definition => match children(p) {
-            [Node::Image(i)] => Some(&i.url),
-            _ => None,
-        },
-        _ => None,
-    };
-    url.map_or_else(|| Arc::from(""), |s| s.replace("&pimate.", "&").into())
-}
-
-// Keep byte offsets in the decoded span, masking only stars originating in escapes/entities.
-fn bold_mask(raw: &str, text: &str) -> String {
-    let mut stars = Vec::new();
-    let mut it = raw.char_indices().peekable();
-    while let Some((i, c)) = it.next() {
-        match c {
-            '\\' if it.peek().is_some_and(|(_, c)| c.is_ascii_punctuation()) => {
-                if it.next().unwrap().1 == '*' {
-                    stars.push(false);
-                }
-            }
-            '*' => stars.push(true),
-            '&' => {
-                let tail = &raw[i + 1..];
-                if let Some(entity) = tail
-                    .as_bytes()
-                    .iter()
-                    .take(33)
-                    .position(|b| *b == b';')
-                    .map(|len| &tail[..len])
-                {
-                    let numeric = entity.strip_prefix('#').and_then(|n| {
-                        if let Some(hex) = n.strip_prefix(['x', 'X']) {
-                            if hex.len() <= 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                                u32::from_str_radix(hex, 16).ok()
-                            } else {
-                                None
-                            }
-                        } else {
-                            if n.len() <= 7 && n.bytes().all(|b| b.is_ascii_digit()) {
-                                n.parse().ok()
-                            } else {
-                                None
-                            }
-                        }
-                    });
-                    if numeric == Some(42)
-                        || markdown::decode_named(entity, true).as_deref() == Some("*")
-                    {
-                        stars.push(false);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut allowed = stars.into_iter();
-    text.chars()
-        .map(|c| {
-            if c == '*' && !allowed.next().unwrap_or(false) {
-                '!'
+    let parser = Parser::new(&protected);
+    let url = if def {
+        parser
+            .reference_definitions()
+            .iter()
+            .next()
+            .map(|(_, d)| d.dest.to_string())
+    } else {
+        parser.into_iter().find_map(|e| {
+            if let Event::Start(Tag::Image { dest_url, .. }) = e {
+                Some(dest_url.into_string())
             } else {
-                c
+                None
             }
         })
-        .collect()
+    };
+    url.unwrap_or_default().replace("&pimate.", "&").into()
 }
