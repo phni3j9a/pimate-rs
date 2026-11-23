@@ -98,7 +98,8 @@ class RemainingJourney {
         tap("デモ PC")
         find(hasText("ペアリング済みの端末"))
         shot("Machine-Detail")
-        if (File(inst.targetContext.cacheDir, "mock-maintenance").delete()) {
+        val fixture = File(inst.targetContext.cacheDir, "mock-maintenance").delete()
+        if (fixture) {
             tap("0.1.20 に更新")
             tap("更新")
             find(hasText("0.1.20 に更新しました"))
@@ -144,7 +145,8 @@ class RemainingJourney {
             ui.onAllNodes(hasText("PC から読み込み中…")).fetchSemanticsNodes().isEmpty()
         }
         shot("GitHub")
-        if (ui.onAllNodes(hasText("example/demo")).fetchSemanticsNodes().isNotEmpty()) {
+        if (fixture) find(hasText("example/demo"))
+        if (fixture || ui.onAllNodes(hasText("example/demo")).fetchSemanticsNodes().isNotEmpty()) {
             tap("#20", true)
             find(hasText("画面の動作と表示", substring = true))
             shot("GitHub-Issue")

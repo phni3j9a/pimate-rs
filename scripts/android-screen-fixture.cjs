@@ -44,6 +44,8 @@ const issue = (kind) => ({
 let dropLogin = process.argv[3] === "reconnect";
 new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 	const pc = new WS(`ws://${host}:${upstream}/ws`);
+	const reconnected = process.argv[3] === "reconnect" && !dropLogin;
+	let loginHeld = false;
 	let authed = false,
 		updated = false,
 		stored = false;
@@ -144,13 +146,16 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 								},
 				});
 			case "auth_session":
+				loginHeld = true;
 				return result({ ok: true, instanceId: "demo-login" });
 			case "auth_session_end":
+				loginHeld = false;
 				waiting = null;
 				flow = null;
 				return;
 			case "rc":
 				if (m.instanceId === "demo-login") {
+					if (!loginHeld) return phone.close(1008, "login hold required");
 					const { method, id } = m.request;
 					const reply = (id, body) =>
 						send({
@@ -178,10 +183,7 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 							},
 						});
 					if (method === "auth_list") {
-						const provider =
-							process.argv[3] === "reconnect" && !dropLogin
-								? "anthropic"
-								: "openai";
+						const provider = reconnected ? "anthropic" : "openai";
 						if (dropLogin) {
 							dropLogin = false;
 							setTimeout(() => phone.close(), 1200);
