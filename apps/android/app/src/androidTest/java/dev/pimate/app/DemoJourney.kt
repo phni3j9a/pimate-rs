@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.*
+import org.junit.Assert.assertTrue
 
 class DemoJourney {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
@@ -21,6 +22,10 @@ class DemoJourney {
         }
     }
 
+    // キーボードの出入りで配置が動いている間も外さないよう、座標のタップではなく操作そのものを呼ぶ。
+    private fun press(node: SemanticsNodeInteraction) =
+        node.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+
     private fun waitFor(text: String, partial: Boolean = false) {
         ui.waitUntil(20000) {
             ui.onAllNodesWithText(text, substring = partial).fetchSemanticsNodes().isNotEmpty()
@@ -28,30 +33,42 @@ class DemoJourney {
     }
 
     @Test
-    fun chat() {
+    fun chat() =
+        try {
+            journey()
+        } catch (e: Throwable) {
+            shot("failure")
+            throw e
+        }
+
+    private fun journey() {
         val secret = File(inst.targetContext.cacheDir, "demo-link")
         Assume.assumeTrue("requires disposable Host", secret.exists())
         val link = secret.readText().trim()
         secret.delete()
-        waitFor("PC とペアリング")
+        waitFor("PC の Pi とつなぐ")
         shot("pair")
-        ui.onNodeWithText("ペアリングリンク").performTextInput(link)
-        ui.onNodeWithText("接続").performClick()
+        ui.onNodeWithText("リンクを貼り付ける").performClick()
+        ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
+        press(ui.onNodeWithText("接続"))
         waitFor("/demo/android")
         shot("drawer")
-        ui.onNodeWithText("ペアリング", useUnmergedTree = true).performClick()
-        waitFor("PC とペアリング")
+        ui.onNodeWithContentDescription("設定").performClick()
+        ui.onNodeWithText("マシンを追加（ペアリング）").performClick()
+        waitFor("マシンを追加")
         ui.activityRule.scenario.recreate()
-        ui.onNodeWithText("PC とペアリング").assertIsDisplayed()
+        ui.onNodeWithText("マシンを追加").assertIsDisplayed()
         ui.runOnUiThread { ui.activity.onBackPressedDispatcher.onBackPressed() }
-        ui.onNodeWithText("Instance 一覧").performClick()
+        ui.onNodeWithContentDescription("Instance 一覧を開く").performClick()
         ui.onNodeWithText("/demo/android").performClick()
         waitFor("greeting", true)
         shot("stream")
-        waitFor("送信")
         waitFor("PiMate", true)
+        ui.waitUntil(20000) {
+            ui.onAllNodesWithContentDescription("送信").fetchSemanticsNodes().isNotEmpty()
+        }
         val message = "日本語で確認します"
-        ui.onNodeWithText("メッセージ").performTextInput(message)
+        ui.onNodeWithContentDescription("メッセージ").performTextInput(message)
         val orientation = ui.activity.requestedOrientation
         try {
             ui.runOnUiThread {
@@ -71,9 +88,9 @@ class DemoJourney {
                 android.content.res.Configuration.ORIENTATION_LANDSCAPE
         }
         ui.onNodeWithText(message).assertIsDisplayed()
-        ui.onNodeWithText("送信").assertIsDisplayed()
+        ui.onNodeWithContentDescription("送信").assertIsDisplayed()
         shot("rotated")
-        ui.onNodeWithText("送信").performClick()
+        press(ui.onNodeWithContentDescription("送信"))
         waitFor(message)
         ui.waitUntil(15000) {
             ui.onAllNodes(hasText(message) and !hasSetTextAction())
@@ -87,17 +104,22 @@ class DemoJourney {
         }
         shot("sent")
         val steer = "割り込みのテスト"
-        ui.onNodeWithText("メッセージ").performTextInput(steer)
-        ui.onNodeWithText("割り込む").performClick()
+        ui.onNodeWithContentDescription("メッセージ").performTextInput(steer)
+        press(ui.onNodeWithContentDescription("割り込む"))
         waitFor("割り込み待ち")
         shot("queued")
-        ui.onNodeWithText("停止").performClick()
+        press(ui.onNodeWithContentDescription("停止"))
         waitFor("下書きへ戻す")
         shot("unconfirmed")
         ui.onNodeWithText("下書きへ戻す").performClick()
         ui.onNode(hasSetTextAction() and hasText(steer)).assertExists()
         shot("restored")
-        ui.onNodeWithText("送信").performClick()
+        press(ui.onNodeWithContentDescription("送信"))
+        // 回答を待つ間に履歴を遡っていても、届いた質問のカードへ戻る。
+        val sent = hasText(steer) and !hasSetTextAction()
+        ui.waitUntil(15000) { ui.onAllNodes(sent).fetchSemanticsNodes().isNotEmpty() }
+        repeat(3) { ui.onNodeWithTag("chat").performTouchInput { swipeDown() } }
+        assertTrue(ui.onNode(sent).isNotDisplayed())
         waitFor("作業ディレクトリの差分を確認します。")
         ui.onNodeWithText("はい").assertIsDisplayed()
         shot("question")

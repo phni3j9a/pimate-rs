@@ -1,0 +1,134 @@
+package dev.pimate.app
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class TranscriptTest {
+    private val read = Call("c1", "read", "src/greet.ts")
+    private val bash = Call("c2", "bash", "npm test")
+    private val turn =
+        listOf(
+            Entry("1", "user", "構成を説明して", time = 1_000),
+            Entry(
+                "2",
+                "assistant",
+                "調べます",
+                thinking = "考える",
+                calls = listOf(read, bash),
+                final = false,
+            ),
+            Entry("3", "tool_result", "a\nb\n", callId = "c1", name = "read"),
+            Entry("4", "tool_result", "失敗", callId = "c2", name = "bash", isError = true),
+            Entry("5", "assistant", "まとめ", meta = "model", time = 19_000),
+        )
+
+    @Test
+    fun completedTurnFoldsWorkButKeepsTheAnswer() {
+        val rows = buildRows(turn, emptyList(), active = false)
+        assertEquals(
+            listOf("1", "turn:1", "2:thinking", "2:text", "tool:2:c1", "tool:2:c2", "5:text"),
+            rows.map { it.key },
+        )
+        assertEquals("18秒 作業 · ツール 2 回", (rows[1] as ChatRow.Summary).text)
+        // 畳まれるのは作業だけ。依頼・要約行・最後の回答は常に見える。
+        assertEquals(
+            listOf("1", "turn:1", "5:text"),
+            rows.filter { it.fold == null }.map { it.key },
+        )
+        assertTrue(rows.filter { it.fold != null }.all { it.fold == "turn:1" })
+        val (first, second) = rows.filterIsInstance<ChatRow.Tool>()
+        assertEquals(ToolState.Done to "2 行", first.state to first.meta)
+        assertEquals(ToolState.Failed to "エラー", second.state to second.meta)
+        assertEquals("model", (rows.last() as ChatRow.Text).meta)
+    }
+
+    @Test
+    fun turnInProgressStaysOpenAndShowsLiveWork() {
+        val rows =
+            buildRows(
+                turn.take(3),
+                listOf(
+                    Live("c2", "bash", "npm test", "running", "> vitest", null, false),
+                    Live("c3", "grep", "TODO", "running", "", null, false),
+                    Live("c4", "read", "child.ts", "running", "", null, nested = true),
+                ),
+                active = true,
+                streamText = "途中",
+                streamThinking = "考え中",
+            )
+        assertTrue(rows.all { it.fold == null })
+        assertEquals(
+            listOf(
+                "1",
+                "2:thinking",
+                "2:text",
+                "tool:2:c1",
+                "tool:2:c2",
+                "running:c3",
+                "live:thinking",
+                "live:text",
+            ),
+            rows.map { it.key },
+        )
+        val running = rows.filterIsInstance<ChatRow.Tool>().first { it.key == "tool:2:c2" }
+        assertEquals(ToolState.Running to "> vitest", running.state to running.output)
+    }
+
+    @Test
+    fun turnWithoutToolsIsNotFoldedAndDuplicateIdsDoNotRepeat() {
+        val plain = listOf(turn[0], Entry("2", "assistant", "答え", thinking = "考える"))
+        assertTrue(buildRows(plain, emptyList(), false).all { it.fold == null })
+        val rows = buildRows(turn + turn, emptyList(), false)
+        assertEquals(rows.size, rows.map { it.key }.toSet().size)
+    }
+
+    @Test
+    fun resultsFollowTheCallPositionWhenIdsRepeatAcrossTurns() {
+        val next =
+            listOf(
+                Entry("6", "user", "もう一度"),
+                Entry("7", "assistant", calls = listOf(read), final = false),
+                Entry("8", "tool_result", "c\n", callId = "c1", name = "read"),
+                Entry("9", "assistant", "完了"),
+            )
+        val rows =
+            buildRows(turn + next, listOf(Live("c1", "read", "", "done", "", 9, false)), false)
+        val tools = rows.filterIsInstance<ChatRow.Tool>().associateBy { it.key }
+        assertEquals(setOf("tool:2:c1", "tool:2:c2", "tool:7:c1"), tools.keys)
+        assertEquals("a\nb\n" to "2 行", tools["tool:2:c1"]!!.let { it.output to it.meta })
+        assertEquals("c\n" to "1 行", tools["tool:7:c1"]!!.let { it.output to it.meta })
+        // 後のターンの要約も、自分のツールの行を開ける。
+        assertEquals("ツール 1 回", (rows.first { it.key == "turn:6" } as ChatRow.Summary).text)
+        assertEquals("turn:6", tools["tool:7:c1"]!!.fold)
+        // 呼び出しのない結果は、その結果の行として出す。
+        val orphan =
+            buildRows(
+                listOf(Entry("r", "tool_result", "x", callId = "gone", name = "bash")),
+                emptyList(),
+                false,
+            )
+        assertEquals(listOf("result:r"), orphan.map { it.key })
+    }
+
+    @Test
+    fun stoppedConnectionsAskForActionAndPcPromptIsShownWithoutHistory() {
+        assertEquals(Stop.Revoked, stopped("\"revoked\""))
+        assertTrue(listOf("invalid_token", "auth_failed").all { stopped("\"$it\"")!!.repair })
+        assertFalse(stopped("\"protocol_mismatch\"")!!.repair)
+        assertTrue(listOf("connected", "connecting", "offline").all { stopped("\"$it\"") == null })
+        assertNull(stopped(null))
+        val ready = "\"ready\""
+        assertNull(notice(true, ready, true, history = false, asking = false, pcPrompt = true))
+        assertNull(notice(true, ready, true, history = false, asking = true, pcPrompt = false))
+        assertEquals(false, notice(true, ready, true, false, false, false)?.second)
+        assertEquals(true, notice(true, "\"instance_gone\"", true, true, false, false)?.second)
+    }
+
+    @Test
+    fun formatsDurations() {
+        assertEquals("12秒", seconds(12_400))
+        assertEquals("1分5秒", seconds(65_000))
+        assertEquals("1:04", elapsed(64_900))
+        assertEquals("1:02:03", elapsed(3_723_000))
+    }
+}
