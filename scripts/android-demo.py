@@ -85,6 +85,7 @@ async def pi(
             instanceId=iid,
             sessionId=session["id"],
             seq=seq,
+            timestamp=int(time.time() * 1000),
             event=dict(type=kind, **data),
         )
         for w in list(clients):
@@ -503,6 +504,10 @@ async def demo(lab, binary):
         port = sock.getsockname()[1]
     if port == 47800:
         raise RuntimeError("Reserved TS Host port; restart the demo")
+    if name := os.environ.get("PIMATE_DEMO_NAME"):
+        import uuid
+        (lab / "config").mkdir(mode=0o700)
+        (lab / "config/host.json").write_text(json.dumps(dict(name=name, hostId=str(uuid.uuid4()))))
     args = ["--port", str(port)]
     host = await asyncio.create_subprocess_exec(
         binary, "serve", *args, "--listen", "127.0.0.1", env=env

@@ -6,6 +6,33 @@ import uniffi.pimate_ffi.*
 
 class RowsTest {
     @Test
+    fun selectedSnapshotIsNewerThanQueuedNotifications() {
+        val hosts = HostRows(mutableMapOf())
+        val question = Item("question", "answered", 0u, "{}")
+        hosts.snapshot("A", Snapshot(10u, listOf(question)))
+        hosts.snapshot("B", Snapshot(10u, listOf(question)))
+        hosts.snapshot("A", Snapshot(12u, emptyList()))
+        hosts.changed("A", 11u, listOf(Change.Upsert(question))) { error("no resync needed") }
+        assertEquals(12uL, hosts["A"].revision)
+        assertNull(hosts["A"].groups["question"])
+        assertEquals(listOf(question), hosts["B"].groups["question"])
+    }
+
+    @Test
+    fun copiedCommandOnlyContainsASingleSafeArgument() {
+        assertEquals("pimate attach pimate-01234567", terminalCommand("pimate-01234567"))
+        for (bad in listOf("", "--help", "host;id", "a\nb")) assertNull(terminalCommand(bad))
+    }
+
+    @Test
+    fun photoBudgetIsSharedWithoutCountingBase64Padding() {
+        val image = Image("image/jpeg", "YQ==")
+        assertEquals((600 * 1024 - 1) / 3, imageBudget(listOf(image), 3, 4))
+        assertEquals(512 * 1024, imageBudget(emptyList(), 1, 1))
+        assertThrows(IllegalArgumentException::class.java) { imageBudget(listOf(image), 1, 1) }
+    }
+
+    @Test
     fun largeHistoryUsesOneSnapshot() {
         val entries = List(4096) { Item("entry", it.toString(), it.toULong(), "{}") }
         var calls = 0

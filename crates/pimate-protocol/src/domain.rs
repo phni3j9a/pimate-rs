@@ -1476,5 +1476,8 @@ pub struct EventMessage {
     #[serde(rename = "sessionId", deserialize_with = "Deserialize::deserialize")]
     pub session_id: Option<String>,
     pub seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub timestamp: Option<u64>,
     pub event: InstanceEvent,
 }

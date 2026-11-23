@@ -41,6 +41,49 @@ class DemoJourney {
             throw e
         }
 
+    @Test
+    fun twoMachines() {
+        val links = File(inst.targetContext.cacheDir, "two-links")
+        Assume.assumeTrue("requires two disposable Hosts", links.exists())
+        val pair = links.readLines().also { links.delete() }
+        for ((i, link) in pair.withIndex()) {
+            if (i > 0) {
+                ui.onNodeWithContentDescription("設定").performClick()
+                ui.onNodeWithText("マシンを追加（ペアリング）").performClick()
+            }
+            ui.onNodeWithText("リンクを貼り付ける").performClick()
+            ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
+            press(ui.onNodeWithText("接続"))
+            waitFor("ログイン画面の改修")
+        }
+        ui.waitUntil(20000) { ui.onAllNodesWithText("ログイン画面の改修").fetchSemanticsNodes().size == 2 }
+        for (machine in listOf("マシン A", "マシン B")) {
+            ui.onNode(hasText("ログイン画面の改修") and hasText(machine)).assertIsDisplayed()
+        }
+        shot("global-attention")
+        ui.onNodeWithContentDescription("Instance・フォルダを検索").performTextInput("/demo/and")
+        ui.runOnUiThread {
+            ui.activity
+                .getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                .hideSoftInputFromWindow(ui.activity.window.decorView.windowToken, 0)
+        }
+        ui.waitUntil(20000) {
+            ui.onAllNodesWithText("/demo/android").fetchSemanticsNodes().size == 2
+        }
+        ui.onAllNodesWithText("接続中").assertCountEquals(2)
+        shot("two-machines")
+        ui.onAllNodesWithText("/demo/android")[0].performClick()
+        waitFor("greeting", true)
+        ui.onNodeWithContentDescription("メッセージ").performTextInput("host A")
+        ui.onNodeWithContentDescription("Instance 一覧を開く").performClick()
+        ui.onAllNodesWithText("/demo/android")[1].performClick()
+        waitFor("greeting", true)
+        ui.onNodeWithText("host A").assertDoesNotExist()
+        ui.onNodeWithContentDescription("Instance 一覧を開く").performClick()
+        ui.onAllNodesWithText("/demo/android")[0].performClick()
+        waitFor("host A")
+    }
+
     private fun journey() {
         val secret = File(inst.targetContext.cacheDir, "demo-link")
         Assume.assumeTrue("requires disposable Host", secret.exists())

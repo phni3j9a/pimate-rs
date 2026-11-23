@@ -68,6 +68,20 @@ pub struct Discovery {
     pub instances: Vec<Value>,
     pub incompatible: serde_json::Map<String, Value>,
 }
+// Discovery already probes hello, including instances with no phone subscription.
+fn attention_details(row: &mut Value, snapshot: &Value) {
+    if let Some(title) = snapshot["pendingUI"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .rev()
+        .filter_map(|q| q["title"].as_str())
+        .find(|s| !s.is_empty())
+    {
+        row["questionTitle"] = json!(title.chars().take(240).collect::<String>());
+    }
+}
+
 pub async fn list(dir: &Path) -> Result<Discovery> {
     let mut login = vec![];
     let mut incompatible = serde_json::Map::new();
@@ -136,6 +150,7 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
         let s = timeout(Duration::from_secs(1), probe).await;
         v["reachable"] = json!(matches!(s, Ok(Ok(_))));
         if let Ok(Ok(s)) = s {
+            attention_details(&mut v, &s);
             for k in ["status", "session"] {
                 if let Some(x) = s.get(k) {
                     v[k] = x.clone()
