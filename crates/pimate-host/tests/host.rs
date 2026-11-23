@@ -17,7 +17,10 @@ use tokio::{
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 fn cli(dir: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_pimate"));
+    cli_exe(dir, Path::new(env!("CARGO_BIN_EXE_pimate")))
+}
+fn cli_exe(dir: &Path, exe: &Path) -> Command {
+    let mut c = Command::new(exe);
     c.env_clear();
     for k in [
         "PATH",
@@ -30,6 +33,7 @@ fn cli(dir: &Path) -> Command {
         }
     }
     c.current_dir(dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("HOME", dir)
         .env("ABDUCO_SOCKET_DIR", dir)
         .env("PI_CODING_AGENT_DIR", dir.join("agent"))
@@ -169,6 +173,14 @@ async fn pairing_auth_and_revocation() -> Result<()> {
 #[tokio::test]
 #[ignore = "requires Pi and a TS PiMate checkout with dependencies"]
 async fn real_pi() -> Result<()> {
+    real_turn(false).await
+}
+#[tokio::test]
+#[ignore = "requires real Pi and faux fixture"]
+async fn real_pi_agent_cli() -> Result<()> {
+    real_turn(true).await
+}
+async fn real_turn(agent_cli: bool) -> Result<()> {
     let pi = PathBuf::from(env::var("PIMATE_TEST_PI")?).canonicalize()?;
     let pkg = PathBuf::from(env::var("PIMATE_TEST_TS")?)
         .canonicalize()?
@@ -192,6 +204,7 @@ async fn real_pi() -> Result<()> {
         .env("PATH", env::var_os("PATH").unwrap())
         .env("ABDUCO_SOCKET_DIR", dir)
         .env("TERM", "xterm-256color")
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("HOME", dir)
         .env("PI_CODING_AGENT_DIR", dir.join("agent"))
         .env("PIMATE_CONFIG_DIR", dir.join("config"))
@@ -235,6 +248,28 @@ async fn real_pi() -> Result<()> {
     let sub = until(&mut ws, |v| v["type"] == "subscribed").await?;
     assert_eq!(sub["snapshot"]["model"]["provider"], "pimate-faux");
     assert!(sub["history"]["items"].is_array());
+    if agent_cli {
+        for (args, expected) in [
+            (
+                vec!["prompt", "real-e2e", "say hello", "--wait"],
+                json!({"deliveredAs":"prompt","outcome":"done","reply":"Hello from the PiMate faux model."}),
+            ),
+            (
+                vec!["wait", "real-e2e"],
+                json!({"outcome":"idle","reply":"Hello from the PiMate faux model."}),
+            ),
+            (
+                vec!["history", "real-e2e", "--last", "1"],
+                json!([{"kind":"assistant","text":"Hello from the PiMate faux model."}]),
+            ),
+        ] {
+            let o = timeout(Duration::from_secs(20), cli(dir).args(args).output()).await??;
+            ensure!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            assert_eq!(serde_json::from_slice::<Value>(&o.stdout)?, expected);
+        }
+        child.kill().await?;
+        return Ok(());
+    }
     send(&mut ws,json!({"type":"rc","instanceId":"real-e2e","request":{"id":"prompt1","method":"prompt","params":{"text":"say hello"}}})).await?;
     let mut acknowledged = false;
     let mut answered = false;
@@ -711,6 +746,7 @@ impl Drop for Cleanup {
                 .env("PIMATE_CONFIG_DIR", self.dir.join("config"))
                 .env("PI_CODING_AGENT_DIR", self.dir.join("agent"))
                 .env("ABDUCO_SOCKET_DIR", &self.dir)
+                .env("XDG_CONFIG_HOME", self.dir.join("xdg"))
                 .env("HOME", &self.dir)
                 .output();
             std::thread::sleep(Duration::from_millis(100));
@@ -957,6 +993,7 @@ async fn reject_modified_bundle_even_if_on_path() -> Result<()> {
     let attach = || {
         let mut c = Command::new(&host);
         c.env_clear()
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
             .env("HOME", root)
             .env("ABDUCO_SOCKET_DIR", root)
             .env("PIMATE_RUN_DIR", root.join("run"))
@@ -1437,5 +1474,501 @@ async fn early_cleanup(detached: bool) -> Result<()> {
                 .success()
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn github_admin_fixed_commands_and_rejection() -> Result<()> {
+    let t = std::sync::Arc::new(tempfile::tempdir()?);
+    let root = t.path();
+    let bin = root.join("bin");
+    std::fs::create_dir(&bin)?;
+    script(
+        &bin.join("gh"),
+        r#"printf '%s\n' "$PWD $*" >> "$HOME/calls"
+[ "$GH_PROMPT_DISABLED" = 1 ] && [ -z "$GH_REPO" ] || exit 4
+case "$1 $2" in 'api --hostname') echo dev;; 'issue view') echo 'could not find https://secret@example.invalid' >&2; exit 1;; 'pr view') echo '{"number":2,"title":"PR"}';; *) exit 1;; esac"#,
+    )?;
+    let s = Server::with(t.clone(), &[("PATH", &bin)]).await?;
+    let repo = root.join("repo");
+    std::fs::create_dir(&repo)?;
+    std::fs::write(root.join("run/gh-pi.json"),json!({"protocol":1,"instanceId":"gh-pi","origin":"pc","pid":std::process::id(),"cwd":repo,"status":"idle","startedAt":1,"session":null,"abducoSession":null}).to_string())?;
+    let mut ws = s.auth(&s.paired().await?["token"]).await?;
+    until(&mut ws, |m| {
+        m["instances"].as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await?;
+    for (msg, expected) in [
+        (
+            json!({"type":"github_status","requestId":"s"}),
+            json!({"type":"github_status_result","requestId":"s","ok":true,"status":{"installed":true,"loggedIn":true,"login":"dev"}}),
+        ),
+        (
+            json!({"type":"host_restart","requestId":"r"}),
+            json!({"type":"host_restart_result","requestId":"r","ok":false,"code":"unsupported"}),
+        ),
+        (
+            json!({"type":"update","requestId":"u"}),
+            json!({"type":"update_result","requestId":"u","ok":false,"code":"unsupported","message":"not_package"}),
+        ),
+    ] {
+        send(&mut ws, msg).await?;
+        assert_eq!(
+            until(&mut ws, |m| m["type"] == expected["type"]).await?,
+            expected
+        );
+    }
+    send(&mut ws,json!({"type":"github","requestId":"q","instanceId":"gh-pi","query":{"kind":"pr","number":2}})).await?;
+    let r = until(&mut ws, |m| m["requestId"] == "q").await?;
+    assert_eq!(r["data"]["item"]["author"], "（削除済み）");
+    send(&mut ws,json!({"type":"github","requestId":"err","instanceId":"gh-pi","query":{"kind":"issue","number":1}})).await?;
+    assert_eq!(
+        until(&mut ws, |m| m["requestId"] == "err").await?,
+        json!({"type":"github_result","requestId":"err","ok":false,"code":"not_found","message":"Issue or pull request not found"})
+    );
+    let calls = std::fs::read_to_string(root.join("calls"))?;
+    assert!(calls.contains(&format!("{} pr view 2 --json", repo.display())));
+    send(
+        &mut ws,
+        json!({"type":"host_restart","requestId":"reject","extra":1}),
+    )
+    .await?;
+    assert!(matches!(ws.next().await, Some(Ok(Message::Close(_)))));
+    Ok(())
+}
+
+#[tokio::test]
+async fn webhook_cli_private_loopback() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let t = tempfile::tempdir()?;
+    let d = t.path();
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/secret-path", l.local_addr()?);
+    let mut setup = cli(d)
+        .args(["webhook", "setup", "--machine", "fixture"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    setup
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{url}\nAuthorization: Bearer example\n").as_bytes())
+        .await?;
+    let o = setup.wait_with_output().await?;
+    assert_eq!(o.stdout, b"saved webhook.json\n");
+    assert_eq!(
+        std::fs::metadata(d.join("config/webhook.json"))?
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    let o = cli(d).args(["webhook", "status"]).output().await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&o.stdout)?,
+        json!({"configured":true,"machine":"fixture","watched":[]})
+    );
+    let job = tokio::spawn(async move {
+        for status in [200, 401] {
+            let (mut sock, _) = l.accept().await?;
+            let mut rd = BufReader::new(&mut sock);
+            let mut len = 0;
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                rd.read_line(&mut line).await?;
+                if line == "\r\n" {
+                    break;
+                }
+                if let Some(v) = line.to_lowercase().strip_prefix("content-length: ") {
+                    len = v.trim().parse()?
+                }
+                headers += &line;
+            }
+            assert!(headers.contains("authorization: Bearer example"));
+            let mut body = vec![0; len];
+            rd.read_exact(&mut body).await?;
+            let v: Value = serde_json::from_slice(&body)?;
+            assert_eq!(v["text"], "Pi webhook test on fixture.");
+            sock.write_all(
+                format!("HTTP/1.1 {status} Resp\r\nContent-Length: 11\r\n\r\nsecret-path")
+                    .as_bytes(),
+            )
+            .await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+    let test = || {
+        let mut c = cli(d);
+        c.args(["webhook", "test"]);
+        c
+    };
+    let o = test().output().await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&o.stdout)?,
+        json!({"ok":true,"status":200})
+    );
+    let o = test().output().await?;
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(o.stderr)?.trim(),
+        "WEBHOOK_REJECTED HTTP 401 (key changed, run setup again)"
+    );
+    job.await??;
+    assert!(cli(d).args(["webhook", "off"]).status().await?.success());
+    assert!(!d.join("config/webhook.json").exists());
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn service_owns_only_its_unit() -> Result<()> {
+    let t = tempfile::tempdir()?;
+    let d = t.path();
+    let bin = d.join("bin");
+    std::fs::create_dir(&bin)?;
+    script(
+        &bin.join("systemctl"),
+        r#"printf '%s\n' "$*" >> "$HOME/calls"
+case "$2" in enable) echo enabled > "$HOME/enabled";;stop) /bin/rm -f "$HOME/enabled";;is-active) echo active;;esac"#,
+    )?;
+    script(&bin.join("loginctl"), "echo no")?;
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")?.local_addr()?;
+    let command = |action: &str| {
+        let mut c = cli(d);
+        c.env("PATH", &bin)
+            .env("PIMATE_SERVICE_PORT", addr.port().to_string())
+            .args(["service", action]);
+        c
+    };
+    let unit = d.join("xdg/systemd/user/pimate-host.service");
+    std::fs::create_dir_all(unit.parent().unwrap())?;
+    std::fs::write(&unit, "foreign")?;
+    assert!(!command("uninstall").status().await?.success());
+    assert_eq!(std::fs::read_to_string(&unit)?, "foreign");
+    std::fs::remove_file(&unit)?;
+    let enabled = d.join("enabled");
+    let host = d.join("config/host.json");
+    let mock = tokio::spawn(async move {
+        while !enabled.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await
+        }
+        let l = tokio::net::TcpListener::bind(addr).await?;
+        let h: Value = serde_json::from_slice(&std::fs::read(host)?)?;
+        while enabled.exists() {
+            if let Ok(Ok((mut sock, _))) = timeout(Duration::from_millis(10), l.accept()).await {
+                let mut buf = [0; 512];
+                if sock.read(&mut buf).await? == 0 {
+                    continue;
+                }
+                let body = json!({"ok":true,"protocol":1,"hostId":h["hostId"]}).to_string();
+                sock.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await?
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    });
+    assert!(command("install").status().await?.success());
+    assert!(std::fs::read_to_string(&unit)?.contains("UMask=0077"));
+    let status = command("status").output().await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&status.stdout)?,
+        json!({"active":true,"installed":true,"linger":"no"})
+    );
+    assert!(command("uninstall").status().await?.success());
+    mock.await??;
+    assert!(!unit.exists());
+    let log = std::fs::read_to_string(d.join("calls"))?;
+    for cmd in [
+        "--user enable --now pimate-host.service",
+        "--user stop pimate-host.service",
+        "--user disable pimate-host.service",
+        "--user daemon-reload",
+    ] {
+        assert!(log.lines().any(|l| l == cmd))
+    }
+    let record = d.join("config/host-process.json");
+    std::fs::write(
+        &record,
+        json!({"owner":"pimate-rs","unit":"pimate-host-1-2"}).to_string(),
+    )?;
+    for (load, ok) in [("loaded", false), ("not-found", true)] {
+        script(
+            &bin.join("systemctl"),
+            &format!("case \"$2\" in stop) exit 5;; show) echo {load};exit 4;; esac"),
+        )?;
+        assert_eq!(command("stop").status().await?.success(), ok);
+        assert_eq!(record.exists(), !ok);
+    }
+    Ok(())
+}
+
+// Same local RC script and golden JSON for the Rust binary and (optionally) upstream Node CLI.
+#[tokio::test]
+async fn agent_cli_contract() -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    use tokio::net::UnixListener;
+    use tokio_util::codec::{Framed, LinesCodec};
+    let t = tempfile::tempdir()?;
+    let root = t.path();
+    let run = root.join("run");
+    std::fs::DirBuilder::new().mode(0o700).create(&run)?;
+    let exes = std::iter::once(PathBuf::from(env!("CARGO_BIN_EXE_pimate")))
+        .chain(env::var_os("PIMATE_TEST_TS_CLI").map(PathBuf::from));
+    for exe in exes {
+        for (args, expected) in [
+            (
+                vec!["prompt", "i", "hello", "--wait"],
+                json!({"deliveredAs":"prompt","outcome":"done","reply":"OK"}),
+            ),
+            (
+                vec!["prompt", "i", "hello", "--wait", "--steer"],
+                json!({"deliveredAs":"steer","outcome":"failed","error":"bad"}),
+            ),
+            (
+                vec!["prompt", "i", "hello", "--follow-up", "--wait"],
+                json!({"deliveredAs":"followUp","outcome":"aborted"}),
+            ),
+            (
+                vec!["wait", "i"],
+                json!({"outcome":"waiting_input","pending":[{"kind":"confirm","requestId":"R"}]}),
+            ),
+            (
+                vec!["wait", "i", "--timeout", "2"],
+                json!({"outcome":"done","reply":"first"}),
+            ),
+            (
+                vec!["wait", "i", "--timeout", "1"],
+                json!({"outcome":"timeout"}),
+            ),
+            (
+                vec!["prompt", "i", "bye", "--wait"],
+                json!({"deliveredAs":"prompt","outcome":"closed"}),
+            ),
+            (
+                vec!["history", "i", "--last", "2"],
+                json!([{"kind":"user","text":"hello"},{"kind":"assistant","text":"OK"}]),
+            ),
+            (
+                vec!["ui", "i", "R", "--answers", "[1]"],
+                json!({"requestId":"R","answers":[1]}),
+            ),
+            (vec!["abort", "i"], json!({"accepted":true})),
+            (vec!["shutdown", "i"], json!({"accepted":true})),
+        ] {
+            let l = UnixListener::bind(run.join("i.sock"))?;
+            let raced = args == ["wait", "i", "--timeout", "2"];
+            let pending = args == ["wait", "i"] || raced;
+            let job = tokio::spawn(async move {
+                let (sock, _) = l.accept().await?;
+                let mut io = Framed::new(sock, LinesCodec::new());
+                while let Some(line) = io.next().await {
+                    let r: Value = serde_json::from_str(&line?)?;
+                    let mut close = false;
+                    let result = match r["method"].as_str() {
+                        Some("hello") => {
+                            if raced {
+                                let events = [
+                                    json!({"type":"ui_request_end","requestId":"R"}),
+                                    json!({"type":"message_end","item":{"kind":"assistant","text":"first"}}),
+                                    json!({"type":"agent_settled"}),
+                                    json!({"type":"agent_start"}),
+                                ];
+                                for (n, e) in events.into_iter().enumerate() {
+                                    io.send(json!({"type":"event","instanceId":"i","seq":n+1,"event":e}).to_string()).await?;
+                                }
+                            }
+                            json!({"snapshot":{"protocol":1,"seq":0,"instanceId":"i","status":"running","pendingUI":if pending{json!([{"kind":"confirm","requestId":"R"}])}else{json!([])}}})
+                        }
+                        Some("prompt") => {
+                            let mode = r["params"]["deliverAs"].as_str().unwrap_or("prompt");
+                            close = r["params"]["text"] == "bye";
+                            if !close {
+                                for(seq,e)in [json!({"type":"agent_start"}),json!({"type":"message_end","item":match mode{"prompt"=>json!({"kind":"assistant","text":"OK"}),"steer"=>json!({"kind":"assistant","stopReason":"error","errorMessage":"bad"}),_=>json!({"kind":"user"})}}),json!({"type":"agent_settled","aborted":mode=="followUp"})].into_iter().enumerate(){io.send(json!({"type":"event","seq":seq+1,"instanceId":"i","event":e}).to_string()).await?}
+                            }
+                            json!({"deliveredAs":mode})
+                        }
+                        Some("history") => {
+                            json!({"items":[{"kind":"assistant","text":"old"},{"kind":"user","text":"hello"},{"kind":"toolResult"},{"kind":"assistant","text":"OK"}]})
+                        }
+                        Some("ui_respond") => r["params"].clone(),
+                        Some("abort" | "shutdown") => json!({"accepted":true}),
+                        _ => bail!("unknown call"),
+                    };
+                    io.send(
+                        json!({"id":r["id"],"type":"response","ok":true,"result":result})
+                            .to_string(),
+                    )
+                    .await?;
+                    if close {
+                        break;
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+            let o = timeout(
+                Duration::from_secs(8),
+                cli_exe(root, &exe)
+                    .args(&args)
+                    .env("PIMATE_ABDUCO", "/bin/true")
+                    .output(),
+            )
+            .await??;
+            ensure!(
+                o.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&o.stdout)?,
+                expected,
+                "{args:?}"
+            );
+            job.await??;
+            std::fs::remove_file(run.join("i.sock"))?;
+        }
+        let o = cli_exe(root, &exe)
+            .args(["prompt", "i", "hi", "--steer", "--follow-up"])
+            .output()
+            .await?;
+        assert_eq!(o.status.code(), Some(1));
+        assert!(o.stdout.is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    use tokio_util::codec::{Framed, LinesCodec};
+    let s = Server::start().await?;
+    let root = s.dir.path();
+    let http = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let url = format!("http://{}/", http.local_addr()?);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::post(move |axum::Json(v): axum::Json<Value>| {
+            let tx = tx.clone();
+            async move {
+                tx.send(v).await.unwrap();
+                axum::http::StatusCode::NO_CONTENT
+            }
+        }),
+    );
+    let web = tokio::spawn(async move { axum::serve(http, router).await });
+    let p = root.join("config");
+    std::fs::write(
+        p.join("webhook.json"),
+        json!({"url":url,"machine":"test","headers":{}}).to_string(),
+    )?;
+    let watch = p.join("webhook-watch");
+    std::fs::DirBuilder::new().mode(0o700).create(&watch)?;
+    std::fs::write(watch.join("pi"), "")?;
+    let token = s.paired().await?["token"].clone();
+    let mut ws = s.auth(&token).await?;
+    send(&mut ws, json!({"type":"watch_alerts","enabled":true})).await?;
+    let run = root.join("run");
+    let listener = tokio::net::UnixListener::bind(run.join("pi.sock"))?;
+    let task = tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut io = Framed::new(sock, LinesCodec::new());
+                let l = io.next().await.context("RC EOF")??;
+                let req: Value = serde_json::from_str(&l)?;
+                let snap = json!({"instanceId":"pi","protocol":1,"seq":10,"status":"waiting_input","session":{"id":"s"},"pendingUI":[{"requestId":"r","kind":"confirm","title":"Proceed?"}]});
+                io.send(
+                    json!({"id":req["id"],"type":"response","ok":true,"result":{"snapshot":snap}})
+                        .to_string(),
+                )
+                .await?;
+                let events = [
+                    json!({"type":"ui_request_end","requestId":"r","by":"tui"}),
+                    json!({"type":"session_changed","session":{"id":"s2","name":"New title"}}),
+                    json!({"type":"agent_start"}),
+                    json!({"type":"message_end","item":{"kind":"assistant","stopReason":"stop","text":"token=secret123"}}),
+                    json!({"type":"agent_settled","aborted":false}),
+                ];
+                for (i, e) in events.into_iter().enumerate() {
+                    let session = if i == 0 { "s" } else { "s2" };
+                    io.send(json!({"type":"event","instanceId":"pi","sessionId":session,"seq":11+i,"event":e}).to_string()).await?;
+                }
+
+                let _ = io.next().await;
+                Ok::<_, anyhow::Error>(())
+            });
+        }
+    });
+    std::fs::write(run.join("pi.json"),json!({"instanceId":"pi","pid":std::process::id(),"origin":"pc","cwd":root,"startedAt":1,"status":"idle","session":null,"protocol":1,"abducoSession":null}).to_string())?;
+    let a = until(&mut ws, |m| m["type"] == "alert").await?;
+    assert_eq!(
+        a["alert"],
+        json!({"id":"pi:15","kind":"complete","instanceId":"pi","sessionId":"s2"})
+    );
+    let mut kinds = vec![];
+    for _ in 0..3 {
+        let v = timeout(Duration::from_secs(6), rx.recv())
+            .await?
+            .context("no POST")?;
+        match v["event"].as_str() {
+            Some("request.opened") => assert_eq!(v["requestTitle"], "Proceed?"),
+            Some("request.resolved") => {
+                assert!(kinds.contains(&json!("request.opened")));
+                assert_eq!(v["by"], "tui")
+            }
+            Some("pi.finished") => {
+                assert_eq!(v["lastReply"], "[redacted]");
+                assert_eq!(v["sessionId"], "s2");
+                assert_eq!(v["title"], "New title");
+            }
+            _ => bail!("unexpected {v}"),
+        };
+        kinds.push(v["event"].clone());
+    }
+    assert_eq!(
+        kinds.iter().collect::<std::collections::HashSet<_>>().len(),
+        3
+    );
+    assert!(p.join("webhook-state.json").exists());
+    task.abort();
+    web.abort();
+    Ok(())
+}
+
+// Once discovery publishes the Pi there is no further discovery tick in the first second.
+#[tokio::test]
+async fn subscribe_starts_monitor_for_already_discovered_pi() -> Result<()> {
+    use tokio_util::codec::{Framed, LinesCodec};
+    let s = Server::start().await?;
+    let dir = s.dir.path().join("run");
+    let l = tokio::net::UnixListener::bind(dir.join("known.sock"))?;
+    let mut ws = s.auth(&s.paired().await?["token"]).await?;
+    std::fs::write(dir.join("known.json"),json!({"instanceId":"known","pid":std::process::id(),"origin":"pc","cwd":s.dir.path(),"startedAt":1,"status":"idle","session":null,"protocol":1,"abducoSession":null}).to_string())?;
+    let hello = async || -> Result<_> {
+        let (sock, _) = l.accept().await?;
+        let mut io = Framed::new(sock, LinesCodec::new());
+        let r: Value = serde_json::from_str(&io.next().await.context("hello")??)?;
+        io.send(json!({"id":r["id"],"type":"response","ok":true,"result":{"snapshot":{"protocol":1,"instanceId":"known","seq":0,"session":{"id":"s"}}}}).to_string()).await?;
+        Ok(io)
+    };
+    drop(timeout(Duration::from_secs(6), hello()).await??);
+    until(&mut ws, |v| {
+        v["instances"].as_array().is_some_and(|a| !a.is_empty())
+    })
+    .await?;
+    send(&mut ws, json!({"type":"watch_alerts","enabled":true})).await?;
+    let mut io = timeout(Duration::from_secs(1), hello()).await??;
+    io.send(json!({"type":"event","instanceId":"known","sessionId":"s","seq":1,"event":{"type":"status","status":"waiting_input"}}).to_string()).await?;
+    assert_eq!(
+        until(&mut ws, |v| v["type"] == "alert").await?["alert"]["kind"],
+        "input"
+    );
     Ok(())
 }

@@ -55,6 +55,8 @@ impl Out {
     }
 }
 struct App {
+    monitor: std::sync::Mutex<crate::alerts::Monitor>,
+    package: crate::update::Package,
     terminal: crate::terminal::Terminal,
     login: Arc<crate::login::Login>,
     folder_cache: tokio::sync::Mutex<Option<(tokio::time::Instant, Vec<Value>)>>,
@@ -71,6 +73,19 @@ impl App {
     async fn operation(&self, m: Value, hold: Option<CancellationToken>) -> Value {
         let kind = m["type"].as_str().unwrap();
         let mut reply = match kind {
+            "github_status" => crate::github::status().await,
+            "github" => {
+                let cwd = self
+                    .instances
+                    .borrow()
+                    .iter()
+                    .find(|r| r["instanceId"] == m["instanceId"])
+                    .and_then(|r| r["cwd"].as_str())
+                    .map(String::from);
+                crate::github::query(cwd, &m["query"]).await
+            }
+            "update" | "update_check" => self.package.run(kind == "update_check").await,
+            "host_restart" => crate::update::restart(crate::service::managed()).await,
             "dirs" => {
                 let path = m["path"].as_str().unwrap().to_owned();
                 let dirs = tokio::task::spawn_blocking(move || crate::operations::dirs(&path))
@@ -177,7 +192,11 @@ async fn listen(
         );
         listeners.push(l);
     }
+    let mut monitor = crate::alerts::Monitor::new()?;
+    monitor.refresh(&dir, &instances.borrow());
     let app = Arc::new(App {
+        monitor: std::sync::Mutex::new(monitor),
+        package: crate::update::Package::running(),
         terminal,
         login,
         last_spawn: Default::default(),
@@ -209,6 +228,8 @@ async fn listen(
                 app.login.observe(&dir, v.login);
                 versions.send_replace(v.incompatible);
                 let next = summaries(v.instances);
+                let mut monitor = app.monitor.lock().unwrap();
+                monitor.refresh(&dir, &next);
                 tx.send_if_modified(|prev| {
                     if *prev == next {
                         return false;
@@ -224,7 +245,7 @@ async fn listen(
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
+        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":a.package.current()}),
     )
 }
 async fn pair(State(a): State<Arc<App>>, req: Request) -> (StatusCode, Json<Value>) {
@@ -361,7 +382,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         generation: CancellationToken::new(),
     };
     let c = &a.config;
-    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true}}));
+    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":a.package.current(),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true,"alerts":true,"githubStatus":true,"github":true,"packageUpdate":true,"hostRestart":crate::service::managed()}}));
     let mut list = a.instances.clone();
     let mut current = list.borrow_and_update().clone();
     out.send(&json!({"type":"instances","instances":current}));
@@ -372,8 +393,10 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
     let mut inflight = std::collections::HashSet::new();
     let mut holds: HashMap<String, (Uuid, crate::login::Hold)> = HashMap::new();
     let mut admin = JoinSet::new();
+    let mut alerts: Option<tokio::sync::broadcast::Receiver<Value>> = None;
     let end = loop {
         let m = tokio::select! {biased;
+            alert=async{alerts.as_mut().unwrap().recv().await},if alerts.is_some()=>{match alert{Ok(alert)=>out.send(&json!({"type":"alert","alert":alert})),Err(_)=>break 1009};continue},
             notice=revoked.recv()=>{match notice{Ok(id) if id==device=>break Code::Revoked as u16,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>tick.reset_immediately(),_=>()}continue},
             _=out.slow.cancelled()=>break 1009,
             _=tick.tick()=>{match c.active(&device){Ok(false)=>break Code::Revoked as u16,Err(_)=>break 1011,Ok(true)=>continue}},
@@ -398,8 +421,33 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         };
         let kind = m["type"].as_str().unwrap_or("");
         match kind {
+            "watch_alerts" if m["enabled"].is_boolean() => {
+                if m["enabled"] == true && alerts.is_none() {
+                    alerts = Some(
+                        a.monitor
+                            .lock()
+                            .unwrap()
+                            .subscribe(&a.dir, &a.instances.borrow()),
+                    );
+                } else if m["enabled"] == false {
+                    alerts = None;
+                }
+            }
             "ping" if m["t"].is_number() => out.send(&json!({"type":"pong","t":m["t"]})),
-            "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders" => {
+            "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders"
+            | "github_status" | "github" | "update" | "update_check" | "host_restart" => {
+                let keys = m.as_object().unwrap().len();
+                if (matches!(
+                    kind,
+                    "github_status" | "update" | "update_check" | "host_restart"
+                ) && keys != 2)
+                    || (kind == "github"
+                        && (keys != 4
+                            || !crate::github::valid(&m["query"])
+                            || !m["instanceId"].as_str().is_some_and(rc::valid_id)))
+                {
+                    break Code::Protocol as u16;
+                }
                 if kind != "auth_session_end" && !short(&m["requestId"]) {
                     break Code::Protocol as u16;
                 }
@@ -439,7 +487,8 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 let out = out.clone();
                 // Accept launch operations independently of the reply connection. A
                 // dropped JoinHandle detaches the operation; the join set bounds waiters.
-                let host_owned = matches!(kind, "spawn" | "auth_session");
+                let host_owned =
+                    matches!(kind, "spawn" | "auth_session" | "update" | "host_restart");
                 let operation = async move { a.operation(m, hold).await };
                 let launch = if host_owned {
                     Ok(tokio::spawn(operation))

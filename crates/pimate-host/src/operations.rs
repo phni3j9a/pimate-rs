@@ -204,8 +204,8 @@ pub async fn spawn(
         "Another spawn is too recent"
     );
     *guard = Some(Instant::now());
-    let (id, name) = term
-        .launch(dir, &cwd, p.trust == Some(true), false, &args)
+    let (id, name, _) = term
+        .launch(dir, &cwd, p.trust == Some(true), "mobile", &args)
         .await?;
     let mut result = json!({"ok":true,"instanceId":id,"abducoSession":name});
     if let Some(text) = p.message

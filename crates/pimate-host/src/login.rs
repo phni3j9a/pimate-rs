@@ -89,8 +89,8 @@ impl Login {
         ]
         .map(String::from);
         ensure!(!released.is_cancelled(), "auth hold released");
-        let (id, _) = t
-            .launch(dir, &operations::home()?, false, true, &args)
+        let (id, _, _) = t
+            .launch(dir, &operations::home()?, false, "auth", &args)
             .await?;
         self.state.lock().unwrap().id = Some(id.clone());
         let ready = operations::ready(dir, &id).await;

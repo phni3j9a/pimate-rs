@@ -17,7 +17,7 @@ use std::{
 use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
-fn executable(name: &Path) -> Option<PathBuf> {
+pub(crate) fn executable(name: &Path) -> Option<PathBuf> {
     search(name, None)
 }
 fn search(name: &Path, rejected: Option<&fs::Metadata>) -> Option<PathBuf> {
@@ -238,9 +238,9 @@ impl Terminal {
         run: &Path,
         cwd: &Path,
         trust: bool,
-        auth: bool,
+        origin: &str,
         args: &[String],
-    ) -> Result<(String, String)> {
+    ) -> Result<(String, String, &'static str)> {
         let ab = self.executable.as_ref().context("abduco not found")?;
         let pi = executable(Path::new(
             &env::var_os("PIMATE_PI").unwrap_or_else(|| "pi".into()),
@@ -251,7 +251,13 @@ impl Terminal {
         let name = format!("pimate-{}", &id[..8]);
         let ns = Sockets::open(run)?;
         let path = ns.path(&name)?;
-        let mut c = if let Some(runner) = user_scope_runner().await {
+        let runner = user_scope_runner().await;
+        let isolation = if runner.is_some() {
+            "systemd-scope"
+        } else {
+            "detached"
+        };
+        let mut c = if let Some(runner) = runner {
             let mut c = Command::new(&runner);
             let help = timeout(
                 Duration::from_secs(2),
@@ -291,11 +297,14 @@ impl Terminal {
         c.args(args)
             .env("PIMATE_INSTANCE_ID", &id)
             .env("PIMATE_RUN_DIR", std::path::absolute(run)?)
-            .env("PIMATE_ORIGIN", "mobile")
+            .env(
+                "PIMATE_ORIGIN",
+                if origin == "auth" { "mobile" } else { origin },
+            )
             .env("PIMATE_TRUST", if trust { "yes" } else { "no" })
             .env("PIMATE_ABDUCO_SESSION", &name)
             .env_remove("PIMATE_PURPOSE");
-        if auth {
+        if origin == "auth" {
             c.env("PIMATE_PURPOSE", "auth");
         }
         // Pin relative entries for child interpreters too (e.g. Pi's env-node shebang).
@@ -317,7 +326,7 @@ impl Terminal {
             });
         }
         ensure!(c.status().await?.success(), "Pi launcher failed");
-        Ok((id, name))
+        Ok((id, name, isolation))
     }
 }
 
@@ -340,6 +349,7 @@ mod tests {
         let status = std::process::Command::new(exe)
             .env_clear()
             .env("HOME", t.path())
+            .env("XDG_CONFIG_HOME", t.path().join("xdg"))
             .env("PATH", t.path())
             .env("PIMATE_TEST_UNBUNDLED", "1")
             .env("ABDUCO_SOCKET_DIR", t.path())
