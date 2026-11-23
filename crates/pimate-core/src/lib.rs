@@ -175,3 +175,6 @@ const _: () = assert!(!matches!(log::STATIC_MAX_LEVEL, log::LevelFilter::Trace))
 fn trace_is_compiled_out() {
     assert!(tracing::level_filters::STATIC_MAX_LEVEL < tracing::level_filters::LevelFilter::TRACE);
 }
+// Cargo ignores dependency workspaces' [patch] tables. A consumer forgetting the
+// patch must fail to build rather than silently reverting to payload-bearing logs.
+const _: () = tokio_tungstenite::tungstenite::PIMATE_CLOSE_LOGS_REDACTED;

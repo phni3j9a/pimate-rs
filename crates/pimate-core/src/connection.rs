@@ -63,7 +63,7 @@ pub struct Connection {
     shared: Arc<Shared>,
     selection: watch::Sender<Option<String>>,
     task: tokio::task::JoinHandle<()>,
-    images: tokio::sync::Mutex<indexmap::IndexMap<String, String>>,
+    images: Arc<tokio::sync::Mutex<indexmap::IndexMap<String, String>>>,
 }
 impl Drop for Connection {
     fn drop(&mut self) {
@@ -190,7 +190,7 @@ impl Connection {
         } = &operation
         {
             // Serialize large replies; immutable transcript entries are shared within one connection.
-            let mut cache = self.images.lock().await;
+            let mut cache = self.images.clone().lock_owned().await;
             self.check(operation.clone())?;
             let key = json!([target.instance, target.session, method, params]).to_string();
             if let Some(v) = cache.shift_remove(&key) {
@@ -200,25 +200,38 @@ impl Connection {
             // Files can change in place. Only immutable history entries are cached.
             let cacheable =
                 target.session.is_some() && *method == pimate_protocol::RcMethod::EntryImage;
-            let v = self.dispatch(operation).await?;
-            if cacheable {
-                const MAX: usize = 24 * 1024 * 1024;
-                let mut bytes = cache.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
-                    + key.len()
-                    + v.len();
-                while bytes > MAX && !cache.is_empty() {
-                    let (k, v) = cache.shift_remove_index(0).unwrap();
-                    bytes -= k.len() + v.len()
-                }
-                if bytes <= MAX {
-                    cache.insert(key, v.clone());
-                }
-            }
-            return Ok(v);
+            let rx = self.enqueue(operation)?;
+            // The actor keeps processing even if a UI cancels its await. Keep the image
+            // permit until the receipt or disconnect, not just until the UI goes away.
+            return runtime()
+                .spawn(async move {
+                    let v = rx.await.unwrap_or(Err(Error::OutcomeUnknown))?;
+                    if cacheable {
+                        const MAX: usize = 24 * 1024 * 1024;
+                        let mut bytes = cache.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
+                            + key.len()
+                            + v.len();
+                        while bytes > MAX && !cache.is_empty() {
+                            let (k, v) = cache.shift_remove_index(0).unwrap();
+                            bytes -= k.len() + v.len()
+                        }
+                        if bytes <= MAX {
+                            cache.insert(key, v.clone());
+                        }
+                    }
+                    Ok(v)
+                })
+                .await
+                .unwrap_or(Err(Error::OutcomeUnknown));
         }
-        self.dispatch(operation).await
+        self.enqueue(operation)?
+            .await
+            .unwrap_or(Err(Error::OutcomeUnknown))
     }
-    async fn dispatch(&self, operation: Operation) -> Result<String, Error> {
+    fn enqueue(
+        &self,
+        operation: Operation,
+    ) -> Result<oneshot::Receiver<Result<String, Error>>, Error> {
         let tx = self
             .shared
             .online
@@ -229,7 +242,7 @@ impl Connection {
         let (reply, rx) = oneshot::channel();
         tx.try_send(Command(operation, reply))
             .map_err(|_| Error::Offline)?;
-        rx.await.unwrap_or(Err(Error::OutcomeUnknown))
+        Ok(rx)
     }
 }
 async fn send(ws: &mut Ws, v: Value) -> Result<(), Error> {
@@ -473,6 +486,11 @@ async fn attempt(
                     .collect::<Vec<_>>()
                 {
                     let p = pending.remove(&id).unwrap();
+                    // An image may still arrive on this generation. Close it before
+                    // allowing another large response to share its outbound budget.
+                    if matches!(p.method.as_deref(), Some("entry_image" | "file_image")) {
+                        return Err(Error::Timeout);
+                    }
                     s.edit(|st| {
                         st.release(&id);
                         if p.method.as_deref() == Some("abort") {
@@ -776,13 +794,13 @@ mod regressions {
         assert!(futures_util::poll!(&mut d).is_pending());
         let cmd = rx.try_recv().unwrap();
         assert!(rx.try_recv().is_err());
-        cmd.1.send(Ok("image1".into())).unwrap();
-        a.await.unwrap();
+        drop(a); // UI closed after send; the transport still owns this slot.
         assert!(futures_util::poll!(&mut b).is_pending());
-        rx.try_recv().unwrap().1.send(Ok("image2".into())).unwrap();
+        assert!(rx.try_recv().is_err());
+        cmd.1.send(Ok("image1".into())).unwrap();
+        tokio::select! {_=&mut b=>panic!("premature receipt"),cmd=rx.recv()=>cmd.unwrap().1.send(Ok("image2".into())).unwrap()};
         b.await.unwrap();
-        assert!(futures_util::poll!(&mut d).is_pending());
-        rx.try_recv().unwrap().1.send(Ok("image3".into())).unwrap();
+        tokio::select! {_=&mut d=>panic!("premature receipt"),cmd=rx.recv()=>cmd.unwrap().1.send(Ok("image3".into())).unwrap()};
         d.await.unwrap();
     }
 }

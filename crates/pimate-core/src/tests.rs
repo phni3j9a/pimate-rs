@@ -532,3 +532,127 @@ fn only_observed_session_arrival_is_proof_of_a_missing_result() {
         assert!(s.get("busy", "operation").is_null());
     }
 }
+#[test]
+fn a_history_entry_confirms_at_most_one_identical_steer() {
+    for history_before_stop in [false, true] {
+        let mut s = view();
+        for id in ["one", "two"] {
+            s.prepare(id, send("again", vec![]), true).unwrap();
+            s.prompt_ack(id, &json!("steer"));
+        }
+        let history = json!({"kind":"user","entryId":"entry","text":"again"});
+        if history_before_stop {
+            event(&mut s, 3, json!({"type":"message_end","item":history}));
+        }
+        s.settle_drafts(&json!("i"), &json!("s"), true);
+        sync(&mut s, json!([history]));
+        sync(&mut s, json!([history]));
+        assert_eq!(s.drafts.len(), 1);
+        assert_eq!(s.get("draft", "two")["status"], "unconfirmed");
+        sync(
+            &mut s,
+            json!([history,{"kind":"user","entryId":"second","text":"again"}]),
+        );
+        assert!(s.drafts.is_empty());
+    }
+}
+fn accepted(s: &mut State, op: &str) {
+    use pimate_protocol::RcMethod::*;
+    let cmd = if op == "compact" {
+        rc(Compact, json!({}))
+    } else {
+        rc(SessionOp, json!({"op":op,"arg":"node"}))
+    };
+    s.prepare("request", cmd, true).unwrap();
+    let mut busy = s.get("busy", "operation").clone();
+    busy["accepted"] = json!(true);
+    s.put("busy", "operation", busy);
+}
+#[test]
+fn operation_receipts_on_either_side_of_snapshot_have_identical_effect() {
+    for (op, e) in [
+        (
+            "tree",
+            json!({"type":"session_op_done","op":"tree","editorText":"original","cancelled":false}),
+        ),
+        ("compact", json!({"type":"compact_error","error":"failed"})),
+        ("compact", json!({"type":"compact_done"})),
+    ] {
+        for before in [false, true] {
+            let mut s = view();
+            accepted(&mut s, op);
+            event(
+                &mut s,
+                6,
+                json!({"type":"session_changed","reason":"tree","session":{"id":"s"}}),
+            );
+            if before {
+                event(&mut s, 9, e.clone());
+            }
+            s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":10,"session":{"id":"s"}},"history":{"items":[]}}));
+            if !before {
+                assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
+                event(&mut s, 11, e.clone());
+            }
+            assert_eq!(s.get("operationResult", "latest")["event"], e);
+            assert_eq!(s.get("operationResult", "latest")["id"], "request");
+            assert!(s.get("busy", "operation").is_null());
+        }
+    }
+}
+#[test]
+fn switch_arrival_uses_resume_reason() {
+    let mut s = view();
+    accepted(&mut s, "switch");
+    event(
+        &mut s,
+        6,
+        json!({"type":"session_changed","reason":"resume","session":{"id":"dest"}}),
+    );
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":10,"session":{"id":"dest"}},"history":{"items":[]}}));
+    assert_eq!(s.get("operationResult", "latest")["outcome"], "done");
+}
+#[test]
+fn accepted_operation_disconnect_reports_unknown_and_keeps_it_on_resubscription() {
+    for op in ["compact", "tree"] {
+        let mut s = view();
+        accepted(&mut s, op);
+        s.changes.clear();
+        s.reset();
+        assert!(
+            s.changes
+                .iter()
+                .any(|c| matches!(c,Change::Upsert(i) if i.collection=="operationResult"))
+        );
+        s.reset();
+        sync(&mut s, json!([]));
+        assert_eq!(
+            s.get("operationResult", "latest"),
+            &json!({"id":"request","instanceId":"i","outcome":"unknown"})
+        );
+    }
+}
+#[test]
+fn indistinguishable_late_compaction_does_not_claim_new_request_succeeded() {
+    let mut s = view();
+    accepted(&mut s, "compact");
+    sync(&mut s, json!([]));
+    s.prepare(
+        "second",
+        rc(pimate_protocol::RcMethod::Compact, json!({})),
+        true,
+    )
+    .unwrap();
+    event(&mut s, 4, json!({"type":"compact_done"}));
+    assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
+    assert_eq!(s.get("busy", "operation")["id"], "second");
+    event(
+        &mut s,
+        5,
+        json!({"type":"compact_error","error":"which one?"}),
+    );
+    assert_eq!(
+        s.get("operationResult", "latest"),
+        &json!({"id":"second","outcome":"unknown"})
+    );
+}

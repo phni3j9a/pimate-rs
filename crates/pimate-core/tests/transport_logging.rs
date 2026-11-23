@@ -33,6 +33,12 @@ async fn application_trace_logger_cannot_observe_auth_frames() {
             assert!(m.is_text());
             ws.send(m).await.unwrap();
         }
+        ws.close(Some(tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            code: 4401.into(),
+            reason: "fake-bearer/fake-key".into(),
+        }))
+        .await
+        .unwrap();
     });
     let mut app = connect_async(format!("ws://{addr}/ws")).await.unwrap().0;
     for frame in [
@@ -42,6 +48,9 @@ async fn application_trace_logger_cannot_observe_auth_frames() {
         app.send(Message::Text(frame.into())).await.unwrap();
         assert!(app.next().await.unwrap().unwrap().is_text());
     }
+    assert!(
+        matches!(app.next().await,Some(Ok(Message::Close(Some(c)))) if u16::from(c.code)==4401)
+    );
     host.await.unwrap();
     assert_eq!(LOGGER.0.load(Ordering::SeqCst), 0);
 }

@@ -32,6 +32,7 @@ pub(crate) struct State {
     pub selected: Option<String>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
+    late_ops: Vec<Value>,
     pub caps: Value,
     pub drafts: Vec<Draft>,
 }
@@ -101,8 +102,16 @@ impl State {
     }
     pub fn reset(&mut self) {
         self.effect_seq = None;
+        let op = self.get("busy", "operation");
+        if op["accepted"] == true {
+            self.put(
+                "operationResult",
+                "latest",
+                json!({"id":op["id"],"instanceId":self.selected,"outcome":"unknown"}),
+            )
+        }
         self.clear("busy");
-        self.clear("operationResult");
+        self.late_ops.clear();
         self.clear("notice");
         self.reset_view()
     }
@@ -132,13 +141,16 @@ impl State {
             v["status"] = json!(status);
             self.put("draft", id, v);
             if matches!(status, "unconfirmed" | "queued")
-                && self.drafts.iter().find(|d| d.id == id).is_some_and(|d| {
-                    self.rows
-                        .get("entry")
-                        .is_some_and(|r| r.values().any(|v| self.matches_entry(d, v)))
-                })
+                && let Some((draft, entry)) =
+                    self.drafts.iter().position(|d| d.id == id).and_then(|i| {
+                        self.rows
+                            .get("entry")?
+                            .iter()
+                            .find(|(_, v)| self.matches_entry(&self.drafts[i], v))
+                            .map(|(entry, _)| (i, entry.clone()))
+                    })
             {
-                self.forget_draft(id)
+                self.confirm(draft, &entry)
             }
         }
     }
@@ -166,9 +178,17 @@ impl State {
                 Some("queued" | "unconfirmed")
             ) && self.matches_entry(d, &v)
         }) {
-            let id = self.drafts.remove(i).id;
-            self.remove("draft", &id)
+            self.confirm(i, &id)
         }
+    }
+    fn confirm(&mut self, i: usize, entry: &str) {
+        let confirmed = self.drafts.remove(i);
+        for d in &mut self.drafts {
+            if d.instance == confirmed.instance && d.session == confirmed.session {
+                d.known.insert(entry.into());
+            }
+        }
+        self.remove("draft", &confirmed.id)
     }
     fn matches_entry(&self, d: &Draft, v: &Value) -> bool {
         v["kind"] == "user"
@@ -343,26 +363,51 @@ impl State {
                         self.put("notice", "latest", json!({"seq":seq,"event":e}));
                         return false;
                     }
-                    let op = self.get("busy", "operation");
-                    if !(k == "session_op_done"
-                        && op["method"] == "session_op"
-                        && op["op"] == e["op"]
-                        || k.starts_with("compact_")
-                            && op["method"] == "compact"
-                            && op["sessionId"] == m["sessionId"])
+                    let matches = |op: &Value| {
+                        k == "session_op_done"
+                            && op["method"] == "session_op"
+                            && op["op"] == e["op"]
+                            || k.starts_with("compact_")
+                                && op["method"] == "compact"
+                                && op["sessionId"] == m["sessionId"]
+                    };
+                    // The event carries no request ID. Never apply a single event to two operations.
+                    let late = self.late_ops.iter().position(matches);
+                    if let Some(i) = late
+                        && matches(self.get("busy", "operation"))
                     {
+                        // Either request could have emitted this event. One receipt consumes
+                        // one slot; neither payload can subsequently be attributed safely.
+                        self.late_ops.remove(i);
+                        let mut active = self.get("busy", "operation").clone();
+                        active["ambiguous"] = json!(true);
+                        self.put("busy", "operation", active);
+                        return false;
+                    }
+                    let op = if let Some(i) = late {
+                        &self.late_ops[i]
+                    } else {
+                        self.get("busy", "operation")
+                    };
+                    if !matches(op) {
                         return false;
                     }
                     let mut result = json!({"id":op["id"],"sessionId":m["sessionId"],"event":e});
-                    if e["op"] == "tree"
-                        && (op["sessionId"] != m["sessionId"]
-                            || self.ready() && op["sessionId"] != self.get("view", "session")["id"]
-                            || !op["arrival"].is_null() && op["arrival"] != op["sessionId"])
+                    if op["ambiguous"] == true
+                        || e["op"] == "tree"
+                            && (op["sessionId"] != m["sessionId"]
+                                || self.ready()
+                                    && op["sessionId"] != self.get("view", "session")["id"]
+                                || !op["arrival"].is_null() && op["arrival"] != op["sessionId"])
                     {
                         result = json!({"id":op["id"],"outcome":"unknown"})
                     }
                     self.put("operationResult", "latest", result);
-                    self.remove("busy", "operation");
+                    if let Some(i) = late {
+                        self.late_ops.remove(i);
+                    } else {
+                        self.remove("busy", "operation")
+                    }
                     return false;
                 }
                 if self.seq.is_none_or(|n| seq <= n) {
@@ -380,10 +425,12 @@ impl State {
                         let mut op = self.get("busy", "operation").clone();
                         if !op.is_null()
                             && op["method"] == "session_op"
-                            && op["op"] == e["reason"]
+                            && (op["op"] == e["reason"]
+                                || op["op"] == "switch" && e["reason"] == "resume")
                             && op["sessionId"] == self.get("view", "session")["id"]
                         {
                             if op["op"] == "reload" {
+                                self.retain_late(&op);
                                 self.put(
                                     "operationResult",
                                     "latest",
@@ -533,13 +580,28 @@ impl State {
             }
         }
     }
+    fn retain_late(&mut self, op: &Value) {
+        // Bounded by the protocol operation kinds; a newer indistinguishable
+        // provisional result cannot safely absorb an older event as proof.
+        if let Some(slot) = self
+            .late_ops
+            .iter_mut()
+            .find(|old| old["method"] == op["method"] && old["op"] == op["op"])
+        {
+            *slot = op.clone();
+            slot["ambiguous"] = json!(true)
+        } else {
+            self.late_ops.push(op.clone())
+        }
+    }
     fn finish_missing_op(&mut self, session: &Value) {
-        let op = self.get("busy", "operation");
+        let op = self.get("busy", "operation").clone();
         if op["accepted"] == true || !op["arrival"].is_null() {
+            self.retain_late(&op);
             self.put(
                 "operationResult",
                 "latest",
-                json!({"id":op["id"],"outcome":if op["op"]!="tree"&&!op["arrival"].is_null()&&op["arrival"]==*session&&op["sessionId"]!=*session{"done"}else{"unknown"}}),
+                json!({"id":op["id"],"outcome":if op["ambiguous"]!=true&&op["op"]!="tree"&&!op["arrival"].is_null()&&op["arrival"]==*session&&op["sessionId"]!=*session{"done"}else{"unknown"}}),
             );
             self.remove("busy", "operation")
         }
