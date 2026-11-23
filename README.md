@@ -41,6 +41,12 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 
 `host_restart`・`github_status`・端末管理・更新・GitHub 要求などの余分なキーを拒否する検査は、Host が生の JSON を受け取った時点で行います。型への変換は、認証・権限・要求内容の検査の代わりにはなりません。要求は自動再送しません。
 
+### 会話の Markdown
+
+[`pimate-markdown`](crates/pimate-markdown) の `parse(source, file_images)` は描画用の `Document` を返します。見出し・段落・表のセルは装飾付きテキストと画像の列、引用とリストは子 block を持ちます。`Block::plain_text()` は選択用の本文、`id..end` は元 Markdown の UTF-8 バイト範囲、`Table::markdown` は「表を Markdown でコピー」用です。`cell_width` / `table_widths` で TS 版と同じ列幅を計算できます。
+
+`Document::images` は表示順の画像、`links` は http(s) リンクです。PC パスは `file_images` が true の場合だけ画像になります。解析自体は通信もファイルアクセスもしません。逐次表示では新しい全文を解析して `new.changes_since(&old)` を呼び、最上位 block の削除と追加・更新を ID 順に反映します（ID は同一メッセージ・同じ親の中で安定）。後から届く参照定義も反映するため全文を読み直す方式です。長い会話はチャンクをまとめて UI スレッドの外で解析してください。計測: `cargo run --release -p pimate-markdown --example stream_time`。
+
 ## Host を試す（Linux / macOS）
 
 [`crates/pimate-host`](crates/pimate-host) は `pimate` 単一バイナリです。既存 Host と並べて試す場合、**両方の端末で同じ一時ディレクトリと別ポート**を指定してください。`list` / `serve` は runDir の古い登録を掃除します。
