@@ -7,15 +7,15 @@ export type ViewImage = { mimeType: ViewImageMimeType, data: string, width?: num
 export type AuthProviderId = "openai" | "openai-codex" | "anthropic" | "opencode" | "opencode-go";
 export type ProviderAuthType = "oauth" | "api_key";
 export type AuthProviderInfoSource = "stored" | "runtime" | "environment" | "fallback" | "models_json_key" | "models_json_command";
-export type AuthProviderInfo = { id: AuthProviderId, 
+export type AuthProviderInfo = { id: AuthProviderId,
 /**
  * OpenAI and OpenCode (Zen / Go) support API keys only; OAuth is available for Codex and Anthropic.
  */
-methods: Array<ProviderAuthType>, 
+methods: Array<ProviderAuthType>,
 /**
  * Stored credential metadata only; not proof that it is valid.
  */
-stored: ProviderAuthType | null, 
+stored: ProviderAuthType | null,
 /**
  * Active registry snapshot; environment/models.json/runtime auth can survive logout.
  */
@@ -25,19 +25,19 @@ export type AuthFlowAuthorization = { url: string, userCode?: string, };
 export type AuthFlowPromptKind = "api_key" | "code";
 export type AuthFlowPrompt = { id: string, kind: AuthFlowPromptKind, };
 export type AuthFlowError = "login_failed" | "storage_failed";
-export type AuthFlow = { id: string, provider: AuthProviderId, method: ProviderAuthType, revision: number, 
+export type AuthFlow = { id: string, provider: AuthProviderId, method: ProviderAuthType, revision: number,
 /**
  * Interactive deadline; an already-started commit/refresh can finish up to 60s later.
  */
-expiresAt: number, status: AuthFlowStatus, 
+expiresAt: number, status: AuthFlowStatus,
 /**
  * Public authorization URL and optional user-facing device code, never tokens.
  */
-authorization?: AuthFlowAuthorization, prompt?: AuthFlowPrompt, 
+authorization?: AuthFlowAuthorization, prompt?: AuthFlowPrompt,
 /**
  * Fixed safe messages only. storage_failed may have unknown persistence outcome: inspect metadata, never auto-resend.
  */
-error?: AuthFlowError, 
+error?: AuthFlowError,
 /**
  * Credential saved but local registry refresh failed. Reopen models/reload Pi; do not resend credentials.
  */
@@ -56,92 +56,92 @@ export type AuthLogoutResult = { refreshRequired: boolean, };
 export type SubagentBackend = "pi-subagents" | "example";
 export type SubagentState = "queued" | "running" | "waiting" | "paused" | "stopping" | "complete" | "failed" | "stopped" | "unknown";
 export type SubagentMode = "single" | "parallel" | "chain" | "workflow" | "unknown";
-export type SubagentUsage = { input?: number, output?: number, 
+export type SubagentUsage = { input?: number, output?: number,
 /**
  * Total tokens as reported by the backend (no double counting of cache).
  */
 total?: number, costUsd?: number, };
-export type SubagentActivity = { 
+export type SubagentActivity = {
 /**
  * Tool currently running in the child, e.g. "read".
  */
-tool?: string, 
+tool?: string,
 /**
  * Display string of its arguments, e.g. "src/api/client.ts" (may be truncated by the backend).
  */
 args?: string, startedAt?: number, };
 export type SubagentAction = "steer" | "follow_up" | "interrupt" | "resume" | "stop" | "stop_child" | "abort_parent";
-export type SubagentChild = { 
+export type SubagentChild = {
 /**
  * Stable within the run (backend child id such as "step:0", or the index).
  */
-id: string, index: number, agent: string, 
+id: string, index: number, agent: string,
 /**
  * Short human title (e.g. from the pi-subagents session name), without the agent prefix.
  */
-title?: string, state: SubagentState, model?: string, thinking?: string, startedAt?: number, endedAt?: number, activity?: SubagentActivity, usage?: SubagentUsage, error?: string, exitCode?: number | null, 
+title?: string, state: SubagentState, model?: string, thinking?: string, startedAt?: number, endedAt?: number, activity?: SubagentActivity, usage?: SubagentUsage, error?: string, exitCode?: number | null,
 /**
  * Question text while `waiting`, when readable.
  */
-question?: string, 
+question?: string,
 /**
  * Whether `subagent_transcript` can return the child's work record.
  */
-hasTranscript: boolean, 
+hasTranscript: boolean,
 /**
  * Child-scoped actions (steer, follow_up, stop_child, resume).
  */
 actions: Array<SubagentAction>, };
 export type SubagentRunStage = { index: number, count: number, };
-export type SubagentRun = { 
+export type SubagentRun = {
 /**
  * RC key: pi-subagents runId, or `tool:<toolCallId>` for runs only known through a tool call.
  */
-id: string, backend: SubagentBackend, 
+id: string, backend: SubagentBackend,
 /**
  * Keeps running after the parent turn ends (pi-subagents async).
  */
-background: boolean, mode: SubagentMode, 
+background: boolean, mode: SubagentMode,
 /**
  * Parent tool call that started (or launched) the run; links the chat tool row to the run.
  */
-toolCallId?: string, state: SubagentState, startedAt?: number, updatedAt?: number, endedAt?: number, 
+toolCallId?: string, state: SubagentState, startedAt?: number, updatedAt?: number, endedAt?: number,
 /**
  * Chain progress (0-based index).
  */
-stage?: SubagentRunStage, children: Array<SubagentChild>, usage?: SubagentUsage, error?: string, 
+stage?: SubagentRunStage, children: Array<SubagentChild>, usage?: SubagentUsage, error?: string,
 /**
  * Run this one was resumed from / was resumed into (pi-subagents `resume` creates a new run).
  */
-resumedFrom?: string, resumedAs?: string, 
+resumedFrom?: string, resumedAs?: string,
 /**
  * Run-scoped actions (interrupt, stop, abort_parent).
  */
 actions: Array<SubagentAction>, };
 export type SubagentsStateBackendsItem = { backend: SubagentBackend, version?: string, supported: boolean, };
-export type SubagentsState = { runs: Array<SubagentRun>, 
+export type SubagentsState = { runs: Array<SubagentRun>,
 /**
  * Backends seen in this Pi, with the version when known. `supported: false` → app shows plain tool rows only.
  */
 backends: Array<SubagentsStateBackendsItem>, };
-export type SubagentCounts = { 
+export type SubagentCounts = {
 /**
  * queued / running / waiting / stopping children.
  */
 active: number, waiting: number, paused: number, failed: number, };
-export type SubagentTranscript = { 
+export type SubagentTranscript = {
 /**
  * Parent's request to the child, unredacted when available.
  */
-task?: string, 
+task?: string,
 /**
  * Child messages normalized like the main transcript (initial task excluded). Message granularity, not token streaming.
  */
-items: Array<TranscriptItem>, 
+items: Array<TranscriptItem>,
 /**
  * Opaque; pass back to get only newer items.
  */
-cursor: string, 
+cursor: string,
 /**
  * Older records were dropped by the backend or the RC size limit.
  */
@@ -158,40 +158,40 @@ export type PimateWriteDetailsPimateKind = "write_diff";
 export type PimateWriteDetailsPimateOmitted = "too_large" | "binary" | "unreadable" | "concurrent";
 export type PimateWriteDetailsPimate = { kind: PimateWriteDetailsPimateKind, existed: boolean, patch?: string, omitted?: PimateWriteDetailsPimateOmitted, };
 export type PimateWriteDetails = { pimate: PimateWriteDetailsPimate, };
-export type TranscriptImages = { 
+export type TranscriptImages = {
 /**
  * JPEG/PNG/WebP previews, each <= 512 KiB decoded; not subject to the prompt total/count limit.
  */
-images?: Array<PromptImage>, 
+images?: Array<PromptImage>,
 /**
  * Original zero-based image index for each preview; absent on old RCs means array position.
  */
-imageIndices?: Array<number>, 
+imageIndices?: Array<number>,
 /**
  * Total original images, including omitted previews and GIFs.
  */
 imageCount?: number, };
-export type TranscriptItem = { "kind": "user", entryId: string, text: string, timestamp?: number, 
+export type TranscriptItem = { "kind": "user", entryId: string, text: string, timestamp?: number,
 /**
  * JPEG/PNG/WebP previews, each <= 512 KiB decoded; not subject to the prompt total/count limit.
  */
-images?: Array<PromptImage>, 
+images?: Array<PromptImage>,
 /**
  * Original zero-based image index for each preview; absent on old RCs means array position.
  */
-imageIndices?: Array<number>, 
+imageIndices?: Array<number>,
 /**
  * Total original images, including omitted previews and GIFs.
  */
-imageCount?: number, } | { "kind": "assistant", entryId: string, text: string, thinking?: string, toolCalls: Array<ToolCallRef>, model?: ModelRef, usage?: Usage, stopReason?: string, errorMessage?: string, timestamp?: number, } | { "kind": "tool_result", entryId: string, toolCallId: string, toolName: string, text: string, truncated?: boolean, isError: boolean, details?: unknown, detailsOmitted?: boolean, timestamp?: number, 
+imageCount?: number, } | { "kind": "assistant", entryId: string, text: string, thinking?: string, toolCalls: Array<ToolCallRef>, model?: ModelRef, usage?: Usage, stopReason?: string, errorMessage?: string, timestamp?: number, } | { "kind": "tool_result", entryId: string, toolCallId: string, toolName: string, text: string, truncated?: boolean, isError: boolean, details?: unknown, detailsOmitted?: boolean, timestamp?: number,
 /**
  * JPEG/PNG/WebP previews, each <= 512 KiB decoded; not subject to the prompt total/count limit.
  */
-images?: Array<PromptImage>, 
+images?: Array<PromptImage>,
 /**
  * Original zero-based image index for each preview; absent on old RCs means array position.
  */
-imageIndices?: Array<number>, 
+imageIndices?: Array<number>,
 /**
  * Total original images, including omitted previews and GIFs.
  */
@@ -200,50 +200,50 @@ export type UIRequestKind = "select" | "confirm" | "input" | "editor" | "questio
 export type UIQuestionOptionsItem = { label: string, description?: string, };
 export type UIQuestion = { question: string, options: Array<UIQuestionOptionsItem>, multiSelect?: boolean, };
 export type UIQuestionAnswer = { selected: Array<string>, custom?: string, };
-export type UIRequest = { requestId: string, kind: UIRequestKind, title: string, message?: string, options?: Array<string>, placeholder?: string, 
+export type UIRequest = { requestId: string, kind: UIRequestKind, title: string, message?: string, options?: Array<string>, placeholder?: string,
 /**
  * editor: the TUI editor stays open after a remote answer (Pi's editor() has no AbortSignal).
  */
-tuiStaysOpen?: boolean, 
+tuiStaysOpen?: boolean,
 /**
  * questionnaire: all questions, answered together (`message` is the optional context).
  */
 questions?: Array<UIQuestion>, };
 export type ContextInfo = { tokens: number | null, contextWindow: number, percent: number | null, };
-export type QuotaWindow = { 
+export type QuotaWindow = {
 /**
  * Window length: 300 = 5 hours, 10080 = 7 days.
  */
-minutes: number, 
+minutes: number,
 /**
  * 0-100.
  */
-usedPercent: number, 
+usedPercent: number,
 /**
  * Epoch ms; absent when the provider did not report it.
  */
 resetsAt?: number, };
 export type QuotaSource = "codex" | "claude";
-export type SubscriptionQuota = { source: QuotaSource, 
+export type SubscriptionQuota = { source: QuotaSource,
 /**
  * Shortest window first.
  */
-windows: Array<QuotaWindow>, 
+windows: Array<QuotaWindow>,
 /**
  * RC clock (epoch ms) when the response carrying it arrived.
  */
 observedAt: number, };
 export type PcPrompt = { kind: string, title?: string, };
-export type ModelInfo = { provider: string, id: string, name: string, contextWindow?: number, 
+export type ModelInfo = { provider: string, id: string, name: string, contextWindow?: number,
 /**
  * Thinking levels this model accepts; ["off"] for non-reasoning models.
  */
 thinkingLevels: Array<ThinkingLevel>, };
-export type SessionListItem = { id: string, 
+export type SessionListItem = { id: string,
 /**
  * Session file; pass as `session_op` `switch` arg.
  */
-path: string, name?: string, firstMessage: string, messageCount: number, created: number, modified: number, 
+path: string, name?: string, firstMessage: string, messageCount: number, created: number, modified: number,
 /**
  * The instance's current session.
  */
@@ -251,69 +251,69 @@ current: boolean, };
 export type SessionTreeItem = { id: string, parentId: string | null, kind: string, preview: string, label?: string, timestamp?: number, onBranch: boolean, isCurrent: boolean, isLeaf: boolean, };
 export type SessionTree = { nodes: Array<SessionTreeItem>, leafId: string | null, truncated: boolean, };
 export type InstanceSnapshotStreaming = { text: string, thinking: string, };
-export type InstanceSnapshot = { 
+export type InstanceSnapshot = {
 /**
  * PiMate package version; absent on pre-M5 RCs.
  */
-version?: string, protocol: number, instanceId: string, pid: number, cwd: string, origin: Origin, 
+version?: string, protocol: number, instanceId: string, pid: number, cwd: string, origin: Origin,
 /**
  * abduco session name when started by the Host; null for a Pi started directly in a terminal.
  */
-abducoSession: string | null, startedAt: number, session: SessionRef | null, status: InstanceStatus, 
+abducoSession: string | null, startedAt: number, session: SessionRef | null, status: InstanceStatus,
 /**
  * A Pi run is between agent_start and agent_settled, including extension dialogs after agent_end.
  */
-agentActive?: boolean, 
+agentActive?: boolean,
 /**
  * Explicit capability: older RCs ignore unknown prompt fields. Never send images without this.
  */
-promptImages?: boolean, 
+promptImages?: boolean,
 /**
  * Maximum prompt image count; missing means 1 when promptImages is true. Shared byte budgets still apply.
  */
-promptImageLimit?: number, 
+promptImageLimit?: number,
 /**
  * On-demand current-session user/toolResult image retrieval via entry_image.
  */
-entryImages?: boolean, 
+entryImages?: boolean,
 /**
  * Local file_image retrieval; relative paths use session cwd, absolute paths are allowed.
  */
-fileImages?: boolean, 
+fileImages?: boolean,
 /**
  * Session tree read, navigation and labels. Absent on older RCs.
  */
-sessionTree?: boolean, 
+sessionTree?: boolean,
 /**
  * RC command discovery, expansion and explicit command acknowledgements.
  */
-slashCommands?: boolean, 
+slashCommands?: boolean,
 /**
  * Auth-specific RPCs for supported providers. Absent = update PC package first.
  */
-providerAuth?: boolean, model: ModelRef | null, thinking: ThinkingLevel | null, pendingUI: Array<UIRequest>, 
+providerAuth?: boolean, model: ModelRef | null, thinking: ThinkingLevel | null, pendingUI: Array<UIRequest>,
 /**
  * TUI-only prompt currently open on the PC, if any.
  */
-pcPrompt?: PcPrompt | null, context?: ContextInfo | null, 
+pcPrompt?: PcPrompt | null, context?: ContextInfo | null,
 /**
  * Last event seq emitted before this snapshot was taken.
  */
-seq: number, 
+seq: number,
 /**
  * Assistant output streamed so far in the current, not yet finished message (for late subscribers).
  */
-streaming?: InstanceSnapshotStreaming, piVersion?: string, 
+streaming?: InstanceSnapshotStreaming, piVersion?: string,
 /**
  * Subagent runs of the current session (M4). Absent from older RCs.
  */
-subagents?: SubagentsState, 
+subagents?: SubagentsState,
 /**
  * Subscription allowances seen since this Pi started. Absent from older RCs; empty = none seen yet.
  */
 quotas?: Array<SubscriptionQuota>, };
 export type InstanceMetaPurpose = "auth";
-export type InstanceMeta = { version?: string, protocol: number, instanceId: string, pid: number, cwd: string, origin: Origin, abducoSession: string | null, startedAt: number, session: SessionRef | null, status: InstanceStatus, updatedAt: number, subagents?: SubagentCounts, 
+export type InstanceMeta = { version?: string, protocol: number, instanceId: string, pid: number, cwd: string, origin: Origin, abducoSession: string | null, startedAt: number, session: SessionRef | null, status: InstanceStatus, updatedAt: number, subagents?: SubagentCounts,
 /**
  * Host-owned login Pi (`auth_session`): never listed to apps / `pimate list`; Host forwards only hello and auth_*.
  */
@@ -358,24 +358,24 @@ export type SubagentsRpcParams = { method: string, params?: unknown, timeoutMs?:
 export type SubagentsRpcResult = { reply: unknown, };
 export type RcMethod = "auth_list" | "auth_begin" | "auth_wait" | "auth_respond" | "auth_cancel" | "auth_logout" | "hello" | "history" | "entry_image" | "file_image" | "prompt" | "abort" | "ui_respond" | "set_thinking" | "set_model" | "compact" | "session_op" | "session_tree" | "set_label" | "commands" | "models" | "set_default_model" | "set_scoped_models" | "sessions" | "shutdown" | "subagent_transcript" | "subagent_control" | "subagents_rpc";
 export type ErrorCode = "bad_request" | "unknown_method" | "not_ready" | "busy" | "instance_mismatch" | "session_changed" | "no_such_request" | "not_found" | "timeout" | "unsupported" | "internal";
-export type ProtocolError = { code: ErrorCode, message?: string, 
+export type ProtocolError = { code: ErrorCode, message?: string,
 /**
  * e.g. `session_changed` carries the current session.
  */
 data?: unknown, };
 export type EventMessageType = "event";
 export type EventMessage = { type: EventMessageType, instanceId: string, sessionId: string | null, seq: number, event: InstanceEvent, };
-export type PairingLink = { 
+export type PairingLink = {
 /**
  * `host:port` reachable from the phone (Tailscale IP or MagicDNS name). IPv6 hosts are bracketed.
  */
-address: string, 
+address: string,
 /**
  * Single-use pairing code (base64url, >=128 bits), valid for a few minutes.
  */
 code: string, hostName: string, hostId: string, };
 export type PairRequest = { code: string, deviceName: string, };
-export type PairResponse = { hostId: string, hostName: string, deviceId: string, 
+export type PairResponse = { hostId: string, hostName: string, deviceId: string,
 /**
  * Long-lived bearer token (base64url, 256 bits). The Host stores only its hash.
  */
@@ -384,84 +384,84 @@ export type PairErrorError = "invalid_code" | "expired_code" | "bad_request";
 export type PairError = { error: PairErrorError, };
 export type PiAlertKind = "input" | "complete" | "failed" | "child_waiting" | "child_paused" | "child_failed";
 export type PiAlert = { id: string, instanceId: string, sessionId: string, kind: PiAlertKind, };
-export type HostInfo = { 
+export type HostInfo = {
 /**
  * Only send device requests when true.
  */
-pairedDevices?: boolean, 
+pairedDevices?: boolean,
 /**
  * True only when a managed Host can be restarted.
  */
-hostRestart?: boolean, 
+hostRestart?: boolean,
 /**
  * Only send github_status when true.
  */
-githubStatus?: boolean, 
+githubStatus?: boolean,
 /**
  * Only send update_check / update when true; older Hosts close on unknown messages.
  */
-packageUpdate?: boolean, 
+packageUpdate?: boolean,
 /**
  * Read-only GitHub queries via the PC's gh login; never send to older Hosts.
  */
-github?: boolean, 
+github?: boolean,
 /**
  * Optional capability: only send watch_alerts when true.
  */
-alerts?: boolean, 
+alerts?: boolean,
 /**
  * Auth RPC timeout/long-poll support; RC providerAuth capability is also required.
  */
-providerAuth?: boolean, 
+providerAuth?: boolean,
 /**
  * Optional capability: only send `auth_session` / `auth_session_end` when true (older Hosts close on unknown messages).
  */
-authSession?: boolean, 
+authSession?: boolean,
 /**
  * Optional capability: only send `dirs` (folder completion) when true; older Hosts close on unknown messages.
  */
 dirs?: boolean, hostId: string, name: string, protocol: number, version: string, platform: string, };
-export type InstanceSummary = { instanceId: string, cwd: string, origin: Origin, abducoSession: string | null, 
+export type InstanceSummary = { instanceId: string, cwd: string, origin: Origin, abducoSession: string | null,
 /**
  * Whether a PC terminal is attached to the abduco session; null when not started under abduco.
  */
-pcAttached: boolean | null, session: SessionRef | null, status: InstanceStatus, startedAt: number, updatedAt: number, 
+pcAttached: boolean | null, session: SessionRef | null, status: InstanceStatus, startedAt: number, updatedAt: number,
 /**
  * Subagent counts (M4); absent when the RC does not report them.
  */
 subagents?: SubagentCounts, };
-export type FolderInfo = { 
+export type FolderInfo = {
 /**
  * Absolute path.
  */
-path: string, 
+path: string,
 /**
  * Last time a Pi session was used there (ms), if known.
  */
-lastUsed?: number, 
+lastUsed?: number,
 /**
  * Number of running instances in this folder.
  */
-running: number, 
+running: number,
 /**
  * Saved project-trust decision (~/.pi/agent/trust.json), if any.
  */
 trusted?: boolean, };
 export type SpawnParamsModel = { provider: string, id: string, };
-export type SpawnParams = { 
+export type SpawnParams = {
 /**
  * Absolute path or `~/...`; must be an existing directory.
  */
-cwd: string, 
+cwd: string,
 /**
  * Project-trust decision for this start only (handled by RC's `project_trust` handler so the TUI prompt
  * never blocks a phone-started Pi). Omitted = decline.
  */
-trust?: boolean, model?: SpawnParamsModel, thinking?: ThinkingLevel, 
+trust?: boolean, model?: SpawnParamsModel, thinking?: ThinkingLevel,
 /**
  * PiMate's `pimate_ask` tool: true adds it (`--tools +pimate_ask`), false removes it, omitted = Pi settings.
  */
-askTool?: boolean, 
+askTool?: boolean,
 /**
  * First prompt, sent once the Pi is ready.
  */

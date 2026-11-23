@@ -698,7 +698,7 @@ pub enum AppMessage {
         #[serde(rename = "holdId")]
         hold_id: String,
     },
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[ts(skip)]
     Unknown,
 }
@@ -919,7 +919,7 @@ pub enum HostMessage {
         #[serde(flatten)]
         outcome: AuthSessionResultOutcome,
     },
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[ts(skip)]
     Unknown,
 }

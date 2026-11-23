@@ -139,7 +139,7 @@ macro_rules! methods {
     (auth { $($auth:ident : $an:ident ($ap:ident, $ar:ident)),+ } rc { $($rc:ident : $rn:ident ($p:ident, $r:ident)),+ }) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
         #[serde(rename_all="snake_case")]
-        pub enum RcMethod { $($an,)+ $($rn,)+ }
+        pub enum RcMethod { $($an,)+ $($rn,)+ #[serde(other, skip_serializing)] #[ts(skip)] Unknown }
         pub mod method {
             use super::*;
             $(one_method!($an, super::$ap, super::$ar);)+

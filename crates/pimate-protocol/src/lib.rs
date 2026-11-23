@@ -1,7 +1,7 @@
 //! PiMate v1 JSON wire types. Validate privileged requests on the original JSON
 //! before deserializing: unknown object fields are deliberately ignored here.
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_json::Value;
+use serde_json::{Number, Value};
 use ts_rs::TS;
 mod auth;
 mod domain;

@@ -98,7 +98,7 @@ pub struct Usage {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub cost: Option<f64>,
+    pub cost: Option<Number>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -322,7 +322,7 @@ pub enum TranscriptItem {
         #[ts(optional)]
         timestamp: Option<u64>,
     },
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[ts(skip)]
     Unknown,
 }
@@ -435,7 +435,7 @@ pub struct ContextInfo {
     pub tokens: Option<u64>,
     pub context_window: u64,
     #[serde(deserialize_with = "Deserialize::deserialize")]
-    pub percent: Option<f64>,
+    pub percent: Option<Number>,
 }
 
 /// One subscription allowance window, read passively from an ordinary model response (never polled).
@@ -444,9 +444,9 @@ pub struct ContextInfo {
 #[serde(rename_all = "camelCase")]
 pub struct QuotaWindow {
     /// Window length: 300 = 5 hours, 10080 = 7 days.
-    pub minutes: u64,
+    pub minutes: Number,
     /// 0-100.
-    pub used_percent: f64,
+    pub used_percent: Number,
     /// Epoch ms; absent when the provider did not report it.
     #[serde(
         default,
@@ -454,7 +454,7 @@ pub struct QuotaWindow {
         skip_serializing_if = "Option::is_none"
     )]
     #[ts(optional)]
-    pub resets_at: Option<u64>,
+    pub resets_at: Option<Number>,
 }
 
 /// `codex`: ChatGPT/Codex OAuth (`openai-codex`). `claude`: Claude Pro/Max OAuth (`anthropic`).
@@ -968,7 +968,7 @@ pub enum InstanceEvent {
         #[ts(type = "unknown")]
         data: Value,
     },
-    #[serde(other)]
+    #[serde(other, skip_serializing)]
     #[ts(skip)]
     Unknown,
 }
