@@ -17,48 +17,64 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import kotlinx.coroutines.*
 import uniffi.pimate_ffi.*
 
-private fun blocks(source: String) = parse(source, false).use { it.blocks() }
+/** 解析した回答: 描画する block と、表示順の画像（全画面で順に送る）。 */
+private class Doc(val blocks: List<Block>, val pics: List<Pic>)
+
+private val empty = Doc(emptyList(), emptyList())
+
+// files: PC のパスを画像として扱う（file_image が使える Pi だけ。使えなければ文字のまま）。
+private fun doc(source: String, files: Boolean) =
+    parse(source, files).use { d ->
+        Doc(d.blocks(), d.images().map { Pic.Shared(it.kind, it.src) })
+    }
 
 // 解析済みの回答。スクロールで戻った回答を解析し直さずにすぐ出す。
-private val parsed = android.util.LruCache<String, List<Block>>(64)
+private val parsed = android.util.LruCache<Pair<Boolean, String>, Doc>(64)
 // 逐次表示の最後の解析（増えるたびに上のものを追い出さないよう分ける）。確定した回答が同じ本文ならそのまま使う。
-private var lastLive: Pair<String, List<Block>>? = null
+private var lastLive: Triple<Boolean, String, Doc>? = null
 
-private fun cached(source: String) =
-    parsed[source] ?: lastLive?.takeIf { it.first == source }?.second
+private fun cached(source: String, files: Boolean) =
+    parsed[files to source]
+        ?: lastLive?.takeIf { it.first == files && it.second == source }?.third
 
 // 逐次表示から確定した直後は、解析が済むまで逐次表示の最後の解析を出す（回答が 1 フレーム消えない）。
-private fun initial(source: String) =
-    cached(source)
+private fun initial(source: String, files: Boolean) =
+    cached(source, files)
         ?: lastLive
-            ?.takeIf { source.startsWith(it.first) && it.first.length * 5 >= source.length * 4 }
-            ?.second
-        ?: emptyList()
+            ?.takeIf {
+                it.first == files &&
+                    source.startsWith(it.second) &&
+                    it.second.length * 5 >= source.length * 4
+            }
+            ?.third
+        ?: empty
+
+/** 回答の中の画像（表示順）。タイルから全画面を開くときに、同じ回答の画像をまとめて渡す。 */
+private val LocalDocPics = compositionLocalOf<List<Pic>> { emptyList() }
 
 /** 回答の本文。長押しで OS の選択になり、範囲を広げてコピーできる（選択は 1 つの回答の中）。 解析は UI スレッドの外で行い、live（逐次表示）は前の表示を残したまま差し替える。 */
 @Composable
 internal fun Markdown(source: String, modifier: Modifier = Modifier, live: Boolean = false) {
+    val files = LocalPics.current.files
     val shown by
-        produceState(initial(source), source) {
-            value = cached(source) ?: withContext(Dispatchers.Default) { blocks(source) }
-            if (live) lastLive = source to value else parsed.put(source, value)
+        produceState(initial(source, files), source, files) {
+            value = cached(source, files) ?: withContext(Dispatchers.Default) { doc(source, files) }
+            if (live) lastLive = Triple(files, source, value) else parsed.put(files to source, value)
         }
-    SelectionContainer(modifier) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            shown.forEach { key(it.id) { BlockView(it) } }
+    CompositionLocalProvider(LocalDocPics provides shown.pics) {
+        SelectionContainer(modifier) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                shown.blocks.forEach { key(it.id) { BlockView(it) } }
+            }
         }
     }
 }
@@ -144,12 +160,60 @@ private fun Spans(
     )
 }
 
+/** 段落。画像は文字の途中で分け、出てくる順にタイルで置く（タップで、その回答の画像を全画面で送って見られる）。 */
+@Composable
+private fun Paragraph(
+    spans: List<Inline>,
+    style: TextStyle = LocalTextStyle.current,
+    modifier: Modifier = Modifier,
+    align: TextAlign? = null,
+    links: Boolean = true,
+) {
+    if (spans.none { it is Inline.Image }) return Spans(spans, style, modifier, align, links)
+    val pics = LocalPics.current
+    val all = LocalDocPics.current
+    // 画像で区切った文字の列と、画像を、元の順に並べる。
+    val parts =
+        remember(spans) {
+            val out = mutableListOf<Any>()
+            var run = mutableListOf<Inline>()
+            for (span in spans) {
+                if (span is Inline.Image) {
+                    if (run.any { it is Inline.Text && it.text.isNotBlank() }) out.add(run)
+                    run = mutableListOf()
+                    out.add(span.v1)
+                } else run += span
+            }
+            if (run.any { it is Inline.Text && it.text.isNotBlank() }) out.add(run)
+            out
+        }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        parts.forEach { part ->
+            if (part is MarkdownImage) {
+                val index = part.index.toInt()
+                // 選択の対象にしない（長押しはタイルの上では何もしない）。
+                DisableSelection {
+                    PicTile(
+                        all[index],
+                        part.alt.ifEmpty { "画像" },
+                        compact = false,
+                        { if (index in all.indices) pics.open(all, index) },
+                    )
+                }
+            } else {
+                @Suppress("UNCHECKED_CAST")
+                Spans(part as List<Inline>, style, align = align, links = links)
+            }
+        }
+    }
+}
+
 @Composable
 private fun BlockView(block: Block) {
     when (val c = block.content) {
-        is Content.Paragraph -> Spans(c.v1)
+        is Content.Paragraph -> Paragraph(c.v1)
         is Content.Heading ->
-            Spans(
+            Paragraph(
                 c.spans,
                 when (c.level.toInt()) {
                     1 -> Type.sheet
@@ -309,7 +373,7 @@ private fun TableBody(
                 else Modifier
             ) {
                 widths.forEachIndexed { col, width ->
-                    Spans(
+                    Paragraph(
                         row.getOrElse(col) { emptyList() },
                         if (index == 0) Type.body.copy(fontWeight = FontWeight.SemiBold)
                         else Type.body,
@@ -340,13 +404,7 @@ private fun TableView(table: Table, modifier: Modifier = Modifier) {
 private fun TableViewer(table: Table, close: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
-    Dialog(
-        close,
-        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        // ステータスバーの帯を暗くしない（下の画面と同じ背景色がそのまま見える）。
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect { window?.setDimAmount(0f) }
+    FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
             Row(
                 Modifier.height(52.dp).padding(horizontal = 2.dp),

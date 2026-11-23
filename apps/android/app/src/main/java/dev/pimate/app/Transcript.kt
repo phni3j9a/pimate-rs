@@ -1,10 +1,92 @@
 package dev.pimate.app
 
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import uniffi.pimate_ffi.ImageKind
 
 // 状態の層（Rows）の JSON を画面の行にする。組み立ては JSON を知らない buildRows が行う。
 
 internal data class Call(val id: String, val name: String, val subject: String)
+
+/** 表示する画像の出どころ。id はメモリ内のキャッシュの名前（空ならキャッシュしない）。 */
+internal sealed interface Pic {
+    val id: String
+
+    /** 状態の層がすでに持っている画像（base64）。 */
+    data class Inline(override val id: String, val mime: String, val data: String) : Pic
+
+    /** 履歴の発言・ツール結果の画像。entry_image で取りに行く。 */
+    data class Entry(val entryId: String, val index: Int) : Pic {
+        override val id
+            get() = "e:$entryId:$index"
+    }
+
+    /** PC のファイル。file_image で取りに行く。 */
+    data class File(val path: String) : Pic {
+        override val id
+            get() = "" // PC のファイルは回答間で上書きされる。
+    }
+
+    /** Markdown は表示領域に入るまで大きな共有文字列を展開しない。 */
+    class Shared(
+        private val kind: ImageKind,
+        private val source: uniffi.pimate_ffi.SharedTextInterface,
+    ) : Pic {
+        override val id = ""
+
+        suspend fun resolve(): Pic =
+            withContext(Dispatchers.Default) {
+                val src = source.value()
+                when (kind) {
+                    ImageKind.REMOTE -> Web(src)
+                    ImageKind.FILE -> File(src)
+                    ImageKind.DATA ->
+                        Inline(
+                            "",
+                            src.substringBefore(';').removePrefix("data:"),
+                            src.substringAfter(','),
+                        )
+                }
+            }
+    }
+
+    /** http(s)。スマホから直接取りに行く。 */
+    data class Web(val url: String) : Pic {
+        override val id
+            get() = "w:$url"
+    }
+}
+
+/** 表示中のタイル1個の中だけで比較する。再解析で共有ハンドルが変わっても同じ参照先は読み直さない。 */
+internal fun Flow<Pic>.tileSources(): Flow<Pic?> =
+    map { shared ->
+            val src =
+                try {
+                    if (shared is Pic.Shared) shared.resolve() else shared
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+            // 比較のために大きな base64 本文を保持しない。Web/PC は参照先の文字列だけ。
+            val key =
+                if (shared is Pic.Shared && src is Pic.Inline)
+                    withContext(Dispatchers.Default) {
+                        src.mime to
+                            ByteBuffer.wrap(
+                                MessageDigest.getInstance("SHA-256").digest(src.data.toByteArray())
+                            )
+                    }
+                else src
+            key to src
+        }
+        .distinctUntilChangedBy { it.first }
+        .map { it.second }
 
 internal data class Entry(
     val id: String,
@@ -21,6 +103,8 @@ internal data class Entry(
     val isError: Boolean = false,
     val change: String = "", // edit / write の「+6 −2」
     val time: Long? = null,
+    /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
+    val pics: ImageSlots = ImageSlots.Empty,
 )
 
 /** 実行中のツール（"tool" の行）。履歴に結果が載るまでの表示に使う。 */
@@ -32,6 +116,7 @@ internal data class Live(
     val output: String,
     val durationMs: Long?,
     val nested: Boolean,
+    val startedAt: Long? = null,
 )
 
 internal enum class ToolState(val label: String) {
@@ -45,7 +130,11 @@ internal sealed interface ChatRow {
     /** 畳まれるターンの要約行の key。開かれるまで表示しない。 */
     val fold: String?
 
-    data class User(override val key: String, val text: String) : ChatRow {
+    data class User(
+        override val key: String,
+        val text: String,
+        val pics: ImageSlots = ImageSlots.Empty,
+    ) : ChatRow {
         override val fold: String?
             get() = null
     }
@@ -60,6 +149,8 @@ internal sealed interface ChatRow {
         val text: String,
         val live: Boolean,
         override val fold: String? = null,
+        /** 考えた時間。この端末が見ていた発言だけ分かる。 */
+        val ms: Long? = null,
     ) : ChatRow
 
     data class Text(
@@ -77,7 +168,24 @@ internal sealed interface ChatRow {
         val output: String,
         val meta: String,
         override val fold: String? = null,
+        val pics: ImageSlots = ImageSlots.Empty,
+        /** 実行中のツールの開始時刻（epoch ms）。分からなければ秒数を出さない。 */
+        val since: Long? = null,
     ) : ChatRow
+
+    /** 会話の切り替え（PC の /resume など）。履歴にはない行で、切り替えを見た位置に置く。 */
+    data class Switch(
+        val reason: String,
+        val byPhone: Boolean,
+        val from: String,
+        val to: String,
+    ) : ChatRow {
+        override val key
+            get() = "switched"
+
+        override val fold: String?
+            get() = null
+    }
 
     /** tone: note（補足）/ error（失敗）。 */
     data class Note(
@@ -112,6 +220,7 @@ internal fun buildRows(
     active: Boolean,
     streamText: String = "",
     streamThinking: String = "",
+    thinkingMs: Map<String, Long> = emptyMap(),
 ): List<ChatRow> {
     // 結果は、同じ ID でまだ結果のない直前の呼び出しに対応付ける（ID がターンをまたいで重なる履歴でも取り違えない）。
     val results = HashMap<Pair<String, String>, Entry>() // (呼び出し元 entry, call ID) → 結果
@@ -165,6 +274,8 @@ internal fun buildRows(
             state,
             result?.text ?: now?.output.orEmpty(),
             meta,
+            pics = result?.pics ?: ImageSlots.Empty,
+            since = now?.startedAt?.takeIf { state == ToolState.Running },
         )
     }
 
@@ -180,7 +291,7 @@ internal fun buildRows(
                 val folded: ChatRow? =
                     when {
                         row is ChatRow.Thinking -> row.copy(fold = key)
-                        row is ChatRow.Tool -> row.copy(fold = key)
+                        row is ChatRow.Tool && row.pics.size == 0 -> row.copy(fold = key)
                         row is ChatRow.Text && row.key != finalKey -> row.copy(fold = key)
                         else -> null
                     }
@@ -208,11 +319,12 @@ internal fun buildRows(
                 started = e.time
                 ended = null
                 finalKey = null
-                turn += ChatRow.User(e.id, e.text)
+                turn += ChatRow.User(e.id, e.text, e.pics)
             }
             "assistant" -> {
                 if (e.thinking.isNotBlank())
-                    turn += ChatRow.Thinking("${e.id}:thinking", e.thinking, false)
+                    turn +=
+                        ChatRow.Thinking("${e.id}:thinking", e.thinking, false, ms = thinkingMs[e.id])
                 if (e.text.isNotBlank()) {
                     turn += ChatRow.Text("${e.id}:text", e.text, if (e.final) e.meta else "")
                     if (e.final) finalKey = "${e.id}:text"
@@ -258,6 +370,7 @@ internal fun buildRows(
 internal fun gap(prev: ChatRow?, row: ChatRow): Int =
     when {
         prev == null -> 0
+        prev is ChatRow.Switch || row is ChatRow.Switch -> 28
         row is ChatRow.User -> if (prev is ChatRow.User) 12 else 32
         row is ChatRow.Summary -> 10
         prev is ChatRow.Summary -> if (row is ChatRow.Text) 6 else 4
@@ -267,6 +380,26 @@ internal fun gap(prev: ChatRow?, row: ChatRow): Int =
         row is ChatRow.Text -> if (prev is ChatRow.Text) 12 else 8
         else -> 12
     }
+
+/**
+ * 切り替えの行を置く位置: 切り替えを見たときの最後の発言（anchor）より後に始まったターンの前。 そういうターンがまだなければ末尾（いちばん新しい位置）。anchor が
+ * null（空の会話に切り替わった）なら先頭。
+ */
+internal fun placeSwitch(
+    rows: List<ChatRow>,
+    note: ChatRow.Switch,
+    entries: List<Entry>,
+    anchor: String?,
+    known: Boolean,
+): List<ChatRow> {
+    val after = if (!known) entries.lastIndex else entries.indexOfFirst { it.id == anchor }
+    val order = entries.withIndex().associate { it.value.id to it.index }
+    val at =
+        rows.indexOfFirst { it is ChatRow.User && (order[it.key] ?: -1) > after }.let {
+            if (it < 0) rows.size else it
+        }
+    return rows.subList(0, at) + note + rows.subList(at, rows.size)
+}
 
 /** 中核が再接続をやめた接続（待っても戻らない）。repair: 再ペアリングで直る。そうでなければ更新してから再接続する。 */
 internal enum class Stop(val label: String, val detail: String, val repair: Boolean) {
@@ -297,9 +430,12 @@ internal fun notice(
     history: Boolean,
     asking: Boolean,
     pcPrompt: Boolean,
+    offline: Boolean = false,
 ): Pair<String, Boolean>? =
     when {
         !selected -> "一覧から Pi を選ぶと、ここに会話が表示されます" to true
+        // 切断中は、中核が会話を持っていない（つながり直すと読み直す）。
+        offline -> "PC に再接続しています。書きかけの下書きは残ります。" to false
         phase == "\"instance_gone\"" -> "この Pi は終了しました" to true
         phase == "\"subscribe_error\"" -> "この Pi を開けませんでした" to true
         !ready -> "読み込み中…" to false
@@ -351,7 +487,7 @@ private fun change(patch: String): String {
     return if (del > 0) "+$add −$del" else "+$add"
 }
 
-private fun count(n: Double): String =
+internal fun count(n: Double): String =
     when {
         n < 1000 -> n.toLong().toString()
         n < 10_000 -> "%.1fk".format(n / 1000).replace(".0k", "k")
@@ -361,7 +497,7 @@ private fun count(n: Double): String =
 
 internal fun entry(o: JSONObject): Entry {
     val id = o.str("entryId")
-    val time = if (o.has("timestamp")) o.optLong("timestamp") else null
+    val time = if (!o.isNull("timestamp")) o.optLong("timestamp") else null
     return when (val kind = o.str("kind")) {
         "assistant" -> {
             val calls = o.optJSONArray("toolCalls")
@@ -413,11 +549,59 @@ internal fun entry(o: JSONObject): Entry {
                 isError = o.optBoolean("isError"),
                 change = if (patch != null && !o.optBoolean("isError")) change(patch) else "",
                 time = time,
+                pics = pics(id, o),
             )
         }
-        "user" -> Entry(id, kind, o.str("text"), time = time)
+        "user" -> Entry(id, kind, o.str("text"), time = time, pics = pics(id, o))
         else ->
             Entry(id, "other", o.str("text"), name = o.str("label").ifEmpty { kind }, time = time)
+    }
+}
+
+/**
+ * プレビューの配列の位置は、元の画像の位置とは限らない（省かれた画像がある）。imageIndices で元の位置に置き、 省かれた位置は取りに行く画像にする（TS 版の
+ * imageSlots と同じ）。
+ */
+private fun pics(entryId: String, o: JSONObject): ImageSlots {
+    val images = o.optJSONArray("images")
+    val shown = images?.length() ?: 0
+    val count =
+        o.optLong("imageCount", shown.toLong())
+            .coerceIn(shown.toLong(), Int.MAX_VALUE.toLong())
+            .toInt()
+    if (count == 0) return ImageSlots.Empty
+    val slots = sortedMapOf<Int, Pic>()
+    val indices = o.optJSONArray("imageIndices")
+    for (i in 0 until shown) {
+        val image = images!!.optJSONObject(i) ?: continue
+        val at = indices?.optInt(i, -1) ?: i
+        if (at in 0 until count)
+            slots[at] = Pic.Inline("e:$entryId:$at", image.str("mimeType"), image.str("data"))
+    }
+    return ImageSlots(entryId, count, slots)
+}
+
+/** プレビューだけを保持し、欠番の参照はページを開いたときに作る。 */
+internal class ImageSlots(
+    private val entryId: String,
+    val size: Int,
+    private val previews: Map<Int, Pic>,
+) {
+    fun gallery(canLoad: Boolean): List<Pic> {
+        if (!canLoad) return previews.values.toList()
+        return object : AbstractList<Pic>() {
+            override val size
+                get() = this@ImageSlots.size
+
+            override fun get(index: Int): Pic {
+                if (index !in indices) throw IndexOutOfBoundsException()
+                return previews[index] ?: Pic.Entry(entryId, index)
+            }
+        }
+    }
+
+    companion object {
+        val Empty = ImageSlots("", 0, emptyMap())
     }
 }
 
@@ -436,7 +620,8 @@ internal fun live(id: String, o: JSONObject): Live {
         subject(name, o.optJSONObject("args")),
         o.str("status"),
         output.toString(),
-        if (o.has("durationMs")) o.optLong("durationMs") else null,
+        if (!o.isNull("durationMs")) o.optLong("durationMs") else null,
         o.has("parentToolCallId"),
+        if (!o.isNull("startedAt")) o.optLong("startedAt") else null,
     )
 }

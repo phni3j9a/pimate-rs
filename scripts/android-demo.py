@@ -2,19 +2,24 @@
 """A disposable, loopback-only Rust Host plus in-memory NDJSON RCs.
 
 Instances mirror the design mocks (docs/design): `demo` streams Markdown and takes prompts,
-`main` stays at work with a running tool, `waiting` holds a question, the rest fill the list.
+`main` stays at work with a running tool, `waiting` holds a question, `edge` is switched to
+another session "on the PC" by SIGUSR1, `attach` waits on a PC-only screen (SIGUSR2 ends it),
+`images` shows pictures, the rest fill the list.
 """
 
 import asyncio
+import base64
 import itertools
 import json
 import os
 from pathlib import Path
 import signal
 import socket
+import struct
 import subprocess
 import tempfile
 import time
+import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 BODY = (
@@ -42,6 +47,65 @@ PATCH = (
 )
 NOW = int(time.time() * 1000)
 MODEL = dict(provider="anthropic", id="claude-opus-5-5")
+LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"]
+MODELS = [
+    dict(provider=p, id=i, name=n, contextWindow=w, thinkingLevels=levels)
+    for p, i, n, w, levels in [
+        ("anthropic", "claude-opus-5-5", "Claude Opus 5.5", 200_000, LEVELS),
+        ("anthropic", "claude-sonnet-5-5", "Claude Sonnet 5.5", 1_000_000, LEVELS),
+        ("anthropic", "claude-haiku-5-5", "Claude Haiku 5.5", 200_000, ["off"]),
+        ("openai", "gpt-5-codex", "GPT-5 Codex", 400_000, LEVELS[:5]),
+        ("openai", "gpt-5", "GPT-5", 400_000, LEVELS[:5]),
+        ("google", "gemini-3-pro", "Gemini 3 Pro", 1_000_000, ["off", "low", "high"]),
+        ("google", "gemini-3-flash", "Gemini 3 Flash", 1_000_000, ["off"]),
+        ("xai", "grok-5", "Grok 5", 256_000, ["off", "low", "high"]),
+    ]
+]
+COMMANDS = [
+    dict(name="review", description="変更をレビューする", source="extension"),
+    dict(name="fix-tests", description="失敗したテストを直す", source="prompt"),
+    dict(name="skill:release-notes", description="リリースノートを書く", source="skill"),
+]
+HOUR = 3_600_000
+
+
+def png(width, height, color, stripe=(255, 255, 255)):
+    """A small picture without extra dependencies: a flat color with a diagonal stripe."""
+    rows = b"".join(
+        b"\0"
+        + b"".join(
+            bytes(stripe if (x + y) % 40 < 6 else color) for x in range(width)
+        )
+        for y in range(height)
+    )
+
+    def chunk(kind, data):
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data))
+        )
+
+    data = (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(rows, 9))
+        + chunk(b"IEND", b"")
+    )
+    return dict(mimeType="image/png", data=base64.b64encode(data).decode())
+
+
+COLORS = [(76, 147, 188), (243, 140, 123), (245, 193, 94), (94, 104, 109), (27, 107, 145)]
+
+
+def picture(index, thumbnail=False):
+    w, h = (160, 100) if thumbnail else (800, 500)
+    return png(w, h, COLORS[index % len(COLORS)])
+
+
+def preview(index):
+    return dict(type="image", **picture(index, True))
 
 
 async def pi(
@@ -56,8 +120,17 @@ async def pi(
     seed=(),
     pending=(),
     runs=(),
+    abduco=None,
+    context=None,
+    quotas=(),
+    pc_prompt=None,
+    other=(),
+    hooks=None,
 ):
-    """One fake Pi: `<iid>.sock` + `<iid>.json` in the Host's run dir."""
+    """One fake Pi: `<iid>.sock` + `<iid>.json` in the Host's run dir.
+
+    `other`: saved sessions as (name, seed) for /resume. `hooks[iid]` gets the PC-side actions.
+    """
     session = {"id": f"{iid}-session", **({"name": name} if name else {})}
     meta = dict(
         protocol=1,
@@ -65,14 +138,28 @@ async def pi(
         pid=os.getpid(),
         cwd=cwd,
         origin=origin,
-        abducoSession=None,
+        abducoSession=abduco,
         session=session,
         startedAt=NOW - age - 60_000,
         updatedAt=NOW - age,
         status=status,
     )
+    if abduco:
+        # The Host reads "attached" from the terminal socket's mode; a plain listener is "not attached".
+        (run / "t").mkdir(mode=0o700, exist_ok=True)
+        terminal = socket.socket(socket.AF_UNIX)
+        terminal.bind(str(run / "t" / abduco))
+        os.chmod(run / "t" / abduco, 0o600)
+        terminal.listen()
+        pi.keep.append(terminal)
     clients, history, pending, queued = set(), [], list(pending), []
     seq, ids, task, partial = 1, itertools.count(1), None, ""
+    model, thinking = dict(MODEL), "high"
+    scoped = [dict(provider=m["provider"], id=m["id"]) for m in MODELS[:2] + MODELS[3:4]]
+    default = dict(model=dict(MODEL), thinking="medium")
+    labels, prompt = {}, pc_prompt
+    # Saved sessions by id: the current one shares `history`.
+    saved = {session["id"]: dict(session=dict(session), items=history, modified=NOW - age)}
 
     def send(w, frame):
         w.write(json.dumps(frame).encode() + b"\n")
@@ -236,21 +323,23 @@ async def pi(
         event("agent_start")
         bash = calls("m")[3]
         event("tool_start", toolCallId=bash["id"], toolName="bash", args=bash["args"])
-        event(
-            "tool_update",
-            toolCallId=bash["id"],
-            toolName="bash",
-            partial=dict(
-                content=[
-                    dict(
-                        type="text",
-                        text="> vitest run\n ✓ src/greet.test.ts (3 tests)\n ⠹ src/cli.test.ts",
-                    )
-                ]
-            ),
-        )
         try:
-            await asyncio.Event().wait()
+            # A running tool keeps printing, so a phone that opens later also has output to show.
+            for frame in itertools.cycle("⠹⠸⠼⠴⠦⠧⠇⠏"):
+                event(
+                    "tool_update",
+                    toolCallId=bash["id"],
+                    toolName="bash",
+                    partial=dict(
+                        content=[
+                            dict(
+                                type="text",
+                                text=f"> vitest run\n ✓ src/greet.test.ts (3 tests)\n {frame} src/cli.test.ts",
+                            )
+                        ]
+                    ),
+                )
+                await asyncio.sleep(2)
         except asyncio.CancelledError:
             queued.clear()
             event("agent_settled", aborted=True)
@@ -258,24 +347,152 @@ async def pi(
 
     for kind, text, more in seed:
         entry(kind, text, **more)
+    for n, (title, items) in enumerate(other):
+        sid = f"{iid}-saved-{n}"
+        rows = []
+        for kind, text, more in items:
+            row = dict(kind=kind, entryId=f"s{n}-{len(rows)}", text=text, timestamp=NOW - 26 * HOUR)
+            row.update(more)
+            if kind == "assistant":
+                row.setdefault("toolCalls", [])
+            rows.append(row)
+        saved[sid] = dict(
+            session=dict(id=sid, name=title), items=rows, modified=NOW - (26 + n) * HOUR
+        )
+
+    def write_meta():
+        (run / f"{iid}.json").write_text(json.dumps(meta))
+
+    def switch(sid, reason):
+        """Moves this Pi to another session, as /new, /resume and /fork do in the TUI."""
+        saved[session["id"]].update(items=list(history), modified=int(time.time() * 1000))
+        target = saved[sid]
+        session.clear()
+        session.update(target["session"])
+        history[:] = target["items"]
+        target["items"] = history
+        write_meta()
+        event("session_changed", reason=reason, session=dict(session))
+        event("context", context=context)
+
+    def create(title, items):
+        sid = f"{iid}-{next(ids)}-session"
+        saved[sid] = dict(
+            session=dict(id=sid, **({"name": title} if title else {})),
+            items=list(items),
+            modified=int(time.time() * 1000),
+        )
+        return sid
+
+    def tree():
+        nodes, parent = [], None
+        for i, item in enumerate(history):
+            nodes.append(
+                dict(
+                    id=item["entryId"],
+                    parentId=parent,
+                    kind=item["kind"],
+                    preview=(item.get("text") or item.get("toolName") or "")[:120],
+                    onBranch=True,
+                    isCurrent=i == len(history) - 1,
+                    isLeaf=i == len(history) - 1,
+                    **({"timestamp": item["timestamp"]} if "timestamp" in item else {}),
+                    **({"label": labels[item["entryId"]]} if item["entryId"] in labels else {}),
+                )
+            )
+            if i == 0:
+                # A side branch left earlier, so that the tree has a fork to show.
+                nodes += [
+                    dict(id="side-user", parentId=item["entryId"], kind="user", preview="別の案: 設定ファイルで切り替える", onBranch=False, isCurrent=False, isLeaf=False, **({"label": labels["side-user"]} if "side-user" in labels else {})),
+                    dict(id="side-answer", parentId="side-user", kind="assistant", preview="設定ファイルの案をまとめました。", onBranch=False, isCurrent=False, isLeaf=True),
+                ]
+            parent = item["entryId"]
+        return dict(nodes=nodes, leafId=parent, truncated=False)
+
+    async def session_op(op, arg):
+        await asyncio.sleep(0.4)
+        text = None
+        if op == "new":
+            switch(create(None, []), "new")
+        elif op == "switch":
+            sid = next((k for k, v in saved.items() if f"/sessions/{k}.jsonl" == arg), None)
+            if sid is None:
+                event("session_op_done", op=op, cancelled=True, error="セッションが見つかりません")
+                return
+            switch(sid, "resume")
+        elif op == "fork":
+            at = next((i for i, x in enumerate(history) if x["entryId"] == arg), len(history))
+            switch(create(None, history[:at]), "fork")
+        elif op == "tree":
+            at = next((i for i, x in enumerate(history) if x["entryId"] == arg), None)
+            if at is not None and history[at]["kind"] == "user":
+                text = history[at]["text"]
+                del history[at:]
+            elif arg == "side-user":
+                text = "別の案: 設定ファイルで切り替える"
+                del history[1:]
+            event("session_changed", reason="tree", session=dict(session))
+        event(
+            "session_op_done",
+            op=op,
+            cancelled=False,
+            **({"editorText": text} if text is not None else {}),
+        )
+
+    async def compact():
+        await asyncio.sleep(1.5)
+        if context:
+            context.update(tokens=21_000, percent=10.5)
+        event("compact_done")
+        event("context", context=context)
+
+    def pc_resume():
+        """Someone runs /resume in the PC terminal (8 seconds after `edge` is first opened, and on SIGUSR1)."""
+        others = [k for k in saved if k != session["id"]]
+        if others:
+            switch(others[0], "resume")
+
+    async def later(seconds, action):
+        await asyncio.sleep(seconds)
+        action()
+
+    def pc_done():
+        """SIGUSR2: the PC-only screen is closed on the PC."""
+        nonlocal prompt
+        if prompt:
+            event("ui_prompt", phase="end", kind=prompt["kind"])
+            prompt = None
+            set_status("idle")
+
+    if hooks is not None:
+        hooks[iid] = (pc_resume, pc_done)
 
     async def rc(reader, w):
-        nonlocal task
+        nonlocal task, model, thinking, scoped, default
         clients.add(w)
         try:
             while line := await reader.readline():
                 r = json.loads(line)
-                method = r["method"]
-                reply = {}
+                method, params = r["method"], r.get("params") or {}
+                reply, error = {}, None
                 if method == "hello":
                     reply = dict(
                         snapshot=dict(
                             meta,
-                            model=MODEL,
-                            thinking="high",
+                            model=model,
+                            thinking=thinking,
                             seq=seq,
                             pendingUI=pending,
                             streaming=dict(text=partial, thinking=""),
+                            promptImages=True,
+                            promptImageLimit=4,
+                            entryImages=True,
+                            fileImages=True,
+                            slashCommands=True,
+                            sessionTree=True,
+                            context=context,
+                            quotas=list(quotas),
+                            **({"pcPrompt": prompt} if prompt else {}),
                             **(
                                 dict(subagents=dict(runs=list(runs), backends=[]))
                                 if runs
@@ -289,12 +506,18 @@ async def pi(
                         task = asyncio.create_task(stream(False))
                     elif task is None and iid == "main":
                         task = asyncio.create_task(hold())
+                    elif task is None and iid == "edge":
+                        task = asyncio.create_task(later(8, pc_resume))
                 elif method == "prompt":
+                    images = params.get("images") or []
+                    more = (
+                        dict(images=images, imageCount=len(images)) if images else {}
+                    )
                     if task and not task.done():
-                        queued.append(r["params"]["text"])
+                        queued.append(params["text"])
                         reply = dict(deliveredAs="steer")
                     else:
-                        entry("user", r["params"]["text"])
+                        entry("user", params["text"], **more)
                         reply = dict(deliveredAs="prompt")
                         task = asyncio.create_task(stream(True))
                 elif method == "abort" and task:
@@ -303,19 +526,100 @@ async def pi(
                     pending.clear()
                     event(
                         "ui_request_end",
-                        requestId=r["params"]["requestId"],
+                        requestId=params["requestId"],
                         by="remote",
                     )
                     set_status("idle")
-                send(w, dict(type="response", id=r["id"], ok=True, result=reply))
+                elif method == "commands":
+                    reply = dict(commands=COMMANDS)
+                elif method == "models":
+                    reply = dict(models=MODELS, current=model, scoped=scoped, default=default)
+                elif method == "set_model":
+                    model = dict(provider=params["provider"], id=params["id"])
+                    reply = dict(model=model)
+                    event("model", model=model)
+                elif method == "set_thinking":
+                    thinking = params["level"]
+                    reply = dict(thinking=thinking)
+                    event("thinking", level=thinking)
+                elif method == "set_scoped_models":
+                    scoped = params["models"]
+                    reply = dict(scoped=scoped)
+                elif method == "set_default_model":
+                    default = dict(model=params["model"], thinking=params.get("thinking"))
+                    reply = dict(default=default)
+                elif method == "sessions":
+                    reply = dict(
+                        sessions=sorted(
+                            (
+                                dict(
+                                    id=k,
+                                    path=f"/sessions/{k}.jsonl",
+                                    firstMessage=next(
+                                        (x["text"] for x in v["items"] if x["kind"] == "user"),
+                                        "",
+                                    ),
+                                    messageCount=sum(
+                                        x["kind"] in ("user", "assistant") for x in v["items"]
+                                    ),
+                                    created=v["modified"] - HOUR,
+                                    modified=v["modified"],
+                                    current=k == session["id"],
+                                    **(
+                                        {"name": v["session"]["name"]}
+                                        if "name" in v["session"]
+                                        else {}
+                                    ),
+                                )
+                                for k, v in saved.items()
+                            ),
+                            key=lambda x: -x["modified"],
+                        )
+                    )
+                elif method == "session_op":
+                    asyncio.create_task(session_op(params["op"], params.get("arg")))
+                elif method == "session_tree":
+                    reply = tree()
+                elif method == "set_label":
+                    if params.get("label"):
+                        labels[params["entryId"]] = params["label"]
+                    else:
+                        labels.pop(params["entryId"], None)
+                elif method == "compact":
+                    asyncio.create_task(compact())
+                elif method == "entry_image":
+                    reply = dict(image=picture(params["index"], params.get("thumbnail")))
+                elif method == "file_image":
+                    if params["path"].endswith("missing.png"):
+                        error = dict(code="not_found", message="No such file")
+                    else:
+                        reply = dict(image=picture(len(params["path"]), params.get("thumbnail")))
+                elif method == "shutdown":
+                    send(w, dict(type="response", id=r["id"], ok=True, result={}))
+                    await w.drain()
+                    for path in (run / f"{iid}.json", run / f"{iid}.sock"):
+                        path.unlink(missing_ok=True)
+                    server.close()
+                    for c in list(clients):
+                        c.close()
+                    return
+                send(
+                    w,
+                    dict(type="response", id=r["id"], ok=False, error=error)
+                    if error
+                    else dict(type="response", id=r["id"], ok=True, result=reply),
+                )
                 await w.drain()
         finally:
             clients.discard(w)
             w.close()
 
-    server = await asyncio.start_unix_server(rc, run / f"{iid}.sock")
-    (run / f"{iid}.json").write_text(json.dumps(meta))
+    server = await asyncio.start_unix_server(rc, run / f"{iid}.sock", limit=1 << 20)  # 画像つきの prompt は 1 行が大きい
+    write_meta()
     return server
+
+
+pi.keep = []
 
 
 def child(index, agent, title):
@@ -371,14 +675,54 @@ async def demo(lab, binary):
             dict(toolCallId=call["id"], toolName=call["name"], isError=False, **more),
         )
 
+    hooks = {}
+    context = dict(tokens=82_000, contextWindow=200_000, percent=41)
+    # Sheet-Usage: a window whose reset has passed, a weekly one, and one that is used up.
+    quotas = [
+        dict(
+            source="claude",
+            observedAt=NOW - 49 * 60_000,
+            windows=[
+                dict(minutes=300, usedPercent=38, resetsAt=NOW - 20 * 60_000),
+                dict(minutes=10080, usedPercent=67, resetsAt=NOW + 71 * HOUR),
+            ],
+        ),
+        dict(
+            source="codex",
+            observedAt=NOW - 5 * 60_000,
+            windows=[
+                dict(minutes=300, usedPercent=12, resetsAt=NOW + 3 * HOUR),
+                dict(minutes=10080, usedPercent=100, resetsAt=NOW + 5 * 24 * HOUR),
+            ],
+        ),
+    ]
     servers = [
-        await pi(run, "demo", "/demo/android"),
+        await pi(
+            run,
+            "demo",
+            "/demo/android",
+            context=dict(tokens=None, contextWindow=200_000, percent=None),
+        ),
         await pi(
             run,
             "main",
             "/home/me/code/demo",
             name="--shout フラグを追加",
             status="running",
+            origin="mobile",
+            abduco="pimate-de7f3a00",
+            context=dict(context),
+            quotas=quotas,
+            other=[
+                (
+                    "API クライアントのリファクタ",
+                    [
+                        ("user", "API クライアントを fetch に置き換えて", {}),
+                        ("assistant", "置き換えました。", dict(stopReason="stop")),
+                    ],
+                ),
+                (None, [("user", "README の誤字を直して", {})]),
+            ],
             seed=[
                 ("user", "プロジェクトの構成を説明して", dict(timestamp=NOW - 78_000)),
                 ("assistant", "", dict(toolCalls=old, stopReason="toolUse")),
@@ -428,6 +772,12 @@ async def demo(lab, binary):
             "/home/me/work/login",
             name="ログイン画面の改修",
             status="waiting_input",
+            context=dict(context),
+            # Chat-Waiting: the rings show the shortest window (67% and a used-up 100%).
+            quotas=[
+                dict(source=q["source"], observedAt=q["observedAt"], windows=[dict(minutes=300, usedPercent=used, resetsAt=NOW + 3 * HOUR)])
+                for q, used in zip(quotas, (67, 100))
+            ],
             seed=[
                 (
                     "user",
@@ -498,6 +848,126 @@ async def demo(lab, binary):
             origin="mobile",
             age=60 * 60_000,
         ),
+        # Chat-Edge: switched to the saved session 8 seconds after it is first opened (and on SIGUSR1),
+        # as /resume on the PC does.
+        await pi(
+            run,
+            "edge",
+            "/home/me/work/errors",
+            name="API クライアントのリファクタ",
+            age=10 * 60_000,
+            context=dict(context),
+            hooks=hooks,
+            seed=[
+                ("user", "タイムアウトしたときの再試行をまとめて", dict(timestamp=NOW - 700_000)),
+                ("assistant", "", dict(toolCalls=old, stopReason="toolUse")),
+                *(done(c, "line\n" * 12) for c in old),
+                (
+                    "assistant",
+                    "リトライ処理を `withRetry()` に共通化しました。タイムアウト時は最大 3 回まで再試行します。",
+                    dict(
+                        model=dict(provider="anthropic", id="claude-sonnet-5-5"),
+                        usage=dict(input=18400, output=640, cost=0.09),
+                        stopReason="stop",
+                        timestamp=NOW - 659_000,
+                    ),
+                ),
+            ],
+            other=[
+                (
+                    "エラー処理の見直し",
+                    [
+                        ("user", "エラーメッセージを整理して", {}),
+                        (
+                            "assistant",
+                            "エラーメッセージを `errors.ts` にまとめ、文言を日本語にそろえました。",
+                            dict(
+                                model=dict(provider="anthropic", id="claude-sonnet-5-5"),
+                                usage=dict(input=9100, output=380, cost=0.04),
+                                stopReason="stop",
+                            ),
+                        ),
+                    ],
+                )
+            ],
+        ),
+        # Chat-Attach: an extension screen that only the PC terminal can operate. SIGUSR2 closes it.
+        await pi(
+            run,
+            "attach",
+            "/home/me/work/ops",
+            name="ブランチの整理",
+            status="waiting_input",
+            abduco="pimate-0091c2ab",
+            origin="mobile",
+            age=2 * 60_000,
+            context=dict(context),
+            pc_prompt=dict(kind="custom", title="git-graph"),
+            hooks=hooks,
+            seed=[
+                ("user", "ローカルのブランチを一覧にして", dict(timestamp=NOW - 200_000)),
+                ("assistant", "", dict(toolCalls=old[:1], stopReason="toolUse")),
+                done(old[0], "main\n"),
+                (
+                    "assistant",
+                    "ブランチは 14 本あり、そのうち 6 本は `main` にマージ済みです。",
+                    dict(
+                        model=dict(provider="anthropic", id="claude-sonnet-5-5"),
+                        usage=dict(input=4800, output=160, cost=0.02),
+                        stopReason="stop",
+                        timestamp=NOW - 194_000,
+                    ),
+                ),
+                ("user", "コミット履歴を見ながら、不要なブランチを整理して", dict(timestamp=NOW - 120_000)),
+                ("assistant", "", dict(toolCalls=old[1:3], stopReason="toolUse")),
+                *(done(c, "line\n" * 12) for c in old[1:3]),
+                (
+                    "assistant",
+                    "グラフを開きました。削除するブランチを選んでください。",
+                    dict(stopReason="stop", timestamp=NOW - 111_000),
+                ),
+            ],
+        ),
+        # Pictures: sent ones, a tool result, omitted previews (+N, fetched on demand) and Markdown images.
+        await pi(
+            run,
+            "images",
+            "/home/me/work/shots",
+            name="スクリーンショットの確認",
+            age=3 * 60_000,
+            context=dict(context),
+            seed=[
+                (
+                    "user",
+                    "この 2 枚の違いを見て",
+                    dict(images=[preview(0), preview(1)], imageCount=2),
+                ),
+                (
+                    "assistant",
+                    "",
+                    dict(
+                        toolCalls=[dict(id="shot", name="screenshot", args=dict(path="out/login.png"))],
+                        stopReason="toolUse",
+                    ),
+                ),
+                (
+                    "tool_result",
+                    "1 枚を保存しました",
+                    dict(toolCallId="shot", toolName="screenshot", isError=False, images=[preview(2)], imageCount=1),
+                ),
+                (
+                    "assistant",
+                    "ボタンの位置が 8px ずれています。\n\n![修正前の画面](out/before.png)\n\n修正後は次のとおりです。\n\n![修正後の画面](out/after.png)\n\n読めない画像: ![見つからない画像](out/missing.png)",
+                    dict(stopReason="stop"),
+                ),
+                (
+                    "user",
+                    "残りの 5 枚も確認して",
+                    dict(images=[preview(0), preview(1)], imageIndices=[0, 1], imageCount=5),
+                ),
+                ("assistant", "5 枚とも問題ありません。", dict(stopReason="stop")),
+            ],
+        ),
     ]
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
@@ -524,6 +994,12 @@ async def demo(lab, binary):
                 await asyncio.sleep(0.05)
         else:
             raise RuntimeError("Host timeout")
+        # The PC-side actions of the mocks: `kill -USR1 <this pid>` runs /resume on `edge`,
+        # `kill -USR2` closes the PC-only screen of `attach`.
+        loop = asyncio.get_running_loop()
+        loop.add_signal_handler(signal.SIGUSR1, hooks["edge"][0])
+        loop.add_signal_handler(signal.SIGUSR2, hooks["attach"][1])
+        print(f"pid {os.getpid()}（kill -USR1: edge で PC の /resume、kill -USR2: attach の PC の画面を閉じる）", flush=True)
         print(f"adb -s SERIAL reverse tcp:{port} tcp:{port}", flush=True)
         subprocess.run(
             [binary, "pair", *args, "--address", f"127.0.0.1:{port}"],

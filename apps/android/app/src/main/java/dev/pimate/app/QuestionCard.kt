@@ -16,6 +16,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.json.*
 
@@ -267,7 +268,8 @@ private fun Field(
         modifier
             .fillMaxWidth()
             .background(pi.background, if (single) CircleShape else RoundedCornerShape(16.dp))
-            .heightIn(min = if (single) tap else 96.dp)
+            // 長い本文でも、回答のボタンまで送れる高さで止める（欄の中で送る）。
+            .heightIn(min = if (single) tap else 96.dp, max = if (single) Dp.Unspecified else 260.dp)
             .padding(horizontal = 14.dp, vertical = if (single) 0.dp else 12.dp),
         enabled = enabled,
         textStyle = Type.body.copy(color = pi.text),

@@ -13,10 +13,20 @@ import uniffi.pimate_ffi.*
 import uniffi.pimate_ffi.Target
 
 data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = emptyMap()) {
+    internal var notices = ChatNotices()
+        private set
+
+    internal fun snapshotRows(s: Snapshot) =
+        from(s).also { it.notices = notices.advance(this, it, null) }
+
     fun apply(rev: ULong, changes: List<Change>, snapshot: () -> Snapshot): Rows {
         if (rev <= revision) return this
         // A history subscription may contain thousands of upserts in a single revision.
-        if (changes.size > 64 || Change.ResyncRequired in changes) return from(snapshot())
+        if (changes.size > 64 || Change.ResyncRequired in changes) {
+            val next = from(snapshot())
+            val ordered = changes.takeIf { next.revision == rev && Change.ResyncRequired !in it }
+            return next.also { it.notices = notices.advance(this, it, ordered) }
+        }
         val next = groups.toMutableMap()
         for (change in changes) {
             when (change) {
@@ -36,7 +46,7 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
                 else -> error("unexpected resync")
             }
         }
-        return Rows(rev, next)
+        return Rows(rev, next).also { it.notices = notices.advance(this, it, changes) }
     }
 
     fun readyTarget(selected: String?): Target? {
@@ -68,7 +78,7 @@ internal class HostRows(private val states: MutableMap<String, Rows>) {
     operator fun get(id: String) = states[id] ?: Rows()
 
     fun snapshot(id: String, value: Snapshot) {
-        states[id] = Rows.from(value)
+        states[id] = get(id).snapshotRows(value)
     }
 
     fun changed(id: String, revision: ULong, changes: List<Change>, snapshot: () -> Snapshot) {

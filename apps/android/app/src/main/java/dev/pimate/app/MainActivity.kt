@@ -35,6 +35,7 @@ import uniffi.pimate_ffi.Host
 
 class MainActivity : ComponentActivity() {
     private val model by viewModels<SessionModel>()
+    private val chat by viewModels<ChatUi>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,7 +44,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             var scale by remember { mutableFloatStateOf(prefs.getFloat("scale", 1f)) }
             PiTheme(scale) {
-                Screen(model, scale) {
+                Screen(model, chat, scale) {
                     scale = it
                     prefs.edit().putFloat("scale", it).apply()
                 }
@@ -54,7 +55,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
+private fun Screen(m: SessionModel, chat: ChatUi, scale: Float, setScale: (Float) -> Unit) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var pairing by rememberSaveable { mutableStateOf(false) }
@@ -98,17 +99,11 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
         },
     ) {
         if (showPair) PairScreen(m, if (host != null) ({ pairing = false }) else null)
-        else key(host?.id) { ChatScreen(m, { scope.launch { drawer.open() } }, recover) }
+        else key(host?.id) { ChatScreen(m, chat, { scope.launch { drawer.open() } }, recover) }
     }
     if (sheet.isNotEmpty())
-        ModalBottomSheet(
-            { sheet = "" },
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-            containerColor = pi.background,
-            tonalElevation = 0.dp,
-            scrimColor = pi.scrim,
-        ) {
-            Column(Modifier.padding(start = gutter, end = gutter, bottom = 24.dp)) {
+        PiSheet({ sheet = "" }) {
+            Column {
                 if (sheet == "new") {
                     Text("新しい Pi", Modifier.semantics { heading() }, style = Type.sheet)
                     Text(
@@ -201,7 +196,7 @@ internal fun tilde(path: String) =
 internal fun title(session: JSONObject?, cwd: String) =
     session?.str("name")?.trim().orEmpty().ifEmpty { basename(cwd) }
 
-private fun ago(at: Long, now: Long): String {
+internal fun ago(at: Long, now: Long): String {
     val min = (now - at).coerceAtLeast(0) / 60_000
     return when {
         min < 1 -> "今"
