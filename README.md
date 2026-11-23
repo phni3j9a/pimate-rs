@@ -2,7 +2,7 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。アプリと Extension の Rust Host への切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。Android 開発版はペアリング・一覧・チャットの土台まで Rust Host に接続できます。他の OS と Extension の切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
 
 ## 目的
 
@@ -222,3 +222,5 @@ scripts/android-demo.py
 スクリプトは一時ディレクトリに模擬 RC と Rust Host を作り、loopback の空きポートだけで待機します。表示された `adb -s SERIAL reverse tcp:PORT tcp:PORT` を別端末で実行し、**PiMate RS** (`dev.pimate.app.rs.debug`) に表示されたリンクを貼り付けるか QR を読み取ります。リンクは秘密・1回限りなので別端末で試す時はスクリプトを起動し直します。一覧の `/demo/android` を開くと Markdown が逐次届き、日本語を送ると会話に追加されます。終了は Ctrl+C、そのポートだけ `adb -s SERIAL reverse --remove tcp:PORT`。実際の Pi・常駐サービス・abduco は使いません。
 
 Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面の仕上げは `MainActivity.kt`、`PairScreen.kt`、`ChatScreen.kt`、`Markdown.kt`、`Theme.kt`、通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。
+
+端末試験は `apps/android/app/src/androidTest`。`StoreContract` はランダムな試験用 Host だけで Keystore の置き換えを検査します。`DemoJourney` は初回ペアリング画面からの試験用です。debug APK と `assembleDebugAndroidTest` の APK を試験端末に入れ、上記の reverse 後、模擬リンクを標準入力で `adb -s SERIAL shell "run-as dev.pimate.app.rs.debug sh -c 'mkdir -p cache; cat > cache/demo-link'"` へ渡します（履歴やログに残さない）。`adb -s SERIAL shell am instrument -w dev.pimate.app.rs.debug.test/androidx.test.runner.AndroidJUnitRunner` で実行できます。リンクがなければ会話試験はスキップします。

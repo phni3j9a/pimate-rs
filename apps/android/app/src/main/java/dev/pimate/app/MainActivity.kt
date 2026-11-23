@@ -14,14 +14,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.json.*
-import uniffi.pimate_ffi.initLogging
 
 class MainActivity : ComponentActivity() {
     private val model by viewModels<SessionModel>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        initLogging()
         enableEdgeToEdge()
         val prefs = getSharedPreferences("display", MODE_PRIVATE)
         setContent {

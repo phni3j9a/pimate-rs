@@ -46,7 +46,7 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
 }
 
 class SessionModel(app: Application) : AndroidViewModel(app) {
-    private val core = Core(EncryptedStore(app))
+    private val core = Core((app as PiApplication).store)
     private val handler = Handler(Looper.getMainLooper())
     private var connection: Connection? = null
     private var generation = 0

@@ -53,7 +53,11 @@ class DemoJourney {
                 .fetchSemanticsNodes()
                 .isNotEmpty()
         }
-        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        ui.runOnUiThread {
+            ui.activity
+                .getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                .hideSoftInputFromWindow(ui.activity.window.decorView.windowToken, 0)
+        }
         shot("sent")
     }
 }
