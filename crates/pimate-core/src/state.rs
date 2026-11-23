@@ -105,7 +105,7 @@ struct Observations {
 // Across all Host connections: 512 KiB of previews is enough for a few screens of output,
 // while still leaving room on a phone for the active transcript and decoded images.
 const PREVIEW_BUDGET: usize = 512 * 1024;
-static PREVIEW_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static PREVIEW_BYTES: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 struct CachedTool {
     id: Box<str>,
     caller: Box<str>,
@@ -115,7 +115,6 @@ struct CachedTool {
 }
 impl CachedTool {
     fn capture(id: &str, caller: &str, tool: &Value) -> Option<Self> {
-        use std::sync::atomic::Ordering::Relaxed;
         let parts = tool["partial"]["content"]
             .as_array()
             .into_iter()
@@ -124,11 +123,13 @@ impl CachedTool {
             .filter_map(|v| v["text"].as_str());
         let len: usize = parts.clone().map(str::len).sum();
         let bytes = id.len() + caller.len() + len + 2 * std::mem::size_of::<Self>();
-        PREVIEW_BYTES
-            .fetch_update(Relaxed, Relaxed, |used| {
-                (used + bytes <= PREVIEW_BUDGET).then_some(used + bytes)
-            })
-            .ok()?;
+        {
+            let mut used = PREVIEW_BYTES.lock().unwrap();
+            if bytes > PREVIEW_BUDGET - *used {
+                return None;
+            }
+            *used += bytes;
+        }
         Some(Self {
             id: id.into(),
             caller: caller.into(),
@@ -140,7 +141,7 @@ impl CachedTool {
 }
 impl Drop for CachedTool {
     fn drop(&mut self) {
-        PREVIEW_BYTES.fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+        *PREVIEW_BYTES.lock().unwrap() -= self.bytes;
     }
 }
 pub(crate) struct Draft {
