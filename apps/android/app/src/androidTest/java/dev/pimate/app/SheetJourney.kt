@@ -85,7 +85,7 @@ class SheetJourney {
         press(ui.onNodeWithText("接続"))
         press(ui.onNodeWithText("ペアリングする"))
         waitFor("一覧を開く")
-        press(ui.onNodeWithText("一覧を開く"))
+        press(ui.onNode(hasText("一覧を開く") and hasAnyAncestor(isDialog())))
         waitFor("スクリーンショットの確認")
 
         // ---- 画像: 発言・ツール結果・Markdown、省かれたプレビューの取得、全画面 ----

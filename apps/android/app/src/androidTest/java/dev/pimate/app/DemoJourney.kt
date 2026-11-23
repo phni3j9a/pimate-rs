@@ -57,7 +57,7 @@ class DemoJourney {
             press(ui.onNodeWithText("ペアリングする"))
             if (i == 0) {
                 waitFor("一覧を開く")
-                press(ui.onNodeWithText("一覧を開く"))
+                press(ui.onNode(hasText("一覧を開く") and hasAnyAncestor(isDialog())))
             }
             waitFor("ログイン画面の改修")
         }
@@ -101,7 +101,7 @@ class DemoJourney {
         press(ui.onNodeWithText("接続"))
         press(ui.onNodeWithText("ペアリングする"))
         waitFor("一覧を開く")
-        press(ui.onNodeWithText("一覧を開く"))
+        press(ui.onNode(hasText("一覧を開く") and hasAnyAncestor(isDialog())))
         waitFor("/demo/android")
         shot("drawer")
         ui.onNodeWithContentDescription("設定").performClick()
