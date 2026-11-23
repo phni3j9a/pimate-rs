@@ -495,7 +495,7 @@ async fn attempt(
                         return Err(Error::Timeout);
                     }
                     s.edit(|st| {
-                        st.release(&id);
+                        st.release_unknown(&id);
                         if p.method.as_deref() == Some("abort") {
                             st.settle_drafts(&p.instance, &p.session, true)
                         }
@@ -516,7 +516,12 @@ async fn attempt(
     }
 }
 fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<String, Error> {
-    if result["ok"] == false || !matches!(p.method.as_deref(), Some("compact" | "session_op")) {
+    if let Some(hold) = &p.hold
+        && let Some(instance) = result["instanceId"].as_str()
+    {
+        st.auth_targets.insert(hold.clone(), instance.into());
+    }
+    if result["ok"] == false {
         if result["error"]["code"] == "no_such_request"
             && st.get("busy", "answer")["id"] == id
             && let Some(q) = st.get("busy", "answer")["requestId"]
@@ -525,14 +530,6 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
         {
             st.remove("question", &q)
         }
-        st.release(id)
-    }
-    if let Some(hold) = &p.hold
-        && let Some(instance) = result["instanceId"].as_str()
-    {
-        st.auth_targets.insert(hold.clone(), instance.into());
-    }
-    if result["ok"] == false {
         let code = if p.method.is_some() {
             &result["error"]["code"]
         } else {
@@ -547,20 +544,25 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
             _ => Error::Rejected,
         };
         if err == Error::OutcomeUnknown {
+            st.release_unknown(id);
             if p.method.as_deref() == Some("abort") {
                 st.settle_drafts(&p.instance, &p.session, true)
             }
             unconfirmed(st, id)
         } else {
+            st.release(id);
             st.draft_status(id, "rejected");
         }
         return Err(err);
+    }
+    if !matches!(p.method.as_deref(), Some("session_op" | "compact")) {
+        st.release(id);
     }
     let Some(method) = &p.method else {
         return Ok(result.to_string());
     };
     let mut body = crate::operation::rc_result(method, &result["result"]).inspect_err(|_| {
-        st.release(id);
+        st.release_unknown(id);
         unconfirmed(st, id)
     })?;
     if method == "abort" {
@@ -720,6 +722,67 @@ mod regressions {
             };
             let _ = resolve(&mut s, &p, "stop", &result);
             assert_eq!(s.get("draft", "prompt")["status"], status);
+        }
+    }
+    #[test]
+    fn unacknowledged_compaction_only_leaves_marks_for_uncertain_outcomes() {
+        for failure in ["disconnect", "internal", "timeout", "busy"] {
+            let mut s = State::default();
+            s.selected = Some("i".into());
+            let snapshot = json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":1,"startedAt":100,"session":{"id":"s"}},"history":{"items":[]}});
+            s.apply(&snapshot);
+            let compact = || Operation::Rc {
+                target: crate::Target {
+                    instance: "i".into(),
+                    session: Some("s".into()),
+                },
+                method: pimate_protocol::RcMethod::Compact,
+                params: "{}".into(),
+            };
+            s.prepare("A", compact(), true).unwrap();
+            if failure == "disconnect" {
+                s.reset();
+                s.apply(&snapshot);
+            } else {
+                let pending = Pending {
+                    reply: oneshot::channel().0,
+                    deadline: Instant::now(),
+                    kind: "rc".into(),
+                    instance: json!("i"),
+                    hold: None,
+                    method: Some("compact".into()),
+                    session: json!("s"),
+                    thumbnail: false,
+                };
+                assert_eq!(
+                    resolve(
+                        &mut s,
+                        &pending,
+                        "A",
+                        &json!({"ok":false,"error":{"code":failure}})
+                    ),
+                    Err(if failure == "busy" {
+                        Error::Blocked
+                    } else {
+                        Error::OutcomeUnknown
+                    })
+                );
+            }
+            assert!(s.get("busy", "operation").is_null());
+            if failure != "busy" {
+                assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
+            }
+            s.prepare("B", compact(), true).unwrap();
+            s.apply(&json!({"type":"event","instanceId":"i","sessionId":"s","seq":2,"event":{"type":"compact_done"}}));
+            s.accept_op("B");
+            let latest = s.get("operationResult", "latest");
+            assert_eq!(latest["id"], "B");
+            if failure == "busy" {
+                assert_eq!(latest["event"]["type"], "compact_done");
+            } else {
+                assert_eq!(latest, &json!({"id":"B","outcome":"unknown"}));
+            }
+            assert!(s.get("busy", "operation").is_null());
         }
     }
     struct Blocking {

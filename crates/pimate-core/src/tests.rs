@@ -726,6 +726,66 @@ fn late_v1_completion_never_credits_the_next_request() {
     }
 }
 #[test]
+fn session_move_before_mark_creation_cannot_credit_next_session() {
+    let mut s = view();
+    accepted(&mut s, "compact");
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":3,"session":{"id":"s2"}},"history":{"items":[]}}));
+    s.expire_result(s.result_deadline.unwrap());
+    assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
+    let b = Operation::Rc {
+        target: Target {
+            instance: "i".into(),
+            session: Some("s2".into()),
+        },
+        method: pimate_protocol::RcMethod::Compact,
+        params: "{}".into(),
+    };
+    s.prepare("B", b, true).unwrap();
+    s.accept_op("B");
+    s.apply(&json!({"type":"event","instanceId":"i","seq":4,"sessionId":"s2","event":{"type":"compact_done"}}));
+    assert_eq!(
+        s.get("operationResult", "latest"),
+        &json!({"id":"B","outcome":"unknown"})
+    );
+    assert!(s.get("busy", "operation").is_null());
+}
+#[test]
+fn replacement_during_grace_drops_the_old_operation_and_its_marks() {
+    for list_first in [true, false] {
+        let mut s = view();
+        let snap = |start| json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":2,"startedAt":start,"session":{"id":"s"}},"history":{"items":[]}});
+        s.apply(&snap(1));
+        accepted(&mut s, "compact");
+        s.apply(&snap(1));
+        let old_deadline = s.result_deadline.unwrap();
+        if list_first {
+            assert!(s.apply(
+                &json!({"type":"instances","instances":[{"instanceId":"i","startedAt":2}]})
+            ));
+            assert!(!s.ready());
+        }
+        s.apply(&snap(2));
+        assert_eq!(
+            s.get("operationResult", "latest"),
+            &json!({"id":"request","outcome":"unknown"})
+        );
+        assert!(s.get("busy", "operation").is_null());
+        s.expire_result(old_deadline);
+        s.prepare(
+            "new",
+            rc(pimate_protocol::RcMethod::Compact, json!({})),
+            true,
+        )
+        .unwrap();
+        s.accept_op("new");
+        event(&mut s, 3, json!({"type":"compact_done"}));
+        assert_eq!(
+            s.get("operationResult", "latest")["event"]["type"],
+            "compact_done"
+        );
+    }
+}
+#[test]
 fn missing_marks_end_on_expiry_process_replacement_or_instance_removal() {
     for cleanup in ["expire", "replace", "remove"] {
         let mut s = view();
@@ -745,6 +805,7 @@ fn missing_marks_end_on_expiry_process_replacement_or_instance_removal() {
                 s.apply(&list(1));
             }
         }
+        sync(&mut s, json!([]));
         accepted(&mut s, "compact");
         event(&mut s, 3, json!({"type":"compact_done"}));
         assert_eq!(

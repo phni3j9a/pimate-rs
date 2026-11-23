@@ -31,81 +31,38 @@ pub trait Listener: Send + Sync {
 struct CompletionScope {
     instance: String,
     kind: String,
-    session: Option<String>,
-}
-impl CompletionScope {
-    fn new(instance: &str, kind: &str, session: &Value) -> Self {
-        Self {
-            instance: instance.into(),
-            kind: kind.into(),
-            // new/switch/fork report their destination, which need not be known when sent.
-            session: if matches!(kind, "compact" | "tree" | "reload") {
-                session.as_str().map(str::to_owned)
-            } else {
-                None
-            },
-        }
-    }
+    started_at: Option<u64>,
 }
 // Long enough for compact and other deferred callbacks, but a lost v1 event must not poison future operations forever.
 pub(crate) const MISSING_TTL: Duration = Duration::from_secs(600);
 struct Missing {
     count: u32,
     until: Instant,
-    started_at: Option<u64>,
 }
 #[derive(Default)]
 struct MissingCompletions(std::collections::HashMap<CompletionScope, Missing>);
 impl MissingCompletions {
-    fn add(&mut self, key: CompletionScope, m: Missing) {
-        self.0
-            .entry(key)
-            .and_modify(|prev| {
-                prev.count = prev.count.saturating_add(m.count);
-                prev.until = prev.until.max(m.until);
-            })
-            .or_insert(m);
+    fn add(&mut self, key: CompletionScope) {
+        let m = self.0.entry(key).or_insert(Missing {
+            count: 0,
+            until: Instant::now(),
+        });
+        m.count = m.count.saturating_add(1);
+        m.until = Instant::now() + MISSING_TTL;
     }
     fn contains(&self, key: &CompletionScope) -> bool {
-        let mut any = key.clone();
-        any.session = None;
-        [key, &any]
-            .into_iter()
-            .any(|k| self.0.get(k).is_some_and(|m| m.until > Instant::now()))
+        self.0.get(key).is_some_and(|m| m.until > Instant::now())
     }
-    fn consume(&mut self, mut key: CompletionScope) -> bool {
+    fn consume(&mut self, key: &CompletionScope) -> bool {
         self.expire(Instant::now());
-        if !self.0.contains_key(&key) {
-            key.session = None;
-        }
-        let Some(m) = self.0.get_mut(&key) else {
+        let Some(m) = self.0.get_mut(key) else {
             return false;
         };
         m.count -= 1;
         if m.count == 0 {
-            self.0.remove(&key);
+            self.0.remove(key);
         }
         true
-    }
-    fn observe(&mut self, id: &str, session: &Value, started_at: Option<u64>) {
-        // Drop a replaced Pi's marks. Across a session move keep just one unscoped count
-        // per kind, since the PC can resume the old session before its callback arrives.
-        self.0.retain(|k, m| {
-            k.instance != id || !matches!((m.started_at,started_at),(Some(a),Some(b)) if a!=b)
-        });
-        let moved: Vec<_> = self
-            .0
-            .keys()
-            .filter(|k| {
-                k.instance == id && k.session.is_some() && k.session.as_deref() != session.as_str()
-            })
-            .cloned()
-            .collect();
-        for mut k in moved {
-            let m = self.0.remove(&k).unwrap();
-            k.session = None;
-            self.add(k, m)
-        }
     }
     fn expire(&mut self, now: Instant) {
         self.0.retain(|_, m| m.until > now);
@@ -121,6 +78,7 @@ pub(crate) struct State {
     seq: Option<u64>,
     effect_seq: Option<u64>,
     missing: MissingCompletions,
+    generations: std::collections::HashMap<String, u64>,
     pub(crate) result_deadline: Option<Instant>,
     pub caps: Value,
     pub drafts: Vec<Draft>,
@@ -192,7 +150,7 @@ impl State {
     pub fn reset(&mut self) {
         self.effect_seq = None;
         let op = self.get("busy", "operation");
-        if op["accepted"] == true {
+        if matches!(op["method"].as_str(), Some("compact" | "session_op")) {
             self.finish_without_event(json!({"instanceId":self.selected,"outcome":"unknown"}));
         }
         self.clear("busy");
@@ -242,6 +200,14 @@ impl State {
             {
                 self.confirm(draft, &entry)
             }
+        }
+    }
+    pub fn release_unknown(&mut self, id: &str) {
+        let op = self.get("busy", "operation");
+        if op["id"] == id && matches!(op["method"].as_str(), Some("compact" | "session_op")) {
+            self.finish_without_event(json!({"outcome":"unknown"}));
+        } else {
+            self.release(id)
         }
     }
     pub fn release(&mut self, id: &str) {
@@ -344,10 +310,22 @@ impl State {
                     Some((v["instanceId"].as_str()?.to_owned(), v))
                 })
                 .collect();
+            let selected = self.selected.clone();
+            if let Some(id) = selected.as_deref()
+                && !next.contains_key(id)
+                && self.generation(id).is_some()
+            {
+                self.retire_generation(id);
+                self.put("view", "phase", json!("instance_gone"));
+            }
+            self.generations.retain(|id, _| next.contains_key(id));
             self.missing.0.retain(|k, _| next.contains_key(&k.instance));
+            let mut resubscribe = self.get("view", "phase") == "instance_gone"
+                && selected
+                    .as_ref()
+                    .is_some_and(|id| next.contains_key(id) && self.generation(id).is_none());
             for (id, row) in &next {
-                self.missing
-                    .observe(id, &row["session"]["id"], row["startedAt"].as_u64());
+                resubscribe |= self.observe_generation(id, row["startedAt"].as_u64());
             }
             let mut prev = self
                 .rows
@@ -373,7 +351,7 @@ impl State {
                         .push(Change::Upsert(item("instance", id, i, v)))
                 }
             }
-            return false;
+            return resubscribe;
         }
         if self.selected.is_none() || self.selected.as_deref() != m["instanceId"].as_str() {
             return false;
@@ -381,9 +359,8 @@ impl State {
         match t {
             "subscribed" => {
                 // A fresh snapshot is not proof that a pending operation completed.
-                self.missing.observe(
+                self.observe_generation(
                     m["instanceId"].as_str().unwrap(),
-                    &m["snapshot"]["session"]["id"],
                     m["snapshot"]["startedAt"].as_u64(),
                 );
                 self.snapshot_op(&m["snapshot"]["session"]["id"]);
@@ -448,10 +425,9 @@ impl State {
             }
             "subscribe_error" | "instance_gone" => {
                 if t == "instance_gone" {
+                    self.retire_generation(m["instanceId"].as_str().unwrap());
+                    self.generations.remove(m["instanceId"].as_str().unwrap());
                     self.reset();
-                    self.missing
-                        .0
-                        .retain(|k, _| Some(&k.instance) != self.selected.as_ref());
                 } else {
                     self.reset_view()
                 }
@@ -484,19 +460,20 @@ impl State {
                     } else {
                         "compact"
                     };
-                    let scope = CompletionScope::new(
-                        m["instanceId"].as_str().unwrap(),
-                        kind,
-                        &m["sessionId"],
-                    );
-                    let stale = self.missing.consume(scope);
+                    let instance = m["instanceId"].as_str().unwrap();
+                    let scope = CompletionScope {
+                        instance: instance.into(),
+                        started_at: self.generation(instance),
+                        kind: kind.into(),
+                    };
+                    let stale = self.missing.consume(&scope);
                     let op = self.get("busy", "operation");
                     let matches = k == "session_op_done"
                         && op["method"] == "session_op"
                         && op["op"] == e["op"]
                         || k.starts_with("compact_")
                             && op["method"] == "compact"
-                            && op["sessionId"] == m["sessionId"];
+                            && (stale || op["sessionId"] == m["sessionId"]);
                     if !matches {
                         return false;
                     }
@@ -537,11 +514,6 @@ impl State {
                 let e = &m["event"];
                 match e["type"].as_str().unwrap_or("") {
                     "session_changed" => {
-                        self.missing.observe(
-                            m["instanceId"].as_str().unwrap(),
-                            &e["session"]["id"],
-                            None,
-                        );
                         let mut op = self.get("busy", "operation").clone();
                         if op["method"] == "session_op"
                             && (op["op"] == e["reason"]
@@ -690,28 +662,44 @@ impl State {
             }
         }
     }
+    pub(crate) fn generation(&self, id: &str) -> Option<u64> {
+        self.generations.get(id).copied()
+    }
+    fn retire_generation(&mut self, id: &str) {
+        self.missing.0.retain(|k, _| k.instance != id);
+        if self.selected.as_deref() == Some(id) {
+            let op = self.get("busy", "operation");
+            if matches!(op["method"].as_str(), Some("session_op" | "compact")) {
+                self.finish_op(json!({"outcome":"unknown"}));
+            }
+            self.reset_view();
+        }
+    }
+    fn observe_generation(&mut self, id: &str, start: Option<u64>) -> bool {
+        if let Some(start) = start
+            && self
+                .generations
+                .insert(id.into(), start)
+                .is_some_and(|prev| prev != start)
+        {
+            self.retire_generation(id);
+            return self.selected.as_deref() == Some(id);
+        }
+        false
+    }
     fn busy_scope(&self) -> CompletionScope {
         let op = self.get("busy", "operation");
-        CompletionScope::new(
-            self.selected.as_deref().expect("operation target"),
-            op["op"].as_str().unwrap_or("compact"),
-            &op["sessionId"],
-        )
+        CompletionScope {
+            instance: self.selected.clone().expect("operation target"),
+            started_at: op["startedAt"].as_u64(),
+            kind: op["op"].as_str().unwrap_or("compact").into(),
+        }
     }
     fn finish_without_event(&mut self, result: Value) {
         let scope = self.busy_scope();
-        let started_at = self
-            .get("view", "startedAt")
-            .as_u64()
-            .or_else(|| self.get("instance", &scope.instance)["startedAt"].as_u64());
-        self.missing.add(
-            scope,
-            Missing {
-                count: 1,
-                until: Instant::now() + MISSING_TTL,
-                started_at,
-            },
-        );
+        if self.generation(&scope.instance) == scope.started_at {
+            self.missing.add(scope);
+        }
         self.finish_op(result)
     }
     fn finish_op(&mut self, mut result: Value) {

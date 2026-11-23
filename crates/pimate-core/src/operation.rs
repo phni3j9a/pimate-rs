@@ -90,6 +90,9 @@ impl State {
             let req = &msg["request"];
             let params = &req["params"];
             let mut busy = json!({"id":id,"requestId":params["requestId"],"method":method,"op":params["op"],"sessionId":req["expectSessionId"]});
+            if matches!(method.as_str(), Some("compact" | "session_op")) {
+                busy["startedAt"] = json!(self.generation(msg["instanceId"].as_str().unwrap()));
+            }
             if params["op"] == "fork"
                 && let Some(entry) = params["arg"].as_str()
             {
