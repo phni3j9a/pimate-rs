@@ -46,6 +46,9 @@ pub enum Operation {
         method: p::RcMethod,
         params: String,
     },
+    HostModels {
+        instance: String,
+    },
     Folders,
     Dirs {
         path: String,
@@ -85,6 +88,16 @@ impl State {
         let msg = self.build(id, op, commit)?;
         let method = &msg["request"]["method"];
         let lock = match method.as_str() {
+            Some("auth_wait") => {
+                let pi = msg["instanceId"].as_str().ok_or(Error::BadRequest)?;
+                if self.auth_waits.values().any(|target| target == pi) {
+                    return Err(Error::Blocked);
+                }
+                if commit {
+                    self.auth_waits.insert(id.into(), pi.into());
+                }
+                return Ok(msg);
+            }
             Some("ui_respond") => "answer",
             Some("compact" | "session_op" | "set_model" | "set_thinking" | "shutdown") => {
                 "operation"
@@ -307,6 +320,20 @@ impl State {
                     }
                 }
                 return Ok(rc(id, target, name, params));
+            }
+            HostModels { instance } => {
+                if self.get("instance", &instance).is_null() {
+                    return Err(Error::StaleTarget);
+                }
+                return Ok(rc(
+                    id,
+                    Target {
+                        instance,
+                        session: None,
+                    },
+                    "models",
+                    json!({}),
+                ));
             }
             Folders => json!({"type":"folders"}),
             Dirs { path } => json!({"type":"dirs","path":path}),

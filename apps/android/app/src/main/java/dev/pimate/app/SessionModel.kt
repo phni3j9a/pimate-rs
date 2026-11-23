@@ -77,6 +77,10 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
 internal class HostRows(private val states: MutableMap<String, Rows>) {
     operator fun get(id: String) = states[id] ?: Rows()
 
+    fun remove(id: String) {
+        states.remove(id)
+    }
+
     fun snapshot(id: String, value: Snapshot) {
         states[id] = get(id).snapshotRows(value)
     }
@@ -91,7 +95,23 @@ internal fun terminalCommand(session: String): String? =
         .takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")) }
         ?.let { "pimate attach $it" }
 
-class SessionModel(app: Application) : AndroidViewModel(app) {
+class SessionModel(app: Application, private val saved: SavedStateHandle) : AndroidViewModel(app) {
+    internal val settings = AppSettings(app.getSharedPreferences("display", 0))
+    var pairing by mutableStateOf(saved.get<Boolean>("additionalPair") == true)
+        private set
+
+    fun showPairing(active: Boolean) {
+        pairing = active
+        saved["additionalPair"] = active
+    }
+
+    var pairedHostId by mutableStateOf<String?>(null)
+        private set
+
+    fun consumePairedHost() {
+        pairedHostId = null
+    }
+
     private val core = Core((app as PiApplication).store)
     private val handler = Handler(Looper.getMainLooper())
 
@@ -115,6 +135,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
 
     internal val edits = ChatEdits()
     internal val answers = AnswerEdits()
+    internal val instructions = ChildInstructions()
     var target by mutableStateOf<Target?>(null)
         private set
 
@@ -201,7 +222,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             hosts.firstOrNull { it.id in slots }?.let(::focus)
-            openList = host != null
+            openList = host != null && !pairing
         } catch (_: CoreException) {
             error = "保存済みの接続を開けません"
         }
@@ -248,6 +269,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                 },
             )
         slots.put(h.id, slot)?.connection?.close()
+        states.remove(h.id)
         slot.connection = c
         snapshot(h.id, c)
     }
@@ -266,9 +288,12 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                 busy = true
                 error = ""
                 try {
-                    val paired = core.pair(link.trim(), android.os.Build.MODEL)
+                    val first = hosts.isEmpty()
+                    val paired = core.pair(link, android.os.Build.MODEL)
                     hosts = core.hosts()
                     connect(paired)
+                    showPairing(false)
+                    pairedHostId = paired.id.takeIf { first }
                     focus(paired)
                     openList = true
                 } catch (_: CoreException) {
@@ -338,6 +363,73 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         return result
     }
 
+    internal suspend fun github(key: EditorKey, query: JSONObject): JSONObject {
+        val c = connection ?: throw CoreException.Offline()
+        if (key != edits.current || key.target != target) throw CoreException.StaleTarget()
+        val result = c.perform(Operation.Github(key.target.instance, query.toString()))
+        if (c !== connection || key != edits.current || key.target != target)
+            throw CoreException.StaleTarget()
+        return JSONObject(result)
+    }
+
+    internal suspend fun machineRequest(id: String, op: Operation): String {
+        require(
+            op is Operation.Folders ||
+                op is Operation.Dirs ||
+                op is Operation.Spawn ||
+                op is Operation.HostModels ||
+                op is Operation.GithubStatus ||
+                op is Operation.Devices ||
+                op is Operation.Revoke ||
+                op is Operation.UpdateCheck ||
+                op is Operation.Update ||
+                op is Operation.Restart
+        )
+        val c = slots[id]?.connection ?: throw CoreException.Offline()
+        val result = c.perform(op)
+        if (slots[id]?.connection !== c) throw CoreException.StaleTarget()
+        return result
+    }
+
+    internal suspend fun <T> withLogin(id: String, block: suspend (LoginSession) -> T): T {
+        val c = slots[id]?.connection ?: throw CoreException.Offline()
+        val hold = java.util.UUID.randomUUID().toString()
+        var active = true
+        try {
+            val login = LoginSession(c, c.openLogin(hold)) { active && slots[id]?.connection === c }
+            if (slots[id]?.connection !== c) throw CoreException.StaleTarget()
+            return block(login)
+        } finally {
+            active = false
+            if (slots[id]?.connection === c) c.closeLogin(hold)
+        }
+    }
+
+    internal fun forget(id: String) {
+        core.forget(id)
+        slots.remove(id)?.connection?.close()
+        states.remove(id)
+        edits.forget(id)
+        answers.forget(id)
+        instructions.forget(id)
+        if (pairedHostId == id) consumePairedHost()
+        hosts = hosts.filterNot { it.id == id }
+        if (host?.id == id) {
+            host = null
+            selected = null
+            edits.current = null
+            publish()
+            hosts.firstOrNull { it.id in slots }?.let(::focus)
+            openList = host != null
+        }
+    }
+
+    internal fun askAbout(key: EditorKey, review: Review) {
+        if (key != edits.current || target != key.target) throw CoreException.StaleTarget()
+        val text = edits.body.text
+        edits.text(key, review.reference + if (text.isBlank()) "" else "\n$text")
+    }
+
     internal fun abort(key: EditorKey?) {
         if (key != null && key == edits.current && key.target == target)
             operate(Operation.Abort(key.target))
@@ -369,5 +461,35 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         slots.values.forEach { it.connection?.close() }
         slots.clear()
         core.close()
+    }
+}
+
+internal class LoginSession(
+    private val connection: Connection,
+    val target: Target,
+    private val valid: () -> Boolean,
+) {
+    suspend fun request(method: RcMethod, params: JSONObject = JSONObject()): String {
+        require(
+            method in
+                setOf(
+                    RcMethod.AUTH_LIST,
+                    RcMethod.AUTH_BEGIN,
+                    RcMethod.AUTH_RESPOND,
+                    RcMethod.AUTH_CANCEL,
+                    RcMethod.AUTH_LOGOUT,
+                )
+        )
+        if (!valid()) throw CoreException.StaleTarget()
+        return connection.perform(Operation.Rc(target, method, params.toString())).also {
+            if (!valid()) throw CoreException.StaleTarget()
+        }
+    }
+
+    suspend fun followOnce(): Boolean {
+        if (!valid()) throw CoreException.StaleTarget()
+        return connection.followLoginOnce(target).also {
+            if (!valid()) throw CoreException.StaleTarget()
+        }
     }
 }

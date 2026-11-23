@@ -71,6 +71,7 @@ impl MissingCompletions {
 #[derive(Default)]
 pub(crate) struct State {
     pub revision: u64,
+    pub auth_waits: std::collections::HashMap<String, String>, // request ID → login Pi, per socket
     pub auth_targets: std::collections::HashMap<String, String>,
     rows: IndexMap<String, IndexMap<String, Value>>,
     pub changes: Vec<Change>,
@@ -95,6 +96,8 @@ struct Failure {
     text: String,
 }
 struct Observations {
+    user_entry: Option<String>,
+    watched: Vec<String>,
     seq: Option<u64>,
     session: Value,
     started: Value,
@@ -252,12 +255,27 @@ impl State {
         }
         None
     }
+    fn last_user_entry(&self) -> Option<&str> {
+        self.rows
+            .get("entry")?
+            .iter()
+            .rev()
+            .find(|(_, e)| e["kind"] == "user")
+            .map(|(id, _)| id.as_str())
+    }
     fn reset_view(&mut self) {
         if self.ready()
             && let Some(id) = self.selected.clone()
         {
             self.observations.shift_remove(&id);
             let observed = Observations {
+                user_entry: self.last_user_entry().map(str::to_owned),
+                watched: self
+                    .rows
+                    .get("runWatch")
+                    .into_iter()
+                    .flat_map(|r| r.keys().cloned())
+                    .collect(),
                 seq: self.seq,
                 session: self.get("view", "session").clone(),
                 started: self.get("view", "startedAt").clone(),
@@ -284,6 +302,7 @@ impl State {
             "question",
             "quota",
             "run",
+            "runWatch",
             "tool",
             "stream",
             "view",
@@ -339,6 +358,7 @@ impl State {
         }
     }
     pub fn release(&mut self, id: &str) {
+        self.auth_waits.remove(id);
         for lock in ["operation", "answer"] {
             if self.get("busy", lock)["id"] == id {
                 if lock == "operation" {
@@ -400,6 +420,11 @@ impl State {
     pub fn prompt_ack(&mut self, id: &str, delivery: &Value) {
         if self.get("draft", id)["status"] != "sending" {
             return;
+        }
+        if self.get("draft", id)["instanceId"] == json!(self.selected)
+            && self.get("draft", id)["sessionId"] == self.get("view", "session")["id"]
+        {
+            self.prune_watch(true);
         }
         if matches!(delivery.as_str(), Some("steer" | "followUp")) {
             self.draft_status(id, "queued")
@@ -633,6 +658,15 @@ impl State {
                         );
                     }
                     if obs.session["id"] == self.get("view", "session")["id"] {
+                        if obs.user_entry.is_some()
+                            && self.last_user_entry() == obs.user_entry.as_deref()
+                        {
+                            for id in obs.watched {
+                                if !self.get("run", &id).is_null() {
+                                    self.put("runWatch", &id, json!(true));
+                                }
+                            }
+                        }
                         for (id, ms) in obs.thinking {
                             if !self.get("entry", &id).is_null() {
                                 self.put("thinkingMs", &id, ms);
@@ -804,6 +838,13 @@ impl State {
                         }
                     }
                     "message_end" => {
+                        if e["item"]["kind"] == "user"
+                            && e["item"]["entryId"]
+                                .as_str()
+                                .is_some_and(|id| self.get("entry", id).is_null())
+                        {
+                            self.prune_watch(true);
+                        }
                         if e["item"]["kind"] == "assistant" {
                             if let Some(start) = self.get("stream", "thinkingSince").as_u64()
                                 && let Some(id) = e["item"]["entryId"].as_str()
@@ -1097,6 +1138,23 @@ impl State {
         for r in v["runs"].as_array().into_iter().flatten() {
             self.run(r)
         }
+        self.prune_watch(false);
+    }
+    fn prune_watch(&mut self, finished: bool) {
+        let stale: Vec<_> = self
+            .rows
+            .get("runWatch")
+            .into_iter()
+            .flat_map(|r| r.keys())
+            .filter(|id| {
+                let run = self.get("run", id);
+                run.is_null() || finished && run["active"] != true
+            })
+            .cloned()
+            .collect();
+        for id in stale {
+            self.remove("runWatch", &id);
+        }
     }
     fn run(&mut self, r: &Value) {
         if self.get("view", "backends").as_array().is_some_and(|b| {
@@ -1114,6 +1172,9 @@ impl State {
         };
         let children = r["children"].as_array().cloned().unwrap_or_default();
         let is_active = active(&r) || children.iter().any(active);
+        if is_active && let Some(id) = r["id"].as_str() {
+            self.put("runWatch", id, json!(true));
+        }
         r["active"] = json!(is_active);
         r["open"] = json!(
             is_active || r["state"] == "paused" || children.iter().any(|c| c["state"] == "paused")

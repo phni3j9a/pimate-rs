@@ -1191,3 +1191,164 @@ fn live_update_after_oversized_preview_rebuilds_only_open_history_call() {
     event(&mut s, 8, update("late"));
     assert!(s.get("tool", "t").is_null());
 }
+
+#[test]
+fn machine_screen_operations_do_not_require_a_chat_subscription() {
+    let mut s = State::default();
+    s.caps = json!({"dirs":true,"github":true,"pairedDevices":true,"githubStatus":true,"hostRestart":true,"packageUpdate":true});
+    let spawn = json!({"cwd":"/tmp/mock","trust":true,"askTool":true,"model":{"provider":"demo","id":"small"},"thinking":"low","message":"hello"});
+    for (op, ty) in [
+        (Operation::Folders, "folders"),
+        (Operation::Dirs { path: "~/".into() }, "dirs"),
+        (
+            Operation::Spawn {
+                params: spawn.to_string(),
+            },
+            "spawn",
+        ),
+        (Operation::GithubStatus, "github_status"),
+        (Operation::Devices, "devices"),
+        (
+            Operation::Revoke {
+                device_id: "other".into(),
+            },
+            "device_revoke",
+        ),
+        (Operation::UpdateCheck, "update_check"),
+        (Operation::Update, "update"),
+        (Operation::Restart, "host_restart"),
+    ] {
+        let frame = s.prepare("r", op, false).unwrap();
+        assert_eq!(frame["type"], ty);
+        if ty == "spawn" {
+            assert_eq!(frame["params"], spawn);
+        }
+    }
+    for query in [
+        json!({"kind":"list"}),
+        json!({"kind":"issue","number":3}),
+        json!({"kind":"pr","number":2}),
+    ] {
+        let frame = s
+            .prepare(
+                "r",
+                Operation::Github {
+                    instance: "pi".into(),
+                    query: query.to_string(),
+                },
+                false,
+            )
+            .unwrap();
+        assert_eq!(frame["query"], query);
+        assert_eq!(frame["instanceId"], "pi");
+    }
+    let models = || Operation::HostModels {
+        instance: "pi".into(),
+    };
+    assert_eq!(s.prepare("r", models(), false), Err(Error::StaleTarget));
+    s.apply(&json!({"type":"instances","instances":[{"instanceId":"pi"}]}));
+    assert_eq!(
+        s.prepare("r", models(), true).unwrap()["request"],
+        json!({"id":"r","method":"models","params":{},"expectInstanceId":"pi"})
+    );
+    assert_eq!(s.selected, None);
+}
+
+#[test]
+fn finished_child_stays_watched_until_a_new_user_entry() {
+    let mut s = view();
+    for (seq, state) in [(3, "running"), (4, "paused")] {
+        event(
+            &mut s,
+            seq,
+            json!({"type":"subagent_run","run":{"id":"r","state":state,"actions":["interrupt"],"children":[]}}),
+        );
+        assert_eq!(s.get("runWatch", "r"), true);
+    }
+    assert_eq!(s.get("run", "r")["open"], true);
+    assert_eq!(
+        s.prepare(
+            "a",
+            rc(
+                pimate_protocol::RcMethod::SubagentControl,
+                json!({"runId":"r","action":"interrupt"})
+            ),
+            false
+        )
+        .unwrap()["request"]["params"]["action"],
+        "interrupt"
+    );
+    event(
+        &mut s,
+        5,
+        json!({"type":"message_end","item":{"kind":"user","entryId":"next"}}),
+    );
+    assert!(s.get("runWatch", "r").is_null());
+}
+
+#[test]
+fn reconnect_restores_only_watched_runs_in_the_same_turn() {
+    for (next_pi, start, session, turn, run, restored) in [
+        ("i", 1, "s", "u", "r", true),
+        ("i", 1, "s", "next", "r", false),
+        ("i", 1, "other", "u", "r", false),
+        ("i", 2, "s", "u", "r", false),
+        ("other", 1, "s", "u", "r", false),
+        ("i", 1, "s", "u", "other", false),
+    ] {
+        let snapshot = |pi, start, session, turn, runs: Value| json!({"type":"subscribed","instanceId":pi,"snapshot":{"seq":2,"startedAt":start,"session":{"id":session},"subagents":{"runs":runs}},"history":{"items":[{"kind":"user","entryId":turn}]}});
+        let mut s = State::default();
+        s.selected = Some("i".into());
+        s.apply(&snapshot("i", 1, "s", "u", json!([])));
+        for (seq, status) in [(3, "running"), (4, "complete")] {
+            event(
+                &mut s,
+                seq,
+                json!({"type":"subagent_run","run":{"id":"r","state":status}}),
+            );
+        }
+        s.reset();
+        s.selected = None;
+        s.reset();
+        s.selected = Some(next_pi.into());
+        s.apply(&snapshot(
+            next_pi,
+            start,
+            session,
+            turn,
+            json!([{"id":run,"state":"complete"}]),
+        ));
+        assert_eq!(s.get("runWatch", run) == true, restored);
+        assert_eq!(s.get("runWatch", "r") == true, restored);
+    }
+}
+
+#[test]
+fn auth_wait_is_exclusive_per_login_pi_until_the_receipt_or_timeout() {
+    let mut s = view();
+    s.caps = json!({"providerAuth":true});
+    for pi in ["a", "b"] {
+        s.auth_targets.insert(pi.into(), pi.into());
+        s.put("loginCapability", pi, json!(true));
+        s.put("auth", pi, json!({"id":"f"}));
+    }
+    let wait = |pi: &str| Operation::Rc {
+        target: Target {
+            instance: pi.into(),
+            session: None,
+        },
+        method: pimate_protocol::RcMethod::AuthWait,
+        params: json!({"flowId":"f","afterRevision":1}).to_string(),
+    };
+    s.prepare("1", wait("a"), false).unwrap();
+    s.prepare("1", wait("a"), true).unwrap();
+    s.reset(); // Switching chats does not cancel the login Pi's wait.
+    assert_eq!(s.prepare("2", wait("a"), true), Err(Error::Blocked));
+    s.prepare("3", wait("b"), true).unwrap();
+    s.release("3");
+    assert_eq!(s.prepare("2", wait("a"), false), Err(Error::Blocked));
+    s.release_unknown("1");
+    s.prepare("2", wait("a"), true).unwrap();
+    s.release("2");
+    s.prepare("4", wait("a"), true).unwrap();
+}

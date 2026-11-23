@@ -110,6 +110,7 @@ impl Connection {
                     st.selected = None;
                     st.put("host", "selection", Value::Null);
                     st.auth_targets.clear();
+                    st.auth_waits.clear();
                     for c in ["auth", "provider", "loginCapability"] {
                         st.clear(c)
                     }
@@ -345,6 +346,7 @@ struct Pending {
     hold: Option<String>,
     method: Option<String>,
     session: Value,
+    host_models: bool,
     thumbnail: bool,
 }
 async fn attempt(
@@ -441,6 +443,7 @@ async fn attempt(
                     continue;
                 }
                 let id = uuid::Uuid::new_v4().to_string();
+                let host_models = matches!(&op, Operation::HostModels { .. });
                 let m = match s.edit(|st| st.prepare(&id, op, true)) {
                     Ok(v) => v,
                     Err(e) => {
@@ -471,6 +474,7 @@ async fn attempt(
                             hold,
                             method,
                             session,
+                            host_models,
                             thumbnail,
                         },
                     );
@@ -597,6 +601,10 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     if method == "prompt" {
         st.prompt_ack(id, &body["deliveredAs"]);
     }
+    if p.host_models {
+        // The spawn picker must not overwrite the selected chat’s model catalog.
+        return Ok(body.to_string());
+    }
     let dedicated = st.auth_targets.values().any(|i| p.instance == *i);
     if !(dedicated
         || st.ready()
@@ -697,7 +705,10 @@ impl Connection {
             .unwrap()
             .get("auth", &target.instance)
             .clone();
-        if !matches!(flow["status"].as_str(), Some("working" | "saving")) {
+        if !matches!(
+            flow["status"].as_str(),
+            Some("working" | "input" | "saving")
+        ) {
             return Ok(false);
         }
         self.perform(Operation::Rc {
@@ -787,7 +798,7 @@ mod regressions {
         }
     }
     #[tokio::test]
-    async fn follow_login_once_never_renews_a_working_flow() {
+    async fn follow_login_once_sends_one_wait_even_while_input_is_shown() {
         let (c, mut commands) = connected();
         let target = crate::Target {
             instance: "login".into(),
@@ -798,7 +809,7 @@ mod regressions {
             s.put(
                 "auth",
                 "login",
-                json!({"status":"working","id":"flow","revision":1}),
+                json!({"status":"input","id":"flow","revision":1}),
             )
         });
         let mut wait = Box::pin(c.follow_login_once(target));
@@ -814,6 +825,26 @@ mod regressions {
         reply.send(Ok("{}".into())).unwrap();
         assert!(wait.await.unwrap());
         assert!(commands.try_recv().is_err());
+    }
+    #[test]
+    fn host_models_reply_does_not_change_the_chat_catalog() {
+        let mut s = State::default();
+        s.put("model", "existing", json!({"favorite":true}));
+        let pending = Pending {
+            reply: oneshot::channel().0,
+            deadline: Instant::now(),
+            kind: "rc".into(),
+            instance: json!("other"),
+            hold: None,
+            method: Some("models".into()),
+            session: Value::Null,
+            host_models: true,
+            thumbnail: false,
+        };
+        let body = json!({"models":[],"current":null,"default":{"model":null,"thinking":null}});
+        let result = resolve(&mut s, &pending, "r", &json!({"ok":true,"result":body})).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), body);
+        assert_eq!(s.get("model", "existing")["favorite"], true);
     }
     #[test]
     fn deadlines_outlast_host_processing() {
@@ -862,6 +893,7 @@ mod regressions {
                 hold: None,
                 method: Some("abort".into()),
                 session: json!("s"),
+                host_models: false,
                 thumbnail: false,
             };
             let _ = resolve(&mut s, &p, "stop", &result);
@@ -896,6 +928,7 @@ mod regressions {
                     hold: None,
                     method: Some("compact".into()),
                     session: json!("s"),
+                    host_models: false,
                     thumbnail: false,
                 };
                 assert_eq!(

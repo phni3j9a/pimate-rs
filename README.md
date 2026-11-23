@@ -256,3 +256,22 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 制限: 未購読中の失敗は RC v1 の snapshot から識別できません。最新の失敗を Extension の snapshot に載せる対応は M7 で行います。
 
 2マシンの計装試験は `PIMATE_DEMO_NAME='マシン A' scripts/android-demo.py` と B を別々に起動し、各ポートだけ reverse。初回状態の RS debug アプリの `cache/two-links` にリンクを1行ずつ渡し、`DemoJourney#twoMachines` を実行します。`global-attention.png` と `two-machines.png` をアプリの cache から取得し、終了後に各プロセスと reverse を片付けます。
+
+### Android の残りの画面で使う状態（#20 前半）
+
+`SessionModel` は Main スレッドから使います。画面を開いた時点の Host ID（会話なら `EditorKey`）を捕捉し、閉じる・対象を変えるときはその画面の coroutine をキャンセルしてください。以下は新しい画面の実装ではなく、その入力と操作の契約です。
+
+| 画面 | 状態と操作 |
+| --- | --- |
+| 変更レビュー | `review(entries, cwd, turn)` に `entry` 行の JSON を履歴順で渡す（重い履歴は UI スレッド外で解析）。`turn` は user entry ID、null は読み込み済みセッション全体。`latestChangedTurn`、ファイル別の `pieces`（呼出順）、元の patch・hunk・行番号・追加削除数、差分なしの理由を返す。最初の piece の `created` が作成の根拠。write の本文だけでは追加行数を数えない。`askAbout(key, review)` は画像・既存本文を残して参照を書き足すだけ。自動送信しない。 |
+| サブエージェント | `run` の `open`（停止中／再開可能を含む）・`active`・`children`・`stopAction`。`rows.subagentCounts()` は観測した実行の完了後も次のユーザー発言まで要約を残す。再購読時には同世代・同セッション・同じ user entry の場合だけ snapshot に残る run を照合。子の画面を開くごとに `workRecord(key,run,child)` を作り、`load()` で不透明な cursor を最大8ページ追う。`more` なら続きを手動で、load が true を返したら取得中に更新があったため再取得。`control(key,run,child,action,text)` は現時点の `actions` を中核が検査。子の指示は `childId` と `text`、run 全体の停止・interrupt・abort_parent は childId を付けず、影響範囲を確認してから。resume の結果は `newRunId`。受付後だけ `instructions.forChild` に送信者ラベル用の本文・操作をメモリ保持（Host・会話・run・child 別、全体128件かつキー等を含む65,536 UTF-16単位まで。超過時は古い順に破棄し、単独で超える指示は記録しない）。 |
+| 新しい Pi | `SpawnForm(hostId,settings.askTool)` はマシン切替で作り直す。`machineRequest(id,Operation.Folders)` の home・folders、`Dirs(path)` の候補、`folder(path, knownTrusted)`（信頼を確認したパスは空白も含めそのまま送る）、`hostModels(id)` の models/scoped/default。チャットは購読し直さず最大3つの Pi へ一覧を照会。Pi がない場合も PC の既定で起動可。`spawn(form)` は trust・askTool・任意の model/thinking/message を一度だけ送る。初回本文の結果不明・20秒以内に一覧に現れない起動を区別し、Ready のときだけ `select` 可能。 |
+| 設定・情報 | `hosts`、`settings.chooseAskTool`・`chooseScale`・`chooseTheme(SYSTEM/LIGHT/DARK)`。既存の文字倍率設定を引き継ぎ OS 倍率に乗算。テーマ変更は全体に即時反映。版はインストール済み APK の versionName。`checkAppUpdate(version)` は Rust 版 `REPO` の最新の公開 `app-vX.Y.Z` を照会する（配布前・通信失敗は Unknown、TS 版 APK は案内しない）。`REPORT_ISSUE` は同じリポジトリ。 |
+| マシン詳細 | `rowsFor(id)` の `host/connection` と `host/info`（能力）。`machineRequest` に `UpdateCheck/Update/Restart/GithubStatus/Devices/Revoke(deviceId)`。成功は Host の結果 JSON、失敗・切断は例外。端末の取り消しと `forget(id)`（このスマホの暗号化された登録・接続・編集を削除）は別操作。確認後だけ実行。 |
+| プロバイダー | 画面の coroutine 内の `withLogin(id) { login -> … }` は専用 Pi の hold を finally で解放。`rowsFor(id)` の provider/auth 行（キーは `login.target.instance`）、`login.request(AUTH_BEGIN/RESPOND/CANCEL/LOGOUT,params)` と `followOnce()`。working/input/saving 中だけ接続・ログイン先につき1つの wait（重複は送信せず Blocked）、変更後は `AUTH_LIST` で再取得。リンクは中核が検証した authorization だけを明示タップで開く。秘密入力を保存・ログ出力しない。 |
+| GitHub | `github(key,query)` の `kind=list` または `kind=issue/pr,number`。Host が対象 Pi のリポジトリを決める。非対応・未ログインは空一覧ではなくエラーとして扱う。 |
+| Pair／セットアップ／最初の Pi | QR・貼付などの候補は `previewPair(link)` で名前・アドレスを検査してから `pair(link)`。案内ページ・カメラ・外部リンクは画面層。追加登録経路は `showPairing(true/false)`、SavedState に保存するのはフラグだけ。初回成功のみ `pairedHostId` が入る（画面で受け取ったら `consumePairedHost()`）。`rowsFor(id).firstStep()` は loading/offline/empty/list。接続済みでも最初の一覧到着前は empty としない。 |
+
+後半は `MainActivity.kt`・`PairScreen.kt`・`ChatScreen.kt`・新規画面でこれらを接続します。Rust・生成コード・暗号ストア・状態層・既存の編集キーの契約は維持してください。#20 のモック比較と Pixel 3 の実 Pi 確認は後半です。
+
+状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。

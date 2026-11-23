@@ -173,3 +173,29 @@ pub fn init_logging() {
         log::set_max_level(log::STATIC_MAX_LEVEL);
     }
 }
+
+/// Inspect a candidate before the user confirms. The pairing code is not display data.
+#[derive(uniffi::Record)]
+pub struct PairPreview {
+    pub name: String,
+    pub address: String,
+}
+#[uniffi::export]
+pub fn preview_pair(link: String) -> Option<PairPreview> {
+    let p = pimate_protocol::parse_pairing_link(&link)?;
+    Some(PairPreview {
+        name: p.host_name,
+        address: p.address,
+    })
+}
+
+#[test]
+fn pairing_preview_uses_protocol_validation_without_a_request() {
+    assert!(preview_pair("pimate://pair?h=bad".into()).is_none());
+    let p = preview_pair("pimate://pair?h=127.0.0.1:9&id=demo&n=Demo&c=abcdefghijklmnop".into())
+        .unwrap();
+    assert_eq!(
+        (p.name.as_str(), p.address.as_str()),
+        ("Demo", "127.0.0.1:9")
+    );
+}
