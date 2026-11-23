@@ -211,7 +211,7 @@ scripts/build-ios.sh
 
 ### Android 開発版と模擬 Host
 
-`apps/android` は API 26 以上の Compose アプリです。上記の Rust ターゲット、cargo-ndk、Android SDK 36、JDK 17 以上を用意し、`ANDROID_HOME`（NDK の版が異なる場合は `ANDROID_NDK_HOME` も）を設定して実行します。
+`apps/android` は API 26 以上の Compose アプリです。上記の Rust ターゲット、cargo-ndk、Android SDK 36、JDK 17 以上（JRE のみの環境では `JAVA_HOME` を JDK に向ける）を用意し、`ANDROID_HOME`（NDK の版が異なる場合は `ANDROID_NDK_HOME` も）を設定して実行します。
 
 ```sh
 (cd apps/android && ./gradlew assembleDebug testDebugUnitTest)
@@ -221,4 +221,4 @@ scripts/android-demo.py
 
 スクリプトは一時ディレクトリに模擬 RC と Rust Host を作り、loopback の空きポートだけで待機します。表示された `adb -s SERIAL reverse tcp:PORT tcp:PORT` を別端末で実行し、**PiMate RS** (`dev.pimate.app.rs.debug`) に表示されたリンクを貼り付けるか QR を読み取ります。リンクは秘密・1回限りなので別端末で試す時はスクリプトを起動し直します。一覧の `/demo/android` を開くと Markdown が逐次届き、日本語を送ると会話に追加されます。終了は Ctrl+C、そのポートだけ `adb -s SERIAL reverse --remove tcp:PORT`。実際の Pi・常駐サービス・abduco は使いません。
 
-Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面の仕上げは `MainActivity.kt`、`Markdown.kt`、`Theme.kt`、通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。
+Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面の仕上げは `MainActivity.kt`、`PairScreen.kt`、`ChatScreen.kt`、`Markdown.kt`、`Theme.kt`、通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。
