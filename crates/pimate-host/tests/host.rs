@@ -362,8 +362,11 @@ async fn bad_requests_never_reach_rc() -> Result<()> {
     assert!(ok.success());
     closed(&mut ws, 4403).await?;
     let mut huge = s.ws().await?;
-    huge.send(Message::Text("x".repeat((1 << 20) + 1).into()))
-        .await?;
+    // The length alone is rejected. Writing the payload races the server's close on small TCP buffers.
+    let mut header = vec![0x81, 0xff];
+    header.extend_from_slice(&((1u64 << 20) + 1).to_be_bytes());
+    header.extend_from_slice(&[0; 4]);
+    huge.get_mut().write_all(&header).await?;
     closed(&mut huge, 1009).await?;
     let mut mismatch = s.ws().await?;
     send(
