@@ -1,8 +1,11 @@
 package dev.pimate.app
 
+import android.os.Build
+import android.view.WindowManager
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -22,12 +25,17 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.*
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 
 /** モック（docs/design/html）の SVG と同じ 24 の線画。色は Icon の tint で付ける。 */
@@ -444,6 +452,48 @@ internal fun UsageRing(percent: Double?, content: @Composable () -> Unit) {
                         box,
                         style = Stroke(w, cap = StrokeCap.Round),
                     )
+            }
+        }
+        content()
+    }
+}
+
+/**
+ * 画面全体を使うダイアログ（表・画像・ツリー）。ステータスバーの下まで描き、帯の文字の色を中身の背景に合わせる。 dark: 中身の背景が暗い。
+ */
+@Composable
+internal fun FullScreen(
+    close: () -> Unit,
+    dark: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
+    Dialog(
+        close,
+        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        val view = LocalView.current
+        val window = (view.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            window?.run {
+                setDimAmount(0f)
+                // ダイアログの窓は既定でシステムの帯を避けて置かれる。帯の下まで広げる。
+                setLayout(
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                    WindowManager.LayoutParams.MATCH_PARENT,
+                )
+                if (Build.VERSION.SDK_INT >= 30)
+                    attributes =
+                        attributes.apply {
+                            fitInsetsTypes = 0
+                            // 既定のままだと、画面上部の切り欠きの高さだけ窓が下がる。
+                            layoutInDisplayCutoutMode =
+                                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                        }
+                else addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS)
+                WindowCompat.getInsetsController(this, view).run {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
             }
         }
         content()

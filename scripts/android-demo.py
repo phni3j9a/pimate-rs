@@ -614,7 +614,7 @@ async def pi(
             clients.discard(w)
             w.close()
 
-    server = await asyncio.start_unix_server(rc, run / f"{iid}.sock")
+    server = await asyncio.start_unix_server(rc, run / f"{iid}.sock", limit=1 << 20)  # 画像つきの prompt は 1 行が大きい
     write_meta()
     return server
 

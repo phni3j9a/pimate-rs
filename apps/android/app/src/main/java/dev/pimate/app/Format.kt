@@ -204,7 +204,7 @@ internal fun treeRows(nodes: JSONArray, usersOnly: Boolean): List<TreeRow> {
             it.o.str("kind"),
             it.o.str("preview"),
             it.o.str("label"),
-            if (it.o.has("timestamp")) it.o.optLong("timestamp") else null,
+            if (!it.o.isNull("timestamp")) it.o.optLong("timestamp") else null,
             it.o.optBoolean("onBranch"),
             it.current,
             it.children == 0,

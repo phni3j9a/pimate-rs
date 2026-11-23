@@ -18,14 +18,10 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import org.json.*
 import uniffi.pimate_ffi.CoreException
 import uniffi.pimate_ffi.RcMethod
@@ -58,12 +54,7 @@ internal fun TreeScreen(m: SessionModel, key: EditorKey, close: () -> Unit) {
     val view = m.rows.groups["view"].orEmpty().associate { it.id to it.json }
     val idle = view["status"] == "\"idle\"" && view["agentActive"] != "true"
     val now = remember(tree) { System.currentTimeMillis() }
-    Dialog(
-        close,
-        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect { window?.setDimAmount(0f) }
+    FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
             Row(
                 Modifier.height(52.dp).padding(start = 2.dp, end = 6.dp),

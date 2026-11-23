@@ -441,7 +441,7 @@ internal fun count(n: Double): String =
 
 internal fun entry(o: JSONObject): Entry {
     val id = o.str("entryId")
-    val time = if (o.has("timestamp")) o.optLong("timestamp") else null
+    val time = if (!o.isNull("timestamp")) o.optLong("timestamp") else null
     return when (val kind = o.str("kind")) {
         "assistant" -> {
             val calls = o.optJSONArray("toolCalls")
@@ -540,8 +540,8 @@ internal fun live(id: String, o: JSONObject): Live {
         subject(name, o.optJSONObject("args")),
         o.str("status"),
         output.toString(),
-        if (o.has("durationMs")) o.optLong("durationMs") else null,
+        if (!o.isNull("durationMs")) o.optLong("durationMs") else null,
         o.has("parentToolCallId"),
-        if (o.has("startedAt")) o.optLong("startedAt") else null,
+        if (!o.isNull("startedAt")) o.optLong("startedAt") else null,
     )
 }

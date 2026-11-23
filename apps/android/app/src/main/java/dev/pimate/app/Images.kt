@@ -24,15 +24,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
-import androidx.core.view.WindowCompat
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.CancellationException
@@ -261,17 +256,7 @@ internal fun PicGrid(all: List<Pic>, modifier: Modifier = Modifier) {
 /** 全画面の画像（写真の閲覧と同じく、テーマによらず黒）。横に送って切り替え、つまむ・2 回タップで拡大する。 */
 @Composable
 internal fun ImageViewer(all: List<Pic>, start: Int, close: () -> Unit) {
-    Dialog(
-        close,
-        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        val view = LocalView.current
-        val window = (view.parent as? DialogWindowProvider)?.window
-        SideEffect {
-            window?.setDimAmount(0f)
-            // 黒い背景の上なので、ステータスバーの文字は明るくする。
-            window?.let { WindowCompat.getInsetsController(it, view).isAppearanceLightStatusBars = false }
-        }
+    FullScreen(close, dark = true) {
         val pager = rememberPagerState(start.coerceIn(0, all.lastIndex)) { all.size }
         var zoomed by remember { mutableStateOf(false) }
         Box(Modifier.fillMaxSize().background(Color.Black)) {

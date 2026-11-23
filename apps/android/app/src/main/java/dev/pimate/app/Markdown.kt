@@ -17,16 +17,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.*
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
 import kotlinx.coroutines.*
 import uniffi.pimate_ffi.*
 
@@ -399,13 +395,7 @@ private fun TableView(table: Table, modifier: Modifier = Modifier) {
 private fun TableViewer(table: Table, close: () -> Unit) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
-    Dialog(
-        close,
-        DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-    ) {
-        // ステータスバーの帯を暗くしない（下の画面と同じ背景色がそのまま見える）。
-        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
-        SideEffect { window?.setDimAmount(0f) }
+    FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
             Row(
                 Modifier.height(52.dp).padding(horizontal = 2.dp),

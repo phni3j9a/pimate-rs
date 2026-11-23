@@ -831,7 +831,7 @@ private fun ForkPage(m: SessionModel, ops: Ops, back: (() -> Unit)?, close: () -
     users.forEach { u ->
         ListRow(
             u.str("text").ifEmpty { "（画像のみ）" },
-            if (u.has("timestamp")) agoLabel(u.optLong("timestamp"), now) else "",
+            if (!u.isNull("timestamp")) agoLabel(u.optLong("timestamp"), now) else "",
             ops.ready,
         ) {
             ops.run(
