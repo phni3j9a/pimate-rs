@@ -16,8 +16,25 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
     internal var notices = ChatNotices()
         private set
 
-    internal fun snapshotRows(s: Snapshot) =
-        from(s).also { it.notices = notices.advance(this, it, null) }
+    internal var connectionGeneration: Any = Any()
+        private set
+
+    private fun advance(next: Rows, changes: List<Change>?): Rows {
+        // A resync can skip a whole reconnect. Never reuse a login hold across that gap.
+        val connectionChanged =
+            changes?.any {
+                when (it) {
+                    is Change.Upsert -> it.v1.collection == "host" && it.v1.id == "connection"
+                    is Change.Remove -> it.collection == "host" && it.id == "connection"
+                    else -> false
+                }
+            } ?: (next.revision != revision)
+        if (!connectionChanged) next.connectionGeneration = connectionGeneration
+        next.notices = notices.advance(this, next, changes)
+        return next
+    }
+
+    internal fun snapshotRows(s: Snapshot) = advance(from(s), null)
 
     fun apply(rev: ULong, changes: List<Change>, snapshot: () -> Snapshot): Rows {
         if (rev <= revision) return this
@@ -25,7 +42,7 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
         if (changes.size > 64 || Change.ResyncRequired in changes) {
             val next = from(snapshot())
             val ordered = changes.takeIf { next.revision == rev && Change.ResyncRequired !in it }
-            return next.also { it.notices = notices.advance(this, it, ordered) }
+            return advance(next, ordered)
         }
         val next = groups.toMutableMap()
         for (change in changes) {
@@ -46,7 +63,7 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
                 else -> error("unexpected resync")
             }
         }
-        return Rows(rev, next).also { it.notices = notices.advance(this, it, changes) }
+        return advance(Rows(rev, next), changes)
     }
 
     fun readyTarget(selected: String?): Target? {
@@ -393,11 +410,14 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
 
     internal suspend fun <T> withLogin(id: String, block: suspend (LoginSession) -> T): T {
         val c = slots[id]?.connection ?: throw CoreException.Offline()
+        val generation = rowsFor(id).connectionGeneration
         val hold = java.util.UUID.randomUUID().toString()
         var active = true
+        fun valid() =
+            active && slots[id]?.connection === c && rowsFor(id).connectionGeneration === generation
         try {
-            val login = LoginSession(c, c.openLogin(hold)) { active && slots[id]?.connection === c }
-            if (slots[id]?.connection !== c) throw CoreException.StaleTarget()
+            val login = LoginSession(c, c.openLogin(hold), ::valid)
+            if (!valid()) throw CoreException.StaleTarget()
             return block(login)
         } finally {
             active = false

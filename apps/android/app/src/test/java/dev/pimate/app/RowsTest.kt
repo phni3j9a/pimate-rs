@@ -19,6 +19,31 @@ class RowsTest {
     }
 
     @Test
+    fun loginHoldChangesEvenIfNoFrameRenderedWhileOffline() {
+        val hosts = HostRows(mutableMapOf())
+        val connected = Item("host", "connection", 0u, "\"connected\"")
+        fun deliver(rev: ULong, item: Item) =
+            hosts.changed("pc", rev, listOf(Change.Upsert(item))) { error("unexpected resync") }
+        deliver(1u, connected)
+        val old = hosts["pc"].connectionGeneration
+        deliver(2u, Item("provider", "login-pi", 0u, "[]"))
+        assertSame(old, hosts["pc"].connectionGeneration)
+        // Browser is in front: no UI reads between the two connection notifications.
+        deliver(3u, connected.copy(json = "\"offline\""))
+        deliver(4u, connected)
+        val reconnected = hosts["pc"].connectionGeneration
+        assertNotSame(old, reconnected)
+        hosts.changed("pc", 7u, listOf(Change.ResyncRequired)) { Snapshot(7u, listOf(connected)) }
+        assertNotSame(reconnected, hosts["pc"].connectionGeneration)
+        val resynced = hosts["pc"].connectionGeneration
+        hosts.snapshot("pc", Snapshot(7u, listOf(connected)))
+        assertSame(resynced, hosts["pc"].connectionGeneration)
+        hosts.remove("pc")
+        hosts.snapshot("pc", Snapshot(7u, listOf(connected)))
+        assertNotSame(resynced, hosts["pc"].connectionGeneration)
+    }
+
+    @Test
     fun copiedCommandOnlyContainsASingleSafeArgument() {
         assertEquals("pimate attach pimate-01234567", terminalCommand("pimate-01234567"))
         for (bad in listOf("", "--help", "host;id", "a\nb")) assertNull(terminalCommand(bad))

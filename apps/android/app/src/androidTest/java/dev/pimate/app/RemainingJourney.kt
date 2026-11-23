@@ -5,6 +5,7 @@ import android.view.KeyEvent
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.*
@@ -64,8 +65,26 @@ class RemainingJourney {
         tap("一覧を開く")
         icon("設定")
         tap("デモ PC")
+        val model = ui.runOnIdle { ViewModelProvider(ui.activity)[SessionModel::class.java] }
+        val id = model.hosts.single().id
+        val before = model.rowsFor(id).connectionGeneration
         tap("プロバイダーのログイン")
         find(hasText("openai"))
+        // Like the browser covering the activity: the listener runs, but Compose gets no frames.
+        ui.mainClock.autoAdvance = false
+        try {
+            ui.waitUntil(25000) {
+                val now = model.rowsFor(id)
+                now.connectionGeneration !== before &&
+                    now.groups["host"].orEmpty().any {
+                        it.id == "connection" && it.json == "\"connected\""
+                    } &&
+                    now.groups["provider"].isNullOrEmpty()
+            }
+            ui.onNodeWithText("openai").assertExists()
+        } finally {
+            ui.mainClock.autoAdvance = true
+        }
         find(hasText("anthropic"))
         find(hasText("API キーを設定"))
     }
@@ -100,7 +119,8 @@ class RemainingJourney {
         shot("Machine-Detail")
         val fixture = File(inst.targetContext.cacheDir, "mock-maintenance").delete()
         if (fixture) {
-            tap("0.1.20 に更新")
+            tap("最新版に更新…")
+            find(hasText("実行時の最新版に更新します（確認時点の最新版: 0.1.20）", substring = true))
             tap("更新")
             find(hasText("0.1.20 に更新しました"))
             tap("Host を再起動")

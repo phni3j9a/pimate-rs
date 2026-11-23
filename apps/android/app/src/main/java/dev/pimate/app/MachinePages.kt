@@ -345,8 +345,8 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
                 ConfirmAction(
                     host to latest,
                     "更新",
-                    "${host.name} を $latest に更新します。接続が一時的に切れる場合があります。",
-                    button = "$latest に更新",
+                    "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。",
+                    button = "最新版に更新…",
                     enabled = !busy,
                 ) {
                     operate {
@@ -435,12 +435,13 @@ internal fun authResultText(flow: JSONObject): String =
 
 @Composable
 private fun ProviderPage(m: SessionModel, id: String, close: () -> Unit) {
-    if (m.rowsFor(id).hostValue("connection") != "\"connected\"") {
+    val rows = m.rowsFor(id)
+    if (rows.hostValue("connection") != "\"connected\"") {
         Page("プロバイダーのログイン", close) { Hint("PC に接続していません。再接続後にログイン状態を読み直します。") }
         return
     }
     var retry by remember { mutableIntStateOf(0) }
-    key(id, retry) { OnlineProviderPage(m, id, close) { retry++ } }
+    key(id, rows.connectionGeneration, retry) { OnlineProviderPage(m, id, close) { retry++ } }
 }
 
 @Composable
