@@ -179,13 +179,13 @@ impl State {
             .collect()
     }
     pub fn draft_status(&mut self, id: &str, status: &str) {
+        if status == "rejected" {
+            // A definitive failure is returned to the sender; it is not a recoverable draft.
+            self.forget_draft(id);
+            return;
+        }
         let mut v = self.get("draft", id).clone();
         if !v.is_null() {
-            if status == "rejected"
-                && let Some(d) = self.drafts.iter_mut().find(|d| d.id == id)
-            {
-                d.known = Default::default();
-            }
             v["status"] = json!(status);
             self.put("draft", id, v);
             if matches!(status, "unconfirmed" | "queued")

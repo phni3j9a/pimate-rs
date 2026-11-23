@@ -2,7 +2,7 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。アプリと Extension の Rust Host への切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。Android 開発版はペアリング・一覧・チャットの土台まで Rust Host に接続できます。他の OS と Extension の切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
 
 ## 目的
 
@@ -208,3 +208,23 @@ scripts/build-ios.sh
 `target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` と `Login.swift` をアプリのターゲットでコンパイルします。
 
 **接続の結合試験:** `scripts/test-mobile.sh swift`（macOS）または `scripts/test-mobile.sh kotlin`（Linux、JDK・`kotlinc` が必要）。後者は `KOTLIN_CP` に JNA 5.17.0・kotlin-stdlib・kotlinx-coroutines-core-jvm の JAR を `:` 区切りで指定します。どちらも一時ディレクトリ・ポート 0 の Rust Host と Unix socket の模擬 RC を起動し、ペアリングリンクは試験クライアントの標準入力にだけ渡します。実装例は [`crates/pimate-ffi/tests/native`](crates/pimate-ffi/tests/native)（試験専用のメモリ保存）です。
+
+### Android 開発版と模擬 Host
+
+`apps/android` は API 26 以上の Compose アプリです。上記の Rust ターゲット、cargo-ndk、Android SDK 36、JDK 17 以上（JRE のみの環境では `JAVA_HOME` を JDK に向ける）を用意し、`ANDROID_HOME`（NDK の版が異なる場合は `ANDROID_NDK_HOME` も）を設定して実行します。
+
+```sh
+(cd apps/android && ./gradlew assembleDebug testDebugUnitTest)
+adb -s SERIAL install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
+scripts/android-demo.py
+```
+
+スクリプトは一時ディレクトリに模擬 RC と Rust Host を作り、loopback の空きポートだけで待機します。表示された `adb -s SERIAL reverse tcp:PORT tcp:PORT` を別端末で実行し、**PiMate RS** (`dev.pimate.app.rs.debug`) に表示されたリンクを貼り付けるか QR を読み取ります。リンクは秘密・1回限りなので別端末で試す時はスクリプトを起動し直します。一覧の `/demo/android` を開くと Markdown が逐次届き、日本語を送ると会話に追加されます。終了は Ctrl+C、そのポートだけ `adb -s SERIAL reverse --remove tcp:PORT`。実際の Pi・常駐サービス・abduco は使いません。
+
+Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面の仕上げは `MainActivity.kt`、`PairScreen.kt`、`ChatScreen.kt`、`Markdown.kt`、`Theme.kt`、通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。
+
+端末試験は `apps/android/app/src/androidTest`。`StoreContract` はランダムな試験用 Host だけで Keystore の置き換えを検査します。`DemoJourney` は初回ペアリング画面からの試験用です。debug APK と `assembleDebugAndroidTest` の APK を試験端末に入れ、上記の reverse 後、模擬リンクを標準入力で `adb -s SERIAL shell "run-as dev.pimate.app.rs.debug sh -c 'mkdir -p cache; cat > cache/demo-link'"` へ渡します（履歴やログに残さない）。`adb -s SERIAL shell am instrument -w dev.pimate.app.rs.debug.test/androidx.test.runner.AndroidJUnitRunner` で実行できます。リンクがなければ会話試験はスキップします。
+
+開発用会話で作業中に割り込み、消費される前に停止すると「割り込み待ち」→「届いていない可能性があります」になります。同じセッションで入力欄が空なら本文を下書きへ戻せますが、自動再送はしません。編集本文は Host・Instance・セッションごとに ViewModel のメモリだけで保持します（画面回転・一時切断では保持、プロセス終了で消去）。質問カードは `QuestionCard.kt` で5種類を描画し、回答の送信可否は中核に委ねます。Android 12 以降のクラウドバックアップ・端末間転送は `hosts.xml` を除外します。
+
+未確認の復元は `Connection.takeUnconfirmed(target, id)` で行います。現在の対象・未確認状態を中核の同じロック内で照合し、本文と画像を返して draft を削除します。遅着した履歴と照合済み・対象違いなら失敗し、UI の編集内容は変更しません。確定した拒否は操作エラーとして通知し、復元可能な draft には残しません。Android の入力イベントは表示時の編集キーに限定し、質問の書きかけも `ChatEdits.kt` のメモリ上で Host・対象・requestId ごとに保持します。同じ対象の質問一覧から消えたときに破棄します。

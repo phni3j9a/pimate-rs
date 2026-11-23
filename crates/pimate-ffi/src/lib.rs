@@ -128,6 +128,13 @@ impl Connection {
     pub fn snapshot(&self) -> Snapshot {
         self.core.snapshot()
     }
+    pub fn take_unconfirmed(
+        &self,
+        target: Target,
+        id: String,
+    ) -> Result<pimate_core::RestoredDraft, CoreError> {
+        self.core.take_unconfirmed(target, id)
+    }
     pub fn check(&self, operation: Operation) -> Result<(), CoreError> {
         self.core.check(operation)
     }

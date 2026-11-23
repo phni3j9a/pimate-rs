@@ -303,7 +303,8 @@ fn pc_history_cannot_confirm_a_rejected_request_or_unlock_a_pending_send() {
     );
     s.draft_status("p", "rejected");
     sync(&mut s, json!([{"kind":"user","entryId":"pc","text":"yes"}]));
-    assert_eq!(s.get("draft", "p")["status"], "rejected");
+    assert!(s.get("draft", "p").is_null());
+    assert!(s.drafts.is_empty());
     for status in ["unknown", "accepted"] {
         let mut s = view();
         s.prepare("p", send("yes", vec![]), true).unwrap();
@@ -979,4 +980,60 @@ fn fork_waits_for_real_event_or_uses_proven_arrival_and_source_text() {
         assert_eq!(result_count(&s, "request"), 1);
         assert!(s.get("busy", "operation").is_null());
     }
+}
+
+#[test]
+fn take_only_matching_unconfirmed_draft_once() {
+    let mut s = view();
+    s.prepare(
+        "id",
+        send(
+            "body",
+            vec![Image {
+                mime_type: "image/png".into(),
+                data: "YQ==".into(),
+            }],
+        ),
+        true,
+    )
+    .unwrap();
+    assert!(s.take_unconfirmed(&target(), "id").is_err());
+    s.draft_status("id", "unconfirmed");
+    for t in [
+        Target {
+            instance: "other".into(),
+            ..target()
+        },
+        Target {
+            session: None,
+            ..target()
+        },
+    ] {
+        assert!(s.take_unconfirmed(&t, "id").is_err());
+    }
+    // The displayed session is now current, but the named draft belongs to its predecessor.
+    s.put("view", "session", json!({"id":"next"}));
+    assert!(
+        s.take_unconfirmed(
+            &Target {
+                session: Some("next".into()),
+                ..target()
+            },
+            "id"
+        )
+        .is_err()
+    );
+    s.put("view", "session", json!({"id":"s"}));
+    let payload = s.take_unconfirmed(&target(), "id").unwrap();
+    assert_eq!(payload.text, "body");
+    assert_eq!(payload.images[0].data, "YQ==");
+    assert_eq!(payload.images[0].mime_type, "image/png");
+    assert!(s.take_unconfirmed(&target(), "id").is_err());
+    s.prepare("late", send("accepted", vec![]), true).unwrap();
+    s.draft_status("late", "unconfirmed");
+    sync(
+        &mut s,
+        json!([{"kind":"user","entryId":"received","text":"accepted"}]),
+    );
+    assert!(s.take_unconfirmed(&target(), "late").is_err());
 }

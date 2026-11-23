@@ -3,6 +3,7 @@ use crate::{
     state::{Draft, State},
 };
 use pimate_protocol as p;
+use serde::Deserialize;
 use serde_json::{Value, json};
 /// Capture from the displayed view, not from the latest session at dispatch time.
 #[derive(Clone, Debug)]
@@ -10,10 +11,17 @@ pub struct Target {
     pub instance: String,
     pub session: Option<String>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Image {
     pub mime_type: String,
     pub data: String,
+}
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct RestoredDraft {
+    pub text: String,
+    #[serde(default)]
+    pub images: Vec<Image>,
 }
 /// Complex parameters are JSON records of the corresponding protocol method (not envelopes).
 #[derive(Clone)]
@@ -341,6 +349,24 @@ impl State {
             self.auth_targets.remove(hold);
         }
         Ok(m)
+    }
+    pub(crate) fn take_unconfirmed(
+        &mut self,
+        target: &Target,
+        id: &str,
+    ) -> Result<RestoredDraft, Error> {
+        self.target(target)?;
+        let draft = self.get("draft", id);
+        if draft["status"] != "unconfirmed"
+            || draft["instanceId"] != target.instance
+            || draft["sessionId"] != json!(target.session)
+        {
+            return Err(Error::StaleTarget);
+        }
+        let payload =
+            RestoredDraft::deserialize(&draft["params"]).map_err(|_| Error::InvalidMessage)?;
+        self.forget_draft(id);
+        Ok(payload)
     }
     fn target(&self, t: &Target) -> Result<(), Error> {
         if !self.ready()
