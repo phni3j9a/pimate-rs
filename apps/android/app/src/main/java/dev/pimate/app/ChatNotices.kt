@@ -1,5 +1,6 @@
 package dev.pimate.app
 
+import androidx.compose.runtime.*
 import org.json.JSONObject
 import org.json.JSONTokener
 import uniffi.pimate_ffi.Change
@@ -19,6 +20,27 @@ internal class Receipt(val request: String, private var owner: String?) {
         if (instance == null || owner != instance || request != id) return false
         owner = null
         return true
+    }
+}
+
+/** バナーを閉じることと、再同期後に編集欄へ文を渡すことは別々に一度だけ行う。 */
+internal class ReceivedResult(val host: String, val instance: String, val result: JSONObject) {
+    var dismissed by mutableStateOf(false)
+    private var textHandled = false
+
+    fun takeText(editor: EditorKey): String? {
+        if (
+            textHandled ||
+                editor.host != host ||
+                editor.target.instance != instance ||
+                editor.target.session != result.str("sessionId")
+        )
+            return null
+        textHandled = true
+        return result
+            .str("forkText")
+            .ifEmpty { result.optJSONObject("event")?.str("editorText").orEmpty() }
+            .ifEmpty { null }
     }
 }
 

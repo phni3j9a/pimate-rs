@@ -49,6 +49,20 @@ private class Parsed<T>(private val parse: (Item) -> T) {
  * SessionModel）。対象は、開いた瞬間の EditorKey で覚える。
  */
 internal class ChatUi : ViewModel() {
+    // 最新の受領結果だけをメモリに置く。別の Pi のバナーや入力欄には渡さない。
+    private var received by mutableStateOf<ReceivedResult?>(null)
+
+    fun receive(host: String?, instance: String?, result: JSONObject?, receipt: Receipt?) {
+        if (host == null || instance == null || result == null) return
+        val id = result.str("id")
+        if (receipt?.take(id, instance) == true) received = ReceivedResult(host, instance, result)
+        else if (resultFor(host, instance)?.result?.str("id")?.let { it != id } == true)
+            received = null // Host の latest が更新された。古い案内・入力文を適用しない。
+    }
+
+    fun resultFor(host: String?, instance: String?) =
+        received?.takeIf { it.host == host && it.instance == instance }
+
     /** 開いているシート・画面（model / usage / session / sessions / fork / tree）と、開いた瞬間の対象。 */
     var sheet by mutableStateOf<Pair<String, EditorKey>?>(null)
 
@@ -194,25 +208,18 @@ internal fun ChatScreen(
     val busyOp =
         groups["busy"].orEmpty().find { it.id == "operation" }?.let { JSONObject(it.json) }
     val latest = groups["operationResult"].orEmpty().find { it.id == "latest" }
-    var result by remember(m.host?.id, m.selected) { mutableStateOf<JSONObject?>(null) }
-    var usedResult by remember(m.host?.id, m.selected) { mutableStateOf<String?>(null) }
+    val hostId = m.host?.id
+    val instance = m.selected
+    val delivered = ui.resultFor(hostId, instance)
     val receipt = m.rows.notices.receipt
     val latestResult = remember(latest) { latest?.let { JSONObject(it.json) } }
     SideEffect {
-        val id = latestResult?.str("id")
-        if (id != null && receipt?.take(id, m.selected) == true) result = latestResult
-        else if (result?.str("id") != id) result = null
-        // 同じ結果の ID・文を一緒に取り出す。再同期中なら正しい編集先が戻るまで待つ。
-        val r = result
-        if (
-            r != null && key != null && r.str("sessionId") == key.target.session && id != usedResult
-        ) {
-            usedResult = id
-            val text =
-                r.str("forkText").ifEmpty { r.optJSONObject("event")?.str("editorText").orEmpty() }
-            if (text.isNotEmpty() && m.edits.body.text.isEmpty() && m.edits.body.images.isEmpty())
-                m.edits.text(key, text)
-        }
+        ui.receive(hostId, instance, latestResult, receipt)
+        if (key != null && key == m.edits.current && key.target == m.target)
+            ui.resultFor(hostId, instance)?.takeText(key)?.let { text ->
+                if (m.edits.body.text.isEmpty() && m.edits.body.images.isEmpty())
+                    m.edits.text(key, text)
+            }
     }
     val fromId = changed?.optJSONObject("from")?.str("id").orEmpty()
     val toId = changed?.optJSONObject("to")?.str("id").orEmpty()
@@ -336,7 +343,12 @@ internal fun ChatScreen(
                         }
                         items(
                             visible.size,
-                            key = { "row:" + visible[visible.size - 1 - it].key },
+                            key = {
+                                val id = visible[visible.size - 1 - it].key
+                                // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
+                                if (id == "live:text") "live:${entries.lastOrNull()?.id}"
+                                else "row:$id"
+                            },
                         ) { n ->
                             val index = visible.size - 1 - n
                             val row = visible[index]
@@ -372,8 +384,8 @@ internal fun ChatScreen(
                 },
                 { ui.confirmed = switchId },
                 busyOp,
-                result,
-                { result = null },
+                delivered?.takeUnless { it.dismissed }?.result,
+                { delivered?.dismissed = true },
                 commandsFailed,
                 { commandsTry++ },
                 show,

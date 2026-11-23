@@ -34,6 +34,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import uniffi.pimate_ffi.RcMethod
@@ -109,11 +110,7 @@ internal class Pics(
         val image =
             try {
                 when (pic) {
-                    is Pic.Shared -> {
-                        val resolved =
-                            withContext(Dispatchers.Default) { pic(pic.kind, pic.source.value()) }
-                        load(resolved, tile)
-                    }
+                    is Pic.Shared -> load(pic.resolve(), tile)
                     is Pic.Inline -> inline(pic.data, edge)
                     is Pic.Web ->
                         withContext(Dispatchers.IO) { decode(fetch(pic.url), edge) }
@@ -156,15 +153,6 @@ internal class Pics(
 
 internal val LocalPics = staticCompositionLocalOf { Pics.Local }
 
-/** Markdown の画像の出どころ。data: は中核が形式と大きさを確かめたものだけ届く。 */
-internal fun pic(kind: uniffi.pimate_ffi.ImageKind, src: String): Pic =
-    when (kind) {
-        uniffi.pimate_ffi.ImageKind.REMOTE -> Pic.Web(src)
-        uniffi.pimate_ffi.ImageKind.FILE -> Pic.File(src)
-        uniffi.pimate_ffi.ImageKind.DATA ->
-            Pic.Inline("", src.substringBefore(';').removePrefix("data:"), src.substringAfter(','))
-    }
-
 private object Failed
 
 /** 画像のタイル。読み込み中は印、読めなければ文字で示す。タップで全画面を開く。 */
@@ -180,15 +168,28 @@ internal fun PicTile(
 ) {
     val pics = LocalPics.current
     // 一つの回答全体が Column に載る。画面外の参照画像は base64 も Bitmap も展開しない。
-    var visible by remember(pic) { mutableStateOf(false) }
+    var visible by remember(pics) { mutableStateOf(false) }
     val needed = pic !is Pic.Shared || visible
-    var measured by remember(pic) { mutableStateOf(IntSize.Zero) }
+    var measured by remember(pics) { mutableStateOf(IntSize.Zero) }
+    val current by rememberUpdatedState(pic)
     val image by
-        produceState<Any?>(pics.cached(pic), pic, pics, needed) {
-            value = pics.cached(pic)
-            if (needed && value == null && more == 0) value = pics.load(pic, true) ?: Failed
-            // 画面外で Bitmap を解放しても位置が飛ばないよう、幅と高さだけ残す。
-            (value as? ImageBitmap)?.let { measured = IntSize(it.width, it.height) }
+        produceState<Any?>(pics.cached(pic), pics, needed, more) {
+            if (!needed || more != 0) {
+                value = null
+                return@produceState
+            }
+            snapshotFlow { current }
+                .tileSources()
+                .collectLatest { src ->
+                    if (src == null) {
+                        value = Failed
+                        return@collectLatest
+                    }
+                    value = pics.cached(src)
+                    if (value == null) value = pics.load(src, true) ?: Failed
+                    // 画面外で Bitmap を解放しても位置が飛ばないよう、幅と高さだけ残す。
+                    (value as? ImageBitmap)?.let { measured = IntSize(it.width, it.height) }
+                }
         }
     val shown = image as? ImageBitmap
     // 1 枚だけのときは、画像の縦横比のまま 220×160dp に収める。

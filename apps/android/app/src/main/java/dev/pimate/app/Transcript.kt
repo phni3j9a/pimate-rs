@@ -1,6 +1,13 @@
 package dev.pimate.app
 
+import java.nio.ByteBuffer
+import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import uniffi.pimate_ffi.ImageKind
 
 // 状態の層（Rows）の JSON を画面の行にする。組み立ては JSON を知らない buildRows が行う。
 
@@ -27,10 +34,25 @@ internal sealed interface Pic {
 
     /** Markdown は表示領域に入るまで大きな共有文字列を展開しない。 */
     class Shared(
-        val kind: uniffi.pimate_ffi.ImageKind,
-        val source: uniffi.pimate_ffi.SharedTextInterface,
+        private val kind: ImageKind,
+        private val source: uniffi.pimate_ffi.SharedTextInterface,
     ) : Pic {
         override val id = ""
+
+        suspend fun resolve(): Pic =
+            withContext(Dispatchers.Default) {
+                val src = source.value()
+                when (kind) {
+                    ImageKind.REMOTE -> Web(src)
+                    ImageKind.FILE -> File(src)
+                    ImageKind.DATA ->
+                        Inline(
+                            "",
+                            src.substringBefore(';').removePrefix("data:"),
+                            src.substringAfter(','),
+                        )
+                }
+            }
     }
 
     /** http(s)。スマホから直接取りに行く。 */
@@ -39,6 +61,32 @@ internal sealed interface Pic {
             get() = "w:$url"
     }
 }
+
+/** 表示中のタイル1個の中だけで比較する。再解析で共有ハンドルが変わっても同じ参照先は読み直さない。 */
+internal fun Flow<Pic>.tileSources(): Flow<Pic?> =
+    map { shared ->
+            val src =
+                try {
+                    if (shared is Pic.Shared) shared.resolve() else shared
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    null
+                }
+            // 比較のために大きな base64 本文を保持しない。Web/PC は参照先の文字列だけ。
+            val key =
+                if (shared is Pic.Shared && src is Pic.Inline)
+                    withContext(Dispatchers.Default) {
+                        src.mime to
+                            ByteBuffer.wrap(
+                                MessageDigest.getInstance("SHA-256").digest(src.data.toByteArray())
+                            )
+                    }
+                else src
+            key to src
+        }
+        .distinctUntilChangedBy { it.first }
+        .map { it.second }
 
 internal data class Entry(
     val id: String,
