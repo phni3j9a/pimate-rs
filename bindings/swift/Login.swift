@@ -1,12 +1,12 @@
 // UniFFI 0.32 does not propagate Swift Task.cancel() to the in-flight Rust future.
-// Check between requests; ARC releases the hold even on the cancellation path.
+// Check between requests; register cleanup before the first await.
 extension Connection {
     public func withLogin<Result>(holdId: String, _ body: (Target) async throws -> Result) async throws -> Result {
         try Task.checkCancellation()
-        let session = try await openLogin(holdId: holdId)
-        defer { withExtendedLifetime(session) {} }
+        defer { closeLogin(holdId: holdId) }
+        let target = try await openLogin(holdId: holdId)
         try Task.checkCancellation()
-        return try await body(session.target())
+        return try await body(target)
     }
 
     public func followLogin(target: Target) async throws {

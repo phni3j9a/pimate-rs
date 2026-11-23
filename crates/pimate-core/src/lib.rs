@@ -3,7 +3,7 @@ mod catalog;
 mod connection;
 mod operation;
 mod state;
-pub use connection::{Connection, LoginHold};
+pub use connection::Connection;
 pub use operation::{Image, Operation, Target};
 use pimate_protocol::{PairRequest, PairResponse, parse_pairing_link};
 pub use state::{Allowance, Change, Item, Listener, QuotaWindow, SessionStats, Snapshot};

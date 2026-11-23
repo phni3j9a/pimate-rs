@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit
 
 private class Store : SecretStore {
     @Volatile private var credential: Credential? = null
+    lateinit var probeAddress: String
     @Volatile var corruptToken = false
     val entered = CountDownLatch(2)
     val release = CountDownLatch(1)
@@ -20,11 +21,33 @@ private class Store : SecretStore {
         credential = Credential(host, token)
     }
     override fun load(id: String): Credential {
+        if (id == "probe") return Credential(Host(id, "test", probeAddress, "test", false), "test")
         val saved = credential?.takeIf { it.host.id == id } ?: throw CallbackException.Failed()
         return if (corruptToken) saved.copy(token = "invalid") else saved
     }
     override fun invalidate(id: String, deviceId: String) { slowFailure() }
     override fun forget(id: String) { error("unexpected storage error") }
+}
+
+private suspend fun cancelledLogin(core: Core) = coroutineScope {
+    val events = Channel<Item>(Channel.UNLIMITED)
+    val listener = object : Listener {
+        override fun changed(revision: ULong, changes: List<Change>) {
+            changes.filterIsInstance<Change.Upsert>().forEach { events.trySend(it.v1) }
+        }
+    }
+    core.connect("probe", listener).use { c ->
+        while (events.receive().let { it.id != "connection" || it.json != "\"connected\"" }) {}
+        c.closeLogin("unknown")
+        val screen = launch {
+            try { c.openLogin("screen"); error("probe should not reply") }
+            finally { c.closeLogin("screen") }
+        }
+        while (events.receive().id != "acquired") {}
+        screen.cancelAndJoin()
+        c.closeLogin("screen")
+        while (events.receive().id != "released") {}
+    }
 }
 
 fun main() = runBlocking {
@@ -40,6 +63,8 @@ fun main() = runBlocking {
     Core(store).use { core ->
         val host = core.pair(readln(), "Kotlin test")
         val secondLink = readln()
+        store.probeAddress = readln()
+        cancelledLogin(core)
         check(core.hosts() == listOf(host))
         core.connect(host.id, listener).use { c ->
             check(batches.receive() == listOf(Change.ResyncRequired))
@@ -49,10 +74,25 @@ fun main() = runBlocking {
             }
             store.corruptToken = true
             val invalidations = Channel<Item>(Channel.UNLIMITED)
+            val retried = CompletableDeferred<ULong>()
             val invalid = object : Listener {
-                override fun changed(revision: ULong, changes: List<Change>) { changes.filterIsInstance<Change.Upsert>().forEach { invalidations.trySend(it.v1) } }
+                var terminalRevision: ULong? = null
+                var attempts = 0
+                override fun changed(revision: ULong, changes: List<Change>) {
+                    if (changes == listOf(Change.ResyncRequired) && revision == terminalRevision) {
+                        if (++attempts == 1) error("retry still failing")
+                        retried.complete(revision)
+                    }
+                    changes.filterIsInstance<Change.Upsert>().forEach {
+                        if (it.v1.id == "connection" && it.v1.json == "\"invalid_token\"") {
+                            terminalRevision = revision
+                            error("lost final revision")
+                        }
+                        invalidations.trySend(it.v1)
+                    }
+                }
             }
-            core.connect(host.id, invalid).use {
+            core.connect(host.id, invalid).use { ended ->
                 val save = async(Dispatchers.Default) { runCatching { core.pair(secondLink, "slow save") }.exceptionOrNull() }
                 try {
                     check(store.entered.await(5, TimeUnit.SECONDS))
@@ -61,7 +101,9 @@ fun main() = runBlocking {
                 } finally { store.release.countDown() }
                 check(save.await() is CoreException.Storage)
                 while (invalidations.receive().let { it.id != "storageError" || it.json != "true" }) {}
-                while (invalidations.receive().let { it.id != "connection" || it.json != "\"invalid_token\"" }) {}
+                val rev = withTimeout(8000) { retried.await() }
+                val finalState = ended.snapshot()
+                check(finalState.revision == rev && finalState.items.any { it.id == "connection" && it.json == "\"invalid_token\"" })
             }
             c.subscribe("stub")
             while (batches.receive().filterIsInstance<Change.Upsert>().none { it.v1.collection == "stream" && it.v1.json == "\"hello\"" }) {}

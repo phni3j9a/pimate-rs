@@ -148,7 +148,7 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 - `subscribe(Some(instance_id))` で表示する Pi を切り替え、`None` で解除します。`snapshot()` は現在の revision と全項目。`Listener::changed(revision, changes)` は `collection` と `id` で識別する更新（値と挿入位置）または削除です。UI スレッドへ順に転送し、取り直した snapshot 以前の revision は捨てます。`instance` は表示順で `section` が `waiting` / `normal` / `bot`。`entry`・`stream`・`question`・`run`・`tool`・`quota` は選択中の Pi の項目です。Markdown 本文は文字列のままです。
 - `Target` は**画面を開いた時点の** instance / session ID。`check(operation)` で可否を確認し、`perform(operation).await` で実行します。送信前にも同じ条件を検査します。`Send` は最大4枚・RC の対応枚数と byte 制限を検査して常に steer 指定。`Abort`・`Answer`、モデルやセッションなどの `Rc`、起動・GitHub・端末管理・更新の Host 操作があります。複雑な引数は protocol v1 の params を表す JSON **文字列**（wire envelope ではありません）。中核が検査・ID 採番・ガード付与・応答の照合を行い、RC の成功時は method の result、Host の成功時は結果メッセージの JSON 文字列を返します。失敗は `Error` で、サーバーのエラー本文は転送しません。
 - 切断後に自動で行うのは再認証と再購読です。**操作は再送しません**。結果不明の送信は `draft` として接続オブジェクトに残し、再同期時に同一セッションの新しい entry ID・本文・画像がすべて一致した時だけ照合します。別の内容になった画像は一致扱いしません。確認して破棄する場合は `DismissDraft`。入力中のテキストは UI の編集バッファと区別してください。
-- プロバイダーの設定は `open_login(hold_id)` が専用 Pi を保持し、`hello` と `auth_list` で機能を確認します。認証はこの target へ `Rc`、進捗取得は `follow_login`、画面を閉じたら `EndAuthSession`。`session_stats` / `allowances(now_ms)` / `command_suggestions(text)` で UI 用の集計と候補を取得できます。
+- プロバイダーの設定は `open_login(hold_id)` が専用 Pi を保持し、`hello` と `auth_list` で機能を確認します。認証はこの target へ `Rc`、進捗取得は `follow_login`、画面を閉じたら `close_login(hold_id)`。`session_stats` / `allowances(now_ms)` / `command_suggestions(text)` で UI 用の集計と候補を取得できます。
 
 `cargo test -p pimate-core` は状態・ガードの単体試験、`cargo test -p pimate-host paired_core_recovers` は一時 Host＋Unix socket 模擬 RC の結合試験です。後者はプロンプト受理直後にループバックの TCP 中継を切り、復帰後も送信が一度だけであることと、履歴照合・質問への回答・失効を確認します。Android は NDK のパスを `ANDROID_NDK_HOME` に設定して `cargo ndk -t arm64-v8a check -p pimate-core`。端末向けの生成と結合試験は下記の Swift / Kotlin の手順を参照してください。
 
@@ -165,8 +165,27 @@ UniFFI 0.32 のバインディングは **ネイティブライブラリと同�
 - Swift: `let core = Core(store: keychain)` → `let host = try await core.pair(link: link, name: name)` → `let c = try core.connect(id: host.id, listener: listener)` → `try c.subscribe(instance: id)`。
 - Kotlin（`uniffi.pimate_ffi`）: `val core = Core(store)` → coroutine 内で `val host = core.pair(link, name)` → `val c = core.connect(host.id, listener)` → `c.subscribe(id)`。接続を使い終わったら `c.close()`（Swift は ARC）。`perform`・`openLogin`・`followLoginOnce` も async / suspend です。
 - `SecretStore` をアプリ側で実装し、Host メタデータと token を一緒に原子的に更新します（iOS は Keychain、Android は Keystore の鍵で暗号化したストレージなど）。`invalidate` は host ID **と device ID** が一致する場合だけ。保存側は `CallbackError.Failed` / `CallbackException.Failed()` を投げられます。想定外の例外も呼び出し元では詳細を含まない Storage エラーになります。`save`・`invalidate` は通信ワーカーから分離します。リンク・Credential・例外の詳細をログに出しません。
-- `Listener.changed` は UI スレッドではありません。例外が出たら次の配送は成功するまで `ResyncRequired` だけを渡します。Swift で snapshot を取り直すリスナーは **接続への逆参照を weak に**してください（例: `weak var connection: Connection?`、アクセスを同一キューまたは lock で同期）。強参照では接続 → リスナー → 接続の循環で切断されません。接続ごとに revision 順を保って UI に配送し、`ResyncRequired` ではバッチを部分適用せず `snapshot()` で置換します（上記のログと通知配送の契約）。起動時に `initLogging()` を呼ぶと Android は logcat、Apple は os_log へ出力します。ログレベルの引数はなく、中核の静的上限と close reason の除去は変わりません。
-- ログイン画面は開くたび一意な hold ID を使い、`LoginSession` がその hold を所有します。Kotlin は `c.openLogin(id).use { login -> /* login.target() を使う */ }`、Swift は同梱の `try await c.withLogin(holdId: id) { target in try await c.followLogin(target: target) }`。取得中に Rust future が破棄された場合も、取得完了後の `close` / ARC と同じく元の接続世代で解放します。`EndAuthSession` を重ねて送る必要はありません。Swift の Task キャンセルは UniFFI の進行中の要求を中断しません。ラッパーが各 await の間で検出し、次の long poll を開始しないため、解放までは進行中の要求の応答またはタイムアウトを待つ場合があります。
+- `Listener.changed` は UI スレッドではありません。例外が出たら、失敗した revision で `ResyncRequired` を再配送します。後続の差分は不要で、1秒から上限16秒まで間隔を延ばし、成功または接続オブジェクトの解放で再試行を止めます。通信が失効・終了した後も、オブジェクトを保持していれば `snapshot()` を取れます。Swift で snapshot を取り直すリスナーは **接続への逆参照を weak に**してください（例: `weak var connection: Connection?`、アクセスを同一キューまたは lock で同期）。強参照では接続 → リスナー → 接続の循環で切断されません。接続ごとに revision 順を保って UI に配送し、`ResyncRequired` ではバッチを部分適用せず `snapshot()` で置換します（上記のログと通知配送の契約）。起動時に `initLogging()` を呼ぶと Android は logcat、Apple は os_log へ出力します。ログレベルの引数はなく、中核の静的上限と close reason の除去は変わりません。
+- ログイン画面は開くたびに新しい hold ID を用意します。`openLogin` の戻り値は `Target`（値）で、解放に必要なのは **呼ぶ前から分かっている ID だけ**です。取得に失敗・キャンセルした場合も `closeLogin` を呼んでください。未取得・解放済みの ID なら何もしません。切断時には Host がそのソケットの全 hold を解放し、次の接続には持ち越しません。
+
+```kotlin
+val id = UUID.randomUUID().toString()
+try {
+    val target = c.openLogin(id)
+    while (c.followLoginOnce(target)) { /* UI には Listener で反映 */ }
+} finally { c.closeLogin(id) }  // suspend しない
+```
+
+```swift
+let id = UUID().uuidString
+// 画面の async 関数内。openLogin より先に登録する。
+defer { c.closeLogin(holdId: id) }
+let target = try await c.openLogin(holdId: id)
+try await c.followLogin(target: target)
+```
+
+Swift の `withLogin` はこの defer を内包します。Task キャンセルは進行中の要求を中断しないため、解放まで応答またはタイムアウトを待つ場合があります。
+
 - Markdown は `parse` の `Document` から `blocks()`・`images()`・`links()`・`changesSince(previous)` を取得します。大量に参照される画像 URL・href を block ごとに複製しないよう、`MarkdownImage.src`・`Style.href` は `SharedText` ハンドルです。文字列が必要なときだけ `value()` を呼びます。`utf16Range(source, start, end)`（Swift は引数ラベルあり）は元 Markdown の UTF-8 バイト範囲を UTF-16 の **開始・終了（終端を含まない）** に変換します。逆順・範囲外・文字途中は nil / null。Swift では `NSRange(location: start, length: end - start)` 相当で、`String.Index` の文字数ではありません。
 
 **Android**（NDK 27、cargo-ndk 4.1.2）:

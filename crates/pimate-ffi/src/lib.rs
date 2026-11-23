@@ -5,9 +5,9 @@ use pimate_core::{
     Allowance, Change, Credential, Error as CoreError, Host, Operation, SessionStats, Snapshot,
     Target,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
 };
 uniffi::setup_scaffolding!();
 
@@ -33,18 +33,30 @@ pub trait SecretStore: Send + Sync {
     fn invalidate(&self, id: String, device_id: String) -> Result<(), CallbackError>;
     fn forget(&self, id: String) -> Result<(), CallbackError>;
 }
-struct Delivery(Arc<dyn Listener>, AtomicBool);
+struct Delivery {
+    listener: Arc<dyn Listener>,
+    closed: Mutex<mpsc::Receiver<()>>,
+}
 impl pimate_core::Listener for Delivery {
     fn changed(&self, revision: u64, changes: Vec<Change>) {
-        let changes = if self.1.load(Ordering::Relaxed) {
-            vec![Change::ResyncRequired]
-        } else {
-            changes
-        };
-        self.1.store(
-            self.0.changed(revision, changes).is_err(),
-            Ordering::Relaxed,
-        );
+        if self.listener.changed(revision, changes).is_ok() {
+            return;
+        }
+        // Runs on the dedicated delivery thread. Even the final revision may need a retry.
+        let mut delay = Duration::from_secs(1);
+        while matches!(
+            self.closed.lock().unwrap().recv_timeout(delay),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ) {
+            if self
+                .listener
+                .changed(revision, vec![Change::ResyncRequired])
+                .is_ok()
+            {
+                break;
+            }
+            delay = (delay * 2).min(Duration::from_secs(16));
+        }
     }
 }
 struct Store(Arc<dyn SecretStore>);
@@ -89,46 +101,56 @@ impl Core {
         id: String,
         listener: Arc<dyn Listener>,
     ) -> Result<Arc<Connection>, CoreError> {
-        Ok(Arc::new(Connection(self.0.connect(
+        let (lifetime, closed) = mpsc::channel();
+        let core = self.0.connect(
             id,
-            Arc::new(Delivery(listener, AtomicBool::new(false))),
-        )?)))
+            Arc::new(Delivery {
+                listener,
+                closed: Mutex::new(closed),
+            }),
+        )?;
+        Ok(Arc::new(Connection {
+            core,
+            _lifetime: lifetime,
+        }))
     }
 }
 #[derive(uniffi::Object)]
-pub struct Connection(Arc<pimate_core::Connection>);
+pub struct Connection {
+    core: Arc<pimate_core::Connection>,
+    _lifetime: mpsc::Sender<()>,
+}
 #[uniffi::export]
 impl Connection {
     pub fn subscribe(&self, instance: Option<String>) -> Result<(), CoreError> {
-        self.0.subscribe(instance)
+        self.core.subscribe(instance)
     }
     pub fn snapshot(&self) -> Snapshot {
-        self.0.snapshot()
+        self.core.snapshot()
     }
     pub fn check(&self, operation: Operation) -> Result<(), CoreError> {
-        self.0.check(operation)
+        self.core.check(operation)
     }
     pub async fn perform(&self, operation: Operation) -> Result<String, CoreError> {
-        self.0.perform(operation).await
+        self.core.perform(operation).await
     }
-    pub async fn open_login(&self, hold_id: String) -> Result<Arc<LoginSession>, CoreError> {
-        let (target, hold) = self.0.acquire_login(hold_id).await?;
-        Ok(Arc::new(LoginSession {
-            target,
-            _hold: hold,
-        }))
+    pub async fn open_login(&self, hold_id: String) -> Result<Target, CoreError> {
+        self.core.open_login(hold_id).await
+    }
+    pub fn close_login(&self, hold_id: String) {
+        self.core.close_login(hold_id)
     }
     pub async fn follow_login_once(&self, target: Target) -> Result<bool, CoreError> {
-        self.0.follow_login_once(target).await
+        self.core.follow_login_once(target).await
     }
     pub fn session_stats(&self) -> SessionStats {
-        self.0.session_stats()
+        self.core.session_stats()
     }
     pub fn allowances(&self, now_ms: u64) -> Vec<Allowance> {
-        self.0.allowances(now_ms)
+        self.core.allowances(now_ms)
     }
     pub fn command_suggestions(&self, text: String) -> Vec<String> {
-        self.0.command_suggestions(text)
+        self.core.command_suggestions(text)
     }
 }
 #[uniffi::export]
@@ -142,17 +164,5 @@ pub fn init_logging() {
     #[cfg(target_vendor = "apple")]
     if oslog::OsLogger::new("app.pimate.core").init().is_ok() {
         log::set_max_level(log::STATIC_MAX_LEVEL);
-    }
-}
-
-#[derive(uniffi::Object)]
-pub struct LoginSession {
-    target: Target,
-    _hold: pimate_core::LoginHold,
-}
-#[uniffi::export]
-impl LoginSession {
-    pub fn target(&self) -> Target {
-        self.target.clone()
     }
 }

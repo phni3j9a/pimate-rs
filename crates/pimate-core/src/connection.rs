@@ -19,6 +19,8 @@ struct Shared {
     state: Mutex<State>,
     notifications: broadcast::Sender<(u64, Vec<crate::Change>)>,
     online: Mutex<Option<mpsc::Sender<Command>>>,
+    // Release capacity is reserved on the acquiring socket, never a later connection.
+    holds: Mutex<HashMap<String, mpsc::OwnedPermit<Command>>>,
 }
 impl Shared {
     fn edit<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
@@ -81,6 +83,7 @@ impl Connection {
             state: Mutex::default(),
             notifications: delivery(listener),
             online: Mutex::default(),
+            holds: Default::default(),
         });
         let (selection, mut rx) = watch::channel(None);
         let s = shared.clone();
@@ -93,6 +96,7 @@ impl Connection {
                     .err()
                     .unwrap_or(Error::Offline);
                 *s.online.lock().unwrap() = None;
+                s.holds.lock().unwrap().clear();
                 s.edit(|st| {
                     for id in st.drafts.iter().map(|d| d.id.clone()).collect::<Vec<_>>() {
                         if matches!(
@@ -235,6 +239,11 @@ impl Connection {
         &self,
         operation: Operation,
     ) -> Result<oneshot::Receiver<Result<String, Error>>, Error> {
+        if let Operation::EndAuthSession { hold_id } = &operation
+            && let Some(rx) = self.release_hold(hold_id)
+        {
+            return Ok(rx);
+        }
         let tx = self
             .shared
             .online
@@ -601,46 +610,36 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
 fn unconfirmed(st: &mut State, id: &str) {
     st.draft_status(id, "unconfirmed");
 }
-/// Reserves a release slot in the same socket generation before acquiring the hold.
-pub struct LoginHold(Option<(mpsc::OwnedPermit<Command>, String)>);
-impl Drop for LoginHold {
-    fn drop(&mut self) {
-        if let Some((slot, hold_id)) = self.0.take() {
-            slot.send(Command(
-                Operation::EndAuthSession { hold_id },
-                oneshot::channel().0,
-            ));
-        }
-    }
-}
 impl Connection {
-    /// Rust callers that manage EndAuthSession explicitly retain the original API.
+    /// The caller must close the ID in finally/defer, even if this await is cancelled.
     pub async fn open_login(&self, hold_id: String) -> Result<crate::Target, Error> {
-        let (target, mut hold) = self.acquire_login(hold_id).await?;
-        hold.0.take();
-        Ok(target)
-    }
-    pub async fn acquire_login(
-        &self,
-        hold_id: String,
-    ) -> Result<(crate::Target, LoginHold), Error> {
-        let tx = self
-            .shared
-            .online
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(Error::Offline)?;
-        let slot = tx.clone().try_reserve_owned().map_err(|_| Error::Offline)?;
-        let (reply, rx) = oneshot::channel();
-        tx.try_send(Command(
-            Operation::AuthSession {
-                hold_id: hold_id.clone(),
-            },
-            reply,
-        ))
-        .map_err(|_| Error::Offline)?;
-        let hold = LoginHold(Some((slot, hold_id)));
+        if hold_id.is_empty() || hold_id.encode_utf16().count() > 200 {
+            return Err(Error::BadRequest);
+        }
+        let rx = {
+            let mut holds = self.shared.holds.lock().unwrap();
+            if holds.contains_key(&hold_id) {
+                return Err(Error::Blocked);
+            }
+            let tx = self
+                .shared
+                .online
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or(Error::Offline)?;
+            let slot = tx.clone().try_reserve_owned().map_err(|_| Error::Offline)?;
+            let (reply, rx) = oneshot::channel();
+            tx.try_send(Command(
+                Operation::AuthSession {
+                    hold_id: hold_id.clone(),
+                },
+                reply,
+            ))
+            .map_err(|_| Error::Offline)?;
+            holds.insert(hold_id, slot);
+            rx
+        };
         let receipt = rx.await.unwrap_or(Err(Error::OutcomeUnknown))?;
         let r: Value = serde_json::from_str(&receipt).map_err(|_| Error::InvalidMessage)?;
         let target = crate::Target {
@@ -661,7 +660,21 @@ impl Connection {
             })
             .await?;
         }
-        Ok((target, hold))
+        Ok(target)
+    }
+    pub fn close_login(&self, hold_id: String) {
+        self.release_hold(&hold_id);
+    }
+    fn release_hold(&self, hold_id: &str) -> Option<oneshot::Receiver<Result<String, Error>>> {
+        let slot = self.shared.holds.lock().unwrap().remove(hold_id)?;
+        let (reply, rx) = oneshot::channel();
+        slot.send(Command(
+            Operation::EndAuthSession {
+                hold_id: hold_id.into(),
+            },
+            reply,
+        ));
+        Some(rx)
     }
     pub async fn follow_login(&self, target: crate::Target) -> Result<(), Error> {
         while self.follow_login_once(target.clone()).await? {}
@@ -713,6 +726,7 @@ mod regressions {
                     state: Default::default(),
                     notifications: broadcast::channel(8).0,
                     online: Mutex::new(Some(tx)),
+                    holds: Default::default(),
                 }),
                 selection: watch::channel(None).0,
                 task: tokio::spawn(std::future::pending()),
@@ -722,10 +736,10 @@ mod regressions {
         )
     }
     #[tokio::test]
-    async fn login_hold_released_at_each_cancellation_point_and_on_owner_drop() {
+    async fn close_login_releases_after_each_cancellation_point_or_success() {
         for completed in 0..=3 {
             let (c, mut commands) = connected();
-            let mut open = Box::pin(c.acquire_login("h".into()));
+            let mut open = Box::pin(c.open_login("h".into()));
             for response in [r#"{"instanceId":"dedicated"}"#, "{}", "{}"]
                 .iter()
                 .take(completed)
@@ -740,7 +754,7 @@ mod regressions {
                     .unwrap();
             }
             if completed == 3 {
-                drop(open.await.unwrap());
+                assert_eq!(open.await.unwrap().instance, "dedicated");
             } else {
                 assert!(futures_util::poll!(&mut open).is_pending());
                 let _in_flight = commands.recv().await.unwrap();
@@ -748,6 +762,9 @@ mod regressions {
                 while c.enqueue(Operation::Devices).is_ok() {}
                 drop(open);
             }
+            c.close_login("unknown".into());
+            c.close_login("h".into());
+            c.close_login("h".into());
             loop {
                 match commands.try_recv().expect("reserved release command").0 {
                     Operation::EndAuthSession { hold_id } => {
@@ -758,6 +775,7 @@ mod regressions {
                     _ => panic!("unexpected command"),
                 }
             }
+            assert!(commands.try_recv().is_err());
         }
     }
     #[tokio::test]
@@ -922,6 +940,7 @@ mod regressions {
         let shared = Shared {
             state: Mutex::default(),
             online: Mutex::default(),
+            holds: Default::default(),
             notifications: delivery(Arc::new(Blocking {
                 events: tx,
                 resume: Mutex::new(wait),
@@ -952,6 +971,7 @@ mod regressions {
                 state: Mutex::new(st),
                 notifications: broadcast::channel(1).0,
                 online: Mutex::new(Some(tx)),
+                holds: Default::default(),
             }),
             selection: watch::channel(None).0,
             task: tokio::spawn(async {}),
