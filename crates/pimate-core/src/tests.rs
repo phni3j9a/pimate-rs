@@ -637,7 +637,7 @@ fn accepted_operation_disconnect_reports_unknown_and_keeps_it_on_resubscription(
     }
 }
 #[test]
-fn grace_expires_once_even_without_more_events_and_does_not_consume_other_terminals() {
+fn grace_expires_once_even_without_more_events() {
     use pimate_protocol::RcMethod::*;
     for ack_before_snapshot in [true, false] {
         let mut s = view();
@@ -671,6 +671,121 @@ fn grace_expires_once_even_without_more_events_and_does_not_consume_other_termin
         s.expire_result(deadline);
         assert_eq!(result_count(&s, "A"), 1);
         assert_eq!(result_count(&s, "B"), 1);
+    }
+}
+#[test]
+fn late_v1_completion_never_credits_the_next_request() {
+    use pimate_protocol::RcMethod::*;
+    for (method, params, terminal) in [
+        (Compact, json!({}), json!({"type":"compact_done"})),
+        (
+            Compact,
+            json!({}),
+            json!({"type":"compact_error","error":"old"}),
+        ),
+        (
+            SessionOp,
+            json!({"op":"tree","arg":"node"}),
+            json!({"type":"session_op_done","op":"tree","cancelled":false}),
+        ),
+    ] {
+        for ack_first in [true, false] {
+            for round_trip in [true, false] {
+                let mut s = view();
+                s.prepare("A", rc(method.clone(), params.clone()), true)
+                    .unwrap();
+                s.accept_op("A");
+                sync(&mut s, json!([]));
+                s.expire_result(s.result_deadline.unwrap());
+                if round_trip {
+                    for dst in ["s2", "s"] {
+                        s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":2,"session":{"id":dst},"status":"idle","sessionTree":true},"history":{"items":[]}}));
+                    }
+                }
+                s.prepare("B", rc(method.clone(), params.clone()), true)
+                    .unwrap();
+                if ack_first {
+                    s.accept_op("B");
+                }
+                event(&mut s, 3, terminal.clone());
+                if !ack_first {
+                    s.accept_op("B");
+                }
+                assert_eq!(
+                    s.get("operationResult", "latest"),
+                    &json!({"id":"B","outcome":"unknown"})
+                );
+                assert!(s.get("busy", "operation").is_null());
+                assert_eq!(result_count(&s, "B"), 1);
+                // The second terminal drains B's remaining mark, so C can complete normally.
+                event(&mut s, 4, terminal.clone());
+                s.prepare("C", rc(method.clone(), params.clone()), true)
+                    .unwrap();
+                s.accept_op("C");
+                event(&mut s, 5, terminal.clone());
+                assert_eq!(s.get("operationResult", "latest")["event"], terminal);
+            }
+        }
+    }
+}
+#[test]
+fn missing_marks_end_on_expiry_process_replacement_or_instance_removal() {
+    for cleanup in ["expire", "replace", "remove"] {
+        let mut s = view();
+        let list = |start| json!({"type":"instances","instances":[{"instanceId":"i","session":{"id":"s"},"startedAt":start}]});
+        s.apply(&list(1));
+        accepted(&mut s, "compact");
+        sync(&mut s, json!([]));
+        let deadline = s.result_deadline.unwrap();
+        s.expire_result(deadline);
+        match cleanup {
+            "expire" => s.expire_result(deadline + state::MISSING_TTL),
+            "replace" => {
+                s.apply(&list(2));
+            }
+            _ => {
+                s.apply(&json!({"type":"instances","instances":[]}));
+                s.apply(&list(1));
+            }
+        }
+        accepted(&mut s, "compact");
+        event(&mut s, 3, json!({"type":"compact_done"}));
+        assert_eq!(
+            s.get("operationResult", "latest")["event"]["type"],
+            "compact_done"
+        );
+    }
+}
+#[test]
+fn pre_ack_switch_move_requires_both_ack_and_matching_snapshot() {
+    for ack_first in [true, false] {
+        let mut s = view();
+        s.prepare(
+            "sw",
+            rc(
+                pimate_protocol::RcMethod::SessionOp,
+                json!({"op":"switch","arg":"dest"}),
+            ),
+            true,
+        )
+        .unwrap();
+        event(
+            &mut s,
+            3,
+            json!({"type":"session_changed","reason":"resume","session":{"id":"dest"}}),
+        );
+        if ack_first {
+            s.accept_op("sw");
+        }
+        s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":4,"session":{"id":"dest"}},"history":{"items":[]}}));
+        if !ack_first {
+            assert!(s.get("operationResult", "latest").is_null());
+            s.accept_op("sw");
+        }
+        assert_eq!(
+            s.get("operationResult", "latest"),
+            &json!({"id":"sw","outcome":"done","sessionId":"dest"})
+        );
     }
 }
 fn result_count(s: &State, id: &str) -> usize {

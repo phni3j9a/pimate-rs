@@ -26,6 +26,91 @@ pub struct Snapshot {
 pub trait Listener: Send + Sync {
     fn changed(&self, revision: u64, changes: Vec<Change>);
 }
+// These are counts, not candidates for retroactive success: never retain request IDs or payloads.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct CompletionScope {
+    instance: String,
+    kind: String,
+    session: Option<String>,
+}
+impl CompletionScope {
+    fn new(instance: &str, kind: &str, session: &Value) -> Self {
+        Self {
+            instance: instance.into(),
+            kind: kind.into(),
+            // new/switch/fork report their destination, which need not be known when sent.
+            session: if matches!(kind, "compact" | "tree" | "reload") {
+                session.as_str().map(str::to_owned)
+            } else {
+                None
+            },
+        }
+    }
+}
+// Long enough for compact and other deferred callbacks, but a lost v1 event must not poison future operations forever.
+pub(crate) const MISSING_TTL: Duration = Duration::from_secs(600);
+struct Missing {
+    count: u32,
+    until: Instant,
+    started_at: Option<u64>,
+}
+#[derive(Default)]
+struct MissingCompletions(std::collections::HashMap<CompletionScope, Missing>);
+impl MissingCompletions {
+    fn add(&mut self, key: CompletionScope, m: Missing) {
+        self.0
+            .entry(key)
+            .and_modify(|prev| {
+                prev.count = prev.count.saturating_add(m.count);
+                prev.until = prev.until.max(m.until);
+            })
+            .or_insert(m);
+    }
+    fn contains(&self, key: &CompletionScope) -> bool {
+        let mut any = key.clone();
+        any.session = None;
+        [key, &any]
+            .into_iter()
+            .any(|k| self.0.get(k).is_some_and(|m| m.until > Instant::now()))
+    }
+    fn consume(&mut self, mut key: CompletionScope) -> bool {
+        self.expire(Instant::now());
+        if !self.0.contains_key(&key) {
+            key.session = None;
+        }
+        let Some(m) = self.0.get_mut(&key) else {
+            return false;
+        };
+        m.count -= 1;
+        if m.count == 0 {
+            self.0.remove(&key);
+        }
+        true
+    }
+    fn observe(&mut self, id: &str, session: &Value, started_at: Option<u64>) {
+        // Drop a replaced Pi's marks. Across a session move keep just one unscoped count
+        // per kind, since the PC can resume the old session before its callback arrives.
+        self.0.retain(|k, m| {
+            k.instance != id || !matches!((m.started_at,started_at),(Some(a),Some(b)) if a!=b)
+        });
+        let moved: Vec<_> = self
+            .0
+            .keys()
+            .filter(|k| {
+                k.instance == id && k.session.is_some() && k.session.as_deref() != session.as_str()
+            })
+            .cloned()
+            .collect();
+        for mut k in moved {
+            let m = self.0.remove(&k).unwrap();
+            k.session = None;
+            self.add(k, m)
+        }
+    }
+    fn expire(&mut self, now: Instant) {
+        self.0.retain(|_, m| m.until > now);
+    }
+}
 #[derive(Default)]
 pub(crate) struct State {
     pub revision: u64,
@@ -35,6 +120,7 @@ pub(crate) struct State {
     pub selected: Option<String>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
+    missing: MissingCompletions,
     pub(crate) result_deadline: Option<Instant>,
     pub caps: Value,
     pub drafts: Vec<Draft>,
@@ -107,7 +193,7 @@ impl State {
         self.effect_seq = None;
         let op = self.get("busy", "operation");
         if op["accepted"] == true {
-            self.finish_op(json!({"instanceId":self.selected,"outcome":"unknown"}));
+            self.finish_without_event(json!({"instanceId":self.selected,"outcome":"unknown"}));
         }
         self.clear("busy");
         self.result_deadline = None;
@@ -258,6 +344,11 @@ impl State {
                     Some((v["instanceId"].as_str()?.to_owned(), v))
                 })
                 .collect();
+            self.missing.0.retain(|k, _| next.contains_key(&k.instance));
+            for (id, row) in &next {
+                self.missing
+                    .observe(id, &row["session"]["id"], row["startedAt"].as_u64());
+            }
             let mut prev = self
                 .rows
                 .insert("instance".into(), next)
@@ -290,6 +381,11 @@ impl State {
         match t {
             "subscribed" => {
                 // A fresh snapshot is not proof that a pending operation completed.
+                self.missing.observe(
+                    m["instanceId"].as_str().unwrap(),
+                    &m["snapshot"]["session"]["id"],
+                    m["snapshot"]["startedAt"].as_u64(),
+                );
                 self.snapshot_op(&m["snapshot"]["session"]["id"]);
                 self.reset_view();
                 let s = &m["snapshot"];
@@ -352,7 +448,10 @@ impl State {
             }
             "subscribe_error" | "instance_gone" => {
                 if t == "instance_gone" {
-                    self.reset()
+                    self.reset();
+                    self.missing
+                        .0
+                        .retain(|k, _| Some(&k.instance) != self.selected.as_ref());
                 } else {
                     self.reset_view()
                 }
@@ -380,6 +479,17 @@ impl State {
                         self.put("notice", "latest", json!({"seq":seq,"event":e}));
                         return false;
                     }
+                    let kind = if k == "session_op_done" {
+                        e["op"].as_str().unwrap_or_default()
+                    } else {
+                        "compact"
+                    };
+                    let scope = CompletionScope::new(
+                        m["instanceId"].as_str().unwrap(),
+                        kind,
+                        &m["sessionId"],
+                    );
+                    let stale = self.missing.consume(scope);
                     let op = self.get("busy", "operation");
                     let matches = k == "session_op_done"
                         && op["method"] == "session_op"
@@ -390,9 +500,15 @@ impl State {
                     if !matches {
                         return false;
                     }
-                    if e["op"] == "tree"
-                        && (op["sessionId"] != m["sessionId"]
-                            || self.ready() && op["sessionId"] != self.get("view", "session")["id"]
+                    if stale {
+                        // This event may belong to A. B still has one outstanding completion.
+                        self.finish_without_event(json!({"outcome":"unknown"}));
+                    } else if matches!(e["op"].as_str(), Some("reload" | "tree"))
+                        && op["sessionId"] != m["sessionId"]
+                    {
+                        self.finish_without_event(json!({"outcome":"unknown"}));
+                    } else if e["op"] == "tree"
+                        && (self.ready() && op["sessionId"] != self.get("view", "session")["id"]
                             || !op["arrival"].is_null() && op["arrival"] != op["sessionId"])
                     {
                         self.finish_op(json!({"outcome":"unknown"}))
@@ -407,7 +523,7 @@ impl State {
                     && self.result_deadline.is_some()
                     && self.seq.max(self.effect_seq).is_none_or(|n| seq > n)
                 {
-                    self.finish_op(json!({"outcome":"unknown"}));
+                    self.finish_without_event(json!({"outcome":"unknown"}));
                 }
                 if self.seq.is_none_or(|n| seq <= n) {
                     return false;
@@ -421,13 +537,18 @@ impl State {
                 let e = &m["event"];
                 match e["type"].as_str().unwrap_or("") {
                     "session_changed" => {
+                        self.missing.observe(
+                            m["instanceId"].as_str().unwrap(),
+                            &e["session"]["id"],
+                            None,
+                        );
                         let mut op = self.get("busy", "operation").clone();
-                        if op["accepted"] == true
-                            && op["method"] == "session_op"
+                        if op["method"] == "session_op"
                             && (op["op"] == e["reason"]
                                 || op["op"] == "switch" && e["reason"] == "resume")
                             && op["sessionId"] == self.get("view", "session")["id"]
                         {
+                            op.as_object_mut().unwrap().remove("snapshotSession");
                             op["arrival"] = e["session"]["id"].clone();
                             self.put("busy", "operation", op)
                         }
@@ -569,6 +690,30 @@ impl State {
             }
         }
     }
+    fn busy_scope(&self) -> CompletionScope {
+        let op = self.get("busy", "operation");
+        CompletionScope::new(
+            self.selected.as_deref().expect("operation target"),
+            op["op"].as_str().unwrap_or("compact"),
+            &op["sessionId"],
+        )
+    }
+    fn finish_without_event(&mut self, result: Value) {
+        let scope = self.busy_scope();
+        let started_at = self
+            .get("view", "startedAt")
+            .as_u64()
+            .or_else(|| self.get("instance", &scope.instance)["startedAt"].as_u64());
+        self.missing.add(
+            scope,
+            Missing {
+                count: 1,
+                until: Instant::now() + MISSING_TTL,
+                started_at,
+            },
+        );
+        self.finish_op(result)
+    }
     fn finish_op(&mut self, mut result: Value) {
         let op = self.get("busy", "operation");
         debug_assert!(!op.is_null());
@@ -585,6 +730,7 @@ impl State {
         self.result_deadline = None;
     }
     pub(crate) fn expire_result(&mut self, now: Instant) {
+        self.missing.expire(now);
         if self.result_deadline.is_some_and(|t| t <= now) {
             let op = self.get("busy", "operation");
             let result = if op["provenFork"] == true {
@@ -592,7 +738,7 @@ impl State {
             } else {
                 json!({"outcome":"unknown"})
             };
-            self.finish_op(result);
+            self.finish_without_event(result);
         }
     }
     pub(crate) fn accept_op(&mut self, id: &str) {
@@ -601,10 +747,10 @@ impl State {
             return;
         }
         op["accepted"] = json!(true);
-        let resynced = op["resynced"] == true;
+        let snapshot_session = op.get("snapshotSession").cloned();
         self.put("busy", "operation", op);
-        if resynced {
-            self.start_result_grace();
+        if let Some(session) = snapshot_session {
+            self.snapshot_op(&session);
         }
     }
     fn start_result_grace(&mut self) {
@@ -617,11 +763,12 @@ impl State {
             return;
         }
         if op["accepted"] != true {
-            op["resynced"] = json!(true);
+            op["snapshotSession"] = session.clone();
             self.put("busy", "operation", op);
             return;
         }
-        let proven = !session.is_null()
+        let proven = !self.missing.contains(&self.busy_scope())
+            && !session.is_null()
             && op["arrival"] == *session
             && match op["op"].as_str() {
                 Some("fork" | "new" | "switch") => op["sessionId"] != *session,
@@ -633,7 +780,7 @@ impl State {
             self.put("busy", "operation", op);
             self.start_result_grace();
         } else if proven {
-            self.finish_op(json!({"outcome":"done","sessionId":session}));
+            self.finish_without_event(json!({"outcome":"done","sessionId":session}));
         } else {
             self.start_result_grace()
         }
