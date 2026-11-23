@@ -20,7 +20,7 @@ class PhotoContract {
             } finally {
                 bitmap.recycle()
             }
-            val image = file.inputStream().use { encodePhoto(it.fd, 512 * 1024) }
+            val image = encodePhoto(512 * 1024) { file.inputStream() }
             val bytes = Base64.decode(image.data, Base64.DEFAULT)
             assertEquals("image/jpeg", image.mimeType)
             val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)

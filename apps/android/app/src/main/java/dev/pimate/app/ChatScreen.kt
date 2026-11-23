@@ -608,7 +608,7 @@ private fun Composer(m: SessionModel, active: Boolean, asking: Boolean) {
                     val stop = m.can(Operation.Abort(target))
                     Box(
                         Modifier.size(36.dp).clip(CircleShape).clickable(stop, role = Role.Button) {
-                            m.operate(Operation.Abort(target))
+                            m.abort(editor)
                         },
                         Alignment.Center,
                     ) {

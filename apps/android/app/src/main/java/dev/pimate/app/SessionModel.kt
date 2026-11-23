@@ -313,7 +313,12 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         return result
     }
 
-    fun operate(op: Operation, success: () -> Unit = {}) {
+    internal fun abort(key: EditorKey?) {
+        if (key != null && key == edits.current && key.target == target)
+            operate(Operation.Abort(key.target))
+    }
+
+    private fun operate(op: Operation, success: () -> Unit = {}) {
         val c = connection ?: return
         val origin = edits.current
         if (!busy)

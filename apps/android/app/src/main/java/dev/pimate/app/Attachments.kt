@@ -20,21 +20,20 @@ internal fun imageBudget(existing: List<Image>, count: Int, limit: Int): Int {
 // URI grants come from the system photo picker. Do not retain paths, EXIF or original bytes.
 internal fun encodePhoto(resolver: ContentResolver, uri: Uri, budget: Int): Image {
     require(uri.scheme == ContentResolver.SCHEME_CONTENT)
-    return requireNotNull(resolver.openFileDescriptor(uri, "r")).use { descriptor ->
-        encodePhoto(descriptor.fileDescriptor, budget)
-    }
+    return encodePhoto(budget) { requireNotNull(resolver.openInputStream(uri)) }
 }
 
-internal fun encodePhoto(fd: java.io.FileDescriptor, budget: Int): Image {
+internal fun encodePhoto(budget: Int, open: () -> java.io.InputStream): Image {
     val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    BitmapFactory.decodeFileDescriptor(fd, null, options)
+    open().use { BitmapFactory.decodeStream(it, null, options) }
     require(options.outWidth > 0 && options.outHeight > 0) { "画像を読み込めません" }
-    val orientation = ExifInterface(fd).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)
+    val orientation =
+        open().use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }
     options.inJustDecodeBounds = false
     options.inSampleSize = 1
     while (maxOf(options.outWidth, options.outHeight) / options.inSampleSize > 3200) options
         .inSampleSize *= 2
-    val bitmap = requireNotNull(BitmapFactory.decodeFileDescriptor(fd, null, options))
+    val bitmap = requireNotNull(open().use { BitmapFactory.decodeStream(it, null, options) })
     try {
         for ((edge, quality) in listOf(1600 to 85, 1200 to 70, 800 to 55, 512 to 40, 320 to 30)) {
             val scale = minOf(1f, edge.toFloat() / maxOf(bitmap.width, bitmap.height))
