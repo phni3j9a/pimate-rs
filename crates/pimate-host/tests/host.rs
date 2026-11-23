@@ -1071,7 +1071,7 @@ async fn scoped_spawn_uses_host_path_and_finishes_prompt_after_disconnect() -> R
 }
 
 #[tokio::test]
-async fn stat_only_listing_and_direct_attach() -> Result<()> {
+async fn reachable_listing_and_direct_attach() -> Result<()> {
     use std::os::unix::{fs::DirBuilderExt, net::UnixListener};
     let t = tempfile::tempdir()?;
     let root = t.path();
@@ -1096,10 +1096,6 @@ async fn stat_only_listing_and_direct_attach() -> Result<()> {
         c.env("PIMATE_ABDUCO", &fake);
         c
     };
-    let list = cmd().arg("attach").output().await?;
-    assert!(list.status.success());
-    let rows: Vec<Value> = serde_json::from_slice(&list.stdout)?;
-    assert_eq!(rows.len(), 2);
     ensure!(
         cmd()
             .args(["attach", name])
@@ -1116,6 +1112,10 @@ async fn stat_only_listing_and_direct_attach() -> Result<()> {
         hanging.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
+    let list = cmd().arg("attach").output().await?;
+    assert!(list.status.success());
+    let rows: Vec<Value> = serde_json::from_slice(&list.stdout)?;
+    assert_eq!(rows.len(), 2);
     let alias = root.join("long".repeat(30));
     std::os::unix::fs::symlink(root, &alias)?;
     let out = cmd()
@@ -1124,7 +1124,7 @@ async fn stat_only_listing_and_direct_attach() -> Result<()> {
         .output()
         .await?;
     ensure!(out.status.success());
-    assert_eq!(serde_json::from_slice::<Vec<Value>>(&out.stdout)?.len(), 2);
+    assert!(serde_json::from_slice::<Vec<Value>>(&out.stdout)?.is_empty());
     Ok(())
 }
 
@@ -1259,8 +1259,7 @@ async fn released_or_disconnected_auth_waiters_never_launch_another_pi() -> Resu
 }
 
 #[tokio::test]
-async fn fresh_bound_socket_survives_cli_until_listen_and_only_old_refused_is_pruned() -> Result<()>
-{
+async fn unreachable_sockets_are_hidden_but_never_unlinked() -> Result<()> {
     use nix::sys::{
         stat::{UtimensatFlags, utimensat},
         time::TimeSpec,
@@ -1280,11 +1279,6 @@ async fn fresh_bound_socket_survives_cli_until_listen_and_only_old_refused_is_pr
     sock.bind(&path)?;
     ensure!(cmd().output().await?.status.success());
     assert!(path.exists());
-    let sock = sock.listen(5)?;
-    std::os::unix::net::UnixStream::connect(&path)?;
-    drop(sock);
-    ensure!(cmd().output().await?.status.success());
-    assert!(path.exists());
     let epoch = TimeSpec::new(1, 0);
     utimensat(
         File::open(&dir)?,
@@ -1296,7 +1290,26 @@ async fn fresh_bound_socket_survives_cli_until_listen_and_only_old_refused_is_pr
     let other = root.join("pimate-abcdef01");
     drop(std::os::unix::net::UnixListener::bind(&other)?);
     ensure!(cmd().output().await?.status.success());
-    assert!(!path.exists() && other.exists());
+    let attach = || {
+        let mut c = cli(root);
+        c.env("PIMATE_ABDUCO", "/bin/true").arg("attach");
+        c
+    };
+    assert_eq!(
+        serde_json::from_slice::<Value>(&attach().output().await?.stdout)?,
+        json!([])
+    );
+    assert!(path.exists() && other.exists());
+    let listener = sock.listen(5)?;
+    let rows: Vec<Value> = serde_json::from_slice(&attach().output().await?.stdout)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "pimate-01234567");
+    drop(listener);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&attach().output().await?.stdout)?,
+        json!([])
+    );
+    assert!(path.exists());
     Ok(())
 }
 

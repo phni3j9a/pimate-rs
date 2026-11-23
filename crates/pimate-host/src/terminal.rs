@@ -1,5 +1,6 @@
 //! Terminal keeper boundary: only this module knows the launcher and its list format.
 use anyhow::{Context, Result, ensure};
+use futures_util::{StreamExt, stream};
 use nix::unistd::{AccessFlags, access};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -35,15 +36,11 @@ fn search(name: &Path, rejected: Option<&fs::Metadata>) -> Option<PathBuf> {
         })
         .and_then(|p| std::path::absolute(p).ok())
 }
-#[derive(Default)]
 pub struct Terminal {
     pub executable: Option<PathBuf>,
-    launching: tokio::sync::RwLock<()>,
 }
 #[derive(Serialize)]
 struct Session {
-    #[serde(skip)]
-    meta: fs::Metadata,
     name: String,
     #[serde(skip)]
     path: PathBuf,
@@ -65,25 +62,28 @@ impl Sockets {
             .context("Terminal socket path too long: choose a shorter PIMATE_RUN_DIR")?;
         Ok(path)
     }
-    fn sessions(&self) -> Result<Vec<Session>> {
-        Ok(fs::read_dir(&self.0)?
-            .flatten()
-            .filter_map(|entry| {
-                let name = entry.file_name().into_string().ok()?;
-                if !managed(&name) {
-                    return None;
-                }
-                let path = entry.path();
-                let meta = path.symlink_metadata().ok()?;
-                meta.file_type().is_socket().then_some(Session {
-                    name,
-                    path,
-                    attached: meta.mode() & 0o100 != 0,
-                    terminated: meta.mode() & 0o010 != 0,
-                    meta,
-                })
+    async fn sessions(&self) -> Result<Vec<Session>> {
+        let candidates = fs::read_dir(&self.0)?.flatten().filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            if !managed(&name) {
+                return None;
+            }
+            let path = entry.path();
+            let meta = path.symlink_metadata().ok()?;
+            meta.file_type().is_socket().then_some(Session {
+                name,
+                path,
+                attached: meta.mode() & 0o100 != 0,
+                terminated: meta.mode() & 0o010 != 0,
             })
-            .collect())
+        });
+        // shortcut: 異常終了した keeper の socket ファイルは runDir に残る（再起動・ログアウトで消える）、M6 の自前の端末保持で解消
+        Ok(stream::iter(candidates)
+            .map(|s| async move { probe(&s.path).await.ok().map(|_| s) })
+            .buffer_unordered(16)
+            .filter_map(std::future::ready)
+            .collect()
+            .await)
     }
 }
 async fn probe(path: &Path) -> std::io::Result<()> {
@@ -93,13 +93,6 @@ async fn probe(path: &Path) -> std::io::Result<()> {
     )
     .await??;
     Ok(())
-}
-fn old_socket(m: &fs::Metadata) -> bool {
-    m.file_type().is_socket()
-        && m.modified()
-            .ok()
-            .and_then(|t| t.elapsed().ok())
-            .is_some_and(|age| age >= Duration::from_secs(30))
 }
 fn validate_rc_path(run: &Path, id: &str) -> Result<()> {
     let p = std::path::absolute(run)?.join(format!("{id}.sock"));
@@ -159,7 +152,6 @@ impl Terminal {
         if let Some(p) = env::var_os("PIMATE_ABDUCO").filter(|s| !s.is_empty()) {
             return Self {
                 executable: executable(Path::new(&p)),
-                ..Default::default()
             };
         }
         Self::fallback(cfg!(all(target_os = "linux", target_arch = "x86_64")))
@@ -178,7 +170,6 @@ impl Terminal {
             if sums["bin/linux-x64/abduco"] == format!("{:x}", Sha256::digest(b)) {
                 return Self {
                     executable: Some(p.clone()),
-                    ..Default::default()
                 };
             }
         }
@@ -186,18 +177,17 @@ impl Terminal {
         let rejected = bundled.and_then(|p| p.metadata().ok());
         Self {
             executable: search(Path::new("abduco"), rejected.as_ref()),
-            ..Default::default()
         }
     }
     pub async fn refresh(&self, run: &Path, instances: &mut [serde_json::Value]) {
         let Some(ab) = &self.executable else { return };
         let Ok(ns) = Sockets::open(run) else { return };
-        let Ok(sessions) = ns.sessions() else {
+        let Ok(sessions) = ns.sessions().await else {
             return;
         };
         for s in sessions {
-            if self.clean(ab, &s).await {
-                continue;
+            if s.terminated && !s.attached {
+                Self::reap(ab, &s.path).await;
             }
             for i in instances
                 .iter_mut()
@@ -207,32 +197,11 @@ impl Terminal {
             }
         }
     }
-    // A fresh socket may still be between bind and listen in another Host process.
-    async fn clean(&self, ab: &Path, s: &Session) -> bool {
-        let exited = s.terminated && !s.attached;
-        if !exited && !old_socket(&s.meta) {
-            return false;
-        }
-        let Ok(_idle) = self.launching.try_write() else {
-            return false;
-        };
-        match probe(&s.path).await {
-            Err(e)
-                if e.kind() == std::io::ErrorKind::ConnectionRefused
-                    && old_socket(&s.meta)
-                    && s.path.symlink_metadata().is_ok_and(|m| {
-                        m.dev() == s.meta.dev() && m.ino() == s.meta.ino() && old_socket(&m)
-                    }) =>
-            {
-                return fs::remove_file(&s.path).is_ok();
-            }
-            Ok(()) if exited => (),
-            _ => return false,
-        }
+    async fn reap(ab: &Path, path: &Path) {
         // /dev/null delivers EOF before the bundled client acknowledges MSG_EXIT.
         if let Ok(mut child) = Command::new(ab)
             .args(["-a", "--"])
-            .arg(&s.path)
+            .arg(path)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -242,7 +211,6 @@ impl Terminal {
             let _input = child.stdin.take();
             let _ = timeout(Duration::from_secs(2), child.wait()).await;
         }
-        false
     }
     pub async fn attach(&self, run: &Path, name: Option<String>) -> Result<()> {
         let ab = self.executable.as_ref().context("abduco not found")?;
@@ -262,7 +230,7 @@ impl Terminal {
                 .exec()
                 .into());
         }
-        println!("{}", serde_json::to_string_pretty(&ns.sessions()?)?);
+        println!("{}", serde_json::to_string_pretty(&ns.sessions().await?)?);
         Ok(())
     }
     pub async fn launch(
@@ -348,7 +316,6 @@ impl Terminal {
                 Ok(())
             });
         }
-        let _launching = self.launching.read().await;
         ensure!(c.status().await?.success(), "Pi launcher failed");
         Ok((id, name))
     }
@@ -405,37 +372,6 @@ mod tests {
         for src in ["extensions/login.ts", "team:rc.ts", "git+ssh:repo", "NPM:x"] {
             assert_eq!(extension_arg(src.into())?, env::current_dir()?.join(src));
         }
-        Ok(())
-    }
-    #[tokio::test]
-    async fn skip_old_refused_socket_while_launch_in_progress() -> Result<()> {
-        use nix::sys::{
-            stat::{UtimensatFlags, utimensat},
-            time::TimeSpec,
-        };
-        let t = tempfile::tempdir()?;
-        let run = t.path().join("run");
-        let ns = Sockets::open(&run)?;
-        let path = ns.path("pimate-00000001")?;
-        drop(std::os::unix::net::UnixListener::bind(&path)?);
-        let old = TimeSpec::new(1, 0);
-        utimensat(
-            fs::File::open(&run)?,
-            &path,
-            &old,
-            &old,
-            UtimensatFlags::NoFollowSymlink,
-        )?;
-        let term = Terminal {
-            executable: Some("/bin/true".into()),
-            ..Default::default()
-        };
-        let active = term.launching.read().await;
-        term.refresh(&run, &mut []).await;
-        assert!(path.exists());
-        drop(active);
-        term.refresh(&run, &mut []).await;
-        assert!(!path.exists());
         Ok(())
     }
     #[test]

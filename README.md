@@ -74,7 +74,9 @@ TMPDIR=/tmp PIMATE_TEST_PI="$HOME/.pi/agent/bin/pi" PIMATE_TEST_TS=/path/to/PiMa
 
 ### スマホからの起動とログイン
 
-ペアリング済み WS の `folders` / `dirs` で起動先を選び、`spawn` へ `cwd` と任意の `model`・`thinking`・`askTool`・`trust`・初回 `message` を渡します。受理した起動はスマホが切断しても初回メッセージ送信まで継続します。初回メッセージの失敗で Pi や prompt を自動再試行しません。終了は既存の RC `shutdown`。Rust Host は `PIMATE_RUN_DIR/t/`（0700）を端末専用の名前空間にします。起動・一覧・attach・終了済み端末の回収はこの中だけで行い、環境の `ABDUCO_SOCKET_DIR`・`~/.abduco`・他の runDir は使いません。ソケットは `<runDir>/t/<名前>` に置き、所有記録・ホスト名・abduco の一覧には依存しません。Host はソケットのモードから接続中・終了済みを判定し、名前指定の attach はそのパスだけを見ます。接続拒否された残骸は更新から30秒以上経ち、同じソケットであることを再確認してから削除します。
+ペアリング済み WS の `folders` / `dirs` で起動先を選び、`spawn` へ `cwd` と任意の `model`・`thinking`・`askTool`・`trust`・初回 `message` を渡します。受理した起動はスマホが切断しても初回メッセージ送信まで継続します。初回メッセージの失敗で Pi や prompt を自動再試行しません。終了は既存の RC `shutdown`。Rust Host は `PIMATE_RUN_DIR/t/`（0700）を端末専用の名前空間にします。起動・一覧・attach・終了済み端末の回収はこの中だけで行い、環境の `ABDUCO_SOCKET_DIR`・`~/.abduco`・他の runDir は使いません。ソケットは `<runDir>/t/<名前>` に置き、所有記録・ホスト名・abduco の一覧には依存しません。Host はソケットのモードから接続中・終了済みを判定し、名前指定の attach はそのパスだけを見ます。一覧は接続できる端末だけを表示します。
+
+制限: keeper が異常終了した場合、到達不能なソケットファイルを自動削除せず runDir に残します（通常の一時 runDir は再起動・ログアウトで消えます）。
 
 `PIMATE_PI`（既定 `pi`）と TS Extension が必要です。`PIMATE_EXTENSION` はファイルパスまたは Pi のパッケージ指定（`npm:`、`git:` など）です。端末管理は `terminal.rs` に隔離し、`PIMATE_ABDUCO` → `pimate` と同じディレクトリの検証済みバイナリ（現在 Linux x64、[チェックサム](bin/SHA256SUMS.json)）→ PATH の順で解決します。配布時は `bin/<platform>-<arch>/` に並べ、Extension の既定はパッケージの `dist/extension.js` です。Linux の user systemd が使えれば Pi ごとの scope、それ以外は独立した端末セッションを使います。後者はログアウトやサービスの cgroup 終了に対する保証はありません。
 
