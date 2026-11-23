@@ -135,16 +135,23 @@ struct Delivery {
     retries: Semaphore,
 }
 impl Delivery {
-    async fn initial_slot(&self) -> tokio::sync::OwnedSemaphorePermit {
-        self.initial
+    async fn resolved(&self, k: &str, v: Value) {
+        let slot = self
+            .initial
             .clone()
             .acquire_owned()
             .await
-            .expect("delivery semaphore is never closed")
+            .expect("delivery semaphore is never closed");
+        if !hook::answered(&self.dir, k) {
+            hook::deliver(&self.dir, v, slot, &self.retries).await;
+        }
     }
-    async fn send(self: &Arc<Self>, v: Value, k: Option<String>) {
-        // Backpressure the per-instance reader, not an unbounded queue of waiting tasks.
-        let slot = self.initial_slot().await;
+    fn send(self: &Arc<Self>, v: Value, k: Option<String>) {
+        // Never stall the RC reader. Only resolutions for accepted opens may wait for a slot.
+        let Ok(slot) = self.initial.clone().try_acquire_owned() else {
+            eprintln!("webhook initial queue full");
+            return;
+        };
         if let Some(key) = &k {
             let mut s = self.state.lock().unwrap();
             if s.opened.contains_key(key) || s.pending.contains_key(key) {
@@ -184,15 +191,12 @@ impl Delivery {
                 };
                 if ok && let Some(v) = next {
                     // This close was already accepted before the opening POST succeeded.
-                    let slot = this.initial_slot().await;
-                    if !hook::answered(&this.dir, &k) {
-                        hook::deliver(&this.dir, v, slot, &this.retries).await;
-                    }
+                    this.resolved(&k, v).await;
                 }
             }
         });
     }
-    async fn close(self: &Arc<Self>, k: String, v: Value) {
+    fn close(self: &Arc<Self>, k: String, v: Value) {
         if hook::answered(&self.dir, &k) {
             return;
         }
@@ -206,7 +210,8 @@ impl Delivery {
                 return;
             }
         }
-        self.send(v, None).await
+        let this = self.clone();
+        tokio::spawn(async move { this.resolved(&k, v).await });
     }
 }
 struct Stream<'a> {
@@ -236,18 +241,18 @@ fn refresh_session(row: &mut Value, latest: &mut watch::Receiver<Value>, m: &Val
     }
 }
 impl Stream<'_> {
-    async fn hook(&mut self, event: &str, session: &Value, r: &str, d: Value) {
+    fn hook(&mut self, event: &str, session: &Value, r: &str, d: Value) {
         if let Some(c) = &self.c {
             let v = hook::payload(c, event, &self.row, session, r, d);
             let k = hook::key(json!([self.row["instanceId"], r]));
             match event {
-                "request.opened" => self.delivery.send(v, Some(k)).await,
-                "request.resolved" => self.delivery.close(k, v).await,
-                _ => self.delivery.send(v, None).await,
+                "request.opened" => self.delivery.send(v, Some(k)),
+                "request.resolved" => self.delivery.close(k, v),
+                _ => self.delivery.send(v, None),
             }
         }
     }
-    async fn open(&mut self, session: &Value, r: &Value) {
+    fn open(&mut self, session: &Value, r: &Value) {
         let Some(id) = r["requestId"].as_str() else {
             return;
         };
@@ -262,9 +267,9 @@ impl Stream<'_> {
             d["context"] =
                 format!("Task: {}", self.user.chars().take(394).collect::<String>()).into()
         }
-        self.hook("request.opened", session, id, d).await
+        self.hook("request.opened", session, id, d)
     }
-    async fn event(&mut self, t: &mut Tracker, m: &Value) {
+    fn event(&mut self, t: &mut Tracker, m: &Value) {
         if m["instanceId"] != self.row["instanceId"]
             || m["type"] != "event"
             || m["seq"].as_u64().is_none_or(|n| n <= t.seq)
@@ -288,14 +293,14 @@ impl Stream<'_> {
                 self.error.clear();
                 self.requests.clear()
             }
-            Some("ui_request") => self.open(s, &e["request"]).await,
+            Some("ui_request") => self.open(s, &e["request"]),
             Some("ui_request_end") => {
                 if let Some(r) = e["requestId"].as_str() {
                     let mut d = json!({"requestId":r,"by":e["by"]});
                     if let Some(k) = self.requests.remove(r) {
                         d["kind"] = k
                     }
-                    self.hook("request.resolved", s, r, d).await
+                    self.hook("request.resolved", s, r, d)
                 }
             }
             Some("message_end") => {
@@ -330,7 +335,7 @@ impl Stream<'_> {
             if !self.last.is_empty() {
                 d["lastReply"] = json!(self.last)
             }
-            self.hook(ev, s, &t.seq.to_string(), d).await
+            self.hook(ev, s, &t.seq.to_string(), d)
         }
     }
 }
@@ -433,13 +438,13 @@ impl Monitor {
                     error: String::new(),
                 };
                 for r in s["pendingUI"].as_array().into_iter().flatten() {
-                    stream.open(&s["session"]["id"], r).await
+                    stream.open(&s["session"]["id"], r)
                 }
                 for v in early {
-                    stream.event(&mut t, &v).await
+                    stream.event(&mut t, &v)
                 }
                 loop {
-                    stream.event(&mut t, &rc.next().await?).await
+                    stream.event(&mut t, &rc.next().await?)
                 }
             });
             self.tasks.insert(
@@ -489,16 +494,16 @@ mod tests {
         let event = |kind| json!({"event":kind,"instanceId":"pi"});
         let key = hook::key(json!(["pi", "r"]));
         timeout(Duration::from_secs(10), async {
-            delivery
-                .send(event("request.opened"), Some(key.clone()))
-                .await;
+            delivery.send(event("request.opened"), Some(key.clone()));
             let (kind, ack) = rx.recv().await.unwrap();
             assert_eq!(kind, "request.opened");
             ack.send(StatusCode::SERVICE_UNAVAILABLE).unwrap();
-            delivery.send(event("pi.finished"), None).await;
+            // The first open has moved to its retry slot.
+            drop(delivery.initial.acquire().await.unwrap());
+            delivery.send(event("pi.finished"), None);
             let (kind, busy) = rx.recv().await.unwrap();
             assert_eq!(kind, "pi.finished");
-            delivery.close(key.clone(), event("request.resolved")).await;
+            delivery.close(key.clone(), event("request.resolved"));
             let (kind, ack) = rx.recv().await.unwrap();
             assert_eq!(kind, "request.opened");
             ack.send(StatusCode::OK).unwrap();
@@ -512,6 +517,78 @@ mod tests {
         })
         .await?;
         server.abort();
+        Ok(())
+    }
+    #[tokio::test]
+    async fn monitor_drains_rc_while_all_webhook_slots_are_busy() -> Result<()> {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_util::codec::{Framed, LinesCodec};
+        let tmp = tempfile::tempdir()?;
+        let dir = tmp.path();
+        let run = dir.join("run");
+        config::private(&run)?;
+        let listener = tokio::net::UnixListener::bind(run.join("pi.sock"))?;
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        config::private(&dir.join("webhook-watch"))?;
+        fs::write(dir.join("webhook-watch/pi"), "")?;
+        fs::write(
+            dir.join("webhook.json"),
+            json!({"machine":"test","headers":{},"url":format!("http://{}/",http.local_addr()?)})
+                .to_string(),
+        )?;
+        let (tx, mut posts) = tokio::sync::mpsc::channel(4);
+        let router = axum::Router::new().route(
+            "/",
+            axum::routing::post(move |axum::Json(v): axum::Json<Value>| {
+                let tx = tx.clone();
+                async move {
+                    tx.send(v).await.unwrap();
+                    axum::http::StatusCode::OK
+                }
+            }),
+        );
+        let web = tokio::spawn(async move { axum::serve(http, router).await });
+        let mut monitor = Monitor {
+            tx: broadcast::channel(16).0,
+            tasks: Default::default(),
+            delivery: Arc::new(Delivery {
+                dir: dir.into(),
+                state: Default::default(),
+                initial: Arc::new(Semaphore::new(100)),
+                retries: Semaphore::new(100),
+            }),
+        };
+        monitor
+            .delivery
+            .state
+            .lock()
+            .unwrap()
+            .opened
+            .insert(hook::key(json!(["pi", "accepted"])), 1);
+        // Model all 100 initial POSTs being in flight, including those for other Pis.
+        let busy = monitor
+            .delivery
+            .initial
+            .clone()
+            .try_acquire_many_owned(100)?;
+        let mut alerts = monitor.subscribe(&run, &[json!({"instanceId":"pi","cwd":"/project"})]);
+        timeout(Duration::from_secs(10),async {
+            let(sock,_)=listener.accept().await?;let mut io=Framed::new(sock,LinesCodec::new());
+            let req:Value=serde_json::from_str(&io.next().await.context("expected hello")??)?;
+            let snapshot=json!({"protocol":1,"instanceId":"pi","seq":0,"session":{"id":"s"},"pendingUI":[{"requestId":"new","kind":"confirm"}]});
+            io.send(json!({"id":req["id"],"type":"response","ok":true,"result":{"snapshot":snapshot}}).to_string()).await?;
+            let frame=|seq,event:Value|json!({"type":"event","instanceId":"pi","sessionId":"s","seq":seq,"event":event}).to_string();
+            for (seq,id) in [(1,"new"),(2,"accepted")] {io.send(frame(seq,json!({"type":"ui_request_end","requestId":id,"by":"tui"}))).await?;}
+            // More than the Extension's 8 MiB per-client backlog on the same socket.
+            let delta="x".repeat(64*1024);
+            for n in 3..132 {io.send(frame(n,json!({"type":"message_update","delta":delta}))).await?;}
+            io.send(frame(132,json!({"type":"status","status":"waiting_input"}))).await?;
+            assert_eq!(alerts.recv().await?,json!({"id":"pi:132","instanceId":"pi","sessionId":"s","kind":"input"}));
+            assert!(monitor.delivery.state.lock().unwrap().pending.is_empty());
+            drop(busy);let post=posts.recv().await.context("missing accepted close")?;assert_eq!(post["event"],"request.resolved");assert_eq!(post["requestId"],"accepted");
+            Ok::<_,anyhow::Error>(())
+        }).await??;
+        web.abort();
         Ok(())
     }
     #[test]
