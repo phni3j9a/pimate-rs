@@ -77,6 +77,7 @@ pub(crate) struct State {
     pub selected: Option<String>,
     // Only retain observations which are not available in RC v1 history/snapshots.
     observations: IndexMap<String, Observations>,
+    failures: std::collections::HashMap<String, Failure>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
     missing: MissingCompletions,
@@ -85,12 +86,62 @@ pub(crate) struct State {
     pub caps: Value,
     pub drafts: Vec<Draft>,
 }
+const UNKNOWN_FAILURE: &str = "Pi の実行に失敗しました";
+struct Failure {
+    entry: Value,
+    session: Value,
+    started: Value,
+    updated: Value,
+    text: String,
+}
 struct Observations {
+    seq: Option<u64>,
     session: Value,
     started: Value,
     running_since: Value,
-    tools: IndexMap<String, (String, Value)>,
+    tools: Vec<CachedTool>,
     thinking: IndexMap<String, Value>,
+}
+// Across all Host connections: 512 KiB of previews is enough for a few screens of output,
+// while still leaving room on a phone for the active transcript and decoded images.
+const PREVIEW_BUDGET: usize = 512 * 1024;
+static PREVIEW_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+struct CachedTool {
+    id: Box<str>,
+    caller: Box<str>,
+    text: Box<str>,
+    started: Option<u64>,
+    bytes: usize,
+}
+impl CachedTool {
+    fn capture(id: &str, caller: &str, tool: &Value) -> Option<Self> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let parts = tool["partial"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|v| v["type"] == "text")
+            .filter_map(|v| v["text"].as_str());
+        let len: usize = parts.clone().map(str::len).sum();
+        let bytes = id.len() + caller.len() + len + 2 * std::mem::size_of::<Self>();
+        PREVIEW_BYTES
+            .fetch_update(Relaxed, Relaxed, |used| {
+                (used + bytes <= PREVIEW_BUDGET).then_some(used + bytes)
+            })
+            .ok()?;
+        Some(Self {
+            id: id.into(),
+            caller: caller.into(),
+            text: parts.collect::<String>().into_boxed_str(),
+            started: tool["startedAt"].as_u64(),
+            bytes,
+        })
+    }
+}
+impl Drop for CachedTool {
+    fn drop(&mut self) {
+        PREVIEW_BYTES.fetch_sub(self.bytes, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 pub(crate) struct Draft {
     pub id: String,
@@ -167,16 +218,35 @@ impl State {
         self.clear("notice");
         self.reset_view()
     }
-    fn open_call(&self, id: &str) -> Option<&str> {
+    fn set_failure(&mut self, id: &str, failure: Option<(&Value, &str)>) {
+        if let Some((entry, text)) = failure {
+            self.failures.insert(
+                id.into(),
+                Failure {
+                    entry: entry.clone(),
+                    session: self.get("view", "session")["id"].clone(),
+                    started: self.get("view", "startedAt").clone(),
+                    updated: self.get("instance", id)["updatedAt"].clone(),
+                    text: text.chars().take(240).collect(),
+                },
+            );
+        } else if self.failures.remove(id).is_none() {
+            return;
+        }
+        if let Some(rows) = self.rows.get("instance") {
+            self.instances(rows.values().cloned().collect());
+        }
+    }
+    fn open_call(&self, id: &str) -> Option<(&str, &Value)> {
         for e in self.rows.get("entry")?.values().rev() {
             if e["kind"] == "user" || (e["kind"] == "tool_result" && e["toolCallId"] == id) {
                 break;
             }
-            if e["toolCalls"]
+            if let Some(call) = e["toolCalls"]
                 .as_array()
-                .is_some_and(|calls| calls.iter().any(|c| c["id"] == id))
+                .and_then(|calls| calls.iter().find(|c| c["id"] == id))
             {
-                return e["entryId"].as_str();
+                return Some((e["entryId"].as_str()?, call));
             }
         }
         None
@@ -185,7 +255,9 @@ impl State {
         if self.ready()
             && let Some(id) = self.selected.clone()
         {
+            self.observations.shift_remove(&id);
             let observed = Observations {
+                seq: self.seq,
                 session: self.get("view", "session").clone(),
                 started: self.get("view", "startedAt").clone(),
                 running_since: self.get("view", "runningSince").clone(),
@@ -194,14 +266,11 @@ impl State {
                     .get("tool")
                     .into_iter()
                     .flatten()
-                    .filter(|(_, t)| t["status"] == "running")
-                    .filter_map(|(id, t)| {
-                        Some((id.clone(), (self.open_call(id)?.to_owned(), t.clone())))
-                    })
+                    .filter(|(_, t)| t["status"] == "running" && t["parentToolCallId"].is_null())
+                    .filter_map(|(id, t)| CachedTool::capture(id, self.open_call(id)?.0, t))
                     .collect(),
                 thinking: self.rows.get("thinkingMs").cloned().unwrap_or_default(),
             };
-            self.observations.shift_remove(&id);
             self.observations.insert(id, observed);
             if self.observations.len() > 16 {
                 self.observations.shift_remove_index(0);
@@ -342,6 +411,92 @@ impl State {
             self.put(c, id, v.clone())
         }
     }
+    fn instances(&mut self, mut list: Vec<Value>) -> bool {
+        let mut previous = std::mem::take(&mut self.failures);
+        for row in &mut list {
+            if let Some(obj) = row.as_object_mut() {
+                obj.remove("failureText");
+            }
+            let Some(id) = row["instanceId"].as_str() else {
+                continue;
+            };
+            if let Some((id, mut f)) = previous.remove_entry(id)
+                && row["startedAt"] == f.started
+                && row["session"]["id"] == f.session
+                && (self.selected.as_ref() == Some(&id) || row["updatedAt"] == f.updated)
+            {
+                f.updated = row["updatedAt"].clone();
+                if row["status"] != "waiting_input"
+                    && row["subagents"]["waiting"].as_u64().unwrap_or(0) == 0
+                {
+                    row["failureText"] = json!(f.text);
+                }
+                self.failures.insert(id, f);
+            }
+        }
+        list.sort_by_key(|v| {
+            (
+                !attention(v),
+                !attention(v) && v["origin"] == "grok-bot",
+                std::cmp::Reverse(v["updatedAt"].as_u64()),
+            )
+        });
+        let next: IndexMap<_, _> = list
+            .into_iter()
+            .filter_map(|mut v| {
+                v["section"] = json!(if attention(&v) {
+                    "waiting"
+                } else if v["origin"] == "grok-bot" {
+                    "bot"
+                } else {
+                    "normal"
+                });
+                Some((v["instanceId"].as_str()?.to_owned(), v))
+            })
+            .collect();
+        // Discovery and subscription run independently; a list may predate the current snapshot.
+        let selected = self.selected.as_ref();
+        self.generations
+            .retain(|id, _| Some(id) == selected || next.contains_key(id));
+        self.missing
+            .0
+            .retain(|k, _| Some(&k.instance) == selected || next.contains_key(&k.instance));
+        let resubscribe = self.get("view", "phase") == "instance_gone"
+            && selected.is_some_and(|id| next.contains_key(id));
+        for (id, row) in &next {
+            if self.selected.as_ref() != Some(id) {
+                self.observe_generation(id, row["startedAt"].as_u64());
+            }
+        }
+        if resubscribe {
+            self.put("view", "phase", json!("resyncing"));
+        }
+        let mut prev = self
+            .rows
+            .insert("instance".into(), next)
+            .unwrap_or_default();
+        let next = &self.rows["instance"];
+        for id in prev.keys().filter(|id| !next.contains_key(*id)) {
+            self.changes.push(Change::Remove {
+                collection: "instance".into(),
+                id: id.clone(),
+            })
+        }
+        prev.retain(|id, _| next.contains_key(id));
+        for (i, (id, v)) in next.iter().enumerate() {
+            let changed = prev.get(id) != Some(v);
+            let pos = prev.get_index_of(id).unwrap_or_else(|| {
+                prev.insert(id.clone(), Value::Null);
+                prev.len() - 1
+            });
+            if pos != i || changed {
+                prev.move_index(pos, i);
+                self.changes
+                    .push(Change::Upsert(item("instance", id, i, v)))
+            }
+        }
+        resubscribe
+    }
     /// Frames have already passed HostMessage validation and normalization.
     pub fn apply(&mut self, m: &Value) -> bool {
         self.apply_at(
@@ -356,69 +511,8 @@ impl State {
         let t = m["type"].as_str().unwrap_or("");
         if t == "instances" {
             self.put("host", "listKnown", json!(true));
-            let mut list = m["instances"].as_array().cloned().unwrap_or_default();
-            list.sort_by_key(|v| {
-                (
-                    !attention(v),
-                    !attention(v) && v["origin"] == "grok-bot",
-                    std::cmp::Reverse(v["updatedAt"].as_u64()),
-                )
-            });
-            let next: IndexMap<_, _> = list
-                .into_iter()
-                .filter_map(|mut v| {
-                    v["section"] = json!(if attention(&v) {
-                        "waiting"
-                    } else if v["origin"] == "grok-bot" {
-                        "bot"
-                    } else {
-                        "normal"
-                    });
-                    Some((v["instanceId"].as_str()?.to_owned(), v))
-                })
-                .collect();
-            // Discovery and subscription run independently; a list may predate the current snapshot.
-            let selected = self.selected.as_ref();
-            self.generations
-                .retain(|id, _| Some(id) == selected || next.contains_key(id));
-            self.missing
-                .0
-                .retain(|k, _| Some(&k.instance) == selected || next.contains_key(&k.instance));
-            let resubscribe = self.get("view", "phase") == "instance_gone"
-                && selected.is_some_and(|id| next.contains_key(id));
-            for (id, row) in &next {
-                if self.selected.as_ref() != Some(id) {
-                    self.observe_generation(id, row["startedAt"].as_u64());
-                }
-            }
-            if resubscribe {
-                self.put("view", "phase", json!("resyncing"));
-            }
-            let mut prev = self
-                .rows
-                .insert("instance".into(), next)
-                .unwrap_or_default();
-            let next = &self.rows["instance"];
-            for id in prev.keys().filter(|id| !next.contains_key(*id)) {
-                self.changes.push(Change::Remove {
-                    collection: "instance".into(),
-                    id: id.clone(),
-                })
-            }
-            prev.retain(|id, _| next.contains_key(id));
-            for (i, (id, v)) in next.iter().enumerate() {
-                let changed = prev.get(id) != Some(v);
-                let pos = prev.get_index_of(id).unwrap_or_else(|| {
-                    prev.insert(id.clone(), Value::Null);
-                    prev.len() - 1
-                });
-                if pos != i || changed {
-                    prev.move_index(pos, i);
-                    self.changes
-                        .push(Change::Upsert(item("instance", id, i, v)))
-                }
-            }
-            return resubscribe;
+            let list = m["instances"].as_array().cloned().unwrap_or_default();
+            return self.instances(list);
         }
         if self.selected.is_none() || self.selected.as_deref() != m["instanceId"].as_str() {
             return false;
@@ -484,6 +578,29 @@ impl State {
                     };
                     self.put("view", "agentActive", json!(active))
                 }
+                let id = m["instanceId"].as_str().unwrap();
+                let failure = entries
+                    .values()
+                    .rev()
+                    .find(|e| e["kind"] != "other")
+                    .filter(|e| {
+                        e["kind"] == "assistant"
+                            && e["stopReason"] == "error"
+                            && s["status"] == "idle"
+                    });
+                match failure {
+                    Some(e)
+                        if !self.failures.get(id).is_some_and(|f| {
+                            f.entry == e["entryId"]
+                                && f.started == s["startedAt"]
+                                && f.session == s["session"]["id"]
+                        }) =>
+                    {
+                        self.set_failure(id, Some((&e["entryId"], UNKNOWN_FAILURE)))
+                    }
+                    None => self.set_failure(id, None),
+                    _ => (),
+                }
                 for v in entries.into_values() {
                     self.entry(v.clone())
                 }
@@ -511,9 +628,16 @@ impl State {
                             }
                         }
                         if self.get("view", "agentActive") == true {
-                            for (id, (caller, tool)) in obs.tools {
-                                if self.open_call(&id) == Some(&caller) {
-                                    self.put("tool", &id, tool);
+                            if self.seq == obs.seq && !obs.running_since.is_null() {
+                                self.put("view", "runningSince", obs.running_since.clone());
+                            }
+                            for tool in obs.tools {
+                                let id = tool.id.as_ref();
+                                if let Some((caller, call)) = self.open_call(id)
+                                    && caller == tool.caller.as_ref()
+                                {
+                                    let row = json!({"status":"running","toolCallId":id,"toolName":call["name"],"args":call["args"],"startedAt":tool.started,"partial":{"content":[{"type":"text","text":tool.text}]}});
+                                    self.put("tool", id, row);
                                     self.put("view", "runningSince", obs.running_since.clone());
                                 }
                             }
@@ -616,6 +740,28 @@ impl State {
                 }
                 self.seq = Some(seq);
                 let e = &m["event"];
+                let id = m["instanceId"].as_str().unwrap();
+                match k {
+                    "message_end"
+                        if e["item"]["stopReason"] == "error"
+                            && e["item"]["kind"] == "assistant" =>
+                    {
+                        self.set_failure(
+                            id,
+                            Some((
+                                &e["item"]["entryId"],
+                                e["item"]["errorMessage"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(UNKNOWN_FAILURE),
+                            )),
+                        )
+                    }
+                    "agent_start" | "session_changed" | "ui_request" | "message_end" => {
+                        self.set_failure(id, None)
+                    }
+                    _ => (),
+                }
                 match e["type"].as_str().unwrap_or("") {
                     "session_changed" => {
                         let mut op = self.get("busy", "operation").clone();
@@ -967,8 +1113,7 @@ impl State {
 }
 
 fn attention(v: &Value) -> bool {
-    v["subagents"]["failed"].as_u64().unwrap_or(0) > 0
-        || v["failureText"].is_string()
+    v["failureText"].is_string()
         || v["status"] == "waiting_input"
         || v["subagents"]["waiting"].as_u64().unwrap_or(0) > 0
 }
@@ -1091,4 +1236,19 @@ fn same_images(item: &Value, params: &Value) -> bool {
         seen |= bit;
         fresh && &sent[pos as usize] == img
     })
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    #[test]
+    fn simultaneous_caches_share_budget_and_never_retain_blobs() {
+        let preview = "x".repeat(PREVIEW_BUDGET / 2 + 1);
+        let tool = json!({"args":preview,"partial":{"details":preview,"content":[{"type":"image","data":preview},{"type":"text","text":preview}]}});
+        let a = CachedTool::capture("a", "e", &tool).unwrap();
+        assert_eq!(a.text.as_ref(), preview);
+        assert!(CachedTool::capture("b", "e", &tool).is_none());
+        drop(a);
+        assert!(CachedTool::capture("b", "e", &tool).is_some());
+    }
 }

@@ -1086,3 +1086,54 @@ fn rc_time_and_session_move_are_not_lost_in_resync() {
     assert_eq!(s.get("notice", "sessionChanged")["from"]["id"], "s");
     assert_eq!(s.get("notice", "sessionChanged")["to"]["id"], "b");
 }
+
+#[test]
+fn past_child_failure_is_not_attention_and_new_questions_supersede_observed_errors() {
+    let mut s = view();
+    let mut list = json!({"type":"instances","instances":[{"instanceId":"i","session":{"id":"s"},"status":"idle","subagents":{"failed":1}}]});
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["section"], "normal");
+    sync(
+        &mut s,
+        json!([{"entryId":"prev","kind":"assistant","stopReason":"error","errorMessage":"not observed"}]),
+    );
+    assert_eq!(
+        s.get("instance", "i")["failureText"],
+        "Pi の実行に失敗しました"
+    );
+    for (seq, message, expected) in [
+        (3, "", "Pi の実行に失敗しました"),
+        (4, "out of memory", "out of memory"),
+    ] {
+        event(
+            &mut s,
+            seq,
+            json!({"type":"message_end","item":{"entryId":"a","kind":"assistant","stopReason":"error","errorMessage":message}}),
+        );
+        s.apply(&list);
+        assert_eq!(s.get("instance", "i")["failureText"], expected);
+        assert_eq!(s.get("instance", "i")["section"], "waiting");
+    }
+    list["instances"][0]["status"] = json!("waiting_input");
+    s.apply(&list);
+    assert!(s.get("instance", "i")["failureText"].is_null());
+    event(&mut s, 5, json!({"type":"agent_start"}));
+    list["instances"][0]["status"] = json!("idle");
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["section"], "normal");
+}
+
+#[test]
+fn same_seq_restores_observed_turn_start_without_tools() {
+    let mut s = view();
+    event(&mut s, 3, json!({"type":"agent_start"}));
+    let start = s.get("view", "runningSince").clone();
+    let mut snap = json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":3,"session":{"id":"s"},"status":"running"},"history":{"items":[]}});
+    s.reset();
+    s.apply_at(&snap, 100);
+    assert_eq!(s.get("view", "runningSince"), &start);
+    snap["snapshot"]["seq"] = json!(6);
+    s.reset();
+    s.apply_at(&snap, 200);
+    assert_eq!(s.get("view", "runningSince"), 200);
+}

@@ -80,12 +80,14 @@ async fn until(
     .await
     .with_context(|| format!("waiting for {collection}/{id}"))?
 }
-fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<Arc<AtomicUsize>> {
+fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<(Arc<AtomicUsize>, Arc<AtomicUsize>)> {
     let run = s.dir.path().join("run");
     let meta = json!({"protocol":1,"instanceId":"stub","pid":std::process::id(),"cwd":"/test","origin":"pc","abducoSession":null,"session":{"id":"s"},"startedAt":1,"updatedAt":1,"status":"idle"});
     std::fs::write(run.join("stub.json"), meta.to_string())?;
     let socket = UnixListener::bind(run.join("stub.sock"))?;
     let sends = Arc::new(AtomicUsize::new(0));
+    let histories = Arc::new(AtomicUsize::new(0));
+    let history_count = histories.clone();
     let count = sends.clone();
     tokio::spawn(async move {
         while let Ok((sock, _)) = socket.accept().await {
@@ -96,6 +98,7 @@ fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<Arc<AtomicUsize>> {
                     .unwrap()
                     .clone(),
             );
+            let history_count = history_count.clone();
             let count = count.clone();
             let cut = cut.clone();
             tokio::spawn(async move {
@@ -106,6 +109,7 @@ fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<Arc<AtomicUsize>> {
                     let result = match r["method"].as_str() {
                         Some("hello") => json!({"snapshot":snap}),
                         Some("history") => {
+                            history_count.fetch_add(1, Ordering::SeqCst);
                             json!({"session":{"id":"s"},"items":if recovered{json!([{"kind":"user","entryId":"u","text":"hey"}])}else{json!([{"entryId":"failed","kind":"assistant","text":"","toolCalls":[],"stopReason":"error","errorMessage":"command failed"}])}})
                         }
                         Some("prompt") => {
@@ -145,7 +149,7 @@ fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<Arc<AtomicUsize>> {
             });
         }
     });
-    Ok(sends)
+    Ok((sends, histories))
 }
 
 /// Hold acquisition deliberately never replies. Report each wire transition to the
@@ -244,7 +248,7 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
             });
         }
     });
-    let sends = mock_rc(&s, cut)?;
+    let (sends, histories) = mock_rc(&s, cut)?;
     let o = cli(s.dir.path())
         .args(["pair", "--address", &address])
         .output()
@@ -265,20 +269,9 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let c = core.connect(h.id, Arc::new(Changes(tx)))?;
     until(&mut rx, "instance", "stub", None).await?;
-    timeout(Duration::from_secs(10), async {
-        loop {
-            if c.snapshot().items.iter().any(|i| {
-                i.collection == "instance"
-                    && serde_json::from_str::<Value>(&i.json).is_ok_and(|v| {
-                        v["failureText"] == "command failed" && v["section"] == "waiting"
-                    })
-            }) {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await?;
+    // Observe at least one discovery refresh with the phone connected but unsubscribed.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(histories.load(Ordering::SeqCst), 0);
     c.subscribe(Some("stub".into()))?;
     for bad in ["", "../stub", "invalid/target", &"x".repeat(101)] {
         assert_eq!(c.subscribe(Some(bad.into())), Err(Error::BadRequest));

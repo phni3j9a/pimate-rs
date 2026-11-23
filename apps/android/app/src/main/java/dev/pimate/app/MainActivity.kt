@@ -287,12 +287,11 @@ private fun DrawerContent(
                                 id == m.selected &&
                                 !m.rows.groups["question"].isNullOrEmpty() ->
                                 "入力待ち: ${JSONObject(m.rows.groups.getValue("question").last().json).str("title")}"
-                            (o.optJSONObject("subagents")?.optLong("failed") ?: 0) > 0 ->
-                                "失敗: サブエージェント"
                             !asks -> "サブエージェントの確認が必要です"
                             else -> "入力待ち: Pi が回答を待っています"
                         },
                         ago(o.optLong("updatedAt"), now),
+                        machine = h.name,
                     ) {
                         select(h, id)
                     }
@@ -498,6 +497,7 @@ private fun InstanceRow(
     selected: Boolean,
     attention: String?,
     right: String,
+    machine: String? = null,
     onClick: () -> Unit,
 ) {
     val agents = o.optJSONObject("subagents")
@@ -528,6 +528,14 @@ private fun InstanceRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (machine != null)
+                Text(
+                    machine,
+                    color = pi.textSecondary,
+                    style = Type.meta,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             if (attention != null)
                 Text(
                     attention,

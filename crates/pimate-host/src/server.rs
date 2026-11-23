@@ -154,7 +154,6 @@ fn summaries(list: Vec<Value>) -> Vec<Value> {
                         | "startedAt"
                         | "updatedAt"
                         | "questionTitle"
-                        | "failureText"
                         | "subagents"
                 )
             });
@@ -223,12 +222,9 @@ async fn listen(
         tasks.spawn(async move { axum::serve(listener, router).await });
     }
     tokio::spawn(async move {
-        let mut failures = Default::default();
         loop {
             sleep(Duration::from_millis(1500)).await;
-            if let Ok(mut v) =
-                rc::discover(&dir, (tx.receiver_count() > 1).then_some(&mut failures)).await
-            {
+            if let Ok(mut v) = rc::list(&dir).await {
                 app.terminal.refresh(&dir, &mut v.instances).await;
                 app.login.observe(&dir, v.login);
                 versions.send_replace(v.incompatible);

@@ -63,6 +63,19 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
     }
 }
 
+// Display and revision checks share the same baseline, including synchronous selection snapshots.
+internal class HostRows(private val states: MutableMap<String, Rows>) {
+    operator fun get(id: String) = states[id] ?: Rows()
+
+    fun snapshot(id: String, value: Snapshot) {
+        states[id] = Rows.from(value)
+    }
+
+    fun changed(id: String, revision: ULong, changes: List<Change>, snapshot: () -> Snapshot) {
+        states[id] = get(id).apply(revision, changes, snapshot)
+    }
+}
+
 internal fun terminalCommand(session: String): String? =
     session
         .takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")) }
@@ -77,9 +90,9 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
     }
 
     private val slots = mutableMapOf<String, Slot>()
-    private val states = mutableStateMapOf<String, Rows>()
+    private val states = HostRows(mutableStateMapOf())
 
-    fun rowsFor(id: String) = states[id] ?: Rows()
+    fun rowsFor(id: String) = states[id]
 
     private val connection
         get() = host?.let { slots[it.id]?.connection }
@@ -102,11 +115,11 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         openList = false
     }
 
-    var rows by mutableStateOf(Rows())
-        private set
+    val rows
+        get() = host?.let { states[it.id] } ?: Rows()
 
-    private fun publish(next: Rows) {
-        rows = next
+    private fun publish() {
+        val next = rows
         target = next.readyTarget(selected)
         target?.let { t ->
             host?.let {
@@ -184,12 +197,13 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun snapshot(id: String, c: Connection) {
+        states.snapshot(id, c.snapshot())
+        if (host?.id == id) publish()
+    }
+
     private fun connect(h: Host) {
         val slot = Slot()
-        fun update(next: Rows) {
-            states[h.id] = next
-            if (host?.id == h.id) publish(next)
-        }
         val c =
             core.connect(
                 h.id,
@@ -205,7 +219,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                                 handler.post {
                                     resync.set(false)
                                     if (this@SessionModel.slots[h.id] === slot)
-                                        slot.connection?.let { update(Rows.from(it.snapshot())) }
+                                        slot.connection?.let { snapshot(h.id, it) }
                                 }
                             return
                         }
@@ -213,7 +227,8 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                             try {
                                 if (this@SessionModel.slots[h.id] === slot)
                                     slot.connection?.let {
-                                        update(rowsFor(h.id).apply(revision, changes, it::snapshot))
+                                        states.changed(h.id, revision, changes, it::snapshot)
+                                        if (host?.id == h.id) publish()
                                     }
                             } finally {
                                 slots.release()
@@ -224,7 +239,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
             )
         slots.put(h.id, slot)?.connection?.close()
         slot.connection = c
-        update(Rows.from(c.snapshot()))
+        snapshot(h.id, c)
     }
 
     private fun focus(h: Host) {
@@ -232,7 +247,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         host = h
         selected = null
         edits.current = null
-        publish(rowsFor(h.id))
+        publish()
     }
 
     fun pair(link: String) {
@@ -270,7 +285,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
             connection?.subscribe(id)
             if (selected != id) edits.current = null
             selected = id
-            connection?.let { publish(Rows.from(it.snapshot())) }
+            connection?.let { snapshot(h.id, it) }
             error = ""
         } catch (_: CoreException) {
             error = "選択できません"

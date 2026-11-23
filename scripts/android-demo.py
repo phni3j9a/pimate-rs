@@ -285,9 +285,9 @@ async def pi(
                     )
                 elif method == "history":
                     reply = dict(session=session, items=history)
-                    if task is None and iid == "demo" and not r["id"].startswith("drawer-"):
+                    if task is None and iid == "demo":
                         task = asyncio.create_task(stream(False))
-                    elif task is None and iid == "main" and not r["id"].startswith("drawer-"):
+                    elif task is None and iid == "main":
                         task = asyncio.create_task(hold())
                 elif method == "prompt":
                     if task and not task.done():

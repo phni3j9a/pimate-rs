@@ -57,6 +57,9 @@ class DemoJourney {
             waitFor("ログイン画面の改修")
         }
         ui.waitUntil(20000) { ui.onAllNodesWithText("ログイン画面の改修").fetchSemanticsNodes().size == 2 }
+        for (machine in listOf("マシン A", "マシン B")) {
+            ui.onNode(hasText("ログイン画面の改修") and hasText(machine)).assertIsDisplayed()
+        }
         shot("global-attention")
         ui.onNodeWithContentDescription("Instance・フォルダを検索").performTextInput("/demo/and")
         ui.runOnUiThread {

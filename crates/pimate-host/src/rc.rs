@@ -70,45 +70,19 @@ pub struct Discovery {
 }
 // Discovery already probes hello, including instances with no phone subscription.
 fn attention_details(row: &mut Value, snapshot: &Value) {
-    let runs = snapshot["subagents"]["runs"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .rev();
-    let agents = runs.flat_map(|r| {
-        r["children"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .chain(std::iter::once(r))
-    });
-    let question = snapshot["pendingUI"]
+    if let Some(title) = snapshot["pendingUI"]
         .as_array()
         .into_iter()
         .flatten()
         .rev()
-        .find_map(|q| q["title"].as_str())
-        .or_else(|| {
-            agents
-                .clone()
-                .filter(|a| a["state"] == "waiting")
-                .find_map(|a| a["question"].as_str())
-        });
-    let failure = agents
-        .filter(|a| a["state"] == "failed")
-        .find_map(|a| a["error"].as_str());
-    for (key, value) in [("questionTitle", question), ("failureText", failure)] {
-        if let Some(value) = value.filter(|s| !s.is_empty()) {
-            row[key] = json!(value.chars().take(240).collect::<String>());
-        }
+        .filter_map(|q| q["title"].as_str())
+        .find(|s| !s.is_empty())
+    {
+        row["questionTitle"] = json!(title.chars().take(240).collect::<String>());
     }
 }
 
-type FailureCache = std::collections::HashMap<String, (Value, Option<String>)>;
 pub async fn list(dir: &Path) -> Result<Discovery> {
-    discover(dir, None).await
-}
-pub async fn discover(dir: &Path, mut failures: Option<&mut FailureCache>) -> Result<Discovery> {
     let mut login = vec![];
     let mut incompatible = serde_json::Map::new();
     private(dir)?;
@@ -172,51 +146,10 @@ pub async fn discover(dir: &Path, mut failures: Option<&mut FailureCache>) -> Re
             login.push(id.to_owned());
             continue;
         }
-        let probe = async {
-            let mut rc = Rc::open(dir, id).await?;
-            let snapshot = rc.hello(|_| Ok(())).await?;
-            anyhow::Ok((rc, snapshot))
-        };
+        let probe = async { Rc::open(dir, id).await?.hello(|_| Ok(())).await };
         let s = timeout(Duration::from_secs(1), probe).await;
         v["reachable"] = json!(matches!(s, Ok(Ok(_))));
-        if let Ok(Ok((mut rc, s))) = s {
-            if let Some(cache) = failures.as_deref_mut()
-                && s["status"] == "idle"
-                && s["session"]["id"].is_string()
-            {
-                // v1 has no last-error summary. Fetch idle history once per observed RC revision, never per phone.
-                let key = json!([s["startedAt"], s["session"]["id"], s["seq"]]);
-                if !cache.get(id).is_some_and(|(k, _)| k == &key) {
-                    let mut req = request("history");
-                    req["id"] = json!(format!("drawer-{}", Uuid::new_v4()));
-                    req["expectSessionId"] = s["session"]["id"].clone();
-                    if let Ok(Ok(r)) =
-                        timeout(Duration::from_secs(1), rc.send(req, |_| Ok(()))).await
-                        && r["ok"] == true
-                        && r["result"]["session"]["id"] == s["session"]["id"]
-                    {
-                        let failure = r["result"]["items"]
-                            .as_array()
-                            .and_then(|a| a.iter().rev().find(|i| i["kind"] != "other"))
-                            .filter(|i| i["kind"] == "assistant" && i["stopReason"] == "error")
-                            .map(|i| {
-                                i["errorMessage"]
-                                    .as_str()
-                                    .filter(|s| !s.is_empty())
-                                    .unwrap_or("Pi の実行に失敗しました")
-                                    .chars()
-                                    .take(240)
-                                    .collect()
-                            });
-                        cache.insert(id.to_owned(), (key.clone(), failure));
-                    }
-                }
-                if let Some((k, Some(text))) = cache.get(id)
-                    && *k == key
-                {
-                    v["failureText"] = json!(text);
-                }
-            }
+        if let Ok(Ok(s)) = s {
             attention_details(&mut v, &s);
             for k in ["status", "session"] {
                 if let Some(x) = s.get(k) {
@@ -233,9 +166,6 @@ pub async fn discover(dir: &Path, mut failures: Option<&mut FailureCache>) -> Re
         }
         v["pcAttached"] = Value::Null;
         entries.push(v)
-    }
-    if let Some(cache) = failures {
-        cache.retain(|id, _| entries.iter().any(|v| v["instanceId"] == *id));
     }
     entries.sort_by(|a, b| a["instanceId"].as_str().cmp(&b["instanceId"].as_str()));
     Ok(Discovery {

@@ -244,11 +244,13 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 | 画面で使う情報 | 読み書きの契約 |
 | --- | --- |
-| 一覧の補足 | `instance` の任意の `questionTitle`・`failureText`。TS Host の一覧には件数・状態しかない場合があります。Rust Host は未購読でも discovery の `hello` から pendingUI と子の質問・失敗を取得。親の失敗はスマホ接続中、idle なセッションの最後の履歴を確認し、同じ世代・セッション・seq なら読み直しません。 |
-| 時間・途中出力 | `view/runningSince`・`tool.startedAt` は epoch ms。`thinkingMs/<assistant entryId>` は最初の thinking delta から最初の本文（なければ回答確定）まで。RC イベントの任意の `timestamp` を優先し、時刻がない v1 は TS 版と同じく受信時刻、途中参加の作業は観測開始から。途中参加の思考時間や見ていないツール出力は推定しません。`tool.partial.content` は最新の途中出力。再購読時は同世代・同セッションで履歴上も同じ未完了の呼び出しのときだけ復元（Host ごとに最近の16 Instance、ディスク保存なし）。 |
+| 一覧の補足 | `instance` の任意の `questionTitle`・`failureText`。TS Host の一覧には件数・状態しかない場合があります。Rust Host は一覧のために履歴を取得せず、`hello` の `pendingUI` から質問の題だけを取得。中核は購読中に観測した親の失敗だけを一覧に反映し、詳細がなければ定型文を使います。子の累積失敗数は現在の要対応ではありません。 |
+| 時間・途中出力 | `view/runningSince`・`tool.startedAt` は epoch ms。`thinkingMs/<assistant entryId>` は最初の thinking delta から最初の本文（なければ回答確定）まで。RC イベントの任意の `timestamp` を優先し、時刻がない v1 は TS 版と同じく受信時刻、途中参加の作業は観測開始から。途中参加の思考時間や見ていないツール出力は推定しません。`tool.partial.content` は最新の途中出力。再購読時は同世代・同セッションで履歴上も同じ未完了の呼び出しのときだけ復元（Host ごとに最近の16 Instance。途中出力はテキストと照合情報のみを全 Host 合計512 KiBまで保持し、上限を超える呼び出しは破棄。ディスク保存なし）。 |
 | 添付 | 画面がシステムの `PickMultipleVisualMedia(4)` を起動し、起動時の `EditorKey` と結果 URI リストを `attach(key, uris)` に渡します。キャンセルは空リスト。能力と枚数を確認し、IO スレッドで縮小・向き補正・JPEG 化し、1枚512 KiB・全体600 KiB以内に収まった場合だけ `edits.body.images` に反映。読み取り・サイズエラーは画面で案内し、リンクや画像をログに出しません。 |
 | 結果が必要な RC 操作 | キーは画面を開いたときに捕捉し、coroutine で `request(key, RcMethod, JSONObject)`。`ENTRY_IMAGE`・`FILE_IMAGE` は返された result JSON の画像を利用。`MODELS`／`SET_SCOPED_MODELS`／`SET_DEFAULT_MODEL` の結果は `model` の `favorite` と `view/defaultModel`、モデル・Thinking の変更は `SET_MODEL`／`SET_THINKING`。`SESSIONS`／`SESSION_TREE` は `session`／`node`、変更は `SESSION_OP`・`SET_LABEL`・`COMPACT`・`SHUTDOWN`。対象が変われば結果を別画面に渡さず、自動再送しません。 |
 | 候補・使用状況 | `COMMANDS` 後に `suggestions(text)`。`stats()` と `allowances(nowMs)` は中核の集計。`view/context`、`quota`、圧縮・セッション操作の `operationResult/latest` も参照できます。 |
 | 再接続・PC 操作 | `host/connection`、`view/phase`、`draft`、`notice/sessionChanged`（`reason`, `from`, `to`。どの端末から操作したかは不明）、`view/pcPrompt`。`attachCommand()` が null ならコピーを出しません。未確認は入力欄・履歴と区別し、`restore` で明示的にだけ戻します。 |
+
+制限: 未購読中の失敗は RC v1 の snapshot から識別できません。最新の失敗を Extension の snapshot に載せる対応は M7 で行います。
 
 2マシンの計装試験は `PIMATE_DEMO_NAME='マシン A' scripts/android-demo.py` と B を別々に起動し、各ポートだけ reverse。初回状態の RS debug アプリの `cache/two-links` にリンクを1行ずつ渡し、`DemoJourney#twoMachines` を実行します。`global-attention.png` と `two-machines.png` をアプリの cache から取得し、終了後に各プロセスと reverse を片付けます。

@@ -6,6 +6,19 @@ import uniffi.pimate_ffi.*
 
 class RowsTest {
     @Test
+    fun selectedSnapshotIsNewerThanQueuedNotifications() {
+        val hosts = HostRows(mutableMapOf())
+        val question = Item("question", "answered", 0u, "{}")
+        hosts.snapshot("A", Snapshot(10u, listOf(question)))
+        hosts.snapshot("B", Snapshot(10u, listOf(question)))
+        hosts.snapshot("A", Snapshot(12u, emptyList()))
+        hosts.changed("A", 11u, listOf(Change.Upsert(question))) { error("no resync needed") }
+        assertEquals(12uL, hosts["A"].revision)
+        assertNull(hosts["A"].groups["question"])
+        assertEquals(listOf(question), hosts["B"].groups["question"])
+    }
+
+    @Test
     fun copiedCommandOnlyContainsASingleSafeArgument() {
         assertEquals("pimate attach pimate-01234567", terminalCommand("pimate-01234567"))
         for (bad in listOf("", "--help", "host;id", "a\nb")) assertNull(terminalCommand(bad))
