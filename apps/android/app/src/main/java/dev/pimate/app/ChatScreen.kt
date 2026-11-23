@@ -560,7 +560,7 @@ private fun Composer(m: SessionModel, active: Boolean, asking: Boolean) {
                                 hint,
                                 color = pi.textSecondary,
                                 style = Type.lead,
-                                maxLines = 1,
+                                maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
                             )
                         inner()

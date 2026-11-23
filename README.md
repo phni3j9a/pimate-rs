@@ -219,11 +219,20 @@ adb -s SERIAL install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
 scripts/android-demo.py
 ```
 
-スクリプトは一時ディレクトリに模擬 RC と Rust Host を作り、loopback の空きポートだけで待機します。表示された `adb -s SERIAL reverse tcp:PORT tcp:PORT` を別端末で実行し、**PiMate RS** (`dev.pimate.app.rs.debug`) に表示されたリンクを貼り付けるか QR を読み取ります。リンクは秘密・1回限りなので別端末で試す時はスクリプトを起動し直します。一覧の `/demo/android` を開くと Markdown が逐次届き、日本語を送ると会話に追加されます。終了は Ctrl+C、そのポートだけ `adb -s SERIAL reverse --remove tcp:PORT`。実際の Pi・常駐サービス・abduco は使いません。
+スクリプトは一時ディレクトリに模擬 RC と Rust Host を作り、loopback の空きポートだけで待機します。表示された `adb -s SERIAL reverse tcp:PORT tcp:PORT` を別端末で実行し、**PiMate RS** (`dev.pimate.app.rs.debug`) の最初の画面で「リンクを貼り付ける」に表示されたリンクを入れるか、QR を読み取ります。リンクは秘密・1回限りなので別端末で試す時はスクリプトを起動し直します。終了は Ctrl+C、そのポートだけ `adb -s SERIAL reverse --remove tcp:PORT`。実際の Pi・常駐サービス・abduco は使いません。
 
-Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面の仕上げは `MainActivity.kt`、`PairScreen.kt`、`ChatScreen.kt`、`Markdown.kt`、`Theme.kt`、通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。
+模擬の Pi はモック（[docs/design](docs/design)）と見比べられる内容にしています。
 
-端末試験は `apps/android/app/src/androidTest`。`StoreContract` はランダムな試験用 Host だけで Keystore の置き換えを検査します。`DemoJourney` は初回ペアリング画面からの試験用です。debug APK と `assembleDebugAndroidTest` の APK を試験端末に入れ、上記の reverse 後、模擬リンクを標準入力で `adb -s SERIAL shell "run-as dev.pimate.app.rs.debug sh -c 'mkdir -p cache; cat > cache/demo-link'"` へ渡します（履歴やログに残さない）。`adb -s SERIAL shell am instrument -w dev.pimate.app.rs.debug.test/androidx.test.runner.AndroidJUnitRunner` で実行できます。リンクがなければ会話試験はスキップします。
+| 一覧の表示 | 見るところ |
+| --- | --- |
+| `android`（`/demo/android`） | 開くと Markdown（見出し・表4種・コード・リスト・タスクリスト・引用・リンク）が逐次届く。送信すると、考えた内容 → ツール4回 → 回答 → 確認の質問、の順に進む |
+| `--shout フラグを追加` | `Main` の状態。畳まれた前のターン、ツールの行、実行中の `bash`。止めるまで作業中のまま |
+| `ログイン画面の改修` | `Chat-Waiting` の状態。要対応に入り、選択肢つきの質問が出る |
+| `認証まわりのレビュー`・`README の整理` | `Drawer` の補足（サブエージェント 2 実行中・スマホで起動） |
+
+Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面は `PairScreen.kt`（最初の画面）、`MainActivity.kt`（ドロワーと、設定・新しい Pi の入口）、`ChatScreen.kt`（見出し・会話の行・入力欄）、`QuestionCard.kt`、`Markdown.kt`（表・コード・選択とコピー）。色・文字・余白は `Theme.kt`、アイコンと共通の部品は `Parts.kt`、履歴を行に組み立てて完了したターンを畳む処理は `Transcript.kt`（JVM の単体試験 `TranscriptTest`）。通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。等幅の JetBrains Mono（SIL OFL 1.1、`assets/licenses`）を同梱しています。
+
+端末試験は `apps/android/app/src/androidTest`。`StoreContract` はランダムな試験用 Host だけで Keystore の置き換えを検査します。`DemoJourney` は初回ペアリング画面からの試験用です（アプリのデータが空で、模擬 Host を起動し直した直後に実行します）。debug APK と `assembleDebugAndroidTest` の APK を試験端末に入れ、上記の reverse 後、模擬リンクを標準入力で `adb -s SERIAL shell "run-as dev.pimate.app.rs.debug sh -c 'mkdir -p cache; cat > cache/demo-link'"` へ渡します（履歴やログに残さない）。`adb -s SERIAL shell am instrument -w dev.pimate.app.rs.debug.test/androidx.test.runner.AndroidJUnitRunner` で実行できます。リンクがなければ会話試験はスキップします。
 
 開発用会話で作業中に割り込み、消費される前に停止すると「割り込み待ち」→「届いていない可能性があります」になります。同じセッションで入力欄が空なら本文を下書きへ戻せますが、自動再送はしません。編集本文は Host・Instance・セッションごとに ViewModel のメモリだけで保持します（画面回転・一時切断では保持、プロセス終了で消去）。質問カードは `QuestionCard.kt` で5種類を描画し、回答の送信可否は中核に委ねます。Android 12 以降のクラウドバックアップ・端末間転送は `hosts.xml` を除外します。
 
