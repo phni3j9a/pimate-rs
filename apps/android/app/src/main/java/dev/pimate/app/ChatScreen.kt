@@ -16,6 +16,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -45,7 +46,7 @@ private class Parsed<T>(private val parse: (Item) -> T) {
 
 /** チャット（docs/design/html/Main.html・Chat-Waiting.html）。見出し・会話・入力欄。 */
 @Composable
-internal fun ChatScreen(m: SessionModel, openDrawer: () -> Unit) {
+internal fun ChatScreen(m: SessionModel, openDrawer: () -> Unit, recover: (Stop) -> Unit) {
     val groups = m.rows.groups
     val view = groups["view"].orEmpty().associate { it.id to it.json }
     val target = m.target
@@ -82,24 +83,37 @@ internal fun ChatScreen(m: SessionModel, openDrawer: () -> Unit) {
     val toggle = { key: String -> if (!open.remove(key)) open.add(key) }
 
     Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
-        Header(m, view, active, questions.isNotEmpty(), openDrawer)
-        val phase = view["phase"]
+        val stop = stopped(groups["host"].orEmpty().find { it.id == "connection" }?.json)
+        Header(m, view, active, questions.isNotEmpty(), stop != null, openDrawer)
+        val pcPrompt = view["pcPrompt"].let { it != null && it != "null" }
+        val notice =
+            notice(
+                m.selected != null,
+                view["phase"],
+                target != null,
+                rows.isNotEmpty(),
+                questions.isNotEmpty(),
+                pcPrompt,
+            )
         when {
-            m.selected == null -> Placeholder("一覧から Pi を選ぶと、ここに会話が表示されます", "一覧を開く", openDrawer)
-            phase == "\"instance_gone\"" -> Placeholder("この Pi は終了しました", "一覧を開く", openDrawer)
-            phase == "\"subscribe_error\"" -> Placeholder("この Pi を開けませんでした", "一覧を開く", openDrawer)
-            target == null -> Placeholder("読み込み中…")
-            rows.isEmpty() && questions.isEmpty() -> Placeholder("メッセージを送ると、ここに会話が表示されます")
+            stop != null -> Placeholder(stop.detail, stop.action) { recover(stop) }
+            notice != null ->
+                Placeholder(notice.first, "一覧を開く".takeIf { notice.second }, openDrawer)
             else -> {
                 val visible = rows.filter { it.fold == null || it.fold in open }
+                val list = rememberLazyListState()
+                // 履歴を遡っている間に届いた質問は画面の外に足される。回答するまで入力できないので、カード（最下段）へ戻す。
+                val newest = questions.lastOrNull()?.id
+                LaunchedEffect(newest) { if (newest != null) list.animateScrollToItem(0) }
                 // 逆順のリスト。先頭（最下段）の固定の項目が見えている間は、増えた行のぶん上へ伸びる。
                 LazyColumn(
-                    Modifier.weight(1f),
+                    Modifier.weight(1f).testTag("chat"),
+                    list,
                     reverseLayout = true,
                     contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
                 ) {
                     item("bottom") { Spacer(Modifier.height(10.dp)) }
-                    if (view["pcPrompt"].let { it != null && it != "null" })
+                    if (pcPrompt)
                         item("pcPrompt") {
                             Note(
                                 "PC の Pi が操作を待っています。スマホには表示できない画面です。PC で操作してください。",
@@ -149,6 +163,7 @@ private fun Header(
     view: Map<String, String>,
     active: Boolean,
     asking: Boolean,
+    stopped: Boolean,
     openDrawer: () -> Unit,
 ) {
     val session = view["session"]?.takeIf { it != "null" }?.let(::JSONObject)
@@ -194,7 +209,8 @@ private fun Header(
             when {
                 m.selected == null ||
                     phase == "\"instance_gone\"" ||
-                    phase == "\"subscribe_error\"" -> Unit
+                    phase == "\"subscribe_error\"" ||
+                    stopped -> Unit
                 !ready -> {
                     Spinner()
                     Text("同期中", color = pi.textSecondary, style = Type.caption)

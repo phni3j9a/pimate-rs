@@ -113,9 +113,26 @@ internal fun buildRows(
     streamText: String = "",
     streamThinking: String = "",
 ): List<ChatRow> {
-    val results = entries.filter { it.kind == "tool_result" }.associateBy { it.callId }
+    // 結果は、同じ ID でまだ結果のない直前の呼び出しに対応付ける（ID がターンをまたいで重なる履歴でも取り違えない）。
+    val results = HashMap<Pair<String, String>, Entry>() // (呼び出し元 entry, call ID) → 結果
+    val claimed = HashSet<Int>() // 呼び出しに対応した結果の位置
+    val caller = HashMap<String, String>() // call ID → 最後に呼んだ entry。実行中のツールはここに付ける
+    run {
+        val open = HashMap<String, String>()
+        entries.forEachIndexed { i, e ->
+            if (e.kind == "assistant")
+                e.calls.forEach {
+                    open[it.id] = e.id
+                    caller[it.id] = e.id
+                }
+            else if (e.kind == "tool_result")
+                open.remove(e.callId)?.let {
+                    results[it to e.callId] = e
+                    claimed += i
+                }
+        }
+    }
     val running = live.associateBy { it.id }
-    val shown = mutableSetOf<String>()
     val out = mutableListOf<ChatRow>()
     var turn = mutableListOf<ChatRow>()
     var turnId: String? = null
@@ -123,10 +140,7 @@ internal fun buildRows(
     var ended: Long? = null
     var finalKey: String? = null
 
-    fun tool(id: String, name: String, subject: String): ChatRow.Tool {
-        shown += id
-        val result = results[id]
-        val now = running[id]
+    fun tool(key: String, name: String, subject: String, result: Entry?, now: Live?): ChatRow.Tool {
         val state =
             when {
                 result != null -> if (result.isError) ToolState.Failed else ToolState.Done
@@ -145,7 +159,7 @@ internal fun buildRows(
                 else -> ""
             }
         return ChatRow.Tool(
-            "tool:$id",
+            key,
             shownName,
             subject.ifEmpty { now?.subject.orEmpty() },
             state,
@@ -185,7 +199,7 @@ internal fun buildRows(
         turn = mutableListOf()
     }
 
-    for (e in entries) {
+    entries.forEachIndexed { i, e ->
         if (e.kind != "user" && e.time != null) ended = e.time
         when (e.kind) {
             "user" -> {
@@ -203,12 +217,22 @@ internal fun buildRows(
                     turn += ChatRow.Text("${e.id}:text", e.text, if (e.final) e.meta else "")
                     if (e.final) finalKey = "${e.id}:text"
                 }
-                e.calls.forEach { turn += tool(it.id, it.name, it.subject) }
+                e.calls.forEach {
+                    turn +=
+                        tool(
+                            "tool:${e.id}:${it.id}",
+                            it.name,
+                            it.subject,
+                            results[e.id to it.id],
+                            running[it.id]?.takeIf { _ -> caller[it.id] == e.id },
+                        )
+                }
                 if (e.aborted) turn += ChatRow.Note("${e.id}:aborted", "中断しました")
                 else if (e.error.isNotEmpty())
                     turn += ChatRow.Note("${e.id}:error", "エラー: ${e.error}", true)
             }
-            "tool_result" -> if (e.callId !in shown) turn += tool(e.callId, e.name, "")
+            // 呼び出しが履歴にない結果（途中からの履歴など）。
+            "tool_result" -> if (i !in claimed) turn += tool("result:${e.id}", e.name, "", e, null)
             else -> {
                 val first = e.text.trim().lineSequence().firstOrNull().orEmpty()
                 turn +=
@@ -222,8 +246,8 @@ internal fun buildRows(
     close(active)
     // 途中から開いたときなど、発言より先に届いた実行中のツール。サブエージェントの中のツールは出さない。
     live
-        .filter { it.id !in shown && !it.nested }
-        .forEach { out += tool(it.id, it.name, it.subject) }
+        .filter { it.id !in caller && !it.nested }
+        .forEach { out += tool("running:${it.id}", it.name, it.subject, null, it) }
     if (streamThinking.isNotBlank()) out += ChatRow.Thinking("live:thinking", streamThinking, true)
     if (streamText.isNotEmpty()) out += ChatRow.Text("live:text", streamText)
     // 同じ ID が重なる壊れた履歴でも、リストの key の重複で落とさない。
@@ -242,6 +266,45 @@ internal fun gap(prev: ChatRow?, row: ChatRow): Int =
             if (prev is ChatRow.Tool || prev is ChatRow.Thinking) 0 else 8
         row is ChatRow.Text -> if (prev is ChatRow.Text) 12 else 8
         else -> 12
+    }
+
+/** 中核が再接続をやめた接続（待っても戻らない）。repair: 再ペアリングで直る。そうでなければ更新してから再接続する。 */
+internal enum class Stop(val label: String, val detail: String, val repair: Boolean) {
+    Revoked("登録解除", "PC でこのスマホの登録が解除されました。使うには、もう一度ペアリングしてください。", true),
+    InvalidToken("再ペアリングが必要", "このスマホの登録が PC にありません。もう一度ペアリングしてください。", true),
+    AuthFailed("認証できません", "PC を確認できませんでした。PC の PiMate を入れ直したときなどは、もう一度ペアリングしてください。", true),
+    Protocol("バージョン不一致", "PC の PiMate とアプリのバージョンが合いません。どちらかを更新してから再接続してください。", false);
+
+    val action
+        get() = if (repair) "再ペアリング" else "再接続"
+}
+
+/** 状態の層の host.connection（JSON の文字列）から。接続中・一時的な切断は null。 */
+internal fun stopped(connection: String?): Stop? =
+    when (connection) {
+        "\"revoked\"" -> Stop.Revoked
+        "\"invalid_token\"" -> Stop.InvalidToken
+        "\"auth_failed\"" -> Stop.AuthFailed
+        "\"protocol_mismatch\"" -> Stop.Protocol
+        else -> null
+    }
+
+/** 会話の欄に会話の代わりに出す案内と、「一覧を開く」を添えるか。null なら会話を出す。 履歴が空でも、質問や PC 側の操作待ちがあれば会話の欄で示す。 */
+internal fun notice(
+    selected: Boolean,
+    phase: String?,
+    ready: Boolean,
+    history: Boolean,
+    asking: Boolean,
+    pcPrompt: Boolean,
+): Pair<String, Boolean>? =
+    when {
+        !selected -> "一覧から Pi を選ぶと、ここに会話が表示されます" to true
+        phase == "\"instance_gone\"" -> "この Pi は終了しました" to true
+        phase == "\"subscribe_error\"" -> "この Pi を開けませんでした" to true
+        !ready -> "読み込み中…" to false
+        !history && !asking && !pcPrompt -> "メッセージを送ると、ここに会話が表示されます" to false
+        else -> null
     }
 
 // ---- JSON（状態の層の行）から ----

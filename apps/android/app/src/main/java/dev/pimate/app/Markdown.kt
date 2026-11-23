@@ -32,26 +32,41 @@ import uniffi.pimate_ffi.*
 
 private fun blocks(source: String) = parse(source, false).use { it.blocks() }
 
-/** 回答の本文。長押しで OS の選択になり、範囲を広げてコピーできる（選択は 1 つの回答の中）。 live（逐次表示）は増えるたびに別スレッドで解析し、前の表示を残したまま差し替える。 */
+// 解析済みの回答。スクロールで戻った回答を解析し直さずにすぐ出す。
+private val parsed = android.util.LruCache<String, List<Block>>(64)
+// 逐次表示の最後の解析（増えるたびに上のものを追い出さないよう分ける）。確定した回答が同じ本文ならそのまま使う。
+private var lastLive: Pair<String, List<Block>>? = null
+
+private fun cached(source: String) =
+    parsed[source] ?: lastLive?.takeIf { it.first == source }?.second
+
+// 逐次表示から確定した直後は、解析が済むまで逐次表示の最後の解析を出す（回答が 1 フレーム消えない）。
+private fun initial(source: String) =
+    cached(source)
+        ?: lastLive
+            ?.takeIf { source.startsWith(it.first) && it.first.length * 5 >= source.length * 4 }
+            ?.second
+        ?: emptyList()
+
+/** 回答の本文。長押しで OS の選択になり、範囲を広げてコピーできる（選択は 1 つの回答の中）。 解析は UI スレッドの外で行い、live（逐次表示）は前の表示を残したまま差し替える。 */
 @Composable
 internal fun Markdown(source: String, modifier: Modifier = Modifier, live: Boolean = false) {
-    val parsed =
-        if (live)
-            produceState(emptyList<Block>(), source) {
-                    value = withContext(Dispatchers.Default) { blocks(source) }
-                }
-                .value
-        else remember(source) { blocks(source) }
+    val shown by
+        produceState(initial(source), source) {
+            value = cached(source) ?: withContext(Dispatchers.Default) { blocks(source) }
+            if (live) lastLive = source to value else parsed.put(source, value)
+        }
     SelectionContainer(modifier) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            parsed.forEach { key(it.id) { BlockView(it) } }
+            shown.forEach { key(it.id) { BlockView(it) } }
         }
     }
 }
 
 private const val CODE = "code"
 
-private fun annotate(spans: List<Inline>, p: Palette) = buildAnnotatedString {
+/** links: false ならリンクは見た目だけ（タップは親の操作に渡す）。 */
+private fun annotate(spans: List<Inline>, p: Palette, links: Boolean) = buildAnnotatedString {
     spans.forEach { span ->
         when (span) {
             is Inline.Image -> append(span.v1.alt.ifEmpty { "画像" })
@@ -59,18 +74,11 @@ private fun annotate(spans: List<Inline>, p: Palette) = buildAnnotatedString {
                 val s = span.style
                 // href は中核が http(s) だけに絞っている。
                 val url = s.href?.value()
+                val look =
+                    SpanStyle(color = p.accentText, textDecoration = TextDecoration.Underline)
                 if (url != null)
-                    pushLink(
-                        LinkAnnotation.Url(
-                            url,
-                            TextLinkStyles(
-                                SpanStyle(
-                                    color = p.accentText,
-                                    textDecoration = TextDecoration.Underline,
-                                )
-                            ),
-                        )
-                    )
+                    if (links) pushLink(LinkAnnotation.Url(url, TextLinkStyles(look)))
+                    else pushStyle(look)
                 if (s.code) pushStringAnnotation(CODE, "")
                 withStyle(
                     SpanStyle(
@@ -122,9 +130,10 @@ private fun Spans(
     style: TextStyle = LocalTextStyle.current,
     modifier: Modifier = Modifier,
     align: TextAlign? = null,
+    links: Boolean = true,
 ) {
     val p = pi
-    val text = remember(spans, p) { annotate(spans, p) }
+    val text = remember(spans, p, links) { annotate(spans, p, links) }
     var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     Text(
         text,
@@ -267,7 +276,13 @@ private fun CodeBlock(code: String) {
  * まで折り返し、それでも入らなければ自然幅のまま横に送る。
  */
 @Composable
-private fun TableBody(table: Table, available: Dp, modifier: Modifier = Modifier, scroll: Boolean) {
+private fun TableBody(
+    table: Table,
+    available: Dp,
+    modifier: Modifier = Modifier,
+    scroll: Boolean,
+    links: Boolean,
+) {
     val natural =
         remember(table) {
             List(table.header.size) { col ->
@@ -304,6 +319,7 @@ private fun TableBody(table: Table, available: Dp, modifier: Modifier = Modifier
                             uniffi.pimate_ffi.Alignment.RIGHT -> TextAlign.End
                             else -> null
                         },
+                        links,
                     )
                 }
             }
@@ -313,7 +329,10 @@ private fun TableBody(table: Table, available: Dp, modifier: Modifier = Modifier
 
 @Composable
 private fun TableView(table: Table, modifier: Modifier = Modifier) {
-    BoxWithConstraints(Modifier.fillMaxWidth()) { TableBody(table, maxWidth, modifier, true) }
+    // 会話の中ではセルのリンクを開かず、タップは全画面を開く。リンクは全画面で開く。
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        TableBody(table, maxWidth, modifier, scroll = true, links = false)
+    }
 }
 
 /** 表の全画面。セルの文字は OS の選択で部分コピーでき、右上で表全体を Markdown としてコピーする。 */
@@ -353,7 +372,7 @@ private fun TableViewer(table: Table, close: () -> Unit) {
                             .horizontalScroll(rememberScrollState())
                             .padding(horizontal = gutter, vertical = 8.dp)
                     ) {
-                        TableBody(table, available, scroll = false)
+                        TableBody(table, available, scroll = false, links = true)
                     }
                 }
             }

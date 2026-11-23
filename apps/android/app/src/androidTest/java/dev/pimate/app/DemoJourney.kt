@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.*
+import org.junit.Assert.assertTrue
 
 class DemoJourney {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
@@ -114,6 +115,11 @@ class DemoJourney {
         ui.onNode(hasSetTextAction() and hasText(steer)).assertExists()
         shot("restored")
         press(ui.onNodeWithContentDescription("送信"))
+        // 回答を待つ間に履歴を遡っていても、届いた質問のカードへ戻る。
+        val sent = hasText(steer) and !hasSetTextAction()
+        ui.waitUntil(15000) { ui.onAllNodes(sent).fetchSemanticsNodes().isNotEmpty() }
+        repeat(3) { ui.onNodeWithTag("chat").performTouchInput { swipeDown() } }
+        assertTrue(ui.onNode(sent).isNotDisplayed())
         waitFor("作業ディレクトリの差分を確認します。")
         ui.onNodeWithText("はい").assertIsDisplayed()
         shot("question")

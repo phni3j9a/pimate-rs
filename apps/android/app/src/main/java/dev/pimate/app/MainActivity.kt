@@ -27,6 +27,7 @@ import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.min
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.*
@@ -62,6 +63,12 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
     val showPair = pairing || host == null
     BackHandler(pairing && host != null) { pairing = false }
     BackHandler(drawer.isOpen) { scope.launch { drawer.close() } }
+    // 再接続をやめた接続の立て直し: 再ペアリングの画面へ。バージョン不一致は更新後につなぎ直す。
+    val recover = { stop: Stop ->
+        if (stop.repair) pairing = true else host?.let(m::switchHost)
+        scope.launch { drawer.close() }
+        Unit
+    }
     LaunchedEffect(m.openList) {
         if (m.openList) {
             pairing = false
@@ -74,12 +81,7 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
         gesturesEnabled = !showPair,
         scrimColor = pi.scrim,
         drawerContent = {
-            ModalDrawerSheet(
-                Modifier.fillMaxWidth(.85f).widthIn(max = 330.dp),
-                drawerShape = RectangleShape,
-                drawerContainerColor = pi.background,
-                drawerTonalElevation = 0.dp,
-            ) {
+            DrawerSheet {
                 DrawerContent(
                     m,
                     select = {
@@ -91,12 +93,13 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
                         scope.launch { drawer.close() }
                     },
                     open = { sheet = it },
+                    recover = recover,
                 )
             }
         },
     ) {
         if (showPair) PairScreen(m, if (host != null) ({ pairing = false }) else null)
-        else ChatScreen(m) { scope.launch { drawer.open() } }
+        else ChatScreen(m, { scope.launch { drawer.open() } }, recover)
     }
     if (sheet.isNotEmpty())
         ModalBottomSheet(
@@ -174,6 +177,20 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
         }
 }
 
+/** ドロワーの面。幅は画面の 85%、広い画面でも 330dp まで。 */
+@Composable
+internal fun DrawerSheet(content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints {
+        ModalDrawerSheet(
+            Modifier.width(min(maxWidth * .85f, 330.dp)),
+            drawerShape = RectangleShape,
+            drawerContainerColor = pi.background,
+            drawerTonalElevation = 0.dp,
+            content = content,
+        )
+    }
+}
+
 private fun basename(path: String) = path.trimEnd('/').substringAfterLast('/').ifEmpty { path }
 
 /** `/home/me/code/demo` → `~/code/demo`。PC のホームは分からないので、よくある配置だけ縮める。 */
@@ -207,6 +224,7 @@ private fun DrawerContent(
     select: (String) -> Unit,
     pair: () -> Unit,
     open: (String) -> Unit,
+    recover: (Stop) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val now by
@@ -218,6 +236,7 @@ private fun DrawerContent(
         }
     val host = m.host
     val state = m.rows.groups["host"].orEmpty().associate { it.id to it.json }
+    val stop = stopped(state["connection"])
     val all =
         remember(m.rows.groups["instance"]) {
             m.rows.groups["instance"].orEmpty().map { it.id to JSONObject(it.json) }
@@ -290,10 +309,14 @@ private fun DrawerContent(
                                 Text("接続中", color = pi.textSecondary, style = Type.meta)
                             }
                             "\"offline\"" -> Text("オフライン", color = pi.failedText, style = Type.meta)
-                            else -> {
-                                Spinner(11.dp)
-                                Text("接続しています", color = pi.textSecondary, style = Type.meta)
-                            }
+                            else ->
+                                if (stop != null) {
+                                    Dot(pi.failed)
+                                    Text(stop.label, color = pi.failedText, style = Type.meta)
+                                } else {
+                                    Spinner(11.dp)
+                                    Text("接続しています", color = pi.textSecondary, style = Type.meta)
+                                }
                         }
                     }
                 }
@@ -320,7 +343,23 @@ private fun DrawerContent(
                         select(id)
                     }
                 }
-                if (shown.isEmpty())
+                if (stop != null)
+                    item("stop") {
+                        Column(Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp)) {
+                            Text(
+                                stop.detail,
+                                color = pi.textSecondary,
+                                style = Type.caption.copy(lineBreak = Type.phrase),
+                            )
+                            TextAction(
+                                stop.action,
+                                { recover(stop) },
+                                Modifier.offset(x = (-14).dp),
+                                enabled = !m.busy,
+                            )
+                        }
+                    }
+                else if (shown.isEmpty())
                     item("empty") {
                         Text(
                             when {
