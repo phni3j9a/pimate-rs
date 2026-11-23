@@ -134,6 +134,7 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
                             cut.send(())?;
                             break;
                         }
+                        Some("compact") => json!({}),
                         Some("ui_respond") => {
                             ensure!(r["params"]["confirmed"] == true);
                             json!({})
@@ -145,6 +146,10 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
                             .to_string(),
                     )
                     .await?;
+                    if r["method"] == "compact" {
+                        // Force a new snapshot after acceptance, then deliberately omit compact_done.
+                        io.send(json!({"type":"event","instanceId":"stub","sessionId":"s","seq":3,"event":{"type":"session_changed","reason":"reload","session":{"id":"s"}}}).to_string()).await?;
+                    }
                     if r["method"] == "history" {
                         let e = if recovered {
                             json!({"type":"ui_request","request":{"kind":"confirm","requestId":"q","title":"ok?"}})
@@ -208,11 +213,27 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
     assert_eq!(sends.load(Ordering::SeqCst), 1);
     let result = c
         .perform(Operation::Answer {
-            target,
+            target: target.clone(),
             params: json!({"requestId":"q","confirmed":true}).to_string(),
         })
         .await?;
     ensure!(serde_json::from_str::<Value>(&result)? == json!({}));
+    let compact = Operation::Rc {
+        target,
+        method: pimate_protocol::RcMethod::Compact,
+        params: "{}".into(),
+    };
+    c.perform(compact.clone()).await?;
+    until(&mut rx, "operationResult", "latest", None).await?;
+    let snapshot = c.snapshot();
+    ensure!(
+        snapshot
+            .items
+            .iter()
+            .any(|i| i.collection == "operationResult"
+                && serde_json::from_str::<Value>(&i.json).is_ok_and(|v| v["outcome"] == "unknown"))
+    );
+    c.check(compact)?;
     c.perform(Operation::Revoke {
         device_id: h.device_id,
     })

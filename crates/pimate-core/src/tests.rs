@@ -522,12 +522,17 @@ fn only_observed_session_arrival_is_proof_of_a_missing_result() {
             true,
         )
         .unwrap();
+        s.accept_op("op");
         event(
             &mut s,
             6,
             json!({"type":"session_changed","reason":op,"session":{"id":if op=="reload"{"s"}else{"next"}}}),
         );
         s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":8,"session":{"id":dest}},"history":{"items":[]}}));
+        if op == "fork" {
+            assert!(s.get("operationResult", "latest").is_null());
+            s.expire_result(s.result_deadline.unwrap());
+        }
         assert_eq!(s.get("operationResult", "latest")["outcome"], expected);
         assert!(s.get("busy", "operation").is_null());
     }
@@ -564,9 +569,7 @@ fn accepted(s: &mut State, op: &str) {
         rc(SessionOp, json!({"op":op,"arg":"node"}))
     };
     s.prepare("request", cmd, true).unwrap();
-    let mut busy = s.get("busy", "operation").clone();
-    busy["accepted"] = json!(true);
-    s.put("busy", "operation", busy);
+    s.accept_op("request");
 }
 #[test]
 fn operation_receipts_on_either_side_of_snapshot_have_identical_effect() {
@@ -591,7 +594,8 @@ fn operation_receipts_on_either_side_of_snapshot_have_identical_effect() {
             }
             s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":10,"session":{"id":"s"}},"history":{"items":[]}}));
             if !before {
-                assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
+                assert!(s.get("operationResult", "latest").is_null());
+                assert_eq!(s.get("busy", "operation")["id"], "request");
                 event(&mut s, 11, e.clone());
             }
             assert_eq!(s.get("operationResult", "latest")["event"], e);
@@ -633,26 +637,146 @@ fn accepted_operation_disconnect_reports_unknown_and_keeps_it_on_resubscription(
     }
 }
 #[test]
-fn indistinguishable_late_compaction_does_not_claim_new_request_succeeded() {
+fn grace_expires_once_even_without_more_events_and_does_not_consume_other_terminals() {
+    use pimate_protocol::RcMethod::*;
+    for ack_before_snapshot in [true, false] {
+        let mut s = view();
+        s.prepare("A", rc(Compact, json!({})), true).unwrap();
+        if ack_before_snapshot {
+            s.accept_op("A")
+        }
+        sync(&mut s, json!([]));
+        if !ack_before_snapshot {
+            s.accept_op("A")
+        };
+        let deadline = s.result_deadline.unwrap();
+        s.expire_result(deadline - std::time::Duration::from_millis(1));
+        assert_eq!(
+            s.prepare("B", rc(Compact, json!({})), true),
+            Err(Error::Blocked)
+        );
+        sync(&mut s, json!([]));
+        assert_eq!(s.result_deadline, Some(deadline));
+        s.expire_result(deadline);
+        assert_eq!(
+            s.get("operationResult", "latest"),
+            &json!({"id":"A","outcome":"unknown"})
+        );
+        s.prepare("B", rc(Compact, json!({})), true).unwrap();
+        s.accept_op("B");
+        event(&mut s, 3, json!({"type":"compact_done"}));
+        assert_eq!(s.get("operationResult", "latest")["id"], "B");
+        assert!(s.get("busy", "operation").is_null());
+        event(&mut s, 4, json!({"type":"compact_done"}));
+        s.expire_result(deadline);
+        assert_eq!(result_count(&s, "A"), 1);
+        assert_eq!(result_count(&s, "B"), 1);
+    }
+}
+fn result_count(s: &State, id: &str) -> usize {
+    s.changes.iter().filter(|c|matches!(c,Change::Upsert(i) if i.collection=="operationResult"&&serde_json::from_str::<Value>(&i.json).unwrap()["id"]==id)).count()
+}
+#[test]
+fn another_tree_move_during_or_after_grace_cannot_publish_its_editor_text() {
+    for (expired, resyncing) in [(false, false), (true, false), (false, true)] {
+        let mut s = view();
+        accepted(&mut s, "tree");
+        event(
+            &mut s,
+            6,
+            json!({"type":"session_changed","reason":"tree","session":{"id":"s"}}),
+        );
+        sync(&mut s, json!([]));
+        let deadline = s.result_deadline.unwrap();
+        if resyncing {
+            s.apply(&json!({"type":"subscribe_error","instanceId":"i","code":"unreachable"}));
+        }
+        if expired {
+            s.expire_result(deadline)
+        }
+        event(
+            &mut s,
+            9,
+            json!({"type":"session_changed","reason":"tree","session":{"id":"s"}}),
+        );
+        sync(&mut s, json!([]));
+        event(
+            &mut s,
+            10,
+            json!({"type":"session_op_done","op":"tree","cancelled":false,"editorText":"another phone"}),
+        );
+        assert_eq!(
+            s.get("operationResult", "latest"),
+            &json!({"id":"request","outcome":"unknown"})
+        );
+        s.expire_result(deadline);
+        assert_eq!(result_count(&s, "request"), 1);
+        assert!(s.get("busy", "operation").is_null());
+    }
+}
+#[test]
+fn only_matching_unresolved_drafts_accumulate_consumed_ids() {
     let mut s = view();
-    accepted(&mut s, "compact");
-    sync(&mut s, json!([]));
-    s.prepare(
-        "second",
-        rc(pimate_protocol::RcMethod::Compact, json!({})),
-        true,
-    )
-    .unwrap();
-    event(&mut s, 4, json!({"type":"compact_done"}));
-    assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
-    assert_eq!(s.get("busy", "operation")["id"], "second");
+    for (id, text, status) in [
+        ("reject", "same", "rejected"),
+        ("different", "different", "unconfirmed"),
+        ("image", "same", "unconfirmed"),
+        ("first", "same", "queued"),
+        ("second", "same", "sending"),
+    ] {
+        let images = if id == "image" {
+            vec![Image {
+                mime_type: "image/png".into(),
+                data: "YQ==".into(),
+            }]
+        } else {
+            vec![]
+        };
+        s.prepare(id, send(text, images), true).unwrap();
+        s.draft_status(id, status);
+    }
     event(
         &mut s,
-        5,
-        json!({"type":"compact_error","error":"which one?"}),
+        3,
+        json!({"type":"message_end","item":{"entryId":"new","kind":"user","text":"same"}}),
     );
-    assert_eq!(
-        s.get("operationResult", "latest"),
-        &json!({"id":"second","outcome":"unknown"})
-    );
+    for d in &s.drafts {
+        assert_eq!(d.known.contains("new"), d.id == "second");
+    }
+    s.draft_status("second", "rejected");
+    assert!(s.drafts.iter().all(|d| d.known.is_empty()));
+}
+#[test]
+fn fork_waits_for_real_event_or_uses_proven_arrival_and_source_text() {
+    for delivered in [true, false] {
+        let mut s = view();
+        sync(
+            &mut s,
+            json!([{"kind":"user","entryId":"node","text":"original"}]),
+        );
+        accepted(&mut s, "fork");
+        event(
+            &mut s,
+            6,
+            json!({"type":"session_changed","reason":"fork","session":{"id":"dst"}}),
+        );
+        s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":8,"session":{"id":"dst"}},"history":{"items":[]}}));
+        let deadline = s.result_deadline.unwrap();
+        let m = json!({"type":"event","sessionId":"dst","instanceId":"i","seq":9,"event":{"type":"session_op_done","op":"fork","cancelled":false,"editorText":"from wire"}});
+        if delivered {
+            s.apply(&m);
+        }
+        s.expire_result(deadline);
+        s.apply(&m);
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["forkText"], "original");
+        if delivered {
+            assert_eq!(result["event"]["editorText"], "from wire")
+        } else {
+            assert_eq!(result["outcome"], "done");
+            assert!(result["event"].is_null())
+        }
+        assert_eq!(result_count(&s, "request"), 1);
+        assert!(s.get("busy", "operation").is_null());
+    }
 }

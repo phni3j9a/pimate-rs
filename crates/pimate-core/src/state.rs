@@ -1,4 +1,7 @@
 use indexmap::IndexMap;
+use tokio::time::{Duration, Instant};
+// Host may drain operation results immediately after publishing its history snapshot.
+pub(crate) const RESULT_GRACE: Duration = Duration::from_secs(5);
 use serde_json::{Value, json};
 /// `position` is relative to the collection; `json` contains one item, never a whole conversation.
 #[derive(Clone, Debug, PartialEq)]
@@ -32,7 +35,7 @@ pub(crate) struct State {
     pub selected: Option<String>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
-    late_ops: Vec<Value>,
+    pub(crate) result_deadline: Option<Instant>,
     pub caps: Value,
     pub drafts: Vec<Draft>,
 }
@@ -104,14 +107,10 @@ impl State {
         self.effect_seq = None;
         let op = self.get("busy", "operation");
         if op["accepted"] == true {
-            self.put(
-                "operationResult",
-                "latest",
-                json!({"id":op["id"],"instanceId":self.selected,"outcome":"unknown"}),
-            )
+            self.finish_op(json!({"instanceId":self.selected,"outcome":"unknown"}));
         }
         self.clear("busy");
-        self.late_ops.clear();
+        self.result_deadline = None;
         self.clear("notice");
         self.reset_view()
     }
@@ -138,6 +137,11 @@ impl State {
     pub fn draft_status(&mut self, id: &str, status: &str) {
         let mut v = self.get("draft", id).clone();
         if !v.is_null() {
+            if status == "rejected"
+                && let Some(d) = self.drafts.iter_mut().find(|d| d.id == id)
+            {
+                d.known = Default::default();
+            }
             v["status"] = json!(status);
             self.put("draft", id, v);
             if matches!(status, "unconfirmed" | "queued")
@@ -157,6 +161,9 @@ impl State {
     pub fn release(&mut self, id: &str) {
         for lock in ["operation", "answer"] {
             if self.get("busy", lock)["id"] == id {
+                if lock == "operation" {
+                    self.result_deadline = None;
+                }
                 self.remove("busy", lock)
             }
         }
@@ -183,8 +190,18 @@ impl State {
     }
     fn confirm(&mut self, i: usize, entry: &str) {
         let confirmed = self.drafts.remove(i);
+        let rows = &self.rows;
         for d in &mut self.drafts {
-            if d.instance == confirmed.instance && d.session == confirmed.session {
+            if d.instance == confirmed.instance
+                && d.session == confirmed.session
+                && matches!(
+                    rows["draft"][&d.id]["status"].as_str(),
+                    Some("sending" | "queued" | "unconfirmed")
+                )
+                && d.params["text"].as_str().map(str::trim)
+                    == confirmed.params["text"].as_str().map(str::trim)
+                && d.params["images"] == confirmed.params["images"]
+            {
                 d.known.insert(entry.into());
             }
         }
@@ -273,7 +290,7 @@ impl State {
         match t {
             "subscribed" => {
                 // A fresh snapshot is not proof that a pending operation completed.
-                self.finish_missing_op(&m["snapshot"]["session"]["id"]);
+                self.snapshot_op(&m["snapshot"]["session"]["id"]);
                 self.reset_view();
                 let s = &m["snapshot"];
                 self.seq = s["seq"].as_u64();
@@ -363,52 +380,34 @@ impl State {
                         self.put("notice", "latest", json!({"seq":seq,"event":e}));
                         return false;
                     }
-                    let matches = |op: &Value| {
-                        k == "session_op_done"
-                            && op["method"] == "session_op"
-                            && op["op"] == e["op"]
-                            || k.starts_with("compact_")
-                                && op["method"] == "compact"
-                                && op["sessionId"] == m["sessionId"]
-                    };
-                    // The event carries no request ID. Never apply a single event to two operations.
-                    let late = self.late_ops.iter().position(matches);
-                    if let Some(i) = late
-                        && matches(self.get("busy", "operation"))
-                    {
-                        // Either request could have emitted this event. One receipt consumes
-                        // one slot; neither payload can subsequently be attributed safely.
-                        self.late_ops.remove(i);
-                        let mut active = self.get("busy", "operation").clone();
-                        active["ambiguous"] = json!(true);
-                        self.put("busy", "operation", active);
+                    let op = self.get("busy", "operation");
+                    let matches = k == "session_op_done"
+                        && op["method"] == "session_op"
+                        && op["op"] == e["op"]
+                        || k.starts_with("compact_")
+                            && op["method"] == "compact"
+                            && op["sessionId"] == m["sessionId"];
+                    if !matches {
                         return false;
                     }
-                    let op = if let Some(i) = late {
-                        &self.late_ops[i]
-                    } else {
-                        self.get("busy", "operation")
-                    };
-                    if !matches(op) {
-                        return false;
-                    }
-                    let mut result = json!({"id":op["id"],"sessionId":m["sessionId"],"event":e});
-                    if op["ambiguous"] == true
-                        || e["op"] == "tree"
-                            && (op["sessionId"] != m["sessionId"]
-                                || self.ready()
-                                    && op["sessionId"] != self.get("view", "session")["id"]
-                                || !op["arrival"].is_null() && op["arrival"] != op["sessionId"])
+                    if e["op"] == "tree"
+                        && (op["sessionId"] != m["sessionId"]
+                            || self.ready() && op["sessionId"] != self.get("view", "session")["id"]
+                            || !op["arrival"].is_null() && op["arrival"] != op["sessionId"])
                     {
-                        result = json!({"id":op["id"],"outcome":"unknown"})
-                    }
-                    self.put("operationResult", "latest", result);
-                    if let Some(i) = late {
-                        self.late_ops.remove(i);
+                        self.finish_op(json!({"outcome":"unknown"}))
                     } else {
-                        self.remove("busy", "operation")
+                        self.finish_op(json!({"sessionId":m["sessionId"],"event":e}))
                     }
                     return false;
+                }
+                // Even when the view is resyncing, a second move invalidates the
+                // grace window. Do not mistake that move's result for our own.
+                if k == "session_changed"
+                    && self.result_deadline.is_some()
+                    && self.seq.max(self.effect_seq).is_none_or(|n| seq > n)
+                {
+                    self.finish_op(json!({"outcome":"unknown"}));
                 }
                 if self.seq.is_none_or(|n| seq <= n) {
                     return false;
@@ -423,24 +422,14 @@ impl State {
                 match e["type"].as_str().unwrap_or("") {
                     "session_changed" => {
                         let mut op = self.get("busy", "operation").clone();
-                        if !op.is_null()
+                        if op["accepted"] == true
                             && op["method"] == "session_op"
                             && (op["op"] == e["reason"]
                                 || op["op"] == "switch" && e["reason"] == "resume")
                             && op["sessionId"] == self.get("view", "session")["id"]
                         {
-                            if op["op"] == "reload" {
-                                self.retain_late(&op);
-                                self.put(
-                                    "operationResult",
-                                    "latest",
-                                    json!({"id":op["id"],"outcome":"done"}),
-                                );
-                                self.remove("busy", "operation")
-                            } else {
-                                op["arrival"] = e["session"]["id"].clone();
-                                self.put("busy", "operation", op)
-                            }
+                            op["arrival"] = e["session"]["id"].clone();
+                            self.put("busy", "operation", op)
                         }
                         self.reset_view();
                         self.put("view", "phase", json!("resyncing"));
@@ -580,30 +569,73 @@ impl State {
             }
         }
     }
-    fn retain_late(&mut self, op: &Value) {
-        // Bounded by the protocol operation kinds; a newer indistinguishable
-        // provisional result cannot safely absorb an older event as proof.
-        if let Some(slot) = self
-            .late_ops
-            .iter_mut()
-            .find(|old| old["method"] == op["method"] && old["op"] == op["op"])
+    fn finish_op(&mut self, mut result: Value) {
+        let op = self.get("busy", "operation");
+        debug_assert!(!op.is_null());
+        result["id"] = op["id"].clone();
+        // Like TS forkText: the fork source is known locally; tree editorText only comes from RC.
+        if !op["forkText"].is_null()
+            && (result["outcome"] == "done"
+                || (result["event"]["cancelled"] == false && result["event"]["error"].is_null()))
         {
-            *slot = op.clone();
-            slot["ambiguous"] = json!(true)
-        } else {
-            self.late_ops.push(op.clone())
+            result["forkText"] = op["forkText"].clone();
+        }
+        self.put("operationResult", "latest", result);
+        self.remove("busy", "operation");
+        self.result_deadline = None;
+    }
+    pub(crate) fn expire_result(&mut self, now: Instant) {
+        if self.result_deadline.is_some_and(|t| t <= now) {
+            let op = self.get("busy", "operation");
+            let result = if op["provenFork"] == true {
+                json!({"outcome":"done","sessionId":op["arrival"]})
+            } else {
+                json!({"outcome":"unknown"})
+            };
+            self.finish_op(result);
         }
     }
-    fn finish_missing_op(&mut self, session: &Value) {
-        let op = self.get("busy", "operation").clone();
-        if op["accepted"] == true || !op["arrival"].is_null() {
-            self.retain_late(&op);
-            self.put(
-                "operationResult",
-                "latest",
-                json!({"id":op["id"],"outcome":if op["ambiguous"]!=true&&op["op"]!="tree"&&!op["arrival"].is_null()&&op["arrival"]==*session&&op["sessionId"]!=*session{"done"}else{"unknown"}}),
-            );
-            self.remove("busy", "operation")
+    pub(crate) fn accept_op(&mut self, id: &str) {
+        let mut op = self.get("busy", "operation").clone();
+        if op["id"] != id {
+            return;
+        }
+        op["accepted"] = json!(true);
+        let resynced = op["resynced"] == true;
+        self.put("busy", "operation", op);
+        if resynced {
+            self.start_result_grace();
+        }
+    }
+    fn start_result_grace(&mut self) {
+        self.result_deadline
+            .get_or_insert_with(|| Instant::now() + RESULT_GRACE);
+    }
+    fn snapshot_op(&mut self, session: &Value) {
+        let mut op = self.get("busy", "operation").clone();
+        if !matches!(op["method"].as_str(), Some("session_op" | "compact")) {
+            return;
+        }
+        if op["accepted"] != true {
+            op["resynced"] = json!(true);
+            self.put("busy", "operation", op);
+            return;
+        }
+        let proven = !session.is_null()
+            && op["arrival"] == *session
+            && match op["op"].as_str() {
+                Some("fork" | "new" | "switch") => op["sessionId"] != *session,
+                Some("reload") => op["sessionId"] == *session,
+                _ => false,
+            };
+        if op["op"] == "fork" && (proven || op["provenFork"] == true) {
+            op["provenFork"] = json!(proven);
+            self.put("busy", "operation", op);
+            self.start_result_grace();
+        } else if proven {
+            self.finish_op(json!({"outcome":"done","sessionId":session}));
+        } else {
+            self.start_result_grace()
         }
     }
     fn runs(&mut self, v: &Value) {

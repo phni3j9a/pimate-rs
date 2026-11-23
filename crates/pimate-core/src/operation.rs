@@ -87,11 +87,18 @@ impl State {
             return Err(Error::Blocked);
         }
         if commit {
-            self.put(
-                "busy",
-                lock,
-                json!({"id":id,"requestId":msg["request"]["params"]["requestId"],"method":method,"op":msg["request"]["params"]["op"],"sessionId":msg["request"]["expectSessionId"]}),
-            )
+            let req = &msg["request"];
+            let params = &req["params"];
+            let mut busy = json!({"id":id,"requestId":params["requestId"],"method":method,"op":params["op"],"sessionId":req["expectSessionId"]});
+            if params["op"] == "fork"
+                && let Some(entry) = params["arg"].as_str()
+            {
+                let source = self.get("entry", entry);
+                if source["kind"] == "user" {
+                    busy["forkText"] = source["text"].clone()
+                }
+            }
+            self.put("busy", lock, busy);
         }
         Ok(msg)
     }

@@ -377,12 +377,15 @@ async fn attempt(
             Frame(Result<Value, Error>),
             Tick,
         }
+        let deadline = s.state.lock().unwrap().result_deadline;
         let event = tokio::select! {
+            _=async { tokio::time::sleep_until(deadline.expect("guarded deadline")).await }, if deadline.is_some()=>Event::Tick,
             _=selection.changed()=>Event::Select,
             Some(cmd)=commands.recv()=>Event::Command(cmd),
             frame=read(&mut ws)=>Event::Frame(frame),
             _=tick.tick()=>Event::Tick,
         };
+        s.edit(|st| st.expire_result(Instant::now()));
         match event {
             Event::Select => {
                 let next = selection.borrow_and_update().clone();
@@ -548,27 +551,23 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
                 st.settle_drafts(&p.instance, &p.session, true)
             }
             unconfirmed(st, id)
-        } else if !st.get("draft", id).is_null() {
-            let mut v = st.get("draft", id).clone();
-            v["status"] = json!("rejected");
-            st.put("draft", id, v)
+        } else {
+            st.draft_status(id, "rejected");
         }
         return Err(err);
     }
     let Some(method) = &p.method else {
         return Ok(result.to_string());
     };
-    let mut body = crate::operation::rc_result(method, &result["result"])
-        .inspect_err(|_| unconfirmed(st, id))?;
+    let mut body = crate::operation::rc_result(method, &result["result"]).inspect_err(|_| {
+        st.release(id);
+        unconfirmed(st, id)
+    })?;
     if method == "abort" {
         st.settle_drafts(&p.instance, &p.session, true)
     }
     if matches!(method.as_str(), "session_op" | "compact") {
-        let mut op = st.get("busy", "operation").clone();
-        if op["id"] == id {
-            op["accepted"] = json!(true);
-            st.put("busy", "operation", op)
-        }
+        st.accept_op(id);
         return Ok(body.to_string());
     }
     if method == "prompt" {
