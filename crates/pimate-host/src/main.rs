@@ -1,8 +1,11 @@
 mod config;
 mod link;
+mod login;
+mod operations;
 mod rc;
 mod relay;
 mod server;
+mod terminal;
 use anyhow::{Result, bail, ensure};
 use config::Config;
 use nix::ifaddrs::getifaddrs;
@@ -62,12 +65,19 @@ async fn addresses() -> Result<Vec<IpAddr>> {
 async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
+    if cmd == "attach" {
+        let name = args.next();
+        ensure!(args.next().is_none());
+        return terminal::Terminal::resolve()
+            .attach(&config::run_dir(), name)
+            .await;
+    }
     if cmd == "list" {
         ensure!(args.next().is_none());
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&rc::list(&config::run_dir()).await?.instances)?
-        );
+        let run = config::run_dir();
+        let mut rows = rc::list(&run).await?.instances;
+        terminal::Terminal::resolve().refresh(&run, &mut rows).await;
+        println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
     let config = Config::open(config::config_dir()?)?;
@@ -145,7 +155,7 @@ async fn main() -> Result<()> {
             }
         }
         _ => bail!(
-            "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] | devices | revoke ID | list"
+            "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] | devices | revoke ID | list | attach [session]"
         ),
     };
     Ok(())

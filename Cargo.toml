@@ -16,7 +16,7 @@ axum = { version = "0.8", features = ["ws"] }
 futures-util = { version = "0.3", features = ["sink"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
-nix = { version = "0.31", features = ["user", "signal", "hostname", "net", "term"] }
+nix = { version = "0.31", features = ["user", "signal", "hostname", "fs", "net", "term"] }
 uuid = { version = "1", features = ["v4"] }
 rand = "0.8"
 base64 = "0.22"

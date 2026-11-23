@@ -55,6 +55,10 @@ impl Out {
     }
 }
 struct App {
+    terminal: crate::terminal::Terminal,
+    login: Arc<crate::login::Login>,
+    folder_cache: tokio::sync::Mutex<Option<(tokio::time::Instant, Vec<Value>)>>,
+    last_spawn: tokio::sync::Mutex<Option<tokio::time::Instant>>,
     addresses: Vec<Value>,
     incompatible: watch::Receiver<serde_json::Map<String, Value>>,
     revoked: tokio::sync::broadcast::Sender<String>,
@@ -62,6 +66,62 @@ struct App {
     config: Config,
     dir: PathBuf,
     instances: watch::Receiver<Vec<Value>>,
+}
+impl App {
+    async fn operation(&self, m: Value, hold: Option<CancellationToken>) -> Value {
+        let kind = m["type"].as_str().unwrap();
+        let mut reply = match kind {
+            "dirs" => {
+                let path = m["path"].as_str().unwrap().to_owned();
+                let dirs = tokio::task::spawn_blocking(move || crate::operations::dirs(&path))
+                    .await
+                    .unwrap_or_default();
+                json!({"dirs":dirs})
+            }
+            "folders" => {
+                let mut cache = self.folder_cache.lock().await;
+                if cache
+                    .as_ref()
+                    .is_none_or(|(t, _)| t.elapsed() >= Duration::from_secs(5))
+                {
+                    let rows = self.instances.borrow().clone();
+                    let folders =
+                        tokio::task::spawn_blocking(move || crate::operations::folders(&rows))
+                            .await
+                            .unwrap_or_default();
+                    *cache = Some((tokio::time::Instant::now(), folders));
+                }
+                json!({"home":crate::operations::home().ok(),"folders":cache.as_ref().unwrap().1})
+            }
+            _ => {
+                let result = if kind == "auth_session" {
+                    self.login
+                        .acquire(&self.terminal, &self.dir, hold.as_ref().expect("auth hold"))
+                        .await
+                        .map(|id| json!({"ok":true,"instanceId":id}))
+                } else {
+                    crate::operations::spawn(
+                        &self.terminal,
+                        &self.dir,
+                        &m["params"],
+                        &self.last_spawn,
+                    )
+                    .await
+                };
+                result.unwrap_or_else(|e| {
+                    let msg = e.to_string();
+                    let code = match msg.as_str() {
+                        "not_found" | "not_directory" | "bad_request" => msg.as_str(),
+                        _ => "spawn_failed",
+                    };
+                    json!({"ok":false,"code":code,"message":format!("{msg}; not retried")})
+                })
+            }
+        };
+        reply["type"] = format!("{kind}_result").into();
+        reply["requestId"] = m["requestId"].clone();
+        reply
+    }
 }
 fn summaries(list: Vec<Value>) -> Vec<Value> {
     list.into_iter()
@@ -90,11 +150,21 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     // Stop even during discovery/bind. Runtime shutdown waits for synchronous DB updates and lock guards.
-    tokio::select! {biased;_=terminate.recv()=>Ok(()),_=interrupt.recv()=>Ok(()),result=listen(config,ips,port)=>result}
+    let login = Arc::new(crate::login::Login::default());
+    let result = tokio::select! {biased;_=terminate.recv()=>Ok(()),_=interrupt.recv()=>Ok(()),result=listen(config,ips,port,login.clone())=>result};
+    login.close(&config::run_dir()).await;
+    result
 }
-async fn listen(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
+async fn listen(
+    config: Config,
+    ips: Vec<IpAddr>,
+    port: u16,
+    login: Arc<crate::login::Login>,
+) -> Result<()> {
     let dir = config::run_dir();
-    let discovery = rc::list(&dir).await?;
+    let mut discovery = rc::list(&dir).await?;
+    let terminal = crate::terminal::Terminal::resolve();
+    terminal.refresh(&dir, &mut discovery.instances).await;
     let (tx, instances) = watch::channel(summaries(discovery.instances));
     let (versions, incompatible) = watch::channel(discovery.incompatible);
     let mut listeners = vec![];
@@ -108,6 +178,10 @@ async fn listen(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
         listeners.push(l);
     }
     let app = Arc::new(App {
+        terminal,
+        login,
+        last_spawn: Default::default(),
+        folder_cache: Default::default(),
         addresses,
         incompatible,
         revoked: tokio::sync::broadcast::channel(128).0,
@@ -120,7 +194,7 @@ async fn listen(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
         .route("/pair", post(pair))
         .route("/ws", get(upgrade))
         .route("/health", get(health))
-        .with_state(app);
+        .with_state(app.clone());
     let mut tasks = JoinSet::new();
     for listener in listeners {
         println!("Listening http://{}", listener.local_addr()?);
@@ -130,7 +204,9 @@ async fn listen(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     tokio::spawn(async move {
         loop {
             sleep(Duration::from_millis(1500)).await;
-            if let Ok(v) = rc::list(&dir).await {
+            if let Ok(mut v) = rc::list(&dir).await {
+                app.terminal.refresh(&dir, &mut v.instances).await;
+                app.login.observe(&dir, v.login);
                 versions.send_replace(v.incompatible);
                 let next = summaries(v.instances);
                 tx.send_if_modified(|prev| {
@@ -148,7 +224,7 @@ async fn listen(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":null,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
+        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
     )
 }
 async fn pair(State(a): State<Arc<App>>, req: Request) -> (StatusCode, Json<Value>) {
@@ -285,7 +361,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         generation: CancellationToken::new(),
     };
     let c = &a.config;
-    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true}}));
+    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true}}));
     let mut list = a.instances.clone();
     let mut current = list.borrow_and_update().clone();
     out.send(&json!({"type":"instances","instances":current}));
@@ -294,6 +370,8 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         HashMap::new();
     let mut ops = JoinSet::new();
     let mut inflight = std::collections::HashSet::new();
+    let mut holds: HashMap<String, (Uuid, crate::login::Hold)> = HashMap::new();
+    let mut admin = JoinSet::new();
     let end = loop {
         let m = tokio::select! {biased;
             notice=revoked.recv()=>{match notice{Ok(id) if id==device=>break Code::Revoked as u16,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>tick.reset_immediately(),_=>()}continue},
@@ -309,6 +387,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 });
                 out.send(&json!({"type":"instances","instances":current}));continue
             },
+            Some(result)=admin.join_next()=>{if let Ok(Some((key,generation)))=result && holds.get(&key).is_some_and(|h|h.0==generation){holds.remove(&key);}continue},
             Some(Ok(key))=ops.join_next()=>{inflight.remove(&key);continue},
             m=read(&mut ws)=>m,
         };
@@ -320,6 +399,62 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         let kind = m["type"].as_str().unwrap_or("");
         match kind {
             "ping" if m["t"].is_number() => out.send(&json!({"type":"pong","t":m["t"]})),
+            "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders" => {
+                if kind != "auth_session_end" && !short(&m["requestId"]) {
+                    break Code::Protocol as u16;
+                }
+                let mut release_on_error = None;
+                let mut hold = None;
+                if kind.starts_with("auth_session") {
+                    if !short(&m["holdId"]) {
+                        break Code::Protocol as u16;
+                    }
+                    let h = m["holdId"].as_str().unwrap();
+                    if kind == "auth_session_end" {
+                        holds.remove(h);
+                        continue;
+                    }
+                    if !holds.contains_key(h) && holds.len() >= 16 {
+                        break Code::Protocol as u16;
+                    }
+                    let generation = Uuid::new_v4();
+                    let (latest, guard) = holds
+                        .entry(h.to_string())
+                        .or_insert_with(|| (generation, a.login.hold()));
+                    *latest = generation;
+                    hold = Some(guard.released.clone());
+                    release_on_error = Some((h.to_owned(), generation));
+                }
+                if kind == "dirs"
+                    && m["path"]
+                        .as_str()
+                        .is_none_or(|s| s.encode_utf16().count() > 4096)
+                {
+                    break Code::Protocol as u16;
+                }
+                if admin.len() >= 16 {
+                    break Code::Protocol as u16;
+                }
+                let a = a.clone();
+                let out = out.clone();
+                // Accept launch operations independently of the reply connection. A
+                // dropped JoinHandle detaches the operation; the join set bounds waiters.
+                let host_owned = matches!(kind, "spawn" | "auth_session");
+                let operation = async move { a.operation(m, hold).await };
+                let launch = if host_owned {
+                    Ok(tokio::spawn(operation))
+                } else {
+                    Err(operation)
+                };
+                admin.spawn(async move {
+                    let reply = match launch {
+                        Ok(handle) => handle.await.ok()?,
+                        Err(operation) => operation.await,
+                    };
+                    out.send(&reply);
+                    release_on_error.filter(|_| reply["ok"] == false)
+                });
+            }
             "devices" | "device_revoke" => {
                 let reply = match settings(c, &device, &m) {
                     Ok(reply) => reply,
@@ -383,8 +518,14 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                             break Code::Protocol as u16;
                         }
                         let key = (id.to_owned(), r["id"].as_str().unwrap().to_owned());
-                        if !exists || inflight.contains(&key) || inflight.len() >= 64 {
-                            out.send(&json!({"type":"rc_result","instanceId":id,"response":{"type":"response","id":r["id"],"ok":false,"error":{"code":if exists{"bad_request"}else{"not_found"}}}}));
+                        let login = a.login.owns(id);
+                        let denied = login && !crate::login::allowed(r["method"].as_str().unwrap());
+                        if (!exists && !login)
+                            || denied
+                            || inflight.contains(&key)
+                            || inflight.len() >= 64
+                        {
+                            out.send(&json!({"type":"rc_result","instanceId":id,"response":{"type":"response","id":r["id"],"ok":false,"error":{"code":if denied{"unsupported"}else if exists||login{"bad_request"}else{"not_found"}}}}));
                             continue;
                         }
                         inflight.insert(key.clone());

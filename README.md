@@ -2,7 +2,7 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。Host の起動管理とアプリは今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。常駐登録とアプリは今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
 
 ## 目的
 
@@ -48,12 +48,18 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 ```sh
 cargo build -p pimate-host
 export PATH="$PWD/target/debug:$PATH"
-lab=$(mktemp -d); export PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config"
+lab=$(mktemp -d /tmp/pimate.XXXXXX); export PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config"
+export PI_CODING_AGENT_DIR="$lab/agent"
+# Linux x64 の開発用（他の OS / CPU では対応する abduco の絶対パス）
+export PIMATE_ABDUCO="$PWD/bin/linux-x64/abduco"
+export PIMATE_EXTENSION=/path/to/PiMate/packages/pimate/src/extension/index.ts
 pimate serve --port 47801 & host_pid=$!
 pimate pair --port 47801          # URL と QR（10分・1回限り）
 pimate devices                   # token / hash は表示しない
 # pimate revoke <deviceId>
 pimate list                      # 同じ runDir で TS Extension をロードした Pi の一覧
+pimate attach                     # 同じ runDir の Rust Host が起動した端末一覧
+# pimate attach pimate-01234567   # Ctrl+\ で切り離す（Pi は動き続ける）
 kill "$host_pid"                  # この例で起動した Host のみ停止
 ```
 
@@ -62,9 +68,21 @@ kill "$host_pid"                  # この例で起動した Host のみ停止
 通常の `cargo test` は一時ディレクトリ・ループバックの自動割当ポートで模擬 RC を使います。実物の Pi 1.6.0 と依存導入済みの TS 版 PiMate があれば、下記で PTY 上の Pi を起動し、発見・購読・prompt・faux モデルの返答まで検査できます。ネットワークの LLM・既存 Host・既存 Pi の設定は使いません。
 
 ```sh
-PIMATE_TEST_PI="$HOME/.pi/agent/bin/pi" PIMATE_TEST_TS=/path/to/PiMate \
+TMPDIR=/tmp PIMATE_TEST_PI="$HOME/.pi/agent/bin/pi" PIMATE_TEST_TS=/path/to/PiMate \
   cargo test -p pimate-host --test host real_pi -- --ignored
 ```
+
+### スマホからの起動とログイン
+
+ペアリング済み WS の `folders` / `dirs` で起動先を選び、`spawn` へ `cwd` と任意の `model`・`thinking`・`askTool`・`trust`・初回 `message` を渡します。受理した起動はスマホが切断しても初回メッセージ送信まで継続します。初回メッセージの失敗で Pi や prompt を自動再試行しません。終了は既存の RC `shutdown`。Rust Host は `PIMATE_RUN_DIR/t/`（0700）を端末専用の名前空間にします。起動・一覧・attach・終了済み端末の回収はこの中だけで行い、環境の `ABDUCO_SOCKET_DIR`・`~/.abduco`・他の runDir は使いません。ソケットは `<runDir>/t/<名前>` に置き、所有記録・ホスト名・abduco の一覧には依存しません。Host はソケットのモードから接続中・終了済みを判定し、名前指定の attach はそのパスだけを見ます。一覧は接続できる端末だけを表示します。
+
+制限: keeper が異常終了した場合、到達不能なソケットファイルを自動削除せず runDir に残します（通常の一時 runDir は再起動・ログアウトで消えます）。
+
+`PIMATE_PI`（既定 `pi`）と TS Extension が必要です。`PIMATE_EXTENSION` はファイルパスまたは Pi のパッケージ指定（`npm:`、`git:` など）です。端末管理は `terminal.rs` に隔離し、`PIMATE_ABDUCO` → `pimate` と同じディレクトリの検証済みバイナリ（現在 Linux x64、[チェックサム](bin/SHA256SUMS.json)）→ PATH の順で解決します。配布時は `bin/<platform>-<arch>/` に並べ、Extension の既定はパッケージの `dist/extension.js` です。Linux の user systemd が使えれば Pi ごとの scope、それ以外は独立した端末セッションを使います。後者はログアウトやサービスの cgroup 終了に対する保証はありません。
+
+`auth_session` のログイン専用 Pi は接続・`holdId` ごとに保持し、`auth_session_end` または切断で解放します。通常の一覧・購読には出さず、`hello` と認証用 RC だけを許可します。起動待ちの保持を解放・切断すると、新たなログイン Pi は起動しません。すでに始まった起動は完了させます。最後の解放から60秒経過後、保存中なら延期し、対話中ならキャンセルして終了します。
+
+上記の `real_pi -- --ignored` は WS 起動・初回 prompt・Host 再起動・PTY attach・専用 Pi の保持と終了まで検査します（1分強）。Linux x64 以外の実 Pi 試験には `PIMATE_TEST_ABDUCO=/absolute/path/to/abduco` も指定してください。Linux x64 でも同じ指定で upstream v0.6 のバイナリを検証できます。`serve` / `attach` / `list` には同じ短い絶対パスの `PIMATE_RUN_DIR` を指定してください。端末ソケットのパス、または RC の `<runDir>/<UUID>.sock` が OS のバイト長上限に達する場合、起動はエラーになります。
 
 ## 決まったこと
 
