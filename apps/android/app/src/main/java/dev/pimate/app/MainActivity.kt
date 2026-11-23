@@ -42,10 +42,11 @@ private fun Screen(m: SessionModel, scale: (Float) -> Unit) {
     val host = m.host
     val showPair = pairing || host == null
     BackHandler(pairing && host != null) { pairing = false }
-    LaunchedEffect(host) {
-        if (host != null) {
+    LaunchedEffect(m.openList) {
+        if (m.openList) {
             pairing = false
             drawer.open()
+            m.listed()
         }
     }
     Surface {

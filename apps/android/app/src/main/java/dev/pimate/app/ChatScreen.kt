@@ -20,38 +20,40 @@ fun ColumnScope.ChatScreen(m: SessionModel) {
             ?.let { JSONTokener(it.json).nextValue() as? String }
             .orEmpty()
     val view = groups["view"].orEmpty().associate { it.id to it.json }
-    val session =
-        view["session"]?.let { (JSONTokener(it).nextValue() as? JSONObject)?.optString("id") }
-    val target = m.selected?.let { if (session == null) null else Target(it, session) }
+    val target = m.target
+    val scroll = rememberLazyListState()
+    val questions = groups["question"].orEmpty()
+    LaunchedEffect(questions.firstOrNull()?.id) {
+        if (questions.isNotEmpty()) scroll.scrollToItem(0)
+    }
     LazyColumn(
         Modifier.weight(1f),
+        state = scroll,
         reverseLayout = true,
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        items(groups["question"].orEmpty()) {
-            val question = JSONObject(it.json)
-            Text(question.optString("title"))
-            if (question.optString("kind") == "confirm" && target != null)
-                Row {
-                    listOf(true to "はい", false to "いいえ").forEach { (yes, label) ->
-                        TextButton(
-                            {
-                                m.operate(
-                                    Operation.Answer(
-                                        target,
-                                        JSONObject()
-                                            .put("requestId", question.getString("requestId"))
-                                            .put("confirmed", yes)
-                                            .toString(),
-                                    )
+        items(questions, key = { "question:${it.id}" }) { item ->
+            key(m.host?.id, target, item.json) {
+                QuestionCard(
+                    remember(item.json) { JSONObject(item.json) },
+                    enabled =
+                        target?.let {
+                            m.can(
+                                Operation.Answer(
+                                    it,
+                                    JSONObject()
+                                        .put("requestId", item.id)
+                                        .put("cancelled", true)
+                                        .toString(),
                                 )
-                            },
-                            enabled = !m.busy,
-                        ) {
-                            Text(label)
-                        }
+                            )
+                        } == true,
+                ) { answer ->
+                    target?.let {
+                        m.operate(Operation.Answer(it, answer.put("requestId", item.id).toString()))
                     }
                 }
+            }
         }
         if (stream.isNotEmpty()) item("stream") { Markdown(stream) }
         items(entries.asReversed(), key = { "entry:${it.id}" }) {
@@ -59,29 +61,62 @@ fun ColumnScope.ChatScreen(m: SessionModel) {
             Markdown(obj.optString("text", obj.optString("kind")))
         }
     }
-    var input by remember(target) { mutableStateOf("") }
+    LazyColumn(Modifier.heightIn(max = 160.dp)) {
+        items(groups["draft"].orEmpty(), key = { "draft:${it.id}" }) { draft ->
+            val d = remember(draft.json) { JSONObject(draft.json) }
+            val status = d.optString("status")
+            if (
+                d.optString("instanceId") == m.selected &&
+                    status in listOf("queued", "unconfirmed", "sending", "rejected")
+            )
+                Column {
+                    Text(
+                        when (status) {
+                            "queued" -> "割り込み待ち"
+                            "sending" -> "送信中"
+                            "rejected" -> "送信できませんでした"
+                            else -> "届いていない可能性があります。履歴を確認してください。"
+                        }
+                    )
+                    Text(d.getJSONObject("params").optString("text"))
+                    if (status == "unconfirmed")
+                        TextButton(
+                            { m.restore(draft) },
+                            enabled =
+                                m.input.isEmpty() &&
+                                    target != null &&
+                                    target.session == (d.opt("sessionId") as? String) &&
+                                    m.can(Operation.DismissDraft(draft.id)),
+                        ) {
+                            Text("下書きへ戻す")
+                        }
+                }
+        }
+    }
+    val input = m.input
+    val hostId = m.host?.id
     OutlinedTextField(
         input,
-        { input = it },
+        m::edit,
         Modifier.fillMaxWidth(),
         label = { Text("メッセージ") },
+        enabled = target != null,
         maxLines = 5,
     )
     Row {
         Button(
-            {
-                val text = input
-                target?.let {
-                    m.operate(Operation.Send(it, text, emptyList())) {
-                        if (text == input) input = ""
-                    }
-                }
-            },
-            enabled = !m.busy && input.isNotBlank() && target != null,
+            { if (hostId != null && target != null) m.send(hostId, target, input) },
+            enabled =
+                input.isNotBlank() && m.can(target?.let { Operation.Send(it, input, emptyList()) }),
         ) {
             Text(if (view["agentActive"] == "true") "割り込む" else "送信")
         }
         if (view["agentActive"] == "true" && target != null)
-            TextButton({ m.operate(Operation.Abort(target)) }) { Text("停止") }
+            TextButton(
+                { m.operate(Operation.Abort(target)) },
+                enabled = m.can(Operation.Abort(target)),
+            ) {
+                Text("停止")
+            }
     }
 }

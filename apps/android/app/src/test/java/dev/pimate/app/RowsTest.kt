@@ -6,6 +6,20 @@ import uniffi.pimate_ffi.*
 
 class RowsTest {
     @Test
+    fun largeHistoryUsesOneSnapshot() {
+        val entries = List(4096) { Item("entry", it.toString(), it.toULong(), "{}") }
+        var calls = 0
+        val rows =
+            Rows().apply(1u, entries.map { Change.Upsert(it) }) {
+                calls++
+                Snapshot(2u, entries)
+            }
+        assertEquals(1, calls)
+        assertEquals(entries, rows.groups["entry"])
+        assertEquals(2uL, rows.revision)
+    }
+
+    @Test
     fun moveRemoveAndResync() {
         val a = Item("instance", "a", 0u, "{}")
         val b = a.copy(id = "b", position = 1u)

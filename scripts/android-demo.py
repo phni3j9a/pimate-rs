@@ -77,21 +77,36 @@ async def demo(lab, binary):
     async def stream(reply):
         nonlocal partial
         event("agent_start")
+        aborted = False
         try:
+            if reply:
+                await asyncio.sleep(5)  # Time to steer or stop the reply from a phone.
             for i in range(0, len(BODY), 20):
                 await asyncio.sleep(0.28)
                 chunk = BODY[i : i + 20]
                 partial += chunk
                 event("text_delta", delta=chunk)
+            for text in queued:
+                entry("user", text)
             entry("assistant", partial)
             if reply:
                 pending[:] = [
-                    dict(kind="confirm", requestId="question", title="続けますか？")
+                    dict(
+                        kind="confirm",
+                        requestId="question",
+                        title="続けますか？",
+                        message="作業ディレクトリの差分を確認します。",
+                    )
                 ]
                 event("ui_request", request=pending[0])
+        except asyncio.CancelledError:
+            aborted = True
         finally:
+            queued.clear()
             partial = ""
-            event("agent_settled", aborted=False)
+            event("agent_settled", aborted=aborted)
+
+    queued = []
 
     async def rc(reader, w):
         nonlocal task
@@ -117,9 +132,12 @@ async def demo(lab, binary):
                     if task is None:
                         task = asyncio.create_task(stream(False))
                 elif method == "prompt":
-                    entry("user", r["params"]["text"])
-                    result = dict(deliveredAs="prompt")
-                    if not task or task.done():
+                    if task and not task.done():
+                        queued.append(r["params"]["text"])
+                        result = dict(deliveredAs="steer")
+                    else:
+                        entry("user", r["params"]["text"])
+                        result = dict(deliveredAs="prompt")
                         task = asyncio.create_task(stream(True))
                 elif method == "abort" and task:
                     task.cancel()
