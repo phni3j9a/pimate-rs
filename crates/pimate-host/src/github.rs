@@ -1,12 +1,9 @@
+use crate::process::output;
 use crate::{operations::home, terminal::executable};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::Command,
-    time::timeout,
-};
+use std::path::Path;
+use tokio::process::Command;
 const SUMMARY: &str = "number,title,state,author,labels,updatedAt,url";
 const PR: &str = "isDraft,reviewDecision,statusCheckRollup";
 fn safe(v: &Value) -> Option<u64> {
@@ -44,10 +41,22 @@ fn item(v: &Value, k: &str, detail: bool) -> Result<Value> {
         safe(&v["number"]).is_some_and(|n| n > 0) && v["title"].is_string(),
         "Invalid gh JSON item"
     );
-    let mut r = json!({"kind":k,"number":v["number"],"title":text(&v["title"],1000),"state":text(&v["state"],30),"author":author(&v["author"]),"url":text(&v["url"],2048),"updatedAt":text(&v["updatedAt"],50),"labels":arr(&v["labels"]).iter().take(100).map(|x|text(&x["name"],100)).collect::<Vec<_>>()});
+    let labels: Vec<_> = arr(&v["labels"])
+        .iter()
+        .take(100)
+        .map(|l| text(&l["name"], 100))
+        .collect();
+    let mut r = json!({
+        "kind":k,"number":v["number"],"title":text(&v["title"],1000),"state":text(&v["state"],30),
+        "author":author(&v["author"]),"url":text(&v["url"],2048),"updatedAt":text(&v["updatedAt"],50),"labels":labels,
+    });
     if detail {
         let comments = arr(&v["comments"]);
-        r["comments"]=json!(comments[comments.len().saturating_sub(30)..].iter().map(|c|json!({"author":author(&c["author"]),"createdAt":text(&c["createdAt"],50),"body":text(&c["body"],8192),"bodyTruncated":c["body"].as_str().is_some_and(|s|s.encode_utf16().count()>8192)})).collect::<Vec<_>>());
+        let recent = &comments[comments.len().saturating_sub(30)..];
+        r["comments"]=recent.iter().map(|c|json!({
+            "author":author(&c["author"]),"createdAt":text(&c["createdAt"],50),
+            "body":text(&c["body"],8192),"bodyTruncated":c["body"].as_str().is_some_and(|s|s.encode_utf16().count()>8192)
+        })).collect();
         r["commentsTruncated"] = (comments.len() > 30).into();
         r["body"] = text(&v["body"], 32768).into();
         r["bodyTruncated"] = v["body"]
@@ -101,35 +110,6 @@ fn item(v: &Value, k: &str, detail: bool) -> Result<Value> {
     }
     Ok(r)
 }
-async fn bounded(io: impl AsyncRead + Unpin, max: usize) -> Result<String> {
-    let mut b = vec![];
-    io.take(max as u64 + 1).read_to_end(&mut b).await?;
-    ensure!(b.len() <= max, "command output too large");
-    Ok(String::from_utf8_lossy(&b).into_owned())
-}
-pub async fn output(
-    mut c: Command,
-    secs: u64,
-    max: usize,
-) -> Result<(Option<i32>, String, String)> {
-    let mut child = c
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
-    let out = child.stdout.take().unwrap();
-    let err = child.stderr.take().unwrap();
-    timeout(Duration::from_secs(secs), async {
-        let (status, out, err) = tokio::try_join!(
-            async { Ok::<_, anyhow::Error>(child.wait().await?) },
-            bounded(out, max),
-            bounded(err, max)
-        )?;
-        Ok((status.code(), out, err))
-    })
-    .await?
-}
 async fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
     let mut c = Command::new(executable(Path::new("gh")).context("gh_missing")?);
     c.current_dir(cwd).args(args).envs([
@@ -140,14 +120,17 @@ async fn gh(cwd: &Path, args: &[&str]) -> Result<String> {
     ]);
     let (code, out, err) = output(c, 15, 4 << 20).await?;
     if code != Some(0) {
-        bail!(
-            "{}",
-            if code == Some(4) {
-                anyhow::anyhow!("{}", err.trim()).context("gh_auth")
-            } else {
-                anyhow::anyhow!("{}", err.trim())
-            }
-        )
+        let message = if err.trim().is_empty() {
+            "GitHub query failed"
+        } else {
+            err.trim()
+        };
+        let e = anyhow::anyhow!("{message}");
+        return Err(if code == Some(4) {
+            e.context("gh_auth")
+        } else {
+            e
+        });
     }
     Ok(out)
 }
@@ -267,7 +250,27 @@ pub async fn query(cwd: Option<String>, q: &Value) -> Value {
             } else {
                 "failed"
             };
-            json!({"ok":false,"code":code,"message":text(&json!(e.to_string()),500)})
+            json!({"ok":false,"code":code,"message":text(&json!(e.root_cause().to_string()),500)})
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn fixed_query_and_limits() -> Result<()> {
+        assert!(!valid(&json!({"kind":"list","repo":"a/b"})));
+        assert!(!valid(&json!({"kind":"pr","number":9007199254740992u64})));
+        assert!(valid(&json!({"kind":"issue","number":1})));
+        let item = item(
+            &json!({"number":1,"title":"a","body":"a".repeat(33000),"comments":vec![json!({"body":"漢"});31],"statusCheckRollup":[{"state":"SUCCESS"},{"status":"COMPLETED","conclusion":"FAILURE"},{"status":"QUEUED"}]}),
+            "pr",
+            true,
+        )?;
+        assert_eq!(item["bodyTruncated"], true);
+        assert_eq!(item["body"].as_str().unwrap().len(), 32768);
+        assert_eq!(item["comments"].as_array().unwrap().len(), 30);
+        assert_eq!(item["ci"], json!({"passed":1,"failed":1,"pending":1}));
+        Ok(())
     }
 }

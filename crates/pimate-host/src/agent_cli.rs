@@ -31,6 +31,7 @@ fn option(args: &mut Vec<String>, f: &str) -> Result<Option<u32>> {
 fn nonempty(v: &Value) -> bool {
     v.as_str().is_some_and(|s| !s.is_empty())
 }
+// A busy prompt may settle before its acknowledgement; an idle prompt must see its own start.
 #[derive(Default)]
 struct Turn {
     seq: u64,
@@ -212,16 +213,34 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
         t.event(v)
     }
     if cmd == "watch" {
-        while let Ok(v) = c.next().await {
-            if v["type"] == "event" && v["instanceId"] == id {
-                print(&v)?
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let stream = async {
+            while let Ok(v) = c.next().await {
+                if v["type"] == "event" && v["instanceId"] == id {
+                    print(&v)?
+                }
             }
-        }
-        return Ok(());
+            std::future::pending::<Result<()>>().await
+        };
+        return tokio::select! {r=stream=>r,_=term.recv()=>Ok(()),r=tokio::signal::ctrl_c()=>Ok(r?)};
     }
     let mut reply = json!({});
     if cmd != "wait" {
-        reply = call(&mut c, method, params, &mut t).await?;
+        let marker = if cmd == "ui" {
+            crate::webhook::mark(&id, &params["requestId"]).unwrap_or_else(|_| {
+                eprintln!("webhook answer marker failed");
+                None
+            })
+        } else {
+            None
+        };
+        reply = call(&mut c, method, params, &mut t)
+            .await
+            .inspect_err(|_| {
+                if let Some(m) = marker {
+                    m.undo()
+                }
+            })?;
         if let Some(n) = last {
             let mut rows = vec![];
             for v in items(&reply)? {

@@ -55,6 +55,7 @@ impl Out {
     }
 }
 struct App {
+    alerts: tokio::sync::broadcast::Sender<Value>,
     terminal: crate::terminal::Terminal,
     login: Arc<crate::login::Login>,
     folder_cache: tokio::sync::Mutex<Option<(tokio::time::Instant, Vec<Value>)>>,
@@ -198,7 +199,10 @@ async fn listen(
         );
         listeners.push(l);
     }
+    let mut monitor = crate::alerts::Monitor::new()?;
+    monitor.refresh(&dir, &instances.borrow());
     let app = Arc::new(App {
+        alerts: monitor.tx.clone(),
         terminal,
         login,
         last_spawn: Default::default(),
@@ -230,6 +234,7 @@ async fn listen(
                 app.login.observe(&dir, v.login);
                 versions.send_replace(v.incompatible);
                 let next = summaries(v.instances);
+                monitor.refresh(&dir, &next);
                 tx.send_if_modified(|prev| {
                     if *prev == next {
                         return false;
@@ -382,7 +387,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         generation: CancellationToken::new(),
     };
     let c = &a.config;
-    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true,"githubStatus":true,"github":true,"packageUpdate":true,"hostRestart":crate::service::managed()}}));
+    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true,"alerts":true,"githubStatus":true,"github":true,"packageUpdate":true,"hostRestart":crate::service::managed()}}));
     let mut list = a.instances.clone();
     let mut current = list.borrow_and_update().clone();
     out.send(&json!({"type":"instances","instances":current}));
@@ -393,8 +398,10 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
     let mut inflight = std::collections::HashSet::new();
     let mut holds: HashMap<String, (Uuid, crate::login::Hold)> = HashMap::new();
     let mut admin = JoinSet::new();
+    let mut alerts: Option<tokio::sync::broadcast::Receiver<Value>> = None;
     let end = loop {
         let m = tokio::select! {biased;
+            alert=async{alerts.as_mut().unwrap().recv().await},if alerts.is_some()=>{match alert{Ok(alert)=>out.send(&json!({"type":"alert","alert":alert})),Err(_)=>break 1009};continue},
             notice=revoked.recv()=>{match notice{Ok(id) if id==device=>break Code::Revoked as u16,Err(tokio::sync::broadcast::error::RecvError::Lagged(_))=>tick.reset_immediately(),_=>()}continue},
             _=out.slow.cancelled()=>break 1009,
             _=tick.tick()=>{match c.active(&device){Ok(false)=>break Code::Revoked as u16,Err(_)=>break 1011,Ok(true)=>continue}},
@@ -419,6 +426,12 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         };
         let kind = m["type"].as_str().unwrap_or("");
         match kind {
+            "watch_alerts" if m["enabled"].is_boolean() => {
+                alerts = m["enabled"]
+                    .as_bool()
+                    .unwrap()
+                    .then(|| a.alerts.subscribe());
+            }
             "ping" if m["t"].is_number() => out.send(&json!({"type":"pong","t":m["t"]})),
             "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders"
             | "github_status" | "github" | "update" | "update_check" | "host_restart" => {

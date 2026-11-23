@@ -1,7 +1,7 @@
 use crate::{
     config::{self, Config},
     operations::home,
-    terminal::executable,
+    process::{command, output},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -16,18 +16,9 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{
-    process::Command,
-    time::{sleep, timeout},
-};
+use tokio::time::{sleep, timeout};
 pub const SERVICE: &str = "pimate-host.service";
 const MARKER: &str = "# Managed by PiMate (Rust)\n";
-pub fn command(name: &str) -> Result<Command> {
-    let mut c =
-        Command::new(executable(Path::new(name)).with_context(|| format!("{name} not found"))?);
-    c.kill_on_drop(true).stdin(Stdio::null());
-    Ok(c)
-}
 async fn ctl(args: &[&str]) -> Result<String> {
     let o = timeout(
         Duration::from_secs(15),
@@ -41,7 +32,31 @@ async fn ctl(args: &[&str]) -> Result<String> {
     );
     Ok(String::from_utf8(o.stdout)?.trim().into())
 }
+// The manager can search different XDG paths than this CLI. Never stop or enable a namesake.
+async fn check_loaded(path: &Path) -> Result<()> {
+    let mut c = command("systemctl")?;
+    c.args([
+        "--user",
+        "show",
+        "--property=FragmentPath",
+        "--value",
+        SERVICE,
+    ]);
+    let (code, out, _) = output(c, 15, 65536).await?;
+    ensure!(matches!(code, Some(0 | 4)), "cannot verify loaded unit");
+    let loaded = out.trim();
+    ensure!(
+        loaded.is_empty()
+            || fs::canonicalize(loaded)
+                .is_ok_and(|p| fs::canonicalize(path).is_ok_and(|ours| ours == p)),
+        "manager loaded a different unit"
+    );
+    Ok(())
+}
 pub async fn restart() -> Result<()> {
+    let path = unit_path()?;
+    ensure!(owned(&path)?, "no owned unit");
+    check_loaded(&path).await?;
     ctl(&["restart", "--no-block", SERVICE]).await?;
     Ok(())
 }
@@ -86,13 +101,8 @@ fn port() -> Result<u16> {
         .map(|s| s.parse())
         .unwrap_or(Ok(pimate_protocol::DEFAULT_HOST_PORT))?)
 }
-fn unit() -> Result<String> {
-    let mut s = format!(
-        "{MARKER}[Unit]\nDescription=PiMate Host\n\n[Service]\nType=simple\nExecStart={} serve --port {}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n{}",
-        quote(&abs(env::current_exe()?)?)?,
-        port()?,
-        config_line()?
-    );
+fn host_env() -> Result<Vec<String>> {
+    let mut out = vec![format!("PIMATE_CONFIG_DIR={}", abs(config::config_dir()?)?)];
     for k in [
         "PATH",
         "PIMATE_RUN_DIR",
@@ -128,8 +138,19 @@ fn unit() -> Result<String> {
             } else {
                 abs(v.into())?
             };
-            s.push_str(&format!("Environment={}\n", quote(&format!("{k}={v}"))?))
+            out.push(format!("{k}={v}"))
         }
+    }
+    Ok(out)
+}
+fn unit() -> Result<String> {
+    let mut s = format!(
+        "{MARKER}[Unit]\nDescription=PiMate Host\n\n[Service]\nType=simple\nExecStart={} serve --port {}\nRestart=on-failure\nRestartSec=3\nUMask=0077\n",
+        quote(&abs(env::current_exe()?)?)?,
+        port()?
+    );
+    for v in host_env()? {
+        s.push_str(&format!("Environment={}\n", quote(&v)?));
     }
     s.push_str("\n[Install]\nWantedBy=default.target\n");
     Ok(s)
@@ -263,6 +284,9 @@ pub async fn run(action: &str) -> Result<Value> {
     }
     let installed = owned(&path)?;
     let dir = config::config_dir()?;
+    if systemd && (installed || action == "install") {
+        check_loaded(&path).await?;
+    }
     let c = Config::open(dir.clone())?;
     let h = ours(&c).await?;
     let state = dir.join("host-process.json");
@@ -276,7 +300,17 @@ pub async fn run(action: &str) -> Result<Value> {
             }
             if state.try_exists()? {
                 let saved: Value = serde_json::from_slice(&fs::read(&state)?)?;
-                if let Some(pid) = saved["pid"]
+                ensure!(
+                    saved["owner"] == "pimate-rs",
+                    "unmanaged Host process record"
+                );
+                if let Some(unit) = saved["unit"].as_str() {
+                    ensure!(
+                        regex::Regex::new(r"^pimate-host-[0-9]+-[0-9]+$")?.is_match(unit),
+                        "invalid transient unit"
+                    );
+                    ctl(&["stop", unit]).await?;
+                } else if let Some(pid) = saved["pid"]
                     .as_i64()
                     .and_then(|n| i32::try_from(n).ok())
                     .filter(|n| *n > 1)
@@ -306,20 +340,59 @@ pub async fn run(action: &str) -> Result<Value> {
             if h.is_none() {
                 if installed {
                     ctl(&["start", SERVICE]).await?;
+                } else if systemd {
+                    let name = format!(
+                        "pimate-host-{}-{}",
+                        std::process::id(),
+                        chrono::Utc::now().timestamp_millis()
+                    );
+                    let mut runner = command("systemd-run")?;
+                    runner
+                        .args(["--user", "--quiet", "--collect"])
+                        .arg(format!("--unit={name}"));
+                    for v in host_env()? {
+                        runner.arg(format!("--setenv={v}"));
+                    }
+                    runner
+                        .arg(env::current_exe()?)
+                        .args(["serve", "--port", &port()?.to_string()]);
+                    ensure!(
+                        timeout(Duration::from_secs(15), runner.status())
+                            .await??
+                            .success(),
+                        "transient Host start failed"
+                    );
+                    write(
+                        &state,
+                        json!({"owner":"pimate-rs","unit":name})
+                            .to_string()
+                            .as_bytes(),
+                    )?;
                 } else {
                     let log = fs::OpenOptions::new()
                         .append(true)
                         .create(true)
                         .mode(0o600)
                         .open(dir.join("host.log"))?;
-                    let child = std::process::Command::new(env::current_exe()?)
+                    let mut child = std::process::Command::new(env::current_exe()?);
+                    unsafe {
+                        child.pre_exec(|| {
+                            nix::unistd::setsid()?;
+                            Ok(())
+                        });
+                    }
+                    let child = child
                         .args(["serve", "--port", &port()?.to_string()])
                         .stdin(Stdio::null())
                         .stdout(log.try_clone()?)
                         .stderr(log)
-                        .process_group(0)
                         .spawn()?;
-                    write(&state, json!({"pid":child.id()}).to_string().as_bytes())?;
+                    write(
+                        &state,
+                        json!({"owner":"pimate-rs","pid":child.id()})
+                            .to_string()
+                            .as_bytes(),
+                    )?;
                 }
                 ready(&c, true).await?
             }

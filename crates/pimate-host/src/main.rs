@@ -1,15 +1,18 @@
 mod agent_cli;
+mod alerts;
 mod config;
 mod github;
 mod link;
 mod login;
 mod operations;
+mod process;
 mod rc;
 mod relay;
 mod server;
 mod service;
 mod terminal;
 mod update;
+mod webhook;
 use anyhow::{Result, bail, ensure};
 use config::Config;
 use nix::ifaddrs::getifaddrs;
@@ -69,9 +72,23 @@ async fn addresses() -> Result<Vec<IpAddr>> {
     Ok(ips)
 }
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(e) = run().await {
+        eprintln!("{e}");
+        std::process::exit(1)
+    }
+}
+async fn run() -> Result<()> {
     let mut args = env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
+    const USAGE: &str = "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] [--json] | devices | revoke ID | list | attach [session] | spawn --cwd DIR [-- pi args] | prompt ID TEXT [--steer|--follow-up] [--wait] [--timeout S] | wait ID [--timeout S] | history ID [--last N] | abort ID | shutdown ID | ui ID REQUEST <value|--confirm|--cancel|--answers JSON> | watch ID | webhook <setup|test|status|off|watch|unwatch> | service ACTION | setup-info | pair-pending CODE";
+    if matches!(cmd.as_str(), "--help" | "-h") {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if cmd == "webhook" {
+        return webhook::cli(args.collect()).await;
+    }
     if cmd == "service" {
         let action = args
             .next()
@@ -106,6 +123,21 @@ async fn main() -> Result<()> {
     }
     let config = Config::open(config::config_dir()?)?;
     match cmd.as_str() {
+        "setup-info" => {
+            ensure!(args.next().is_none());
+            println!(
+                "{}",
+                serde_json::json!({"host":config.host,"configDir":config::config_dir()?,"addresses":addresses().await?,"abduco":terminal::Terminal::resolve().executable})
+            )
+        }
+        "pair-pending" => {
+            let code = args.next().ok_or_else(|| anyhow::anyhow!("missing code"))?;
+            ensure!(args.next().is_none());
+            println!(
+                "{}",
+                serde_json::json!({"pending":config.pending(&code).try_exists()?})
+            )
+        }
         "devices" => {
             ensure!(args.next().is_none());
             println!(
@@ -123,14 +155,29 @@ async fn main() -> Result<()> {
             let id = args
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("missing deviceId"))?;
+            let as_json = match args.next().as_deref() {
+                None => false,
+                Some("--json") => true,
+                _ => bail!("{USAGE}"),
+            };
             ensure!(args.next().is_none());
-            config.revoke(&id)?
+            config.revoke(&id)?;
+            if as_json {
+                println!("{{\"ok\":true}}")
+            } else {
+                println!("Device revoked")
+            }
         }
         "pair" | "serve" => {
             let mut port = pimate_protocol::DEFAULT_HOST_PORT;
             let mut address = None;
             let mut listen = vec![];
+            let mut as_json = false;
             while let Some(k) = args.next() {
+                if cmd == "pair" && k == "--json" {
+                    as_json = true;
+                    continue;
+                }
                 let v = args
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("missing value"))?;
@@ -164,12 +211,20 @@ async fn main() -> Result<()> {
                             .is_some_and(|p| p > 0),
                     "invalid address"
                 );
+                let (code, expires_at) = config.code()?;
                 let link = format_pairing_link(&PairingLink {
                     address,
-                    code: config.code()?,
+                    code: code.clone(),
                     host_name: config.host.name,
                     host_id: config.host.host_id,
                 });
+                if as_json {
+                    println!(
+                        "{}",
+                        serde_json::json!({"code":code,"link":link,"expiresAt":expires_at})
+                    );
+                    return Ok(());
+                }
                 println!(
                     "{link}\n{}",
                     qrcode::QrCode::new(&link)?
@@ -178,9 +233,7 @@ async fn main() -> Result<()> {
                 )
             }
         }
-        _ => bail!(
-            "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] | devices | revoke ID | list | attach [session]"
-        ),
+        _ => bail!("{USAGE}"),
     };
     Ok(())
 }

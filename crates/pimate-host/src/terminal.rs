@@ -349,6 +349,7 @@ mod tests {
         let status = std::process::Command::new(exe)
             .env_clear()
             .env("HOME", t.path())
+            .env("XDG_CONFIG_HOME", t.path().join("xdg"))
             .env("PATH", t.path())
             .env("PIMATE_TEST_UNBUNDLED", "1")
             .env("ABDUCO_SOCKET_DIR", t.path())

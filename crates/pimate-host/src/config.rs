@@ -83,7 +83,7 @@ impl Device {
         json!({"deviceId":self.device_id,"name":self.name,"createdAt":self.created_at,"lastSeenAt":self.last_seen_at})
     }
 }
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
     pub host_id: String,
@@ -143,17 +143,18 @@ impl Config {
         f.persist(self.dir.join("devices.json"))?;
         Ok(result)
     }
-    fn pending(&self, code: &str) -> PathBuf {
+    pub fn pending(&self, code: &str) -> PathBuf {
         self.dir
             .join("pairing")
             .join(format!("{}.json", digest(code)))
     }
-    pub fn code(&self) -> Result<String> {
+    pub fn code(&self) -> Result<(String, u64)> {
         let code = secret::<24>();
         let f = NamedTempFile::new_in(self.dir.join("pairing"))?;
-        serde_json::to_writer(&f, &json!({"expiresAt":now()+600000}))?;
+        let expires_at = now() + 600000;
+        serde_json::to_writer(&f, &json!({"expiresAt":expires_at}))?;
         f.persist_noclobber(self.pending(&code))?;
-        Ok(code)
+        Ok((code, expires_at))
     }
     pub fn pair(&self, code: &str, name: &str) -> Result<Value> {
         self.update(|ds| {
@@ -262,7 +263,7 @@ mod tests {
         assert!(lock.exists());
         assert_eq!(c.devices()?.len(), 1);
         fs::remove_file(lock)?;
-        let code = c.code()?;
+        let (code, _) = c.code()?;
         let pending = c.pending(&code);
         for (f, mode) in [
             (p.clone(), 0o700),
