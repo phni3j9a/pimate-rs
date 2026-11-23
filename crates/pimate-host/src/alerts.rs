@@ -135,14 +135,23 @@ struct Delivery {
     retries: Semaphore,
 }
 impl Delivery {
-    fn send(self: &Arc<Self>, v: Value, k: Option<String>) {
-        let Ok(slot) = self.initial.clone().try_acquire_owned() else {
-            eprintln!("webhook queue full");
-            if let Some(k) = k {
-                self.state.lock().unwrap().pending.remove(&k);
+    async fn initial_slot(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.initial
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("delivery semaphore is never closed")
+    }
+    async fn send(self: &Arc<Self>, v: Value, k: Option<String>) {
+        // Backpressure the per-instance reader, not an unbounded queue of waiting tasks.
+        let slot = self.initial_slot().await;
+        if let Some(key) = &k {
+            let mut s = self.state.lock().unwrap();
+            if s.opened.contains_key(key) || s.pending.contains_key(key) {
+                return;
             }
-            return;
-        };
+            s.pending.insert(key.clone(), None);
+        }
         let this = self.clone();
         tokio::spawn(async move {
             let ok = hook::deliver(&this.dir, v, slot, &this.retries).await;
@@ -173,35 +182,31 @@ impl Delivery {
                     }
                     next
                 };
-                if ok
-                    && !hook::answered(&this.dir, &k)
-                    && let Some(v) = next
-                {
-                    this.send(v, None);
+                if ok && let Some(v) = next {
+                    // This close was already accepted before the opening POST succeeded.
+                    let slot = this.initial_slot().await;
+                    if !hook::answered(&this.dir, &k) {
+                        hook::deliver(&this.dir, v, slot, &this.retries).await;
+                    }
                 }
             }
         });
     }
-    fn open(self: &Arc<Self>, k: String, v: Value) {
-        let mut s = self.state.lock().unwrap();
-        if s.opened.contains_key(&k) || s.pending.contains_key(&k) {
-            return;
-        }
-        s.pending.insert(k.clone(), None);
-        drop(s);
-        self.send(v, Some(k))
-    }
-    fn close(self: &Arc<Self>, k: String, v: Value) {
+    async fn close(self: &Arc<Self>, k: String, v: Value) {
         if hook::answered(&self.dir, &k) {
             return;
         }
-        let mut s = self.state.lock().unwrap();
-        if let Some(p) = s.pending.get_mut(&k) {
-            *p = Some(v)
-        } else if s.opened.contains_key(&k) {
-            drop(s);
-            self.send(v, None)
+        {
+            let mut s = self.state.lock().unwrap();
+            if let Some(p) = s.pending.get_mut(&k) {
+                *p = Some(v);
+                return;
+            }
+            if !s.opened.contains_key(&k) {
+                return;
+            }
         }
+        self.send(v, None).await
     }
 }
 struct Stream<'a> {
@@ -231,18 +236,18 @@ fn refresh_session(row: &mut Value, latest: &mut watch::Receiver<Value>, m: &Val
     }
 }
 impl Stream<'_> {
-    fn hook(&mut self, event: &str, session: &Value, r: &str, d: Value) {
+    async fn hook(&mut self, event: &str, session: &Value, r: &str, d: Value) {
         if let Some(c) = &self.c {
             let v = hook::payload(c, event, &self.row, session, r, d);
             let k = hook::key(json!([self.row["instanceId"], r]));
             match event {
-                "request.opened" => self.delivery.open(k, v),
-                "request.resolved" => self.delivery.close(k, v),
-                _ => self.delivery.send(v, None),
+                "request.opened" => self.delivery.send(v, Some(k)).await,
+                "request.resolved" => self.delivery.close(k, v).await,
+                _ => self.delivery.send(v, None).await,
             }
         }
     }
-    fn open(&mut self, session: &Value, r: &Value) {
+    async fn open(&mut self, session: &Value, r: &Value) {
         let Some(id) = r["requestId"].as_str() else {
             return;
         };
@@ -257,9 +262,9 @@ impl Stream<'_> {
             d["context"] =
                 format!("Task: {}", self.user.chars().take(394).collect::<String>()).into()
         }
-        self.hook("request.opened", session, id, d)
+        self.hook("request.opened", session, id, d).await
     }
-    fn event(&mut self, t: &mut Tracker, m: &Value) {
+    async fn event(&mut self, t: &mut Tracker, m: &Value) {
         if m["instanceId"] != self.row["instanceId"]
             || m["type"] != "event"
             || m["seq"].as_u64().is_none_or(|n| n <= t.seq)
@@ -283,14 +288,14 @@ impl Stream<'_> {
                 self.error.clear();
                 self.requests.clear()
             }
-            Some("ui_request") => self.open(s, &e["request"]),
+            Some("ui_request") => self.open(s, &e["request"]).await,
             Some("ui_request_end") => {
                 if let Some(r) = e["requestId"].as_str() {
                     let mut d = json!({"requestId":r,"by":e["by"]});
                     if let Some(k) = self.requests.remove(r) {
                         d["kind"] = k
                     }
-                    self.hook("request.resolved", s, r, d)
+                    self.hook("request.resolved", s, r, d).await
                 }
             }
             Some("message_end") => {
@@ -325,7 +330,7 @@ impl Stream<'_> {
             if !self.last.is_empty() {
                 d["lastReply"] = json!(self.last)
             }
-            self.hook(ev, s, &t.seq.to_string(), d)
+            self.hook(ev, s, &t.seq.to_string(), d).await
         }
     }
 }
@@ -428,13 +433,13 @@ impl Monitor {
                     error: String::new(),
                 };
                 for r in s["pendingUI"].as_array().into_iter().flatten() {
-                    stream.open(&s["session"]["id"], r)
+                    stream.open(&s["session"]["id"], r).await
                 }
                 for v in early {
-                    stream.event(&mut t, &v)
+                    stream.event(&mut t, &v).await
                 }
                 loop {
-                    stream.event(&mut t, &rc.next().await?)
+                    stream.event(&mut t, &rc.next().await?).await
                 }
             });
             self.tasks.insert(
@@ -451,6 +456,64 @@ impl Monitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn accepted_close_survives_open_retry_and_saturated_initial_posts() -> Result<()> {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+        use tokio::sync::{mpsc, oneshot};
+        let dir = tempfile::tempdir()?;
+        let d = dir.path();
+        config::private(&d.join("webhook-watch"))?;
+        fs::write(d.join("webhook-watch/pi"), "")?;
+        let delivery = Arc::new(Delivery {
+            dir: d.into(),
+            state: Default::default(),
+            initial: Arc::new(Semaphore::new(1)),
+            retries: Semaphore::new(1),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        fs::write(d.join("webhook.json"),json!({"machine":"test","headers":{},"url":format!("http://{}/",listener.local_addr()?)}).to_string())?;
+        // Hold each loopback POST until the test explicitly acknowledges it.
+        let (tx, mut rx) = mpsc::channel(4);
+        let router = Router::new().route(
+            "/",
+            post(move |Json(v): Json<Value>| {
+                let tx = tx.clone();
+                async move {
+                    let (ack, status) = oneshot::channel::<StatusCode>();
+                    tx.send((v["event"].clone(), ack)).await.unwrap();
+                    status.await.unwrap()
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        let event = |kind| json!({"event":kind,"instanceId":"pi"});
+        let key = hook::key(json!(["pi", "r"]));
+        timeout(Duration::from_secs(10), async {
+            delivery
+                .send(event("request.opened"), Some(key.clone()))
+                .await;
+            let (kind, ack) = rx.recv().await.unwrap();
+            assert_eq!(kind, "request.opened");
+            ack.send(StatusCode::SERVICE_UNAVAILABLE).unwrap();
+            delivery.send(event("pi.finished"), None).await;
+            let (kind, busy) = rx.recv().await.unwrap();
+            assert_eq!(kind, "pi.finished");
+            delivery.close(key.clone(), event("request.resolved")).await;
+            let (kind, ack) = rx.recv().await.unwrap();
+            assert_eq!(kind, "request.opened");
+            ack.send(StatusCode::OK).unwrap();
+            // Retry completed, but the other initial POST still owns the only initial slot.
+            let _completed = delivery.retries.acquire().await.unwrap();
+            assert!(delivery.state.lock().unwrap().opened.contains_key(&key));
+            busy.send(StatusCode::OK).unwrap();
+            let (kind, ack) = rx.recv().await.unwrap();
+            assert_eq!(kind, "request.resolved");
+            ack.send(StatusCode::OK).unwrap();
+        })
+        .await?;
+        server.abort();
+        Ok(())
+    }
     #[test]
     fn discovery_rename_updates_a_live_stream() {
         let mut row = json!({"session":{"id":"s","name":"before"}});

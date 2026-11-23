@@ -1764,8 +1764,8 @@ async fn agent_cli_contract() -> Result<()> {
             (vec!["shutdown", "i"], json!({"accepted":true})),
         ] {
             let l = UnixListener::bind(run.join("i.sock"))?;
-            let pending = args == ["wait", "i"];
             let raced = args == ["wait", "i", "--timeout", "2"];
+            let pending = args == ["wait", "i"] || raced;
             let job = tokio::spawn(async move {
                 let (sock, _) = l.accept().await?;
                 let mut io = Framed::new(sock, LinesCodec::new());
@@ -1776,6 +1776,7 @@ async fn agent_cli_contract() -> Result<()> {
                         Some("hello") => {
                             if raced {
                                 let events = [
+                                    json!({"type":"ui_request_end","requestId":"R"}),
                                     json!({"type":"message_end","item":{"kind":"assistant","text":"first"}}),
                                     json!({"type":"agent_settled"}),
                                     json!({"type":"agent_start"}),

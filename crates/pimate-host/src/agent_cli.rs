@@ -38,6 +38,7 @@ struct Turn {
     last: Value,
     pending: Vec<Value>,
     started: bool,
+    prompt_in_flight: bool,
     held: Option<Value>,
 }
 impl Turn {
@@ -61,8 +62,10 @@ impl Turn {
         let e = &m["event"];
         match e["type"].as_str() {
             Some("agent_start") => {
-                self.started = true;
-                self.held = None;
+                if self.prompt_in_flight {
+                    self.started = true;
+                    self.held = None;
+                }
                 self.last = Value::Null
             }
             Some("message_end") if e["item"]["kind"] == "assistant" => {
@@ -199,6 +202,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
     .await??;
     ensure!(snapshot["purpose"].is_null(), "reserved RC instance");
     let mut t = Turn {
+        prompt_in_flight: cmd == "prompt",
         seq: snapshot["seq"].as_u64().unwrap_or(0),
         pending: snapshot["pendingUI"]
             .as_array()
@@ -210,9 +214,6 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
         t.held = Some(t.result("waiting_input"))
     }
     for v in early {
-        if cmd == "wait" && t.held.is_some() {
-            break;
-        }
         t.event(v)
     }
     if cmd == "watch" {
@@ -263,6 +264,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
         if !wait || reply["deliveredAs"] == "command" {
             return print(&reply);
         }
+        t.prompt_in_flight = false;
         if reply["deliveredAs"] == "prompt" && !t.started {
             t.held = None
         }
