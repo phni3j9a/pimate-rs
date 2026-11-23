@@ -69,10 +69,12 @@ pub fn request(method: &str) -> Value {
     json!({"id":Uuid::new_v4().to_string(),"method":method,"params":{}})
 }
 pub struct Discovery {
+    pub login: Vec<String>,
     pub instances: Vec<Value>,
     pub incompatible: serde_json::Map<String, Value>,
 }
 pub async fn list(dir: &Path) -> Result<Discovery> {
+    let mut login = vec![];
     let mut incompatible = serde_json::Map::new();
     private(dir)?;
     let mut entries = vec![];
@@ -132,6 +134,7 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
             continue;
         }
         if v.get("purpose").is_some() {
+            login.push(id.to_owned());
             continue;
         }
         let probe = async { Rc::open(dir, id).await?.hello(|_| Ok(())).await };
@@ -156,6 +159,7 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
     }
     entries.sort_by(|a, b| a["instanceId"].as_str().cmp(&b["instanceId"].as_str()));
     Ok(Discovery {
+        login,
         instances: entries,
         incompatible,
     })
