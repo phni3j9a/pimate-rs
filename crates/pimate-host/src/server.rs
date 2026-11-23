@@ -71,6 +71,27 @@ impl App {
     async fn operation(&self, m: Value, hold: Option<CancellationToken>) -> Value {
         let kind = m["type"].as_str().unwrap();
         let mut reply = match kind {
+            "github_status" => crate::github::status().await,
+            "github" => {
+                let cwd = self
+                    .instances
+                    .borrow()
+                    .iter()
+                    .find(|r| r["instanceId"] == m["instanceId"])
+                    .and_then(|r| r["cwd"].as_str())
+                    .map(String::from);
+                crate::github::query(cwd, &m["query"]).await
+            }
+            "update" | "update_check" => crate::update::run(kind == "update_check").await,
+            "host_restart" => {
+                if !crate::service::managed() {
+                    json!({"ok":false,"code":"unsupported"})
+                } else if crate::service::restart().await.is_ok() {
+                    json!({"ok":true})
+                } else {
+                    json!({"ok":false,"code":"failed"})
+                }
+            }
             "dirs" => {
                 let path = m["path"].as_str().unwrap().to_owned();
                 let dirs = tokio::task::spawn_blocking(move || crate::operations::dirs(&path))
@@ -361,7 +382,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         generation: CancellationToken::new(),
     };
     let c = &a.config;
-    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true}}));
+    out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true,"authSession":true,"providerAuth":true,"dirs":true,"githubStatus":true,"github":true,"packageUpdate":true,"hostRestart":crate::service::managed()}}));
     let mut list = a.instances.clone();
     let mut current = list.borrow_and_update().clone();
     out.send(&json!({"type":"instances","instances":current}));
@@ -399,7 +420,20 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         let kind = m["type"].as_str().unwrap_or("");
         match kind {
             "ping" if m["t"].is_number() => out.send(&json!({"type":"pong","t":m["t"]})),
-            "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders" => {
+            "auth_session_end" | "auth_session" | "spawn" | "dirs" | "folders"
+            | "github_status" | "github" | "update" | "update_check" | "host_restart" => {
+                let keys = m.as_object().unwrap().len();
+                if (matches!(
+                    kind,
+                    "github_status" | "update" | "update_check" | "host_restart"
+                ) && keys != 2)
+                    || (kind == "github"
+                        && (keys != 4
+                            || !crate::github::valid(&m["query"])
+                            || !m["instanceId"].as_str().is_some_and(rc::valid_id)))
+                {
+                    break Code::Protocol as u16;
+                }
                 if kind != "auth_session_end" && !short(&m["requestId"]) {
                     break Code::Protocol as u16;
                 }
@@ -439,7 +473,8 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 let out = out.clone();
                 // Accept launch operations independently of the reply connection. A
                 // dropped JoinHandle detaches the operation; the join set bounds waiters.
-                let host_owned = matches!(kind, "spawn" | "auth_session");
+                let host_owned =
+                    matches!(kind, "spawn" | "auth_session" | "update" | "host_restart");
                 let operation = async move { a.operation(m, hold).await };
                 let launch = if host_owned {
                     Ok(tokio::spawn(operation))

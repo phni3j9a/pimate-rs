@@ -1,11 +1,15 @@
+mod agent_cli;
 mod config;
+mod github;
 mod link;
 mod login;
 mod operations;
 mod rc;
 mod relay;
 mod server;
+mod service;
 mod terminal;
+mod update;
 use anyhow::{Result, bail, ensure};
 use config::Config;
 use nix::ifaddrs::getifaddrs;
@@ -27,6 +31,9 @@ async fn addresses() -> Result<Vec<IpAddr>> {
         "tailscale",
         "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
     ] {
+        let Some(cli) = terminal::executable(std::path::Path::new(cli)) else {
+            continue;
+        };
         let Ok(Ok(output)) = tokio::time::timeout(
             Duration::from_secs(3),
             tokio::process::Command::new(cli)
@@ -65,6 +72,23 @@ async fn addresses() -> Result<Vec<IpAddr>> {
 async fn main() -> Result<()> {
     let mut args = env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
+    if cmd == "service" {
+        let action = args
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("missing service action"))?;
+        ensure!(args.next().is_none());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&service::run(&action).await?)?
+        );
+        return Ok(());
+    }
+    if matches!(
+        cmd.as_str(),
+        "spawn" | "prompt" | "wait" | "history" | "watch" | "abort" | "shutdown" | "ui"
+    ) {
+        return agent_cli::run(&cmd, args.collect()).await;
+    }
     if cmd == "attach" {
         let name = args.next();
         ensure!(args.next().is_none());

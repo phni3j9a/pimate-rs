@@ -30,6 +30,7 @@ fn cli(dir: &Path) -> Command {
         }
     }
     c.current_dir(dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("HOME", dir)
         .env("ABDUCO_SOCKET_DIR", dir)
         .env("PI_CODING_AGENT_DIR", dir.join("agent"))
@@ -169,6 +170,14 @@ async fn pairing_auth_and_revocation() -> Result<()> {
 #[tokio::test]
 #[ignore = "requires Pi and a TS PiMate checkout with dependencies"]
 async fn real_pi() -> Result<()> {
+    real_turn(false).await
+}
+#[tokio::test]
+#[ignore = "requires real Pi and faux fixture"]
+async fn real_pi_agent_cli() -> Result<()> {
+    real_turn(true).await
+}
+async fn real_turn(agent_cli: bool) -> Result<()> {
     let pi = PathBuf::from(env::var("PIMATE_TEST_PI")?).canonicalize()?;
     let pkg = PathBuf::from(env::var("PIMATE_TEST_TS")?)
         .canonicalize()?
@@ -192,6 +201,7 @@ async fn real_pi() -> Result<()> {
         .env("PATH", env::var_os("PATH").unwrap())
         .env("ABDUCO_SOCKET_DIR", dir)
         .env("TERM", "xterm-256color")
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("HOME", dir)
         .env("PI_CODING_AGENT_DIR", dir.join("agent"))
         .env("PIMATE_CONFIG_DIR", dir.join("config"))
@@ -235,6 +245,28 @@ async fn real_pi() -> Result<()> {
     let sub = until(&mut ws, |v| v["type"] == "subscribed").await?;
     assert_eq!(sub["snapshot"]["model"]["provider"], "pimate-faux");
     assert!(sub["history"]["items"].is_array());
+    if agent_cli {
+        for (args, expected) in [
+            (
+                vec!["prompt", "real-e2e", "say hello", "--wait"],
+                json!({"deliveredAs":"prompt","outcome":"done","reply":"Hello from the PiMate faux model."}),
+            ),
+            (
+                vec!["wait", "real-e2e"],
+                json!({"outcome":"idle","reply":"Hello from the PiMate faux model."}),
+            ),
+            (
+                vec!["history", "real-e2e", "--last", "1"],
+                json!([{"kind":"assistant","text":"Hello from the PiMate faux model."}]),
+            ),
+        ] {
+            let o = timeout(Duration::from_secs(20), cli(dir).args(args).output()).await??;
+            ensure!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+            assert_eq!(serde_json::from_slice::<Value>(&o.stdout)?, expected);
+        }
+        child.kill().await?;
+        return Ok(());
+    }
     send(&mut ws,json!({"type":"rc","instanceId":"real-e2e","request":{"id":"prompt1","method":"prompt","params":{"text":"say hello"}}})).await?;
     let mut acknowledged = false;
     let mut answered = false;
@@ -711,6 +743,7 @@ impl Drop for Cleanup {
                 .env("PIMATE_CONFIG_DIR", self.dir.join("config"))
                 .env("PI_CODING_AGENT_DIR", self.dir.join("agent"))
                 .env("ABDUCO_SOCKET_DIR", &self.dir)
+                .env("XDG_CONFIG_HOME", self.dir.join("xdg"))
                 .env("HOME", &self.dir)
                 .output();
             std::thread::sleep(Duration::from_millis(100));
@@ -957,6 +990,7 @@ async fn reject_modified_bundle_even_if_on_path() -> Result<()> {
     let attach = || {
         let mut c = Command::new(&host);
         c.env_clear()
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
             .env("HOME", root)
             .env("ABDUCO_SOCKET_DIR", root)
             .env("PIMATE_RUN_DIR", root.join("run"))
