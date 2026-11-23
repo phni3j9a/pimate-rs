@@ -61,13 +61,10 @@ pub struct WireRequest<M, P> {
     )]
     #[ts(optional)]
     pub expect_session_id: Option<String>,
-    /// Forward future guards/metadata unchanged along with the params.
-    #[serde(flatten)]
-    #[ts(skip)]
-    pub extra: std::collections::BTreeMap<String, Value>,
 }
-/// The Host routes this envelope without interpreting the Extension method.
-pub type Request<P = Value> = WireRequest<String, P>;
+/// Opaque RC request for Host forwarding. Inspect id, method and guards on the
+/// original object before forwarding; unlike `RequestOf`, this is not validation.
+pub type Request = serde_json::Map<String, Value>;
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub enum ResponseType {
     #[serde(rename = "response")]
@@ -137,7 +134,7 @@ pub trait RpcMethod {
 }
 pub type ParamsOf<M> = <M as RpcMethod>::Params;
 pub type ResultOf<M> = <M as RpcMethod>::Result;
-/// Typed envelope for clients with a statically known method; use Request for routing.
+/// Typed envelope for clients with a statically known method; use the original JSON object for routing.
 pub type RequestOf<M> = WireRequest<M, ParamsOf<M>>;
 
 macro_rules! methods {

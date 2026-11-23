@@ -232,7 +232,7 @@ pub struct SubagentRunStage {
 pub struct SubagentRun {
     /// RC key: pi-subagents runId, or `tool:<toolCallId>` for runs only known through a tool call.
     pub id: String,
-    pub backend: Received<SubagentBackend>,
+    pub backend: SubagentBackend,
     /// Keeps running after the parent turn ends (pi-subagents async).
     pub background: bool,
     pub mode: SubagentMode,
@@ -372,15 +372,22 @@ fn known_backend_rows<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>
     Vec::<Value>::deserialize(d)?
         .into_iter()
         .filter_map(|row| {
-            if let Some(Value::String(name)) = row.get("backend")
-                && SubagentBackend::deserialize(serde::de::value::StrDeserializer::<D::Error>::new(
-                    name,
-                ))
-                .is_err()
-            {
+            if unknown_backend(&row) {
                 return None;
             }
             Some(serde_json::from_value(row).map_err(serde::de::Error::custom))
         })
         .collect()
+}
+
+// Only a new string discriminator is skippable; missing or invalid tags are errors.
+pub(crate) fn unknown_backend(row: &Value) -> bool {
+    row.get("backend")
+        .and_then(Value::as_str)
+        .is_some_and(|name| {
+            SubagentBackend::deserialize(
+                serde::de::value::StrDeserializer::<serde::de::value::Error>::new(name),
+            )
+            .is_err()
+        })
 }

@@ -187,3 +187,86 @@ fn future_report_values_do_not_expand_command_vocabulary() {
     );
     assert!(serde_json::from_value::<SetThinkingParams>(json!({"level":"future"})).is_err());
 }
+
+#[test]
+fn live_subagent_event_checks_backend_before_payload() {
+    let mut frame = fixtures()["server"][2].clone();
+    for backend in ["new_backend", "example"] {
+        frame["event"]["run"] = json!({"backend": backend, "opaque":true});
+        let rc = serde_json::from_value::<ServerMessage>(frame.clone());
+        let app = serde_json::from_value::<HostMessage>(frame.clone());
+        if backend == "new_backend" {
+            assert!(
+                matches!(rc, Ok(ServerMessage::Event(msg)) if matches!(msg.event, InstanceEvent::Unknown))
+            );
+            assert!(
+                matches!(app, Ok(HostMessage::Event{event,..}) if matches!(*event,InstanceEvent::Unknown))
+            );
+        } else {
+            assert!(rc.is_err() && app.is_err());
+        }
+    }
+    roundtrip::<HostMessage>(&fixtures()["server"][2]);
+}
+
+#[test]
+fn host_relay_preserves_snapshot_live_event_and_response() {
+    let mut frame = fixtures()["server"][2].clone();
+    frame["event"]["run"]["actions"] = json!(["steer", "new_action"]);
+    frame["future_event_field"] = json!(true);
+    let mut snapshot = fixtures()["host"][0]["snapshot"].clone();
+    snapshot["subagents"] = json!({"runs":[frame["event"]["run"],{"backend":"new_backend","opaque":true}], "backends":[{"backend":"new_backend","supported":false}]});
+    let history = json!({"session":null,"items":[{"kind":"future"}],"future":1});
+    // Exactly what the Host receives via NDJSON, before any endpoint normalization.
+    let frames = [
+        json!({"type":"response","id":"h","ok":true,"result":{"snapshot":snapshot},"future":2}),
+        frame.clone(),
+    ];
+    let mut received = vec![];
+    let mut decoder = LineDecoder::default();
+    for f in &frames {
+        decoder.push(&encode_line(f).unwrap(), |v| received.push(v.unwrap()));
+    }
+    let subscribed = relay::HostFrame::Subscribed {
+        instance_id: "i",
+        snapshot: &received[0]["result"]["snapshot"],
+        history: &history,
+    };
+    assert_eq!(
+        serde_json::to_value(subscribed).unwrap(),
+        json!({"type":"subscribed","instanceId":"i","snapshot":snapshot,"history":history})
+    );
+    let reply = relay::HostFrame::RcResult {
+        instance_id: "i",
+        response: &received[0],
+    };
+    assert_eq!(
+        serde_json::to_value(reply).unwrap(),
+        json!({"type":"rc_result","instanceId":"i","response":frames[0]})
+    );
+    assert_eq!(
+        decode_json(&encode_line(&received[1]).unwrap()).unwrap(),
+        frame
+    );
+}
+#[test]
+fn typed_request_has_no_second_source_of_reserved_keys() {
+    let req = RequestOf::<method::Hello> {
+        id: "r".into(),
+        method: method::Hello::Hello,
+        params: None,
+        expect_instance_id: None,
+        expect_session_id: None,
+    };
+    // Check the serialized text: converting to Value would hide duplicate keys.
+    assert_eq!(
+        serde_json::to_string(&req).unwrap(),
+        r#"{"id":"r","method":"hello"}"#
+    );
+    for dup in [
+        r#"{"id":"r","method":"hello","method":"shutdown"}"#,
+        r#"{"id":"r","method":"hello","id":"s"}"#,
+    ] {
+        assert!(serde_json::from_str::<RequestOf<method::Hello>>(dup).is_err())
+    }
+}

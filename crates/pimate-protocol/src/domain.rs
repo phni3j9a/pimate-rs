@@ -812,9 +812,31 @@ pub enum InstanceEventNotifyLevel {
     Error,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "type")]
-pub enum InstanceEvent {
+// The private serde mirror decodes known events; no public deserialization path
+// can bypass the backend check. Both enums share the same wire definition.
+macro_rules! instance_events {
+    ($($variants:tt)*) => {
+        #[derive(Clone, Debug, PartialEq, Serialize, TS)]
+        #[serde(tag = "type")]
+        pub enum InstanceEvent { $($variants)* }
+
+        impl<'de> Deserialize<'de> for InstanceEvent {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                #[derive(Deserialize, TS)]
+                #[serde(tag = "type", remote = "InstanceEvent")]
+                enum WireEvent { $($variants)* }
+
+                let event = Value::deserialize(d)?;
+                if event.get("type").and_then(Value::as_str) == Some("subagent_run")
+                    && event.get("run").is_some_and(subagents::unknown_backend) {
+                    return Ok(Self::Unknown);
+                }
+                WireEvent::deserialize(event).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+instance_events! {
     #[serde(rename = "status")]
     Status { status: Received<InstanceStatus> },
     #[serde(rename = "session_changed")]

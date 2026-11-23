@@ -98,7 +98,7 @@ export type SubagentRun = {
 /**
  * RC key: pi-subagents runId, or `tool:<toolCallId>` for runs only known through a tool call.
  */
-id: string, backend: Received<SubagentBackend>,
+id: string, backend: SubagentBackend,
 /**
  * Keeps running after the parent turn ends (pi-subagents async).
  */

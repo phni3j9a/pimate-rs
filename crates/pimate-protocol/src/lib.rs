@@ -1,5 +1,6 @@
-//! PiMate v1 JSON wire types. Validate privileged requests on the original JSON
-//! before deserializing: unknown object fields are deliberately ignored here.
+//! PiMate v1 JSON wire types. For Host forwarding use the original JSON and
+//! [`relay::HostFrame`], not the endpoint types: those normalize unknown data.
+//! Validate privileged requests on their original JSON before deserializing.
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Number, Value};
 use ts_rs::TS;
@@ -8,6 +9,7 @@ mod domain;
 mod helpers;
 mod host;
 mod images;
+pub mod relay;
 mod rpc;
 mod subagents;
 pub use {auth::*, domain::*, helpers::*, host::*, images::*, rpc::*, subagents::*};
