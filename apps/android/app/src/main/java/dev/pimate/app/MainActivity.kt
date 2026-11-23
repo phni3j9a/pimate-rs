@@ -84,8 +84,8 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
             DrawerSheet {
                 DrawerContent(
                     m,
-                    select = {
-                        m.select(it)
+                    select = { h, id ->
+                        m.select(h, id)
                         scope.launch { drawer.close() }
                     },
                     pair = {
@@ -93,13 +93,12 @@ private fun Screen(m: SessionModel, scale: Float, setScale: (Float) -> Unit) {
                         scope.launch { drawer.close() }
                     },
                     open = { sheet = it },
-                    recover = recover,
                 )
             }
         },
     ) {
         if (showPair) PairScreen(m, if (host != null) ({ pairing = false }) else null)
-        else ChatScreen(m, { scope.launch { drawer.open() } }, recover)
+        else key(host?.id) { ChatScreen(m, { scope.launch { drawer.open() } }, recover) }
     }
     if (sheet.isNotEmpty())
         ModalBottomSheet(
@@ -214,17 +213,12 @@ private fun ago(at: Long, now: Long): String {
     }
 }
 
-/**
- * ドロワー（docs/design/html/Drawer.html）: 要対応を最上段、つづいてマシンごと。最下段の左に設定、右に「＋ 新しい Pi」。 接続は 1 本なので、Instance
- * を並べるのは接続中のマシンだけ。ほかのマシンは見出しをタップして切り替える。
- */
 @Composable
 private fun DrawerContent(
     m: SessionModel,
-    select: (String) -> Unit,
+    select: (Host, String) -> Unit,
     pair: () -> Unit,
     open: (String) -> Unit,
-    recover: (Stop) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val now by
@@ -234,21 +228,21 @@ private fun DrawerContent(
                 value = System.currentTimeMillis()
             }
         }
-    val host = m.host
-    val state = m.rows.groups["host"].orEmpty().associate { it.id to it.json }
-    val stop = stopped(state["connection"])
-    val all =
-        remember(m.rows.groups["instance"]) {
-            m.rows.groups["instance"].orEmpty().map { it.id to JSONObject(it.json) }
-        }
     val shown =
-        all.filter { (_, o) ->
-            query.isBlank() ||
-                title(o.optJSONObject("session"), o.str("cwd")).contains(query.trim(), true) ||
-                o.str("cwd").contains(query.trim(), true)
+        m.hosts.flatMap { h ->
+            val instances = m.rowsFor(h.id).groups["instance"]
+            remember(h, instances, query) {
+                instances
+                    .orEmpty()
+                    .map { Triple(h, it.id, JSONObject(it.json)) }
+                    .filter { (_, _, o) ->
+                        query.isBlank() ||
+                            title(o.optJSONObject("session"), o.str("cwd"))
+                                .contains(query.trim(), true) ||
+                            o.str("cwd").contains(query.trim(), true)
+                    }
+            }
         }
-    val question =
-        m.rows.groups["question"].orEmpty().lastOrNull()?.let { JSONObject(it.json).str("title") }
     Column(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         Row(
             Modifier.padding(start = 2.dp, top = 6.dp, end = 2.dp)
@@ -275,27 +269,37 @@ private fun DrawerContent(
             )
         }
         LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
-            val (waiting, rest) = shown.partition { it.second.str("section") == "waiting" }
+            val (waiting, rest) = shown.partition { it.third.str("section") == "waiting" }
             if (waiting.isNotEmpty()) {
                 item("attention") { GroupHeader(Icons.Bell, "要対応", pi.waitingText) }
-                items(waiting, key = { "w:${it.first}" }) { (id, o) ->
+                items(waiting, key = { "w:${it.first.id}:${it.second}" }) { (h, id, o) ->
                     val asks = o.str("status") == "waiting_input"
                     InstanceRow(
                         o,
-                        id == m.selected,
+                        h.id == m.host?.id && id == m.selected,
                         when {
+                            o.has("failureText") -> "失敗: ${o.str("failureText")}"
+                            o.has("questionTitle") -> "入力待ち: ${o.str("questionTitle")}"
+                            h.id == m.host?.id &&
+                                id == m.selected &&
+                                !m.rows.groups["question"].isNullOrEmpty() ->
+                                "入力待ち: ${JSONObject(m.rows.groups.getValue("question").last().json).str("title")}"
+                            (o.optJSONObject("subagents")?.optLong("failed") ?: 0) > 0 ->
+                                "失敗: サブエージェント"
                             !asks -> "サブエージェントの確認が必要です"
-                            id == m.selected && question != null -> "入力待ち: $question"
                             else -> "入力待ち: Pi が回答を待っています"
                         },
                         ago(o.optLong("updatedAt"), now),
                     ) {
-                        select(id)
+                        select(h, id)
                     }
                 }
             }
-            if (host != null) {
-                item("host") {
+            for (host in m.hosts.filterNot { it.needsPairing }) {
+                val groups = m.rowsFor(host.id).groups
+                val state = groups["host"].orEmpty().associate { it.id to it.json }
+                val stop = stopped(state["connection"])
+                item("host:${host.id}") {
                     val connection = state["connection"]
                     GroupHeader(
                         if (state["info"]?.contains("\"darwin\"") == true) Icons.Laptop
@@ -320,14 +324,22 @@ private fun DrawerContent(
                         }
                     }
                 }
-                val (bots, normal) = rest.partition { it.second.str("section") == "bot" }
-                items(normal, key = { "i:${it.first}" }) { (id, o) ->
-                    InstanceRow(o, id == m.selected, null, ago(o.optLong("updatedAt"), now)) {
-                        select(id)
+                val (bots, normal) =
+                    rest
+                        .filter { it.first.id == host.id }
+                        .partition { it.third.str("section") == "bot" }
+                items(normal, key = { "i:${it.first.id}:${it.second}" }) { (h, id, o) ->
+                    InstanceRow(
+                        o,
+                        h.id == m.host?.id && id == m.selected,
+                        null,
+                        ago(o.optLong("updatedAt"), now),
+                    ) {
+                        select(h, id)
                     }
                 }
                 if (bots.isNotEmpty())
-                    item("bots") {
+                    item("bots:${host.id}") {
                         Text(
                             "Grok Bot",
                             Modifier.padding(start = 36.dp, top = 10.dp, bottom = 2.dp).semantics {
@@ -338,13 +350,18 @@ private fun DrawerContent(
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
-                items(bots, key = { "b:${it.first}" }) { (id, o) ->
-                    InstanceRow(o, id == m.selected, null, ago(o.optLong("updatedAt"), now)) {
-                        select(id)
+                items(bots, key = { "b:${it.first.id}:${it.second}" }) { (h, id, o) ->
+                    InstanceRow(
+                        o,
+                        h.id == m.host?.id && id == m.selected,
+                        null,
+                        ago(o.optLong("updatedAt"), now),
+                    ) {
+                        select(h, id)
                     }
                 }
                 if (stop != null)
-                    item("stop") {
+                    item("stop:${host.id}") {
                         Column(Modifier.padding(start = 12.dp, top = 10.dp, end = 12.dp)) {
                             Text(
                                 stop.detail,
@@ -353,19 +370,19 @@ private fun DrawerContent(
                             )
                             TextAction(
                                 stop.action,
-                                { recover(stop) },
+                                { if (stop.repair) pair() else m.switchHost(host) },
                                 Modifier.offset(x = (-14).dp),
                                 enabled = !m.busy,
                             )
                         }
                     }
-                else if (shown.isEmpty())
-                    item("empty") {
+                else if (shown.none { it.first.id == host.id })
+                    item("empty:${host.id}") {
                         Text(
                             when {
                                 state["connection"] == "\"offline\"" -> "PC に接続できません。再接続を試みています。"
                                 state["listKnown"] != "true" -> "読み込み中…"
-                                all.isNotEmpty() -> "一致する Pi はありません"
+                                !groups["instance"].isNullOrEmpty() -> "一致する Pi はありません"
                                 else -> "起動中の Pi はありません。PC で pi を起動すると、ここに表示されます。"
                             },
                             Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
@@ -374,7 +391,7 @@ private fun DrawerContent(
                         )
                     }
             }
-            items(m.hosts.filter { it.id != host?.id }, key = { "h:${it.id}" }) { other ->
+            items(m.hosts.filter { it.needsPairing }, key = { "h:${it.id}" }) { other ->
                 OtherHost(other, !m.busy) {
                     if (other.needsPairing) pair() else m.switchHost(other)
                 }

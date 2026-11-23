@@ -75,6 +75,8 @@ pub(crate) struct State {
     rows: IndexMap<String, IndexMap<String, Value>>,
     pub changes: Vec<Change>,
     pub selected: Option<String>,
+    // Only retain observations which are not available in RC v1 history/snapshots.
+    observations: IndexMap<String, Observations>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
     missing: MissingCompletions,
@@ -82,6 +84,13 @@ pub(crate) struct State {
     pub(crate) result_deadline: Option<Instant>,
     pub caps: Value,
     pub drafts: Vec<Draft>,
+}
+struct Observations {
+    session: Value,
+    started: Value,
+    running_since: Value,
+    tools: IndexMap<String, (String, Value)>,
+    thinking: IndexMap<String, Value>,
 }
 pub(crate) struct Draft {
     pub id: String,
@@ -158,12 +167,61 @@ impl State {
         self.clear("notice");
         self.reset_view()
     }
+    fn open_call(&self, id: &str) -> Option<&str> {
+        for e in self.rows.get("entry")?.values().rev() {
+            if e["kind"] == "user" || (e["kind"] == "tool_result" && e["toolCallId"] == id) {
+                break;
+            }
+            if e["toolCalls"]
+                .as_array()
+                .is_some_and(|calls| calls.iter().any(|c| c["id"] == id))
+            {
+                return e["entryId"].as_str();
+            }
+        }
+        None
+    }
     fn reset_view(&mut self) {
+        if self.ready()
+            && let Some(id) = self.selected.clone()
+        {
+            let observed = Observations {
+                session: self.get("view", "session")["id"].clone(),
+                started: self.get("view", "startedAt").clone(),
+                running_since: self.get("view", "runningSince").clone(),
+                tools: self
+                    .rows
+                    .get("tool")
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, t)| t["status"] == "running")
+                    .filter_map(|(id, t)| {
+                        Some((id.clone(), (self.open_call(id)?.to_owned(), t.clone())))
+                    })
+                    .collect(),
+                thinking: self.rows.get("thinkingMs").cloned().unwrap_or_default(),
+            };
+            self.observations.shift_remove(&id);
+            self.observations.insert(id, observed);
+            if self.observations.len() > 16 {
+                self.observations.shift_remove_index(0);
+            }
+        }
         self.seq = None;
         self.remove("busy", "answer");
         for c in [
-            "entry", "question", "quota", "run", "tool", "stream", "view", "command", "session",
-            "model", "node",
+            "entry",
+            "question",
+            "quota",
+            "run",
+            "tool",
+            "stream",
+            "view",
+            "command",
+            "session",
+            "model",
+            "node",
+            "thinkingMs",
         ] {
             self.clear(c)
         }
@@ -286,6 +344,15 @@ impl State {
     }
     /// Frames have already passed HostMessage validation and normalization.
     pub fn apply(&mut self, m: &Value) -> bool {
+        self.apply_at(
+            m,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        )
+    }
+    pub(crate) fn apply_at(&mut self, m: &Value, now: u64) -> bool {
         let t = m["type"].as_str().unwrap_or("");
         if t == "instances" {
             self.put("host", "listKnown", json!(true));
@@ -420,6 +487,29 @@ impl State {
                 for v in entries.into_values() {
                     self.entry(v.clone())
                 }
+                if let Some(obs) = self
+                    .observations
+                    .shift_remove(m["instanceId"].as_str().unwrap())
+                    && obs.started == s["startedAt"]
+                    && obs.session == self.get("view", "session")["id"]
+                {
+                    for (id, ms) in obs.thinking {
+                        if !self.get("entry", &id).is_null() {
+                            self.put("thinkingMs", &id, ms);
+                        }
+                    }
+                    if self.get("view", "agentActive") == true {
+                        for (id, (caller, tool)) in obs.tools {
+                            if self.open_call(&id) == Some(&caller) {
+                                self.put("tool", &id, tool);
+                                self.put("view", "runningSince", obs.running_since.clone());
+                            }
+                        }
+                    }
+                }
+                if s["status"] != "idle" && self.get("view", "runningSince").is_null() {
+                    self.put("view", "runningSince", json!(now));
+                }
                 self.builtins();
                 self.put("view", "phase", json!("ready"))
             }
@@ -537,6 +627,23 @@ impl State {
                     }
                     "message_end" => {
                         if e["item"]["kind"] == "assistant" {
+                            if let Some(start) = self.get("stream", "thinkingSince").as_u64()
+                                && let Some(id) = e["item"]["entryId"].as_str()
+                                && e["item"]["thinking"]
+                                    .as_str()
+                                    .is_some_and(|s| !s.trim().is_empty())
+                            {
+                                self.put(
+                                    "thinkingMs",
+                                    id,
+                                    json!(
+                                        self.get("stream", "thinkingUntil")
+                                            .as_u64()
+                                            .unwrap_or(now)
+                                            .saturating_sub(start)
+                                    ),
+                                );
+                            }
                             self.clear("stream")
                         }
                         self.entry(e["item"].clone())
@@ -547,6 +654,22 @@ impl State {
                         } else {
                             "thinking"
                         };
+                        if k == "thinking"
+                            && ["text", "thinking"].iter().all(|k| {
+                                self.get("stream", k)
+                                    .as_str()
+                                    .unwrap_or_default()
+                                    .is_empty()
+                            })
+                            && self.get("stream", "thinkingSince").is_null()
+                        {
+                            self.put("stream", "thinkingSince", json!(now));
+                        } else if k == "text"
+                            && !self.get("stream", "thinkingSince").is_null()
+                            && self.get("stream", "thinkingUntil").is_null()
+                        {
+                            self.put("stream", "thinkingUntil", json!(now));
+                        }
                         let mut text = self
                             .get("stream", k)
                             .as_str()
@@ -580,6 +703,7 @@ impl State {
                         },
                     ),
                     "agent_start" => {
+                        self.put("view", "runningSince", json!(now));
                         if self.get("view", "status") == "idle" {
                             self.put("view", "status", json!("running"))
                         }
@@ -607,6 +731,13 @@ impl State {
                     "subagent_run" => self.run(&e["run"]),
                     "subagents_reset" => self.runs(&e["state"]),
                     k @ ("context" | "status" | "model") => {
+                        if k == "status" {
+                            if e[k] == "idle" {
+                                self.remove("view", "runningSince");
+                            } else if self.get("view", "runningSince").is_null() {
+                                self.put("view", "runningSince", json!(now));
+                            }
+                        }
                         if k == "status" && e[k] != "waiting_input" {
                             self.put("view", "agentActive", json!(e[k] == "running"))
                         }
@@ -621,6 +752,10 @@ impl State {
                             .unwrap_or_default();
                         if tool.is_empty() && e["type"] != "tool_start" {
                             return false;
+                        }
+                        if e["type"] == "tool_start" {
+                            tool.clear();
+                            tool.insert("startedAt".into(), json!(now));
                         }
                         tool.extend(e.as_object().unwrap().clone());
                         tool.insert(
@@ -811,7 +946,10 @@ impl State {
 }
 
 fn attention(v: &Value) -> bool {
-    v["status"] == "waiting_input" || v["subagents"]["waiting"].as_u64().unwrap_or(0) > 0
+    v["subagents"]["failed"].as_u64().unwrap_or(0) > 0
+        || v["failureText"].is_string()
+        || v["status"] == "waiting_input"
+        || v["subagents"]["waiting"].as_u64().unwrap_or(0) > 0
 }
 
 fn mirrored(req: &Value, p: &Value) -> bool {

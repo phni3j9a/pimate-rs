@@ -106,7 +106,7 @@ fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<Arc<AtomicUsize>> {
                     let result = match r["method"].as_str() {
                         Some("hello") => json!({"snapshot":snap}),
                         Some("history") => {
-                            json!({"session":{"id":"s"},"items":if recovered{json!([{"kind":"user","entryId":"u","text":"hey"}])}else{json!([])}})
+                            json!({"session":{"id":"s"},"items":if recovered{json!([{"kind":"user","entryId":"u","text":"hey"}])}else{json!([{"entryId":"failed","kind":"assistant","text":"","toolCalls":[],"stopReason":"error","errorMessage":"command failed"}])}})
                         }
                         Some("prompt") => {
                             ensure!(
@@ -265,6 +265,20 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let c = core.connect(h.id, Arc::new(Changes(tx)))?;
     until(&mut rx, "instance", "stub", None).await?;
+    timeout(Duration::from_secs(10), async {
+        loop {
+            if c.snapshot().items.iter().any(|i| {
+                i.collection == "instance"
+                    && serde_json::from_str::<Value>(&i.json).is_ok_and(|v| {
+                        v["failureText"] == "command failed" && v["section"] == "waiting"
+                    })
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await?;
     c.subscribe(Some("stub".into()))?;
     for bad in ["", "../stub", "invalid/target", &"x".repeat(101)] {
         assert_eq!(c.subscribe(Some(bad.into())), Err(Error::BadRequest));

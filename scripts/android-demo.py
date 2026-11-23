@@ -284,9 +284,9 @@ async def pi(
                     )
                 elif method == "history":
                     reply = dict(session=session, items=history)
-                    if task is None and iid == "demo":
+                    if task is None and iid == "demo" and not r["id"].startswith("drawer-"):
                         task = asyncio.create_task(stream(False))
-                    elif task is None and iid == "main":
+                    elif task is None and iid == "main" and not r["id"].startswith("drawer-"):
                         task = asyncio.create_task(hold())
                 elif method == "prompt":
                     if task and not task.done():
@@ -503,6 +503,10 @@ async def demo(lab, binary):
         port = sock.getsockname()[1]
     if port == 47800:
         raise RuntimeError("Reserved TS Host port; restart the demo")
+    if name := os.environ.get("PIMATE_DEMO_NAME"):
+        import uuid
+        (lab / "config").mkdir(mode=0o700)
+        (lab / "config/host.json").write_text(json.dumps(dict(name=name, hostId=str(uuid.uuid4()))))
     args = ["--port", str(port)]
     host = await asyncio.create_subprocess_exec(
         binary, "serve", *args, "--listen", "127.0.0.1", env=env

@@ -66,8 +66,19 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
 class SessionModel(app: Application) : AndroidViewModel(app) {
     private val core = Core((app as PiApplication).store)
     private val handler = Handler(Looper.getMainLooper())
-    private var connection: Connection? = null
-    private var generation = 0
+
+    private class Slot {
+        var connection: Connection? = null
+    }
+
+    private val slots = mutableMapOf<String, Slot>()
+    private val states = mutableStateMapOf<String, Rows>()
+
+    fun rowsFor(id: String) = states[id] ?: Rows()
+
+    private val connection
+        get() = host?.let { slots[it.id]?.connection }
+
     var host by mutableStateOf<Host?>(null)
         private set
 
@@ -154,20 +165,26 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
     init {
         try {
             hosts = core.hosts()
-            hosts.firstOrNull { !it.needsPairing }?.let(::connect)
+            for (h in hosts.filterNot { it.needsPairing }) {
+                try {
+                    connect(h)
+                } catch (_: CoreException) {
+                    error = "接続を開けません"
+                }
+            }
+            hosts.firstOrNull { it.id in slots }?.let(::focus)
+            openList = host != null
         } catch (_: CoreException) {
             error = "保存済みの接続を開けません"
         }
     }
 
     private fun connect(h: Host) {
-        val epoch = ++generation
-        connection?.close()
-        connection = null
-        edits.current = null
-        selected = null
-        publish(Rows())
-        host = null
+        val slot = Slot()
+        fun update(next: Rows) {
+            states[h.id] = next
+            if (host?.id == h.id) publish(next)
+        }
         val c =
             core.connect(
                 h.id,
@@ -182,16 +199,16 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                             if (resync.compareAndSet(false, true))
                                 handler.post {
                                     resync.set(false)
-                                    if (generation == epoch)
-                                        connection?.let { publish(Rows.from(it.snapshot())) }
+                                    if (this@SessionModel.slots[h.id] === slot)
+                                        slot.connection?.let { update(Rows.from(it.snapshot())) }
                                 }
                             return
                         }
                         handler.post {
                             try {
-                                if (generation == epoch)
-                                    connection?.let {
-                                        publish(rows.apply(revision, changes, it::snapshot))
+                                if (this@SessionModel.slots[h.id] === slot)
+                                    slot.connection?.let {
+                                        update(rowsFor(h.id).apply(revision, changes, it::snapshot))
                                     }
                             } finally {
                                 slots.release()
@@ -200,10 +217,17 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                     }
                 },
             )
-        connection = c
+        slots.put(h.id, slot)?.connection?.close()
+        slot.connection = c
+        update(Rows.from(c.snapshot()))
+    }
+
+    private fun focus(h: Host) {
+        if (host?.id != h.id) connection?.subscribe(null)
         host = h
-        publish(Rows.from(c.snapshot()))
-        openList = true
+        selected = null
+        edits.current = null
+        publish(rowsFor(h.id))
     }
 
     fun pair(link: String) {
@@ -215,6 +239,8 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                     val paired = core.pair(link.trim(), android.os.Build.MODEL)
                     hosts = core.hosts()
                     connect(paired)
+                    focus(paired)
+                    openList = true
                 } catch (_: CoreException) {
                     error = "ペアリングに失敗しました。リンクと接続を確認してください"
                 } finally {
@@ -226,14 +252,16 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
     fun switchHost(h: Host) {
         try {
             connect(h)
+            if (host?.id == h.id) focus(h)
             error = ""
         } catch (_: CoreException) {
             error = "接続を開けません"
         }
     }
 
-    fun select(id: String) {
+    fun select(h: Host, id: String) {
         try {
+            if (h.id != host?.id) focus(h)
             connection?.subscribe(id)
             if (selected != id) edits.current = null
             selected = id
@@ -242,6 +270,33 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         } catch (_: CoreException) {
             error = "選択できません"
         }
+    }
+
+    // Pass the key captured when launching PickMultipleVisualMedia; cancellation is an empty list.
+    internal suspend fun attach(key: EditorKey, uris: List<android.net.Uri>) {
+        if (uris.isEmpty() || edits.current != key || target != key.target) return
+        val view = rows.groups["view"].orEmpty().associate { it.id to it.json }
+        require(view["promptImages"] == "true")
+        val existing = edits.body.images
+        val budget = imageBudget(existing, uris.size, view["promptImageLimit"]?.toIntOrNull() ?: 1)
+        val resolver = getApplication<Application>().contentResolver
+        val photos = withContext(Dispatchers.IO) { uris.map { encodePhoto(resolver, it, budget) } }
+        if (edits.current == key && target == key.target && edits.body.images == existing)
+            edits.update(key, edits.body.copy(images = existing + photos))
+    }
+
+    fun suggestions(text: String) = connection?.commandSuggestions(text).orEmpty()
+
+    fun stats() = connection?.sessionStats()
+
+    fun allowances(nowMs: ULong) = connection?.allowances(nowMs).orEmpty()
+
+    internal suspend fun request(key: EditorKey, method: RcMethod, params: JSONObject): String {
+        val c = connection
+        require(c != null && edits.current == key && target == key.target)
+        val result = c.perform(Operation.Rc(key.target, method, params.toString()))
+        check(connection === c && edits.current == key && target == key.target)
+        return result
     }
 
     fun operate(op: Operation, success: () -> Unit = {}) {
@@ -267,8 +322,8 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
-        generation++
-        connection?.close()
+        slots.values.forEach { it.connection?.close() }
+        slots.clear()
         core.close()
     }
 }

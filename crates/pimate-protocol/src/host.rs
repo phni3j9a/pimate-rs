@@ -172,6 +172,12 @@ pub struct InstanceSummary {
     pub status: Received<InstanceStatus>,
     pub started_at: u64,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub question_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure_text: Option<String>,
     /// Subagent counts (M4); absent when the RC does not report them.
     #[serde(
         default,

@@ -426,7 +426,7 @@ export type InstanceSummary = { instanceId: string, cwd: string, origin: Receive
 /**
  * Whether a PC terminal is attached to the abduco session; null when not started under abduco.
  */
-pcAttached: boolean | null, session: SessionRef | null, status: Received<InstanceStatus>, startedAt: number, updatedAt: number,
+pcAttached: boolean | null, session: SessionRef | null, status: Received<InstanceStatus>, startedAt: number, updatedAt: number, questionTitle?: string, failureText?: string,
 /**
  * Subagent counts (M4); absent when the RC does not report them.
  */

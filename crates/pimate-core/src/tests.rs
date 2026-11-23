@@ -1037,3 +1037,36 @@ fn take_only_matching_unconfirmed_draft_once() {
     );
     assert!(s.take_unconfirmed(&target(), "late").is_err());
 }
+
+#[test]
+fn observed_timing_and_partial_survive_reopening_only_an_unanswered_call() {
+    let mut s = view();
+    let events = [
+        json!({"type":"agent_start"}),
+        json!({"type":"thinking_delta","delta":"a"}),
+        json!({"type":"text_delta","delta":"b"}),
+        json!({"type":"message_end","item":{"kind":"assistant","entryId":"e","thinking":"a","toolCalls":[{"id":"t"}]}}),
+        json!({"type":"tool_start","toolCallId":"t"}),
+        json!({"type":"tool_update","toolCallId":"t","partial":{"content":[{"type":"text","text":"test"}]}}),
+    ];
+    for (i, e) in events.into_iter().enumerate() {
+        s.apply_at(
+            &json!({"type":"event","instanceId":"i","sessionId":"s","seq":3+i,"event":e}),
+            1000 + i as u64 * 50,
+        );
+    }
+    let item = s.get("entry", "e").clone();
+    let mut snapshot = json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":10,"session":{"id":"s"},"status":"running"},"history":{"items":[item]}});
+    s.reset();
+    s.apply_at(&snapshot, 5000);
+    assert_eq!(s.get("view", "runningSince"), 1000);
+    assert_eq!(s.get("thinkingMs", "e"), 50);
+    assert_eq!(s.get("tool", "t")["startedAt"], 1200);
+    assert_eq!(s.get("tool", "t")["partial"]["content"][0]["text"], "test");
+    snapshot["history"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"entryId":"result","kind":"tool_result","toolCallId":"t"}));
+    s.apply_at(&snapshot, 6000);
+    assert!(s.get("tool", "t").is_null());
+}

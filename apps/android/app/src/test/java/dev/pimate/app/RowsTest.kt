@@ -6,6 +6,14 @@ import uniffi.pimate_ffi.*
 
 class RowsTest {
     @Test
+    fun photoBudgetIsSharedWithoutCountingBase64Padding() {
+        val image = Image("image/jpeg", "YQ==")
+        assertEquals((600 * 1024 - 1) / 3, imageBudget(listOf(image), 3, 4))
+        assertEquals(512 * 1024, imageBudget(emptyList(), 1, 1))
+        assertThrows(IllegalArgumentException::class.java) { imageBudget(listOf(image), 1, 1) }
+    }
+
+    @Test
     fun largeHistoryUsesOneSnapshot() {
         val entries = List(4096) { Item("entry", it.toString(), it.toULong(), "{}") }
         var calls = 0
