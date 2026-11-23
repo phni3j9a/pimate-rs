@@ -110,6 +110,7 @@ impl Connection {
                     st.selected = None;
                     st.put("host", "selection", Value::Null);
                     st.auth_targets.clear();
+                    st.auth_waits.clear();
                     for c in ["auth", "provider", "loginCapability"] {
                         st.clear(c)
                     }

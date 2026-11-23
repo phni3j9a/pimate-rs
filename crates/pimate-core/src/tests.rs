@@ -1285,3 +1285,70 @@ fn finished_child_stays_watched_until_a_new_user_entry() {
     );
     assert!(s.get("runWatch", "r").is_null());
 }
+
+#[test]
+fn reconnect_restores_only_watched_runs_in_the_same_turn() {
+    for (next_pi, start, session, turn, run, restored) in [
+        ("i", 1, "s", "u", "r", true),
+        ("i", 1, "s", "next", "r", false),
+        ("i", 1, "other", "u", "r", false),
+        ("i", 2, "s", "u", "r", false),
+        ("other", 1, "s", "u", "r", false),
+        ("i", 1, "s", "u", "other", false),
+    ] {
+        let snapshot = |pi, start, session, turn, runs: Value| json!({"type":"subscribed","instanceId":pi,"snapshot":{"seq":2,"startedAt":start,"session":{"id":session},"subagents":{"runs":runs}},"history":{"items":[{"kind":"user","entryId":turn}]}});
+        let mut s = State::default();
+        s.selected = Some("i".into());
+        s.apply(&snapshot("i", 1, "s", "u", json!([])));
+        for (seq, status) in [(3, "running"), (4, "complete")] {
+            event(
+                &mut s,
+                seq,
+                json!({"type":"subagent_run","run":{"id":"r","state":status}}),
+            );
+        }
+        s.reset();
+        s.selected = None;
+        s.reset();
+        s.selected = Some(next_pi.into());
+        s.apply(&snapshot(
+            next_pi,
+            start,
+            session,
+            turn,
+            json!([{"id":run,"state":"complete"}]),
+        ));
+        assert_eq!(s.get("runWatch", run) == true, restored);
+        assert_eq!(s.get("runWatch", "r") == true, restored);
+    }
+}
+
+#[test]
+fn auth_wait_is_exclusive_per_login_pi_until_the_receipt_or_timeout() {
+    let mut s = view();
+    s.caps = json!({"providerAuth":true});
+    for pi in ["a", "b"] {
+        s.auth_targets.insert(pi.into(), pi.into());
+        s.put("loginCapability", pi, json!(true));
+        s.put("auth", pi, json!({"id":"f"}));
+    }
+    let wait = |pi: &str| Operation::Rc {
+        target: Target {
+            instance: pi.into(),
+            session: None,
+        },
+        method: pimate_protocol::RcMethod::AuthWait,
+        params: json!({"flowId":"f","afterRevision":1}).to_string(),
+    };
+    s.prepare("1", wait("a"), false).unwrap();
+    s.prepare("1", wait("a"), true).unwrap();
+    s.reset(); // Switching chats does not cancel the login Pi's wait.
+    assert_eq!(s.prepare("2", wait("a"), true), Err(Error::Blocked));
+    s.prepare("3", wait("b"), true).unwrap();
+    s.release("3");
+    assert_eq!(s.prepare("2", wait("a"), false), Err(Error::Blocked));
+    s.release_unknown("1");
+    s.prepare("2", wait("a"), true).unwrap();
+    s.release("2");
+    s.prepare("4", wait("a"), true).unwrap();
+}

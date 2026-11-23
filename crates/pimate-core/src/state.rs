@@ -71,6 +71,7 @@ impl MissingCompletions {
 #[derive(Default)]
 pub(crate) struct State {
     pub revision: u64,
+    pub auth_waits: std::collections::HashMap<String, String>, // request ID → login Pi, per socket
     pub auth_targets: std::collections::HashMap<String, String>,
     rows: IndexMap<String, IndexMap<String, Value>>,
     pub changes: Vec<Change>,
@@ -95,6 +96,8 @@ struct Failure {
     text: String,
 }
 struct Observations {
+    user_entry: Option<String>,
+    watched: Vec<String>,
     seq: Option<u64>,
     session: Value,
     started: Value,
@@ -252,12 +255,27 @@ impl State {
         }
         None
     }
+    fn last_user_entry(&self) -> Option<&str> {
+        self.rows
+            .get("entry")?
+            .iter()
+            .rev()
+            .find(|(_, e)| e["kind"] == "user")
+            .map(|(id, _)| id.as_str())
+    }
     fn reset_view(&mut self) {
         if self.ready()
             && let Some(id) = self.selected.clone()
         {
             self.observations.shift_remove(&id);
             let observed = Observations {
+                user_entry: self.last_user_entry().map(str::to_owned),
+                watched: self
+                    .rows
+                    .get("runWatch")
+                    .into_iter()
+                    .flat_map(|r| r.keys().cloned())
+                    .collect(),
                 seq: self.seq,
                 session: self.get("view", "session").clone(),
                 started: self.get("view", "startedAt").clone(),
@@ -340,6 +358,7 @@ impl State {
         }
     }
     pub fn release(&mut self, id: &str) {
+        self.auth_waits.remove(id);
         for lock in ["operation", "answer"] {
             if self.get("busy", lock)["id"] == id {
                 if lock == "operation" {
@@ -639,6 +658,15 @@ impl State {
                         );
                     }
                     if obs.session["id"] == self.get("view", "session")["id"] {
+                        if obs.user_entry.is_some()
+                            && self.last_user_entry() == obs.user_entry.as_deref()
+                        {
+                            for id in obs.watched {
+                                if !self.get("run", &id).is_null() {
+                                    self.put("runWatch", &id, json!(true));
+                                }
+                            }
+                        }
                         for (id, ms) in obs.thinking {
                             if !self.get("entry", &id).is_null() {
                                 self.put("thinkingMs", &id, ms);

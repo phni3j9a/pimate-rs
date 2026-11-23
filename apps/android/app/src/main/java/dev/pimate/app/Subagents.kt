@@ -94,18 +94,35 @@ internal data class ChildKey(val editor: EditorKey, val run: String, val child: 
 internal data class SentInstruction(val action: String, val text: String)
 
 internal class ChildInstructions {
-    private val sent = mutableStateMapOf<ChildKey, List<SentInstruction>>()
-
-    fun accepted(key: ChildKey, action: String, text: String) {
-        sent[key] = sent[key].orEmpty() + SentInstruction(action, text)
+    // A label hint, not a second transcript. Bound both metadata and text across all children.
+    private data class Record(val key: ChildKey, val value: SentInstruction) {
+        val units =
+            key.editor.host.length.toLong() +
+                key.editor.target.instance.length +
+                (key.editor.target.session?.length ?: 0) +
+                key.run.length +
+                key.child.length +
+                value.action.length +
+                value.text.length
     }
 
-    fun forChild(key: ChildKey, resumedFrom: String?) =
-        sent[key].orEmpty() +
-            resumedFrom?.takeUnless { it == key.run }?.let { sent[key.copy(run = it)] }.orEmpty()
+    private val sent = mutableStateListOf<Record>()
+
+    fun accepted(key: ChildKey, action: String, text: String) {
+        val record = Record(key, SentInstruction(action, text))
+        if (record.units > 65536) return
+        var units = sent.sumOf { it.units } + record.units
+        while (sent.size >= 128 || units > 65536) units -= sent.removeAt(0).units
+        sent.add(record)
+    }
+
+    fun forChild(key: ChildKey, resumedFrom: String?): List<SentInstruction> {
+        val previous = resumedFrom?.let { key.copy(run = it) }
+        return sent.filter { it.key == key || it.key == previous }.map { it.value }
+    }
 
     fun forget(host: String) {
-        sent.keys.filter { it.editor.host == host }.forEach(sent::remove)
+        sent.removeAll { it.key.editor.host == host }
     }
 }
 

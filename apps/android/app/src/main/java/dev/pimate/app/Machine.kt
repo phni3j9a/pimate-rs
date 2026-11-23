@@ -27,14 +27,19 @@ internal fun Rows.firstStep(): FirstStep {
     }
 }
 
-internal suspend fun SessionModel.hostModels(id: String): JSONObject? {
+internal suspend fun SessionModel.hostModels(id: String) =
+    rowsFor(id).hostModels { instance ->
+        JSONObject(machineRequest(id, Operation.HostModels(instance)))
+    }
+
+internal suspend fun Rows.hostModels(fetch: suspend (String) -> JSONObject): JSONObject? {
     val recent =
-        rowsFor(id).groups["instance"].orEmpty().sortedByDescending {
-            JSONObject(it.json).optLong("updatedAt")
-        }
+        groups["instance"].orEmpty().sortedByDescending { JSONObject(it.json).optLong("updatedAt") }
     for (pi in recent.take(3)) {
         try {
-            return JSONObject(machineRequest(id, Operation.HostModels(pi.id)))
+            return fetch(pi.id)
+        } catch (_: CoreException.Blocked) {
+            continue
         } catch (_: CoreException.Rejected) {
             continue
         } catch (_: CoreException.Unsupported) {
@@ -66,7 +71,7 @@ internal class SpawnForm(val host: String, askDefault: Boolean) {
         require(cwd.isNotBlank())
         val params =
             JSONObject()
-                .put("cwd", cwd.trim())
+                .put("cwd", cwd)
                 .put("trust", trust)
                 .put("askTool", askTool)
                 .put("model", model)

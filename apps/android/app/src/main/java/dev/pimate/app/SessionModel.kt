@@ -289,7 +289,7 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
                 error = ""
                 try {
                     val first = hosts.isEmpty()
-                    val paired = core.pair(link.trim(), android.os.Build.MODEL)
+                    val paired = core.pair(link, android.os.Build.MODEL)
                     hosts = core.hosts()
                     connect(paired)
                     showPairing(false)

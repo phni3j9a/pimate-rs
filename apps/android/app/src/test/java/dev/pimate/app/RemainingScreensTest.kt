@@ -118,6 +118,61 @@ class RemainingScreensTest {
     }
 
     @Test
+    fun trustUsesTheExactSelectedPathIncludingTrailingSpace() {
+        val form = SpawnForm("host", false)
+        form.folder("/work/repo ", true)
+        val params = JSONObject(form.operation().params)
+        assertEquals("/work/repo ", params.getString("cwd"))
+        assertTrue(params.getBoolean("trust"))
+        form.folder("/work/repo")
+        assertFalse(JSONObject(form.operation().params).getBoolean("trust"))
+    }
+
+    @Test
+    fun hostModelsTriesNextPiWhenNewestIsNotReady() = runBlocking {
+        val rows =
+            Rows.from(
+                Snapshot(
+                    1u,
+                    listOf(
+                        Item("instance", "older", 0u, "{\"updatedAt\":1}"),
+                        Item("instance", "newer", 1u, "{\"updatedAt\":2}"),
+                    ),
+                )
+            )
+        val calls = mutableListOf<String>()
+        val models = JSONObject()
+        assertSame(
+            models,
+            rows.hostModels { id ->
+                calls += id
+                if (id == "newer") throw CoreException.Blocked()
+                models
+            },
+        )
+        assertEquals(listOf("newer", "older"), calls)
+    }
+
+    @Test
+    fun childLabelHintsHaveGlobalCountAndTextBudgets() {
+        val key = ChildKey(EditorKey("a", uniffi.pimate_ffi.Target("pi", "s")), "run", "child")
+        val other = key.copy(editor = key.editor.copy(host = "b"))
+        val sent = ChildInstructions()
+        sent.accepted(key, "steer", "old")
+        repeat(128) { sent.accepted(other, "steer", it.toString()) }
+        assertTrue(sent.forChild(key, null).isEmpty())
+        assertEquals(128, sent.forChild(other, null).size)
+        val long = "x".repeat(32768)
+        sent.accepted(key, "steer", long)
+        sent.accepted(other, "resume", long)
+        assertTrue(sent.forChild(key, null).isEmpty())
+        assertEquals(listOf(SentInstruction("resume", long)), sent.forChild(other, null))
+        sent.accepted(key, "steer", long + long)
+        assertTrue(sent.forChild(key, null).isEmpty())
+        assertEquals(1, sent.forChild(other, null).size)
+    }
+
+    @Test
     fun successfulSpawnDoesNotImplyPromptWasDeliveredOrInstanceAlreadyListed() = runBlocking {
         val result = JSONObject().put("instanceId", "pi")
         assertEquals(SpawnOutcome.NotListed("pi"), spawnOutcome(result) { false })
