@@ -3,9 +3,7 @@ package dev.pimate.app
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,15 +13,17 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.delay
 import org.json.*
 import uniffi.pimate_ffi.*
@@ -44,12 +44,59 @@ private class Parsed<T>(private val parse: (Item) -> T) {
     }
 }
 
-/** チャット（docs/design/html/Main.html・Chat-Waiting.html）。見出し・会話・入力欄。 */
+/**
+ * チャットの画面の一時的な状態。回転はまたぐが、保存はしない（全画面の画像は大きくて SavedState に入らない）。 接続・下書き・回答は持たない（それらは
+ * SessionModel）。対象は、開いた瞬間の EditorKey で覚える。
+ */
+internal class ChatUi : ViewModel() {
+    /** 開いているシート・画面（model / usage / session / sessions / fork / tree）と、開いた瞬間の対象。 */
+    var sheet by mutableStateOf<Pair<String, EditorKey>?>(null)
+
+    /** 全画面で開いている画像と、開いた瞬間の対象（会話の外の画像なら null）。 */
+    var viewer by mutableStateOf<Triple<EditorKey?, List<Pic>, Int>?>(null)
+
+    /** フォトピッカーを開いた瞬間の対象。結果が返るまで覚えておく。 */
+    var picking: EditorKey? = null
+
+    /** 選んだ写真を縮小している間。 */
+    var encoding by mutableStateOf(false)
+
+    /** 添付や / コマンドの操作で起きたこと（入力欄の上で案内する）。失敗なら赤。 */
+    var problem by mutableStateOf<Triple<String, String, Boolean>?>(null)
+
+    /** 案内を閉じた、または下書きに入れた操作結果の ID。null は「まだ何も見ていない」。 */
+    var seenResult by mutableStateOf<String?>(null)
+    var usedResult: String? = null
+
+    /** 書きかけの本文がある対象（中身は持たない）。切り替えで下書きが元の会話に残ったことを伝えるのに使う。 */
+    val drafted = mutableSetOf<EditorKey>()
+
+    /** 「送信先が変わりました」を確認した切り替え（from>to）。 */
+    var confirmed by mutableStateOf("")
+
+    /** 切り替え（from>to）を最初に見たときの、履歴の最後の発言。切り替えの行をその後ろに置く。 */
+    var switched by mutableStateOf<Pair<String, String?>?>(null)
+}
+
+private fun EditorKey.scope() = "$host/${target.instance}/${target.session}"
+
+/**
+ * チャット（docs/design/html/Main.html・Chat-Waiting.html・Chat-Edge.html・Chat-Attach.html）。見出し・会話・入力欄と、
+ * そこから開くシート・全画面の画像。
+ */
 @Composable
-internal fun ChatScreen(m: SessionModel, openDrawer: () -> Unit, recover: (Stop) -> Unit) {
+internal fun ChatScreen(
+    m: SessionModel,
+    ui: ChatUi,
+    openDrawer: () -> Unit,
+    recover: (Stop) -> Unit,
+) {
     val groups = m.rows.groups
     val view = groups["view"].orEmpty().associate { it.id to it.json }
     val target = m.target
+    val editor = m.edits.current
+    // 操作を送れる対象（表示中の会話が読み込み済みで、編集の対象と同じ）。
+    val key = editor?.takeIf { target != null && it.target == target }
     val active = view["agentActive"] == "true"
     val questions = groups["question"].orEmpty()
     val entryCache = remember(m.selected) { Parsed { entry(JSONObject(it.json)) } }
@@ -64,11 +111,15 @@ internal fun ChatScreen(m: SessionModel, openDrawer: () -> Unit, recover: (Stop)
             .orEmpty()
     val text = stream("text")
     val thinking = stream("thinking")
-    val rows =
-        remember(entries, tools, active, text, thinking) {
-            buildRows(entries, tools, active, text, thinking)
+    val thinkingMs =
+        remember(groups["thinkingMs"]) {
+            groups["thinkingMs"].orEmpty().associate { it.id to (it.json.toLongOrNull() ?: 0) }
         }
-    // 開いた要約・ツール・考えた内容の key。回転では保ち、Pi を切り替えたら閉じる。
+    val rows =
+        remember(entries, tools, active, text, thinking, thinkingMs) {
+            buildRows(entries, tools, active, text, thinking, thinkingMs)
+        }
+    // 利用者が開閉した行: 「+key」は開いた、「-key」は閉じた。回転では保ち、Pi を切り替えたら忘れる。
     val open =
         rememberSaveable(
             m.selected,
@@ -80,80 +131,269 @@ internal fun ChatScreen(m: SessionModel, openDrawer: () -> Unit, recover: (Stop)
         ) {
             mutableStateListOf()
         }
-    val toggle = { key: String -> if (!open.remove(key)) open.add(key) }
-
-    Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
-        val stop = stopped(groups["host"].orEmpty().find { it.id == "connection" }?.json)
-        Header(m, view, active, questions.isNotEmpty(), stop != null, openDrawer)
-        val pcPrompt = view["pcPrompt"].let { it != null && it != "null" }
-        val notice =
-            notice(
-                m.selected != null,
-                view["phase"],
-                target != null,
-                rows.isNotEmpty(),
-                questions.isNotEmpty(),
-                pcPrompt,
-            )
+    // 実行中のツールと、考えている途中の内容は開いておく（終わると閉じる）。利用者が開閉したら、それに従う。
+    fun isOpen(row: ChatRow) =
         when {
-            stop != null -> Placeholder(stop.detail, stop.action) { recover(stop) }
-            notice != null ->
-                Placeholder(notice.first, "一覧を開く".takeIf { notice.second }, openDrawer)
-            else -> {
-                val visible = rows.filter { it.fold == null || it.fold in open }
-                val list = rememberLazyListState()
-                // 履歴を遡っている間に届いた質問は画面の外に足される。回答するまで入力できないので、カード（最下段）へ戻す。
-                val newest = questions.lastOrNull()?.id
-                LaunchedEffect(newest) { if (newest != null) list.animateScrollToItem(0) }
-                // 逆順のリスト。先頭（最下段）の固定の項目が見えている間は、増えた行のぶん上へ伸びる。
-                LazyColumn(
-                    Modifier.weight(1f).testTag("chat"),
-                    list,
-                    reverseLayout = true,
-                    contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
-                ) {
-                    item("bottom") { Spacer(Modifier.height(10.dp)) }
-                    if (pcPrompt)
-                        item("pcPrompt") {
-                            Note(
-                                "PC の Pi が操作を待っています。スマホには表示できない画面です。PC で操作してください。",
-                                Modifier.padding(top = 24.dp),
+            "+${row.key}" in open -> true
+            "-${row.key}" in open -> false
+            else ->
+                row is ChatRow.Tool && row.state == ToolState.Running ||
+                    row is ChatRow.Thinking && row.live && row.text.isNotBlank()
+        }
+    val toggle = { row: ChatRow ->
+        val was = isOpen(row)
+        open.remove("+${row.key}")
+        open.remove("-${row.key}")
+        open.add((if (was) "-" else "+") + row.key)
+        Unit
+    }
+
+    val connection = groups["host"].orEmpty().find { it.id == "connection" }?.json
+    val stop = stopped(connection)
+    val offline = connection != "\"connected\"" && stop == null
+    val pcPrompt = view["pcPrompt"]?.takeIf { it != "null" }?.let(::JSONObject)
+    val session = view["session"]?.takeIf { it != "null" }?.let(::JSONObject)
+
+    // 画像の取得は、いま表示している対象に結び付ける。対象が変わったあとに返った結果は SessionModel.request が捨てる。
+    val pics =
+        remember(editor, view["entryImages"], view["fileImages"]) {
+            Pics(
+                editor?.scope().orEmpty(),
+                view["entryImages"] == "true",
+                view["fileImages"] == "true",
+                { method, params ->
+                    m.ask(editor ?: throw CoreException.StaleTarget(), method, params)
+                },
+            ) { list, index ->
+                ui.viewer = Triple(editor, list, index)
+            }
+        }
+
+    // 会話を開いたら、/ コマンドとモデルの一覧を取りに行く（再同期で消えるので、読み込み済みになるたび）。
+    var commandsFailed by remember(key) { mutableStateOf(false) }
+    var commandsTry by remember(key) { mutableIntStateOf(0) }
+    LaunchedEffect(key, commandsTry) {
+        if (key == null) return@LaunchedEffect
+        if (view["slashCommands"] == "true")
+            commandsFailed =
+                try {
+                    m.ask(key, RcMethod.COMMANDS, JSONObject())
+                    false
+                } catch (_: CoreException) {
+                    true
+                }
+        if (commandsTry == 0)
+            try {
+                m.ask(key, RcMethod.MODELS, JSONObject())
+            } catch (_: CoreException) {
+                // 名前が分からなければ、入力欄には ID をそのまま出す。
+            }
+    }
+
+    // ---- セッションの切り替え（PC の /resume など）と、操作の結果 ----
+    val changed =
+        groups["notice"].orEmpty().find { it.id == "sessionChanged" }?.let { JSONObject(it.json) }
+    val busyOp =
+        groups["busy"].orEmpty().find { it.id == "operation" }?.let { JSONObject(it.json) }
+    val result =
+        groups["operationResult"].orEmpty().find { it.id == "latest" }?.let { JSONObject(it.json) }
+    val fromId = changed?.optJSONObject("from")?.str("id").orEmpty()
+    val toId = changed?.optJSONObject("to")?.str("id").orEmpty()
+    // このスマホの操作で切り替わったか。状態の層は「誰が」を持たないので、自分の操作の進行・結果と突き合わせる。
+    val byPhone =
+        changed != null &&
+            (busyOp?.str("method") == "session_op" && busyOp.str("sessionId") == fromId ||
+                result != null &&
+                    result.str("sessionId") == toId &&
+                    result.str("outcome") != "unknown" &&
+                    result.optJSONObject("event")?.let {
+                        !it.optBoolean("cancelled") && !it.has("error")
+                    } != false)
+    // 書きかけがある対象を覚える（中身は ChatEdits が持つ）。
+    val body = m.edits.body
+    SideEffect {
+        if (editor != null)
+            if (body.text.isNotEmpty() || body.images.isNotEmpty()) ui.drafted += editor
+            else ui.drafted -= editor
+    }
+    // 切り替え前の会話に下書きが残った: 送信先が変わったことを確かめてもらうまで、送らせない。
+    val left =
+        editor != null &&
+            changed != null &&
+            !byPhone &&
+            session?.str("id") == toId &&
+            ui.confirmed != "$fromId>$toId" &&
+            editor.copy(target = Target(editor.target.instance, fromId)) in ui.drafted
+    // 開いたときにすでにあった結果は、もう一度案内しない。
+    LaunchedEffect(Unit) { if (ui.seenResult == null) ui.seenResult = result?.str("id").orEmpty() }
+    // 分岐・ツリーの移動で選んだ文は、入力欄が空なら入れる（直してから送れる）。1 回だけ。
+    val resultText =
+        result?.takeIf { it.str("sessionId") == target?.session }?.let {
+            it.str("forkText").ifEmpty { it.optJSONObject("event")?.str("editorText").orEmpty() }
+        }
+    LaunchedEffect(result?.str("id"), key) {
+        val id = result?.str("id") ?: return@LaunchedEffect
+        if (key == null || id == ui.usedResult || ui.seenResult == null || id == ui.seenResult) return@LaunchedEffect
+        if (!resultText.isNullOrEmpty() && body.text.isEmpty() && body.images.isEmpty()) {
+            ui.usedResult = id
+            m.edits.text(key, resultText)
+        }
+    }
+
+    // 対象が変わったら、前の対象のシートと画像は閉じる。
+    val sheet = ui.sheet?.takeIf { it.second == editor }
+    val viewer = ui.viewer?.takeIf { it.first == null || it.first == editor }
+    SideEffect {
+        if (ui.sheet != null && sheet == null) ui.sheet = null
+        if (ui.viewer != null && viewer == null) ui.viewer = null
+    }
+    val show = { name: String -> if (editor != null) ui.sheet = name to editor }
+
+    CompositionLocalProvider(LocalPics provides pics) {
+        Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
+            Header(
+                m,
+                view,
+                active,
+                questions.isNotEmpty(),
+                stop != null,
+                offline,
+                pcPrompt != null,
+                openDrawer,
+                { show("session") }.takeIf { key != null },
+            )
+            val notice =
+                notice(
+                    m.selected != null,
+                    view["phase"],
+                    target != null,
+                    // 空の会話でも、切り替わったことは会話の欄に出す。
+                    rows.isNotEmpty() || changed != null && session?.str("id") == toId,
+                    questions.isNotEmpty(),
+                    pcPrompt != null,
+                    offline,
+                )
+            when {
+                stop != null -> Placeholder(stop.detail, stop.action) { recover(stop) }
+                notice != null ->
+                    Placeholder(notice.first, "一覧を開く".takeIf { notice.second }, openDrawer)
+                else -> {
+                    val shown = rows.filter { it.fold == null || "+${it.fold}" in open }
+                    // 会話が切り替わったことは、切り替えを見た位置（その時点の履歴の後ろ）に残す。
+                    val switchId = "$fromId>$toId"
+                    val here = changed != null && session?.str("id") == toId
+                    SideEffect {
+                        if (here && key != null && ui.switched?.first != switchId)
+                            ui.switched = switchId to entries.lastOrNull()?.id
+                    }
+                    val visible =
+                        if (!here) shown
+                        else
+                            placeSwitch(
+                                shown,
+                                ChatRow.Switch(
+                                    changed!!.str("reason"),
+                                    byPhone,
+                                    changed.optJSONObject("from")?.str("name").orEmpty(),
+                                    changed.optJSONObject("to")?.str("name").orEmpty().ifEmpty {
+                                        entries.firstOrNull { it.kind == "user" }?.text.orEmpty()
+                                    },
+                                ),
+                                entries,
+                                ui.switched?.second,
+                                ui.switched?.first == switchId,
                             )
+                    val list = rememberLazyListState()
+                    // 履歴を遡っている間に届いた質問は画面の外に足される。回答するまで入力できないので、カード（最下段）へ戻す。
+                    val newest = questions.lastOrNull()?.id
+                    LaunchedEffect(newest) { if (newest != null) list.animateScrollToItem(0) }
+                    // 逆順のリスト。先頭（最下段）の固定の項目が見えている間は、増えた行のぶん上へ伸びる。
+                    LazyColumn(
+                        Modifier.weight(1f).testTag("chat"),
+                        list,
+                        reverseLayout = true,
+                        contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
+                    ) {
+                        item("bottom") { Spacer(Modifier.height(10.dp)) }
+                        if (pcPrompt != null && questions.isEmpty())
+                            item("pcPrompt") {
+                                PcCard(pcPrompt.str("title"), m.attachCommand())
+                            }
+                        items(questions.asReversed(), key = { "question:${it.id}" }) { item ->
+                            val edit = editor?.let { m.answers[it, item.id] }
+                            if (edit != null && target != null)
+                                Box(Modifier.padding(top = 24.dp)) {
+                                    QuestionCard(
+                                        remember(item.json) { JSONObject(item.json) },
+                                        edit,
+                                        m.can(
+                                            Operation.Answer(
+                                                target,
+                                                JSONObject()
+                                                    .put("requestId", item.id)
+                                                    .put("cancelled", true)
+                                                    .toString(),
+                                            )
+                                        ),
+                                    ) { answer ->
+                                        m.answer(editor, item.id, edit, answer)
+                                    }
+                                }
                         }
-                    items(questions.asReversed(), key = { "question:${it.id}" }) { item ->
-                        val editor = m.edits.current
-                        val edit = editor?.let { m.answers[it, item.id] }
-                        if (edit != null && target != null)
-                            Box(Modifier.padding(top = 24.dp)) {
-                                QuestionCard(
-                                    remember(item.json) { JSONObject(item.json) },
-                                    edit,
-                                    m.can(
-                                        Operation.Answer(
-                                            target,
-                                            JSONObject()
-                                                .put("requestId", item.id)
-                                                .put("cancelled", true)
-                                                .toString(),
-                                        )
-                                    ),
-                                ) { answer ->
-                                    m.answer(editor, item.id, edit, answer)
+                        items(
+                            visible.size,
+                            key = { "row:" + visible[visible.size - 1 - it].key },
+                        ) { n ->
+                            val index = visible.size - 1 - n
+                            val row = visible[index]
+                            Box(
+                                Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)
+                            ) {
+                                RowView(
+                                    row,
+                                    if (row is ChatRow.Summary) "+${row.key}" in open
+                                    else isOpen(row),
+                                ) {
+                                    if (row is ChatRow.Summary) {
+                                        if (!open.remove("+${row.key}")) open.add("+${row.key}")
+                                    } else toggle(row)
                                 }
                             }
-                    }
-                    items(visible.size, key = { "row:" + visible[visible.size - 1 - it].key }) { n
-                        ->
-                        val index = visible.size - 1 - n
-                        val row = visible[index]
-                        Box(Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)) {
-                            RowView(row, row.key in open, toggle)
                         }
                     }
                 }
             }
+            Composer(
+                m,
+                ui,
+                key,
+                active,
+                questions.isNotEmpty(),
+                pcPrompt != null,
+                offline,
+                left,
+                changed?.let { c ->
+                    c.optJSONObject("from")?.str("name").orEmpty() to
+                        title(session, view["cwd"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty())
+                },
+                { ui.confirmed = "$fromId>$toId" },
+                busyOp,
+                result?.takeIf { ui.seenResult != null && it.str("id") != ui.seenResult },
+                commandsFailed,
+                { commandsTry++ },
+                show,
+            )
         }
-        Composer(m, active, questions.isNotEmpty())
+        sheet?.let { (name, at) ->
+            val close = { ui.sheet = null }
+            when (name) {
+                "model" -> ModelSheet(m, at, close)
+                "usage" -> UsageSheet(m, at, close)
+                "tree" -> TreeScreen(m, at, close)
+                else -> SessionSheet(m, at, name, { ui.sheet = "tree" to at }, close)
+            }
+        }
+        viewer?.let { (_, list, index) -> ImageViewer(list, index) { ui.viewer = null } }
     }
 }
 
@@ -164,21 +404,16 @@ private fun Header(
     active: Boolean,
     asking: Boolean,
     stopped: Boolean,
+    offline: Boolean,
+    pcPrompt: Boolean,
     openDrawer: () -> Unit,
+    openMenu: (() -> Unit)?,
 ) {
     val session = view["session"]?.takeIf { it != "null" }?.let(::JSONObject)
     val cwd = view["cwd"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty()
-    // 経過は、この画面で待機から作業に変わるのを見たときだけ数える（開始時刻は状態の層にない）。
-    var since by rememberSaveable(m.selected) { mutableStateOf<Long?>(null) }
-    var idleSeen by rememberSaveable(m.selected) { mutableStateOf(false) }
+    // 作業の開始時刻は状態の層にある（この端末が見始めた時刻のこともある）。
+    val since = view["runningSince"]?.toLongOrNull()?.takeIf { active }
     val ready = m.target != null
-    LaunchedEffect(active, ready) {
-        if (!ready) return@LaunchedEffect
-        if (!active) {
-            since = null
-            idleSeen = true
-        } else if (idleSeen && since == null) since = System.currentTimeMillis()
-    }
     val now by
         produceState(System.currentTimeMillis(), since) {
             while (since != null) {
@@ -199,43 +434,55 @@ private fun Header(
             overflow = TextOverflow.Ellipsis,
         )
         Row(
-            Modifier.padding(start = 6.dp, end = 16.dp).semantics(mergeDescendants = true) {
+            Modifier.padding(start = 6.dp, end = if (openMenu == null) 16.dp else 2.dp).semantics(
+                mergeDescendants = true
+            ) {
                 liveRegion = LiveRegionMode.Polite
             },
             Arrangement.spacedBy(6.dp),
             Alignment.CenterVertically,
         ) {
             val phase = view["phase"]
+            @Composable
+            fun waiting(label: String) {
+                Dot(pi.waiting, 7.dp)
+                Text(
+                    label,
+                    color = pi.waitingText,
+                    style = Type.caption,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+            }
             when {
                 m.selected == null ||
                     phase == "\"instance_gone\"" ||
                     phase == "\"subscribe_error\"" ||
                     stopped -> Unit
+                offline -> {
+                    Spinner()
+                    Text("再接続中", color = pi.textSecondary, style = Type.caption, maxLines = 1)
+                }
                 !ready -> {
                     Spinner()
-                    Text("同期中", color = pi.textSecondary, style = Type.caption)
+                    Text("同期中", color = pi.textSecondary, style = Type.caption, maxLines = 1)
                 }
-                asking || view["status"] == "\"waiting_input\"" -> {
-                    Dot(pi.waiting, 7.dp)
-                    Text(
-                        "入力待ち",
-                        color = pi.waitingText,
-                        style = Type.caption,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+                pcPrompt && !asking -> waiting("PC で操作待ち")
+                asking || view["status"] == "\"waiting_input\"" -> waiting("入力待ち")
                 active -> {
                     Spinner()
                     Text(
-                        since?.let { "作業中 · ${elapsed(now - it)}" } ?: "作業中",
+                        since?.let { "作業中 · ${elapsed((now - it).coerceAtLeast(0))}" } ?: "作業中",
                         // 秒ごとの読み上げはしない。
                         Modifier.semantics { contentDescription = "作業中" },
                         pi.textSecondary,
                         style = Type.caption,
+                        maxLines = 1,
                     )
                 }
             }
         }
+        if (openMenu != null) IconAction(Icons.More, "セッションのメニュー", openMenu, size = 20.dp)
     }
 }
 
@@ -253,11 +500,7 @@ private fun ColumnScope.Placeholder(
         Text(
             text,
             color = pi.textSecondary,
-            style =
-                Type.body.copy(
-                    lineBreak = Type.phrase,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                ),
+            style = Type.body.copy(lineBreak = Type.phrase, textAlign = TextAlign.Center),
         )
         if (action != null) TextAction(action, onAction)
     }
@@ -268,44 +511,119 @@ private fun Note(text: String, modifier: Modifier = Modifier, error: Boolean = f
     Text(text, modifier, if (error) pi.failedText else pi.textSecondary, style = Type.caption)
 }
 
+/** 会話の切り替えの行（Chat-Edge）。誰がどう切り替えたかと、前の会話 → いまの会話。 */
 @Composable
-private fun RowView(row: ChatRow, open: Boolean, toggle: (String) -> Unit) {
+private fun SwitchNote(
+    reason: String,
+    byPhone: Boolean,
+    from: String,
+    to: String,
+    modifier: Modifier = Modifier,
+) {
+    val (lead, command) = switchLine(reason, byPhone)
+    Column(
+        modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+        Arrangement.spacedBy(4.dp),
+        Alignment.CenterHorizontally,
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Swap, null, Modifier.size(14.dp), pi.textSecondary)
+            Text(
+                buildAnnotatedString {
+                    append(lead)
+                    if (command != null) {
+                        append(" ")
+                        withStyle(SpanStyle(fontFamily = Mono)) { append(command) }
+                        append(" されました")
+                    }
+                },
+                color = pi.textSecondary,
+                style = Type.caption,
+            )
+        }
+        Text(
+            buildAnnotatedString {
+                if (from.isNotEmpty()) append("$from → ")
+                withStyle(SpanStyle(color = pi.text, fontWeight = FontWeight.SemiBold)) {
+                    append(to.ifEmpty { "新しい会話" }.lineSequence().first().take(60))
+                }
+            },
+            color = pi.textSecondary,
+            style = Type.caption.copy(textAlign = TextAlign.Center),
+        )
+    }
+}
+
+/** スマホでは操作できない PC の画面（Chat-Attach）。PC のターミナルへ案内し、つなぐコマンドがあればコピーできる。 */
+@Composable
+internal fun PcCard(title: String, command: String?) {
+    Column(
+        Modifier.padding(top = 24.dp)
+            .fillMaxWidth()
+            .background(pi.surface, RoundedCornerShape(16.dp))
+            .padding(16.dp)
+    ) {
+        Row(
+            Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite },
+            Arrangement.spacedBy(8.dp),
+            Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Terminal, null, Modifier.size(16.dp), pi.text)
+            Text(
+                "PC のターミナルで操作が必要です",
+                style = Type.body.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold),
+            )
+        }
+        Text(
+            (if (title.isNotEmpty()) "「$title」の画面" else "Extension の独自画面") +
+                "は、スマホでは操作できません。PC で操作が終わるまで、Pi はこのまま待ちます。" +
+                if (command == null) "Pi を起動した PC のターミナルで操作してください。" else "",
+            Modifier.padding(top = 8.dp),
+            pi.textSecondary,
+            style = Type.body.copy(lineBreak = Type.phrase),
+        )
+        if (command != null) CommandPill(command, Modifier.padding(top = 14.dp), onSurface = true)
+    }
+}
+
+@Composable
+private fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
     when (row) {
         is ChatRow.User ->
-            Box(Modifier.fillMaxWidth(), Alignment.CenterEnd) {
+            Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
+                if (row.pics.isNotEmpty()) PicGrid(row.pics)
                 val accent = SpanStyle(color = pi.accentText, fontFamily = Mono, fontSize = 13.sp)
-                SelectionContainer {
-                    Text(
-                        // @パス（メンション）はアクセントの等幅で示す。
-                        remember(row.text, accent) {
-                            buildAnnotatedString {
-                                append(row.text)
-                                Regex("(?<![^\\s])@[\\w./~-]+").findAll(row.text).forEach {
-                                    addStyle(accent, it.range.first, it.range.last + 1)
+                if (row.text.isNotEmpty())
+                    SelectionContainer {
+                        Text(
+                            // @パス（メンション）はアクセントの等幅で示す。
+                            remember(row.text, accent) {
+                                buildAnnotatedString {
+                                    append(row.text)
+                                    Regex("(?<![^\\s])@[\\w./~-]+").findAll(row.text).forEach {
+                                        addStyle(accent, it.range.first, it.range.last + 1)
+                                    }
                                 }
-                            }
-                        },
-                        Modifier.widthIn(max = 280.dp)
-                            .background(pi.selected, RoundedCornerShape(18.dp))
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        style = Type.body.copy(lineBreak = Type.phrase),
-                    )
-                }
+                            },
+                            Modifier.widthIn(max = 280.dp)
+                                .background(pi.selected, RoundedCornerShape(18.dp))
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            style = Type.body.copy(lineBreak = Type.phrase),
+                        )
+                    }
             }
         is ChatRow.Summary ->
-            Expander(
-                row.text,
-                open,
-                { toggle(row.key) },
-                Modifier.heightIn(min = 32.dp),
-                wide = false,
-            )
+            Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
         is ChatRow.Thinking ->
             Column {
                 Expander(
-                    if (row.live) "考え中…" else "考えた",
+                    when {
+                        row.live -> "考え中…"
+                        row.ms != null && row.ms >= 1000 -> "${seconds(row.ms)} 考えた"
+                        else -> "考えた"
+                    },
                     open,
-                    { toggle(row.key) },
+                    toggle,
                     Modifier.fillMaxWidth().heightIn(min = 32.dp),
                 ) {
                     if (row.live) Spinner()
@@ -332,8 +650,15 @@ private fun RowView(row: ChatRow, open: Boolean, toggle: (String) -> Unit) {
                         style = Type.meta,
                     )
             }
-        is ChatRow.Tool -> ToolRow(row, open) { toggle(row.key) }
+        is ChatRow.Tool ->
+            Column {
+                ToolRow(row, open, toggle)
+                // ツールが返した画像は、出力を畳んでいても見える。
+                if (row.pics.isNotEmpty())
+                    PicGrid(row.pics, Modifier.padding(start = 22.dp, top = 4.dp, bottom = 6.dp))
+            }
         is ChatRow.Note -> Note(row.text, error = row.error)
+        is ChatRow.Switch -> SwitchNote(row.reason, row.byPhone, row.from, row.to)
     }
 }
 
@@ -382,6 +707,15 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                 .joinToString("\n")
         }
     val canOpen = output.isNotEmpty() || row.state == ToolState.Running
+    // 実行中は、始まってからの秒数を右に出す（開始時刻が分かるときだけ）。
+    val running by
+        produceState("", row.since) {
+            while (row.since != null) {
+                value = seconds((System.currentTimeMillis() - row.since).coerceAtLeast(0))
+                delay(1000)
+            }
+        }
+    val meta = if (row.since != null) running else row.meta
     Column {
         Row(
             Modifier.fillMaxWidth()
@@ -409,17 +743,23 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                 overflow = TextOverflow.Ellipsis,
             )
             if (row.state == ToolState.Failed)
-                Text(row.meta, color = pi.failedText, style = Type.meta)
-            else if (row.meta.startsWith("+"))
-                row.meta.split(" ").forEach {
+                Text(meta, color = pi.failedText, style = Type.meta)
+            else if (meta.startsWith("+"))
+                meta.split(" ").forEach {
                     Text(
                         it,
                         color = if (it.startsWith("+")) pi.addText else pi.delText,
                         style = Type.meta,
                     )
                 }
-            else if (row.meta.isNotEmpty())
-                Text(row.meta, color = pi.textSecondary, style = Type.meta)
+            else if (meta.isNotEmpty())
+                Text(
+                    meta,
+                    // 秒ごとの読み上げはしない。
+                    if (row.since != null) Modifier.clearAndSetSemantics {} else Modifier,
+                    pi.textSecondary,
+                    style = Type.meta,
+                )
             if (canOpen)
                 Icon(
                     if (open) Icons.Up else Icons.Down,
@@ -442,203 +782,5 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                     softWrap = false,
                 )
             }
-    }
-}
-
-/** 入力欄と、その上の送信待ち。受け付けられただけの本文は履歴に混ぜず、ここに分けて出す。 */
-@Composable
-private fun Composer(m: SessionModel, active: Boolean, asking: Boolean) {
-    val target = m.target
-    val editor = m.edits.current
-    val body = m.edits.body
-    val view = m.rows.groups["view"].orEmpty().associate { it.id to it.json }
-    val drafts =
-        m.rows.groups["draft"].orEmpty().mapNotNull { item ->
-            val d = JSONObject(item.json)
-            Triple(item.id, d, d.str("status")).takeIf {
-                d.str("instanceId") == m.selected &&
-                    it.third in listOf("queued", "unconfirmed", "sending")
-            }
-        }
-    Column(Modifier.padding(start = 16.dp, top = 6.dp, end = 16.dp, bottom = 8.dp)) {
-        if (drafts.isNotEmpty())
-            Column(
-                Modifier.heightIn(max = 200.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(bottom = 6.dp)
-            ) {
-                drafts.forEach { (id, d, status) ->
-                    val text = d.optJSONObject("params")?.str("text").orEmpty()
-                    if (status == "unconfirmed") {
-                        val restorable =
-                            !m.busy &&
-                                body.text.isEmpty() &&
-                                body.images.isEmpty() &&
-                                target != null &&
-                                target.session == (d.opt("sessionId") as? String)
-                        Column(
-                            Modifier.fillMaxWidth()
-                                .padding(bottom = 6.dp)
-                                .background(pi.surface, RoundedCornerShape(16.dp))
-                                .padding(start = 14.dp, top = 12.dp, end = 4.dp, bottom = 2.dp)
-                        ) {
-                            Text(
-                                "届いていない可能性があります",
-                                color = pi.waitingText,
-                                style = Type.caption,
-                                fontWeight = FontWeight.SemiBold,
-                            )
-                            Text(
-                                "PC の入力欄に戻っている場合があります。履歴を確認してください。",
-                                Modifier.padding(end = 10.dp),
-                                pi.textSecondary,
-                                style = Type.caption,
-                            )
-                            Text(
-                                text,
-                                Modifier.padding(top = 6.dp, end = 10.dp),
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            TextAction(
-                                "下書きへ戻す",
-                                { editor?.let { m.restore(it, id) } },
-                                Modifier.offset(x = (-14).dp),
-                                enabled = restorable,
-                            )
-                        }
-                    } else
-                        Row(
-                            Modifier.fillMaxWidth()
-                                .heightIn(min = 40.dp)
-                                .padding(start = 12.dp, end = 12.dp)
-                                .semantics(mergeDescendants = true) {},
-                            Arrangement.spacedBy(8.dp),
-                            Alignment.CenterVertically,
-                        ) {
-                            Icon(Icons.Reply, null, Modifier.size(14.dp), pi.textSecondary)
-                            Text(
-                                if (status == "queued") "割り込み待ち" else "送信中",
-                                color = pi.textSecondary,
-                                style = Type.caption,
-                            )
-                            Text(
-                                text,
-                                Modifier.weight(1f),
-                                style = Type.body.copy(fontSize = 13.sp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                }
-            }
-        if (m.error.isNotEmpty())
-            Text(
-                m.error,
-                Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp).semantics {
-                    liveRegion = LiveRegionMode.Polite
-                },
-                pi.failedText,
-                style = Type.caption,
-            )
-        Column(
-            Modifier.background(pi.surface, RoundedCornerShape(24.dp))
-                .padding(start = 14.dp, top = 12.dp, end = 8.dp, bottom = 6.dp)
-        ) {
-            if (body.images.isNotEmpty())
-                Text(
-                    "添付画像 ${body.images.size} 枚",
-                    Modifier.padding(bottom = 4.dp),
-                    pi.textSecondary,
-                    style = Type.caption,
-                )
-            val hint =
-                when {
-                    target == null -> "Pi を選ぶと入力できます"
-                    asking -> "上の質問に回答すると入力できます"
-                    else -> "メッセージ"
-                }
-            // 入力は ViewModel（ChatEdits）が持つ。欄は編集の対象ごとに作り直し、古い IME の確定を捨てる。
-            key(editor) {
-                BasicTextField(
-                    body.text,
-                    { text -> editor?.let { m.edits.text(it, text) } },
-                    Modifier.fillMaxWidth().padding(end = 6.dp).semantics {
-                        contentDescription = "メッセージ"
-                    },
-                    enabled = target != null && !asking,
-                    textStyle = Type.lead.copy(color = pi.text),
-                    maxLines = 5,
-                    cursorBrush = SolidColor(pi.accent),
-                    decorationBox = { inner ->
-                        if (body.text.isEmpty())
-                            Text(
-                                hint,
-                                color = pi.textSecondary,
-                                style = Type.lead,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        inner()
-                    },
-                )
-            }
-            Row(
-                Modifier.padding(top = 6.dp).heightIn(min = 36.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // 左は状態の 1 行。モデルの選択と使用状況のリング（M3b）はこの位置に入る。
-                val model =
-                    view["model"]
-                        ?.takeIf { it != "null" }
-                        ?.let { JSONObject(it).str("id") }
-                        .orEmpty()
-                val level =
-                    view["thinking"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty()
-                Text(
-                    if (active) "割り込みで送信"
-                    else listOf(model, level).filter { it.isNotEmpty() }.joinToString(" · "),
-                    Modifier.weight(1f).padding(end = 8.dp),
-                    pi.textSecondary,
-                    style = Type.body.copy(fontSize = 13.sp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (active && target != null) {
-                    val stop = m.can(Operation.Abort(target))
-                    Box(
-                        Modifier.size(36.dp).clip(CircleShape).clickable(stop, role = Role.Button) {
-                            m.abort(editor)
-                        },
-                        Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Stop,
-                            "停止",
-                            Modifier.size(22.dp),
-                            pi.text.copy(alpha = if (stop) 1f else .4f),
-                        )
-                    }
-                    Spacer(Modifier.width(2.dp))
-                }
-                val send =
-                    (body.text.isNotBlank() || body.images.isNotEmpty()) &&
-                        m.can(target?.let { Operation.Send(it, body.text, body.images) })
-                Box(
-                    Modifier.size(36.dp)
-                        .clip(CircleShape)
-                        .background(if (send) pi.accent else pi.surfaceStrong)
-                        .clickable(send, role = Role.Button) { editor?.let { m.send(it, body) } },
-                    Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Send,
-                        if (active) "割り込む" else "送信",
-                        Modifier.size(18.dp),
-                        if (send) pi.onAccent else pi.textSecondary,
-                    )
-                }
-            }
-        }
     }
 }
