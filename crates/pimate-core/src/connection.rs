@@ -171,6 +171,13 @@ impl Connection {
         }
         st.prepare("", operation, false).map(|_| ())
     }
+    pub fn take_unconfirmed(
+        &self,
+        target: crate::Target,
+        id: String,
+    ) -> Result<crate::RestoredDraft, Error> {
+        self.shared.edit(|st| st.take_unconfirmed(&target, &id))
+    }
     pub fn snapshot(&self) -> crate::Snapshot {
         let st = self.shared.state.lock().unwrap();
         crate::Snapshot {

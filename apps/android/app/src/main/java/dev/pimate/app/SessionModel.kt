@@ -74,8 +74,8 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
     var hosts by mutableStateOf(emptyList<Host>())
         private set
 
-    private val edits = mutableStateMapOf<Pair<String, Target>, String>()
-    private var editor by mutableStateOf<Pair<String, Target>?>(null)
+    internal val edits = ChatEdits()
+    internal val answers = AnswerEdits()
     var target by mutableStateOf<Target?>(null)
         private set
 
@@ -86,24 +86,20 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         openList = false
     }
 
-    val input
-        get() = edits[editor].orEmpty()
-
-    fun edit(text: String) {
-        editor?.let { putText(it, text) }
-    }
-
-    private fun putText(key: Pair<String, Target>, text: String) {
-        if (text.isEmpty()) edits.remove(key) else edits[key] = text
-    }
-
     var rows by mutableStateOf(Rows())
         private set
 
     private fun publish(next: Rows) {
         rows = next
         target = next.readyTarget(selected)
-        target?.let { t -> host?.let { editor = it.id to t } }
+        target?.let { t ->
+            host?.let {
+                val key = EditorKey(it.id, t)
+                if (key != edits.current) error = ""
+                edits.current = key
+                answers.sync(key, next.groups["question"].orEmpty())
+            }
+        }
     }
 
     fun can(op: Operation?): Boolean =
@@ -118,30 +114,32 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                 }
             } == true
 
-    fun send(hostId: String, dest: Target, text: String) {
-        val key = hostId to dest
-        if (key != editor || dest != target || text != input) return
-        operate(Operation.Send(dest, text, emptyList())) {
-            if (edits[key] == text) putText(key, "")
-        }
+    internal fun send(key: EditorKey, body: RestoredDraft) {
+        if (key != edits.current || key.target != target || body != edits.body) return
+        operate(Operation.Send(key.target, body.text, body.images)) { edits.accepted(key, body) }
     }
 
-    fun restore(draft: Item) {
-        val key = editor ?: return
-        val value = JSONObject(draft.json)
+    internal fun answer(key: EditorKey, id: String, edit: AnswerEdit, params: JSONObject) {
+        if (key != edits.current || key.target != target || answers[key, id] !== edit) return
+        operate(Operation.Answer(key.target, params.put("requestId", id).toString()))
+    }
+
+    internal fun restore(key: EditorKey, id: String) {
         if (
             busy ||
-                target != key.second ||
-                input.isNotEmpty() ||
-                value.optString("status") != "unconfirmed" ||
-                value.optString("instanceId") != key.second.instance ||
-                (value.opt("sessionId") as? String) != key.second.session ||
-                draft !in rows.groups["draft"].orEmpty()
+                key != edits.current ||
+                key.target != target ||
+                edits.body.text.isNotEmpty() ||
+                edits.body.images.isNotEmpty()
         )
             return
-        // Copy before dismissing: even an interrupted local operation must not lose the text.
-        putText(key, value.getJSONObject("params").getString("text"))
-        operate(Operation.DismissDraft(draft.id))
+        try {
+            val body = connection?.takeUnconfirmed(key.target, id) ?: return
+            edits.update(key, body)
+            error = ""
+        } catch (_: CoreException) {
+            error = "この未確認の送信は復元できません。履歴を確認してください"
+        }
     }
 
     var selected by mutableStateOf<String?>(null)
@@ -166,7 +164,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
         val epoch = ++generation
         connection?.close()
         connection = null
-        editor = null
+        edits.current = null
         selected = null
         publish(Rows())
         host = null
@@ -237,7 +235,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
     fun select(id: String) {
         try {
             connection?.subscribe(id)
-            if (selected != id) editor = null
+            if (selected != id) edits.current = null
             selected = id
             connection?.let { publish(Rows.from(it.snapshot())) }
             error = ""
@@ -248,6 +246,7 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
 
     fun operate(op: Operation, success: () -> Unit = {}) {
         val c = connection ?: return
+        val origin = edits.current
         if (!busy)
             viewModelScope.launch {
                 busy = true
@@ -256,8 +255,11 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
                     c.check(op)
                     c.perform(op)
                     success()
-                } catch (_: CoreException) {
-                    error = "操作を確認できません。再送前に履歴を確認してください"
+                } catch (e: CoreException) {
+                    if (edits.current == origin)
+                        error =
+                            if (e is CoreException.Rejected) "操作は拒否されました"
+                            else "操作を確認できません。再送前に履歴を確認してください"
                 } finally {
                     busy = false
                 }

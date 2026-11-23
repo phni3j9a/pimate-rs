@@ -21,6 +21,8 @@ fun ColumnScope.ChatScreen(m: SessionModel) {
             .orEmpty()
     val view = groups["view"].orEmpty().associate { it.id to it.json }
     val target = m.target
+    val editor = m.edits.current
+    val body = m.edits.body
     val scroll = rememberLazyListState()
     val questions = groups["question"].orEmpty()
     LaunchedEffect(questions.firstOrNull()?.id) {
@@ -34,25 +36,26 @@ fun ColumnScope.ChatScreen(m: SessionModel) {
     ) {
         items(questions, key = { "question:${it.id}" }) { item ->
             key(m.host?.id, target, item.json) {
-                QuestionCard(
-                    remember(item.json) { JSONObject(item.json) },
-                    enabled =
-                        target?.let {
-                            m.can(
-                                Operation.Answer(
-                                    it,
-                                    JSONObject()
-                                        .put("requestId", item.id)
-                                        .put("cancelled", true)
-                                        .toString(),
+                val edit = editor?.let { m.answers[it, item.id] }
+                if (edit != null)
+                    QuestionCard(
+                        remember(item.json) { JSONObject(item.json) },
+                        edit,
+                        enabled =
+                            target?.let {
+                                m.can(
+                                    Operation.Answer(
+                                        it,
+                                        JSONObject()
+                                            .put("requestId", item.id)
+                                            .put("cancelled", true)
+                                            .toString(),
+                                    )
                                 )
-                            )
-                        } == true,
-                ) { answer ->
-                    target?.let {
-                        m.operate(Operation.Answer(it, answer.put("requestId", item.id).toString()))
+                            } == true,
+                    ) { answer ->
+                        m.answer(editor, item.id, edit, answer)
                     }
-                }
             }
         }
         if (stream.isNotEmpty()) item("stream") { Markdown(stream) }
@@ -67,47 +70,49 @@ fun ColumnScope.ChatScreen(m: SessionModel) {
             val status = d.optString("status")
             if (
                 d.optString("instanceId") == m.selected &&
-                    status in listOf("queued", "unconfirmed", "sending", "rejected")
+                    status in listOf("queued", "unconfirmed", "sending")
             )
                 Column {
                     Text(
                         when (status) {
                             "queued" -> "割り込み待ち"
                             "sending" -> "送信中"
-                            "rejected" -> "送信できませんでした"
                             else -> "届いていない可能性があります。履歴を確認してください。"
                         }
                     )
                     Text(d.getJSONObject("params").optString("text"))
                     if (status == "unconfirmed")
                         TextButton(
-                            { m.restore(draft) },
+                            { editor?.let { m.restore(it, draft.id) } },
                             enabled =
-                                m.input.isEmpty() &&
+                                !m.busy &&
+                                    body.text.isEmpty() &&
+                                    body.images.isEmpty() &&
                                     target != null &&
-                                    target.session == (d.opt("sessionId") as? String) &&
-                                    m.can(Operation.DismissDraft(draft.id)),
+                                    target.session == (d.opt("sessionId") as? String),
                         ) {
                             Text("下書きへ戻す")
                         }
                 }
         }
     }
-    val input = m.input
-    val hostId = m.host?.id
-    OutlinedTextField(
-        input,
-        m::edit,
-        Modifier.fillMaxWidth(),
-        label = { Text("メッセージ") },
-        enabled = target != null,
-        maxLines = 5,
-    )
+    key(editor) {
+        if (body.images.isNotEmpty()) Text("添付画像 ${body.images.size} 枚")
+        OutlinedTextField(
+            body.text,
+            { text -> editor?.let { m.edits.text(it, text) } },
+            Modifier.fillMaxWidth(),
+            label = { Text("メッセージ") },
+            enabled = target != null,
+            maxLines = 5,
+        )
+    }
     Row {
         Button(
-            { if (hostId != null && target != null) m.send(hostId, target, input) },
+            { editor?.let { m.send(it, body) } },
             enabled =
-                input.isNotBlank() && m.can(target?.let { Operation.Send(it, input, emptyList()) }),
+                (body.text.isNotBlank() || body.images.isNotEmpty()) &&
+                    m.can(target?.let { Operation.Send(it, body.text, body.images) }),
         ) {
             Text(if (view["agentActive"] == "true") "割り込む" else "送信")
         }

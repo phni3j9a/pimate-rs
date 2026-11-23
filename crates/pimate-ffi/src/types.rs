@@ -1,6 +1,6 @@
 use pimate_core::{
     Allowance, Change, Credential, Error as CoreError, Host, Image, Item, Operation, QuotaWindow,
-    SessionStats, Snapshot, Target,
+    RestoredDraft, SessionStats, Snapshot, Target,
 };
 use pimate_protocol::RcMethod;
 
@@ -95,6 +95,12 @@ pub struct Target {
 pub struct Image {
     pub mime_type: String,
     pub data: String,
+}
+
+#[uniffi::remote(Record)]
+pub struct RestoredDraft {
+    pub text: String,
+    pub images: Vec<Image>,
 }
 
 #[uniffi::remote(Enum)]

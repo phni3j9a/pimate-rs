@@ -20,9 +20,17 @@ class QuestionContract {
                 )
             )
         var result = JSONObject()
+        var visible by mutableStateOf(true)
         ui.runOnUiThread {
             ui.activity.setContent {
-                PiTheme(1f) { key(request) { QuestionCard(request, true) { result = it } } }
+                val edit =
+                    remember(request) {
+                        AnswerEdit(
+                            if (request.optString("kind") == "editor") request.optString("message")
+                            else ""
+                        )
+                    }
+                PiTheme(1f) { if (visible) QuestionCard(request, edit, true) { result = it } }
             }
         }
         ui.onNodeWithText("説明").assertIsDisplayed()
@@ -35,6 +43,10 @@ class QuestionContract {
         }
         ui.onNodeWithText("理由を入力").assertExists()
         ui.onNode(hasSetTextAction()).performTextInput("理由")
+        ui.runOnIdle { visible = false }
+        ui.onNode(hasSetTextAction()).assertDoesNotExist()
+        ui.runOnIdle { visible = true }
+        ui.onNodeWithText("理由").assertExists()
         ui.onNodeWithText("回答する").performClick()
         assertEquals("理由", result.getString("value"))
         ui.runOnIdle {
