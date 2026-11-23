@@ -21,6 +21,10 @@ class DemoJourney {
         }
     }
 
+    // キーボードの出入りで配置が動いている間も外さないよう、座標のタップではなく操作そのものを呼ぶ。
+    private fun press(node: SemanticsNodeInteraction) =
+        node.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.OnClick)
+
     private fun waitFor(text: String, partial: Boolean = false) {
         ui.waitUntil(20000) {
             ui.onAllNodesWithText(text, substring = partial).fetchSemanticsNodes().isNotEmpty()
@@ -28,7 +32,15 @@ class DemoJourney {
     }
 
     @Test
-    fun chat() {
+    fun chat() =
+        try {
+            journey()
+        } catch (e: Throwable) {
+            shot("failure")
+            throw e
+        }
+
+    private fun journey() {
         val secret = File(inst.targetContext.cacheDir, "demo-link")
         Assume.assumeTrue("requires disposable Host", secret.exists())
         val link = secret.readText().trim()
@@ -37,7 +49,7 @@ class DemoJourney {
         shot("pair")
         ui.onNodeWithText("リンクを貼り付ける").performClick()
         ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
-        ui.onNodeWithText("接続").performClick()
+        press(ui.onNodeWithText("接続"))
         waitFor("/demo/android")
         shot("drawer")
         ui.onNodeWithContentDescription("設定").performClick()
@@ -77,7 +89,7 @@ class DemoJourney {
         ui.onNodeWithText(message).assertIsDisplayed()
         ui.onNodeWithContentDescription("送信").assertIsDisplayed()
         shot("rotated")
-        ui.onNodeWithContentDescription("送信").performClick()
+        press(ui.onNodeWithContentDescription("送信"))
         waitFor(message)
         ui.waitUntil(15000) {
             ui.onAllNodes(hasText(message) and !hasSetTextAction())
@@ -92,16 +104,16 @@ class DemoJourney {
         shot("sent")
         val steer = "割り込みのテスト"
         ui.onNodeWithContentDescription("メッセージ").performTextInput(steer)
-        ui.onNodeWithContentDescription("割り込む").performClick()
+        press(ui.onNodeWithContentDescription("割り込む"))
         waitFor("割り込み待ち")
         shot("queued")
-        ui.onNodeWithContentDescription("停止").performClick()
+        press(ui.onNodeWithContentDescription("停止"))
         waitFor("下書きへ戻す")
         shot("unconfirmed")
         ui.onNodeWithText("下書きへ戻す").performClick()
         ui.onNode(hasSetTextAction() and hasText(steer)).assertExists()
         shot("restored")
-        ui.onNodeWithContentDescription("送信").performClick()
+        press(ui.onNodeWithContentDescription("送信"))
         waitFor("作業ディレクトリの差分を確認します。")
         ui.onNodeWithText("はい").assertIsDisplayed()
         shot("question")
