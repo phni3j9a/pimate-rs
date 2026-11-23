@@ -54,6 +54,7 @@ class RemainingJourney {
         tap("リンクを貼り付ける")
         find(hasContentDescription("ペアリング用のリンク")).performTextInput(secret)
         tap("接続")
+        tap("ペアリングする")
     }
 
     @Test
@@ -68,6 +69,7 @@ class RemainingJourney {
     @Test
     fun screens() {
         val secret = link("ui-link")
+        shot("Pair")
         tap("スマホと PC を Tailscale でつなぐ")
         shot("Setup-Tailscale")
         tap("次へ：PC に PiMate を入れる")
@@ -83,13 +85,26 @@ class RemainingJourney {
         tap("デモ PC")
         find(hasText("ペアリング済みの端末"))
         shot("Machine-Detail")
-        if (ui.onAllNodes(hasText("0.1.20 に更新")).fetchSemanticsNodes().isNotEmpty()) {
+        if (File(inst.targetContext.cacheDir, "mock-maintenance").delete()) {
             tap("0.1.20 に更新")
             tap("更新")
             find(hasText("0.1.20 に更新しました"))
             tap("Host を再起動")
             tap("Host を再起動")
             find(hasText("再起動を受け付けました"))
+            tap("プロバイダーのログイン")
+            find(hasText("API キーを設定"))
+            shot("Provider")
+            tap("API キーを設定")
+            find(hasSetTextAction() and hasText("API キー")).performTextInput("fixture-only")
+            tap("送信")
+            find(hasText("ログインしました"))
+            tap("ログアウト")
+            tap("キャンセル")
+            tap("ログアウト")
+            tap("ログアウト")
+            find(hasText("未設定"))
+            icon("戻る")
         }
         tap("このマシンを削除")
         tap("キャンセル")
@@ -138,6 +153,9 @@ class RemainingJourney {
         tap("認証")
         find(hasText("認証の期限切れ判定", substring = true))
         shot("Subagent-Detail")
+        find(hasSetTextAction() and hasText("指示")).performTextInput("テストへの影響も確認してください")
+        tap("割り込む")
+        find(hasText("あなた · 割り込む"))
         tap("この子を停止…")
         tap("キャンセル")
         icon("戻る")

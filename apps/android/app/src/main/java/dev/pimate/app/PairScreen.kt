@@ -35,9 +35,35 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
     var paste by rememberSaveable { mutableStateOf(false) }
     var guide by rememberSaveable { mutableIntStateOf(0) }
     var invalid by remember { mutableStateOf(false) }
+    var candidateLink by remember { mutableStateOf<String?>(null) }
     fun submitLink(candidate: String) {
         invalid = uniffi.pimate_ffi.previewPair(candidate) == null
-        if (!invalid) m.pair(candidate)
+        if (!invalid) candidateLink = candidate
+    }
+    candidateLink?.let { candidate ->
+        uniffi.pimate_ffi.previewPair(candidate)?.let { preview ->
+            AlertDialog(
+                { candidateLink = null },
+                title = { Text("この PC に接続しますか？", style = Type.sheet) },
+                text = {
+                    Column {
+                        Text(preview.name)
+                        Hint(preview.address)
+                    }
+                },
+                confirmButton = {
+                    TextAction(
+                        "ペアリングする",
+                        {
+                            candidateLink = null
+                            m.pair(candidate)
+                        },
+                    )
+                },
+                dismissButton = { TextAction("キャンセル", { candidateLink = null }) },
+                containerColor = pi.background,
+            )
+        }
     }
     val scanner =
         rememberLauncherForActivityResult(ScanContract()) { r -> r.contents?.let(::submitLink) }
@@ -190,7 +216,7 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
 
 /** PC の Pi の見本: Pi のロゴ（4×4 のピクセル）と、上下の線にはさまれた入力欄。3 色はこの絵の中だけ。 */
 @Composable
-private fun PiTerminal(modifier: Modifier = Modifier) {
+internal fun PiTerminal(modifier: Modifier = Modifier) {
     val p = pi
     Column(
         modifier

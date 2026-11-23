@@ -15,7 +15,12 @@ import org.json.*
 import uniffi.pimate_ffi.*
 
 @Composable
-internal fun Page(title: String, close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+internal fun Page(
+    title: String,
+    close: () -> Unit,
+    footer: (@Composable ColumnScope.() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding().imePadding()) {
             Row(Modifier.heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -23,7 +28,8 @@ internal fun Page(title: String, close: () -> Unit, content: @Composable ColumnS
                 Text(title, Modifier.semantics { heading() }, style = Type.header)
             }
             Column(
-                Modifier.fillMaxSize()
+                Modifier.fillMaxWidth()
+                    .weight(1f)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = gutter),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -31,6 +37,11 @@ internal fun Page(title: String, close: () -> Unit, content: @Composable ColumnS
                 content()
                 Spacer(Modifier.height(24.dp))
             }
+            if (footer != null)
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = gutter, vertical = 8.dp),
+                    content = footer,
+                )
         }
     }
 }
@@ -90,13 +101,61 @@ internal fun Toggle(label: String, value: Boolean, set: (Boolean) -> Unit) {
     }
 }
 
+/** 同じアカウントでつなぐ2台。図だけで接続済みとは伝えない。 */
+@Composable
+private fun DeviceLink(connected: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 18.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(50.dp)
+                .background(
+                    pi.surface,
+                    androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                ),
+            Alignment.Center,
+        ) {
+            Icon(Icons.Phone, null, Modifier.size(24.dp), pi.textCode)
+        }
+        Row(
+            Modifier.padding(horizontal = 12.dp),
+            Arrangement.spacedBy(6.dp),
+            Alignment.CenterVertically,
+        ) {
+            repeat(3) { Dot(pi.textTertiary, 3.dp) }
+            if (connected) Icon(Icons.Check, null, Modifier.size(18.dp), pi.accentText)
+            repeat(3) { Dot(pi.textTertiary, 3.dp) }
+        }
+        Box(
+            Modifier.size(50.dp)
+                .background(
+                    pi.surface,
+                    androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                ),
+            Alignment.Center,
+        ) {
+            Icon(Icons.Laptop, null, Modifier.size(24.dp), pi.textCode)
+        }
+    }
+}
+
 @Composable
 internal fun SetupGuide(step: Int, close: () -> Unit, next: () -> Unit, scan: () -> Unit) {
     val context = LocalContext.current
-    Page(if (step == 1) "Tailscale でつなぐ" else "PC に PiMate を入れる", close) {
+    Page(
+        if (step == 1) "Tailscale でつなぐ" else "PC に PiMate を入れる",
+        close,
+        footer = {
+            if (step == 1) PrimaryButton("次へ：PC に PiMate を入れる", next, Modifier.fillMaxWidth())
+            else PrimaryButton("QRコードを読み取る", scan, Modifier.fillMaxWidth())
+        },
+    ) {
         Hint("ペアリングの準備　$step / 3")
         if (step == 1) {
             Text("スマホと PC を同じ Tailscale のネットワークにつなぎます。", style = Type.lead)
+            DeviceLink(false)
             Label("このスマホ")
             Text("Tailscale のアプリを入れてログインし、VPN 接続を許可してください。")
             Label("PC")
@@ -107,13 +166,13 @@ internal fun SetupGuide(step: Int, close: () -> Unit, next: () -> Unit, scan: ()
                 "Play ストアで Tailscale を開く",
                 "https://play.google.com/store/apps/details?id=com.tailscale.ipn",
             )
-            PrimaryButton("次へ：PC に PiMate を入れる", next, Modifier.fillMaxWidth())
         } else {
             val install = "pi install npm:@phni3j9a/pimate"
             Label("1　ターミナルで実行します")
             CommandPill(install)
             CommandPill("pi")
             Label("2　Pi の入力欄で実行します")
+            PiTerminal(Modifier.padding(vertical = 6.dp))
             CommandPill("/pimate setup")
             Hint("QR コードが表示されます。ペアリングし直すときは /pimate pair で出し直せます。")
             TextAction(
@@ -132,7 +191,6 @@ internal fun SetupGuide(step: Int, close: () -> Unit, next: () -> Unit, scan: ()
                     )
                 },
             )
-            PrimaryButton("QRコードを読み取る", scan, Modifier.fillMaxWidth())
         }
     }
 }
@@ -146,13 +204,22 @@ internal fun FirstPage(
     select: (String) -> Unit,
 ) {
     val rows = m.rowsFor(host.id)
-    Page(host.name, close) {
+    Page(
+        host.name,
+        close,
+        footer = {
+            if (rows.firstStep() in listOf(FirstStep.EMPTY, FirstStep.LIST))
+                PrimaryButton("新しい Pi を起動", spawn, Modifier.fillMaxWidth())
+            TextAction("一覧を開く", close, Modifier.fillMaxWidth())
+        },
+    ) {
         when (rows.firstStep()) {
             FirstStep.LOADING -> Text("PC の Pi を確認しています…")
             FirstStep.OFFLINE -> Text("PC に接続していません")
             else -> {
                 Text("${host.name} とつながりました", style = Type.title)
                 if (rows.firstStep() == FirstStep.EMPTY) {
+                    DeviceLink(true)
                     Text("まだ起動中の Pi はありません。このスマホから PC のフォルダを選んで、新しい Pi を起動できます。")
                     CommandPill("pi")
                     Hint("PC のターミナルで起動した Pi も、ここに表示されます")
@@ -172,9 +239,7 @@ internal fun FirstPage(
                     }
                     Hint("一覧は、チャットで右へスワイプするといつでも開けます")
                 }
-                PrimaryButton("新しい Pi を起動", spawn, Modifier.fillMaxWidth())
             }
         }
-        TextAction("一覧を開く", close)
     }
 }

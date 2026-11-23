@@ -83,6 +83,7 @@ class SheetJourney {
         ui.onNodeWithText("リンクを貼り付ける").performClick()
         ui.onNodeWithContentDescription("ペアリング用のリンク").performTextInput(link)
         press(ui.onNodeWithText("接続"))
+        press(ui.onNodeWithText("ペアリングする"))
         waitFor("一覧を開く")
         press(ui.onNodeWithText("一覧を開く"))
         waitFor("スクリーンショットの確認")

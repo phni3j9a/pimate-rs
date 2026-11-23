@@ -87,7 +87,8 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                                                 style = Type.mono,
                                                 color = pi.textSecondary,
                                             )
-                                            h.lines.forEach { line ->
+                                            var limit by remember(h) { mutableIntStateOf(120) }
+                                            h.lines.take(limit).forEach { line ->
                                                 val add = line.old == null
                                                 val del = line.new == null
                                                 Text(
@@ -98,6 +99,11 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                                                         else if (del) pi.delText else pi.text,
                                                 )
                                             }
+                                            if (h.lines.size > limit)
+                                                TextAction(
+                                                    "続きを表示（残り ${h.lines.size-limit} 行）",
+                                                    { limit += 120 },
+                                                )
                                         }
                                     else {
                                         Hint(
@@ -185,6 +191,7 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                         Markdown(v.str("body").ifEmpty { "本文はありません" })
                         if (v.optBoolean("bodyTruncated")) Hint("本文の一部を省略しています")
                         Label("コメント")
+                        if (v.optJSONArray("comments").objects().isEmpty()) Hint("コメントはありません")
                         v.optJSONArray("comments").objects().forEach {
                             Text(it.str("author"), style = Type.header)
                             Markdown(it.str("body"))
@@ -222,16 +229,30 @@ private fun agentAction(id: String) =
     }
 
 @Composable
-internal fun AgentsPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
-    var rid by rememberSaveable { mutableStateOf("") }
-    var cid by rememberSaveable { mutableStateOf("") }
+internal fun AgentsPage(
+    m: SessionModel,
+    at: EditorKey,
+    close: () -> Unit,
+    initial: String? = null,
+) {
+    var rid by rememberSaveable { mutableStateOf(initial.orEmpty()) }
     val rows = m.rows.groups["run"].orEmpty()
     val runs = remember(rows) { rows.map { JSONObject(it.json) } }
+    val selectedRun = runs.find { it.str("id") == initial }
+    var cid by rememberSaveable {
+        mutableStateOf(
+            selectedRun?.optJSONArray("children").objects().singleOrNull()?.str("id").orEmpty()
+        )
+    }
     if (cid.isEmpty())
         PiSheet(close) {
             SheetTitle("サブエージェント")
             for (open in listOf(true, false)) {
-                val group = runs.filter { it.optBoolean("open") == open }
+                val group =
+                    runs.filter {
+                        it.optBoolean("open") == open &&
+                            (initial == null || it.str("id") == initial)
+                    }
                 if (group.isNotEmpty()) Label(if (open) "実行中・再開可能" else "以前の実行")
                 group.forEach { run ->
                     key(run.str("id")) {
@@ -240,6 +261,17 @@ internal fun AgentsPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                             val detail =
                                 listOfNotNull(
                                         c.str("agent"),
+                                        c.optLong("startedAt")
+                                            .takeIf { it > 0 }
+                                            ?.let {
+                                                elapsed(
+                                                    (c.optLong(
+                                                            "endedAt",
+                                                            System.currentTimeMillis(),
+                                                        ) - it)
+                                                        .coerceAtLeast(0)
+                                                )
+                                            },
                                         c.optJSONObject("activity")?.let {
                                             it.str("tool") + " " + it.str("args")
                                         },
@@ -264,7 +296,14 @@ internal fun AgentsPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
         key(rid, cid) {
             val run = runs.find { it.str("id") == rid }
             val child = run?.optJSONArray("children").objects().find { it.str("id") == cid }
-            Page(child?.str("title").orEmpty().ifEmpty { "サブエージェント" }, { cid = "" }) {
+            Page(
+                child?.str("title").orEmpty().ifEmpty { "サブエージェント" },
+                {
+                    if (initial != null && selectedRun?.optJSONArray("children")?.length() == 1)
+                        close()
+                    else cid = ""
+                },
+            ) {
                 if (child == null || run == null) {
                     Hint("この実行は一覧にありません")
                     return@Page
@@ -299,37 +338,44 @@ internal fun AgentsPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                 Label("親の Pi からの依頼")
                 Text(record.task.ifEmpty { if (loading) "読み込み中…" else "依頼文は取得されていません" })
                 Label("子の作業記録")
-                val labels =
-                    m.instructions
-                        .forChild(ChildKey(at, rid, cid), run.str("resumedFrom").ifEmpty { null })
-                        .toMutableList()
-                if (record.items.isEmpty()) Hint(if (has) "作業記録はまだありません" else "作業記録は提供されていません")
-                record.items.forEach { v ->
-                    val text = v.str("text")
-                    when (v.str("kind")) {
-                        "user" -> {
-                            Hint(
-                                labels
-                                    .indexOfFirst { it.text.trim() == text.trim() }
-                                    .takeIf { it >= 0 }
-                                    ?.let(labels::removeAt)
-                                    ?.let { "あなた · ${agentAction(it.action)}" } ?: "依頼"
-                            )
-                            Text(text)
-                        }
-                        "assistant" -> {
-                            v.str("thinking").takeIf(String::isNotEmpty)?.let { Hint(it) }
-                            v.optJSONArray("toolCalls").objects().forEach {
-                                Text(it.str("name"), style = Type.mono)
-                            }
-                            if (text.isNotEmpty()) Markdown(text)
-                        }
-                        else -> {
-                            Hint(v.str("toolName"))
-                            Text(text, style = Type.mono)
+                val sent =
+                    m.instructions.forChild(
+                        ChildKey(at, rid, cid),
+                        run.str("resumedFrom").ifEmpty { null },
+                    )
+                val transcript =
+                    remember(record.items) {
+                        buildRows(record.items.map(::entry), emptyList(), false).filterNot {
+                            it is ChatRow.Summary
                         }
                     }
+                val captions =
+                    remember(sent, transcript) {
+                        val unused = sent.toMutableList()
+                        transcript.filterIsInstance<ChatRow.User>().associate { row ->
+                            val i = unused.indexOfFirst { it.text.trim() == row.text.trim() }
+                            row.key to
+                                (if (i < 0) "追加の指示"
+                                else "あなた · ${agentAction(unused.removeAt(i).action)}")
+                        }
+                    }
+                // 子の entry ID やファイルを親の Pi への画像要求に流用しない。
+                CompositionLocalProvider(LocalPics provides Pics.Local) {
+                    if (transcript.isEmpty())
+                        Hint(
+                            if (loading) "読み込み中…" else if (has) "作業記録はまだありません" else "作業記録は提供されていません"
+                        )
+                    for (row in transcript) key(row.key) {
+                        captions[row.key]?.let { Hint(it) }
+                        var expanded by remember { mutableStateOf(false) }
+                        RowView(row, expanded) { expanded = !expanded }
+                    }
                 }
+                child.str("question").takeIf(String::isNotEmpty)?.let {
+                    Hint("親の Pi に確認中")
+                    Text(it)
+                }
+                child.str("error").takeIf(String::isNotEmpty)?.let { SheetError(it) }
                 if (record.truncated) Hint("記録の一部を省略しています")
                 SheetError(error)
                 if (record.more || error.isNotEmpty() && has)
@@ -391,7 +437,7 @@ private fun StopAgent(m: SessionModel, at: EditorKey, run: JSONObject, child: JS
     val action =
         if (child?.optJSONArray("actions").strings().contains("stop_child")) "stop_child"
         else run.str("stopAction")
-    if (action.isEmpty()) return
+    if (action.isEmpty() || !run.optBoolean("active")) return
     var confirm by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }

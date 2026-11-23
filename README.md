@@ -2,7 +2,7 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。Android 開発版はペアリング・一覧・チャットの土台まで Rust Host に接続できます。他の OS と Extension の切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。Android 開発版では Rust Host にペアリングし、チャット、変更レビュー、サブエージェント、新しい Pi の起動、マシン管理、Issue / PR の閲覧ができます。他の OS と Extension の切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
 
 ## 目的
 
@@ -259,7 +259,7 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 ### Android の残りの画面で使う状態（#20 前半）
 
-`SessionModel` は Main スレッドから使います。画面を開いた時点の Host ID（会話なら `EditorKey`）を捕捉し、閉じる・対象を変えるときはその画面の coroutine をキャンセルしてください。以下は新しい画面の実装ではなく、その入力と操作の契約です。
+`SessionModel` は Main スレッドから使います。画面を開いた時点の Host ID（会話なら `EditorKey`）を捕捉し、閉じる・対象を変えるときはその画面の coroutine をキャンセルしてください。以下は画面から使う入力と操作の契約です。
 
 | 画面 | 状態と操作 |
 | --- | --- |
@@ -272,6 +272,13 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 | GitHub | `github(key,query)` の `kind=list` または `kind=issue/pr,number`。Host が対象 Pi のリポジトリを決める。非対応・未ログインは空一覧ではなくエラーとして扱う。 |
 | Pair／セットアップ／最初の Pi | QR・貼付などの候補は `previewPair(link)` で名前・アドレスを検査してから `pair(link)`。案内ページ・カメラ・外部リンクは画面層。追加登録経路は `showPairing(true/false)`、SavedState に保存するのはフラグだけ。初回成功のみ `pairedHostId` が入る（画面で受け取ったら `consumePairedHost()`）。`rowsFor(id).firstStep()` は loading/offline/empty/list。接続済みでも最初の一覧到着前は empty としない。 |
 
-後半は `MainActivity.kt`・`PairScreen.kt`・`ChatScreen.kt`・新規画面でこれらを接続します。Rust・生成コード・暗号ストア・状態層・既存の編集キーの契約は維持してください。#20 のモック比較と Pixel 3 の実 Pi 確認は後半です。
+### Android の画面と試し方
+
+- Pair の手順 1・2 からセットアップの案内を開けます。リンク・QR の名前とアドレスを確認してペアリングし、初回は起動中の Pi を選ぶか新しい Pi を起動します。2台目以降は一覧に戻ります。
+- チャットの **… → 変更レビュー** でターンまたは読み込み済みセッションの差分を開きます。「この変更について依頼」は下書きに参照を加えるだけです。同じメニューから現在の Pi のリポジトリの Issue / PR を読みます。子の状態は入力欄の上の1行から開きます。指示は対象の子が対応する場合だけ。実行全体や親を止める場合は対象を確認します。
+- ドロワーの **新しい Pi** ではマシン・フォルダ・信頼・モデル・初回本文を指定できます。**設定** にはマシンごとの管理、テーマ・文字サイズ・質問ツールの既定、APK の版と更新があります。端末の取り消しは PC 側の操作、マシンの削除はこのスマホの登録・下書きの削除です。通知は作りません。
+- 実装は `Pages.kt`（セットアップ・初回）、`ConversationPages.kt`（レビュー・子の作業記録・GitHub）、`MachinePages.kt`（起動・設定・マシン・専用 Pi の認証）。いずれも既存の画面と同じテーマで、操作に使う ID は画面の対象に固定します。
+
+**専用の画面試験**: 既定の `scripts/android-demo.py` は今までどおり Rust Host と模擬 Pi だけです。保守・ログイン・GitHub の成功状態も安全に試す場合だけ `PIMATE_DEMO_NAME='デモ PC' PIMATE_DEMO_SCREENS=list scripts/android-demo.py` を使用します（Node.js と Node から `require('ws')` できる環境。なければ一時ディレクトリで `npm install --prefix "$lab" ws@8`、`NODE_PATH="$lab/node_modules"`）。`android-screen-fixture.cjs` は loopback だけで待ち、ペアリングとチャットは専用 Rust Host、保守・GitHub・認証は固定のテスト応答です。systemctl・更新・実認証を呼びません。空一覧は `PIMATE_DEMO_SCREENS=empty`。登録のない**専用 APK** と1回限りのリンクを使い、上記 `demo-link` の手順で `cache/ui-link`（空は `cache/empty-link`）に渡します。模擬保守を使う場合だけ `cache/mock-maintenance` に空ファイルを用意し、`RemainingJourney#screens`（空は `#firstEmpty`）を実行します。実 Pi の `#realFaux` は `cache/real-link` と、`検証用 PC` という名前の一時 Host・`work` フォルダ内の本物の Pi + faux が必要です。各試験はリンクがなければスキップします。
 
 状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。

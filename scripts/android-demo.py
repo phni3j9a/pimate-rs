@@ -1002,6 +1002,7 @@ async def demo(lab, binary):
     host = await asyncio.create_subprocess_exec(
         binary, "serve", *args, "--listen", "127.0.0.1", env=env
     )
+    fixture = None
     try:
         for _ in range(100):
             if host.returncode is not None:
@@ -1020,6 +1021,14 @@ async def demo(lab, binary):
         loop.add_signal_handler(signal.SIGUSR1, hooks["edge"][0])
         loop.add_signal_handler(signal.SIGUSR2, hooks["attach"][1])
         print(f"pid {os.getpid()}（kill -USR1: edge で PC の /resume、kill -USR2: attach の PC の画面を閉じる）", flush=True)
+        if mode := os.environ.get("PIMATE_DEMO_SCREENS"):
+            if mode not in {"list", "empty"}:
+                raise ValueError("PIMATE_DEMO_SCREENS must be list or empty")
+            fixture = await asyncio.create_subprocess_exec(
+                "node", ROOT / "scripts/android-screen-fixture.cjs", str(port), mode,
+                stdout=asyncio.subprocess.PIPE,
+            )
+            port = int(await asyncio.wait_for(fixture.stdout.readline(), timeout=5))
         print(f"adb -s SERIAL reverse tcp:{port} tcp:{port}", flush=True)
         subprocess.run(
             [binary, "pair", *args, "--address", f"127.0.0.1:{port}"],
@@ -1028,6 +1037,9 @@ async def demo(lab, binary):
         )
         await host.wait()
     finally:
+        if fixture is not None and fixture.returncode is None:
+            fixture.terminate()
+            await fixture.wait()
         if host.returncode is None:
             host.terminate()
             await host.wait()

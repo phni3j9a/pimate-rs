@@ -62,7 +62,40 @@ internal fun NewPage(
         val recent = folders?.optJSONArray("folders").objects()
         fun folder(path: String) =
             form.folder(path, recent.any { it.str("path") == path && it.optBoolean("trusted") })
-        Page("新しい Pi", close) {
+        Page(
+            "新しい Pi",
+            close,
+            footer = {
+                PrimaryButton(
+                    if (busy) "起動を確認しています…" else "起動",
+                    {
+                        if (!busy && h != null) {
+                            busy = true
+                            error = ""
+                            scope.launch {
+                                try {
+                                    checked({ error = it }) {
+                                        when (val r = m.spawn(form)) {
+                                            is SpawnOutcome.Ready -> select(h, r.instance)
+                                            is SpawnOutcome.NotListed ->
+                                                outcome = "起動を受け付けましたが、一覧では確認できません。一覧で確認してください。"
+                                            is SpawnOutcome.MessageUnconfirmed ->
+                                                outcome =
+                                                    "Pi は起動しましたが、最初のメッセージは未確認です。" +
+                                                        r.attach.orEmpty()
+                                        }
+                                    }
+                                } finally {
+                                    busy = false
+                                }
+                            }
+                        }
+                    },
+                    Modifier.fillMaxWidth(),
+                    enabled = h != null && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
+                )
+            },
+        ) {
             Label("マシン")
             m.hosts.forEach {
                 MenuRow(
@@ -116,13 +149,18 @@ internal fun NewPage(
             Label("モデル")
             MenuRow(
                 form.model?.str("id") ?: "PC の既定",
-                form.thinking.orEmpty(),
+                form.thinking
+                    ?: (if (form.model == null)
+                            models?.optJSONObject("default")?.optJSONObject("model")?.str("id")
+                        else null)
+                        .orEmpty(),
                 !busy && models != null,
                 next = true,
             ) {
                 modelPicker = !modelPicker
             }
             if (modelPicker) {
+                val favorites = models?.optJSONArray("scoped").objects()
                 TextAction(
                     "PC の既定",
                     {
@@ -131,20 +169,25 @@ internal fun NewPage(
                         modelPicker = false
                     },
                 )
-                models?.optJSONArray("models").objects().forEach { model ->
-                    MenuRow(
-                        model.str("name").ifEmpty { model.str("id") },
-                        model.str("provider"),
-                        !busy,
-                    ) {
-                        form.model =
-                            JSONObject()
-                                .put("provider", model.str("provider"))
-                                .put("id", model.str("id"))
-                        form.thinking = null
-                        modelPicker = false
+                models
+                    ?.optJSONArray("models")
+                    .objects()
+                    .sortedByDescending { model -> favorites.any { same(it, model) } }
+                    .forEach { model ->
+                        MenuRow(
+                            model.str("name").ifEmpty { model.str("id") },
+                            (if (favorites.any { same(it, model) }) "★ " else "") +
+                                model.str("provider"),
+                            !busy,
+                        ) {
+                            form.model =
+                                JSONObject()
+                                    .put("provider", model.str("provider"))
+                                    .put("id", model.str("id"))
+                            form.thinking = null
+                            modelPicker = false
+                        }
                     }
-                }
             }
             models
                 ?.optJSONArray("models")
@@ -167,33 +210,6 @@ internal fun NewPage(
             )
             SheetError(error)
             if (outcome.isNotEmpty()) Hint(outcome)
-            PrimaryButton(
-                if (busy) "起動を確認しています…" else "起動",
-                {
-                    if (!busy && h != null) {
-                        busy = true
-                        error = ""
-                        scope.launch {
-                            try {
-                                checked({ error = it }) {
-                                    when (val r = m.spawn(form)) {
-                                        is SpawnOutcome.Ready -> select(h, r.instance)
-                                        is SpawnOutcome.NotListed ->
-                                            outcome = "起動を受け付けましたが、一覧では確認できません。一覧で確認してください。"
-                                        is SpawnOutcome.MessageUnconfirmed ->
-                                            outcome =
-                                                "Pi は起動しましたが、最初のメッセージは未確認です。" + r.attach.orEmpty()
-                                    }
-                                }
-                            } finally {
-                                busy = false
-                            }
-                        }
-                    }
-                },
-                Modifier.fillMaxWidth(),
-                enabled = h != null && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
-            )
         }
     }
 }
@@ -298,6 +314,13 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
         Label("状態")
         Text(rows.summary())
         Hint(host.address)
+        devices
+            ?.find { it.optBoolean("current") }
+            ?.optLong("createdAt")
+            ?.takeIf { it > 0 }
+            ?.let {
+                Hint(android.text.format.DateFormat.format("yyyy/MM/dd", it).toString() + " にペアリング")
+            }
         Label("PC の PiMate")
         val current = check?.str("current").orEmpty().ifEmpty { caps.str("version") }
         Text("現在 ${current.ifEmpty { "不明" }}")

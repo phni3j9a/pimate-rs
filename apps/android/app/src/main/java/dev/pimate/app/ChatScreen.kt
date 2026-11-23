@@ -242,6 +242,23 @@ internal fun ChatScreen(
             ui.confirmed != switchId &&
             editor.copy(target = Target(editor.target.instance, fromId)) in ui.drafted
     // 対象が変わったら、前の対象のシートと画像は閉じる。
+    val runLinks =
+        remember(entries, groups["run"]) {
+            val runs =
+                groups["run"]
+                    .orEmpty()
+                    .map { JSONObject(it.json) }
+                    .filter { it.str("toolCallId").isNotEmpty() }
+                    .associateBy { it.str("toolCallId") }
+            buildMap {
+                runs.forEach { (id, r) -> put("running:$id", r.str("id")) }
+                entries.forEach { e ->
+                    e.calls.forEach { c ->
+                        runs[c.id]?.let { put("tool:${e.id}:${c.id}", it.str("id")) }
+                    }
+                }
+            }
+        }
     val sheet = ui.sheet?.takeIf { it.second == editor }
     val viewer = ui.viewer?.takeIf { it.first == null || it.first == editor }
     SideEffect {
@@ -357,7 +374,9 @@ internal fun ChatScreen(
                                 ) {
                                     if (row is ChatRow.Summary) {
                                         if (!open.remove("+${row.key}")) open.add("+${row.key}")
-                                    } else toggle(row)
+                                    } else if (runLinks.containsKey(row.key) && key != null)
+                                        show("agents:" + runLinks.getValue(row.key))
+                                    else toggle(row)
                                 }
                             }
                         }
@@ -406,7 +425,10 @@ internal fun ChatScreen(
                 "review" -> ReviewPage(m, at, close)
                 "github" -> GithubPage(m, at, close)
                 "agents" -> AgentsPage(m, at, close)
-                else -> SessionSheet(m, at, name, { ui.sheet = it to at }, close)
+                else ->
+                    if (name.startsWith("agents:"))
+                        AgentsPage(m, at, close, name.removePrefix("agents:"))
+                    else SessionSheet(m, at, name, { ui.sheet = it to at }, close)
             }
         }
         viewer?.let { (_, list, index) -> ImageViewer(list, index) { ui.viewer = null } }
@@ -606,7 +628,7 @@ internal fun PcCard(title: String, command: String?) {
 }
 
 @Composable
-private fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
+internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
     when (row) {
         is ChatRow.User ->
             Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
