@@ -10,14 +10,14 @@ use std::{
 
 const DEPTH: usize = 32;
 use table_guard::CELLS;
-pub(super) const OPTIONS: Options = Options::ENABLE_TABLES
+const OPTIONS: Options = Options::ENABLE_TABLES
     .union(Options::ENABLE_STRIKETHROUGH)
     .union(Options::ENABLE_TASKLISTS);
 type Events<'a> = Peekable<Box<dyn Iterator<Item = (Event<'a>, Range<usize>)> + 'a>>;
 
 pub fn parse(source: &str, file_images: bool) -> Document {
-    let input = compat::prepare(source);
-    let (prepared, oversized) = table_guard::prepare(&input.text);
+    let input = newlines::prepare(source);
+    let (prepared, oversized) = table_guard::bound_sparse_tables(&input.text);
     let oversized = oversized.into_iter().map(|p| input.original(p)).collect();
     let first = Parser::new_ext(&prepared, OPTIONS);
     if first.reference_definitions().iter().next().is_none() {
@@ -59,7 +59,7 @@ fn render(
     parser: Parser,
     defs: pulldown_cmark::RefDefs,
     oversized: &std::collections::HashSet<usize>,
-    input: &compat::Input,
+    input: &newlines::Input,
 ) -> Document {
     let iter = parser.into_offset_iter().map(|(e, r)| {
         (
@@ -99,7 +99,7 @@ fn definition_colon(s: &str) -> Option<usize> {
     None
 }
 struct Render<'a> {
-    input: &'a compat::Input<'a>,
+    input: &'a newlines::Input<'a>,
     source: &'a str,
     oversized: &'a std::collections::HashSet<usize>,
     defs: pulldown_cmark::RefDefs<'a>,
@@ -112,7 +112,53 @@ struct Render<'a> {
 }
 enum Container {
     Quote,
-    Item { start: usize, width: usize },
+    Item {
+        start: usize,
+        content: usize,
+        columns: usize,
+    },
+}
+fn advance(col: usize, b: u8) -> usize {
+    if b == b'\t' {
+        col + 4 - col % 4
+    } else {
+        col + 1
+    }
+}
+fn column(s: &str, p: usize) -> usize {
+    s[..p]
+        .rsplit(['\r', '\n'])
+        .next()
+        .unwrap_or("")
+        .bytes()
+        .fold(0, advance)
+}
+fn list_prefix(source: &str, start: usize, raw: &str, parents: &[Container]) -> Container {
+    let mark = start + raw.len() - raw.trim_start_matches([' ', '\t']).len();
+    let marker_end = mark
+        + source[mark..]
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .count()
+        + 1;
+    let after = &source[marker_end..];
+    let padding = after
+        .bytes()
+        .take_while(|b| matches!(b, b' ' | b'\t'))
+        .count();
+    let col = column(source, marker_end);
+    let padded = after[..padding].bytes().fold(col, advance);
+    let base = table_line_start(source, mark, parents);
+    let (content, content_col) = if (1..=4).contains(&(padded - col)) {
+        (marker_end + padding, padded)
+    } else {
+        (marker_end + usize::from(padding != 0), col + 1)
+    };
+    Container::Item {
+        start: mark,
+        content,
+        columns: content_col - column(source, base),
+    }
 }
 // Strip only ancestor prefixes. Spaces after the consumed quote/list margin belong to the table.
 fn table_line_start(source: &str, at: usize, containers: &[Container]) -> usize {
@@ -127,15 +173,23 @@ fn table_line_start(source: &str, at: usize, containers: &[Container]) -> usize 
                     }
                 }
             }
-            Container::Item { start, width } => {
+            Container::Item {
+                start,
+                content,
+                columns,
+            } => {
                 if (p..at).contains(&start) {
-                    p = (start + width).min(at)
+                    p = content.min(at);
                 } else {
-                    p += source[p..at]
-                        .bytes()
-                        .take_while(|b| matches!(b, b' ' | b'\t'))
-                        .take(width)
-                        .count();
+                    let col = column(source, p);
+                    let mut current = col;
+                    for b in source[p..at].bytes() {
+                        if current - col >= columns || !matches!(b, b' ' | b'\t') {
+                            break;
+                        }
+                        current = advance(current, b);
+                        p += 1;
+                    }
                 }
             }
         }
@@ -214,8 +268,15 @@ impl Render<'_> {
                     } else {
                         match t {
                             Tag::HtmlBlock => {
-                                skip(e);
-                                literal(raw.trim())
+                                let mut text = String::new();
+                                for (ev, _) in e.by_ref() {
+                                    match ev {
+                                        Event::Html(v) => text.push_str(&v),
+                                        Event::End(_) => break,
+                                        _ => {}
+                                    }
+                                }
+                                literal(text.trim())
                             }
                             Tag::Paragraph | Tag::Heading { .. } => {
                                 if let Some((Event::TaskListMarker(v), _)) = e.peek() {
@@ -243,18 +304,12 @@ impl Render<'_> {
                                 items: self.blocks(e, depth + 1, end, &mut None),
                             },
                             Tag::Item => {
-                                let marker = raw.bytes().take_while(u8::is_ascii_digit).count() + 1;
-                                let spaces = raw
-                                    .get(marker..)
-                                    .unwrap_or("")
-                                    .bytes()
-                                    .take_while(|b| matches!(b, b' ' | b'\t'))
-                                    .count();
-                                self.containers.push(Container::Item {
+                                self.containers.push(list_prefix(
+                                    self.source,
                                     start,
-                                    width: marker
-                                        + if (1..=4).contains(&spaces) { spaces } else { 1 },
-                                });
+                                    raw,
+                                    &self.containers,
+                                ));
                                 let mut checked = None;
                                 let children = self.blocks(e, depth + 1, end, &mut checked);
                                 self.containers.pop();
@@ -514,14 +569,13 @@ impl Render<'_> {
                     styles.pop();
                 }
                 Event::Text(v) => {
-                    let mut text = self.original_text(v, &r);
+                    let mut text = v.into_string();
                     let mut mask = String::new();
                     mask_part(&mut mask, &text, raw, self.source, r.start);
                     while let Some((Event::Text(_), _)) = e.peek() {
                         let Some((Event::Text(v), r)) = e.next() else {
                             unreachable!()
                         };
-                        let v = self.original_text(v, &r);
                         mask_part(&mut mask, &v, &self.source[r.clone()], self.source, r.start);
                         text.push_str(&v);
                         end = r.end;
@@ -538,20 +592,6 @@ impl Render<'_> {
             }
         }
         (out, end)
-    }
-    fn original_text(&self, v: pulldown_cmark::CowStr, r: &Range<usize>) -> String {
-        let mut text = v.into_string();
-        let raw = &self.source[r.clone()];
-        if raw.len() == text.len() {
-            let i = self.input.masked.partition_point(|p| *p < r.start);
-            for pos in self.input.masked[i..].iter().take_while(|p| **p < r.end) {
-                let at = pos - r.start;
-                if text.as_bytes()[at] == b'!' {
-                    text.replace_range(at..at + 1, &raw[at..at + 1]);
-                }
-            }
-        }
-        text
     }
     fn charge(&mut self, n: usize) -> bool {
         if n > self.expansion {

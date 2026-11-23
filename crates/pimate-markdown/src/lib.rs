@@ -1,7 +1,7 @@
 //! Owned, presentation-neutral Markdown. IDs are unique among sibling blocks of one message.
-mod compat;
 mod diff;
 mod image;
+mod newlines;
 mod parse;
 mod table;
 mod table_guard;

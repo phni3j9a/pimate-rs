@@ -418,28 +418,26 @@ fn loose_tasks() {
     }
 }
 #[test]
-fn pipeless_single_column() {
-    for md in ["項目\n|:--|\nりんご", "項目\r\n:--\r\nりんご"] {
+fn tables_follow_pulldown_without_injecting_pipes() {
+    for md in ["項目\n|:--|\nりんご", "a|b\n:--\nc"] {
         let d = parse(md, false);
-        let Content::Table(t) = &d.blocks[0].content else {
-            panic!()
-        };
-        assert_eq!(t.align, [Alignment::Left]);
-        assert_eq!(d.blocks[0].plain_text(), "項目\nりんご");
-        assert_eq!(t.markdown, md.replace("\r\n", "\n"));
+        assert!(matches!(d.blocks[0].content, Content::Paragraph(_)));
+        assert_eq!(d.blocks[0].plain_text(), md);
     }
+    let d = parse("a\n> |---|", false);
+    assert_eq!(d.blocks[0].plain_text(), "a");
+    let d = parse("- h\n  |:--|\n  a", false);
+    assert_eq!(d.blocks[0].plain_text(), "h\n|:--|\na");
 }
 #[test]
-fn malformed_table_is_a_formatted_paragraph() {
-    let d = parse("a|b\n--:--|--\n**1**|2", false);
-    assert_eq!(d.blocks[0].plain_text(), "a|b\n--:--|--\n1|2");
-    let Content::Paragraph(p) = &d.blocks[0].content else {
+fn pulldown_accepts_interior_colon() {
+    let md = "a|b\n--:--|--\n**1**|2";
+    let d = parse(md, false);
+    let Content::Table(t) = &d.blocks[0].content else {
         panic!()
     };
-    assert!(
-        p.iter()
-            .any(|v| matches!(v,Inline::Text{text,style} if text=="1"&&style.bold))
-    );
+    assert_eq!(t.markdown, md);
+    assert_eq!(t.align, [Alignment::Right, Alignment::Default]);
 }
 #[test]
 fn invalid_link_label_does_not_autolink() {
@@ -482,7 +480,7 @@ fn trimmed_html() {
 }
 #[test]
 fn single_column_mid_paragraph_unicode_ranges() {
-    let md = "前\r\n**項目**\r\n|:--|\r\nりんご\r\n\r\n# 次";
+    let md = "前\r\n\r\n|**項目**|\r\n|:--|\r\nりんご\r\n\r\n# 次";
     let d = parse(md, false);
     assert_eq!(d.blocks.len(), 3);
     for b in &d.blocks {
@@ -491,7 +489,7 @@ fn single_column_mid_paragraph_unicode_ranges() {
     let Content::Table(t) = &d.blocks[1].content else {
         panic!()
     };
-    assert_eq!(t.markdown, "**項目**\n|:--|\nりんご");
+    assert_eq!(t.markdown, "|**項目**|\n|:--|\nりんご");
     assert_eq!(d.blocks[1].plain_text(), "項目\nりんご");
     assert_eq!(
         &md[d.blocks[2].id as usize..d.blocks[2].end as usize],
@@ -519,4 +517,32 @@ fn table_copy_keeps_only_inner_indent() {
         panic!()
     };
     assert_eq!(t.markdown, "  | h |\n  |---|\n  | x |");
+}
+
+#[test]
+fn indented_and_tabbed_list_table_copy() {
+    for md in [
+        "  - | h |\n    |---|\n    | x |",
+        "-\t| h |\n    |---|\n    | x |",
+        "  -\t| h |\n\t|---|\n\t| x |",
+    ] {
+        let d = parse(md, false);
+        let Content::List { items, .. } = &d.blocks[0].content else {
+            panic!()
+        };
+        let Content::Item { children, .. } = &items[0].content else {
+            panic!()
+        };
+        let Content::Table(t) = &children[0].content else {
+            panic!()
+        };
+        assert_eq!(t.markdown, "| h |\n|---|\n| x |");
+    }
+}
+#[test]
+fn quoted_html_selection() {
+    assert_eq!(
+        parse("> <div>hi\n> bye</div>", false).blocks[0].plain_text(),
+        "<div>hi\nbye</div>"
+    );
 }

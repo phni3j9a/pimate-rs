@@ -43,7 +43,7 @@ fn middle(line: &str, offset: usize, width: usize) -> Option<Range<usize>> {
     let start = pipes.next()? + 1;
     Some(start..pipes.nth(width - 3)?)
 }
-pub(super) fn prepare(source: &str) -> (Cow<'_, str>, HashSet<usize>) {
+pub(super) fn bound_sparse_tables(source: &str) -> (Cow<'_, str>, HashSet<usize>) {
     let none = || (Cow::Borrowed(source), HashSet::new());
     if !source.contains('|') {
         return none();
