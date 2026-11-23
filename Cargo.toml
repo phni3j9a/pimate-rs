@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pimate-protocol"]
+members = ["crates/pimate-protocol", "crates/pimate-host"]
 resolver = "3"
 
 [workspace.package]
@@ -10,3 +10,19 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
+pimate-protocol = { path = "crates/pimate-protocol" }
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+futures-util = { version = "0.3", features = ["sink"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+nix = { version = "0.31", features = ["user", "signal", "hostname", "net", "term"] }
+uuid = { version = "1", features = ["v4"] }
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+subtle = "2"
+tempfile = "3"
+qrcode = { version = "0.14", default-features = false }
+tokio-tungstenite = "0.29"
+tungstenite = { version = "0.29", default-features = false }
