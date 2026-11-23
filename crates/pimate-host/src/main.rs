@@ -68,7 +68,9 @@ async fn main() -> Result<()> {
     if cmd == "attach" {
         let name = args.next();
         ensure!(args.next().is_none());
-        return terminal::Terminal::resolve().attach(name).await;
+        return terminal::Terminal::resolve()
+            .attach(&config::run_dir(), name)
+            .await;
     }
     if cmd == "list" {
         ensure!(args.next().is_none());

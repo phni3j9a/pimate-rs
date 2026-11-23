@@ -68,7 +68,7 @@ struct App {
     instances: watch::Receiver<Vec<Value>>,
 }
 impl App {
-    async fn operation(&self, m: Value) -> Value {
+    async fn operation(&self, m: Value, hold: Option<CancellationToken>) -> Value {
         let kind = m["type"].as_str().unwrap();
         let mut reply = match kind {
             "dirs" => {
@@ -96,7 +96,7 @@ impl App {
             _ => {
                 let result = if kind == "auth_session" {
                     self.login
-                        .acquire(&self.terminal, &self.dir)
+                        .acquire(&self.terminal, &self.dir, hold.as_ref().expect("auth hold"))
                         .await
                         .map(|id| json!({"ok":true,"instanceId":id}))
                 } else {
@@ -404,6 +404,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                     break Code::Protocol as u16;
                 }
                 let mut release_on_error = None;
+                let mut hold = None;
                 if kind.starts_with("auth_session") {
                     if !short(&m["holdId"]) {
                         break Code::Protocol as u16;
@@ -417,10 +418,11 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                         break Code::Protocol as u16;
                     }
                     let generation = Uuid::new_v4();
-                    holds
+                    let (latest, guard) = holds
                         .entry(h.to_string())
-                        .or_insert_with(|| (generation, a.login.hold()))
-                        .0 = generation;
+                        .or_insert_with(|| (generation, a.login.hold()));
+                    *latest = generation;
+                    hold = Some(guard.released.clone());
                     release_on_error = Some((h.to_owned(), generation));
                 }
                 if kind == "dirs"
@@ -438,7 +440,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                 // Accept launch operations independently of the reply connection. A
                 // dropped JoinHandle detaches the operation; the join set bounds waiters.
                 let host_owned = matches!(kind, "spawn" | "auth_session");
-                let operation = async move { a.operation(m).await };
+                let operation = async move { a.operation(m, hold).await };
                 let launch = if host_owned {
                     Ok(tokio::spawn(operation))
                 } else {

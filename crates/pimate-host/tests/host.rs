@@ -640,23 +640,25 @@ impl Drop for Cleanup {
         if !self.dir.is_dir() {
             return;
         }
-        if let Ok(o) = std::process::Command::new(&self.ab)
-            .env("HOME", &self.dir)
+        if let Ok(o) = std::process::Command::new(env!("CARGO_BIN_EXE_pimate"))
+            .arg("attach")
+            .env("PIMATE_ABDUCO", &self.ab)
+            .env("PIMATE_RUN_DIR", self.dir.join("run"))
+            .env("PIMATE_CONFIG_DIR", self.dir.join("config"))
+            .env("PI_CODING_AGENT_DIR", self.dir.join("agent"))
             .env("ABDUCO_SOCKET_DIR", &self.dir)
+            .env("HOME", &self.dir)
             .output()
+            && let Ok(rows) = serde_json::from_slice::<Vec<Value>>(&o.stdout)
         {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                let cols: Vec<_> = line.split('\t').collect();
-                if cols.len() != 4 {
-                    continue;
-                }
-                let n = cols[3].trim();
-                if let Some(hex) = n.strip_prefix("pimate-")
-                    && hex.len() == 8
-                    && hex.bytes().all(|b| b.is_ascii_hexdigit())
-                    && let Ok(pid) = cols[2].parse::<i32>()
-                    && pid > 0
-                {
+            for row in rows {
+                if let (Some(n), Some(pid)) = (
+                    row["name"].as_str(),
+                    row["pid"]
+                        .as_i64()
+                        .and_then(|n| i32::try_from(n).ok())
+                        .filter(|p| *p > 0),
+                ) {
                     if cfg!(target_os = "linux")
                         && std::fs::read_to_string(format!("/proc/{pid}/cgroup")).is_ok_and(
                             |groups| groups.lines().any(|g| g.ends_with(&format!("/{n}.scope"))),
@@ -830,7 +832,10 @@ async fn real_pi_spawn_attach_restart_login() -> Result<()> {
     timeout(Duration::from_secs(15), async {
         loop {
             let o = cli(&path).envs(vars).arg("attach").output().await?;
-            if !loginmeta.exists() && serde_json::from_slice::<Value>(&o.stdout)? == json!([]) {
+            if !loginmeta.exists()
+                && serde_json::from_slice::<Value>(&o.stdout)? == json!([])
+                && std::fs::read_dir(path.join("run/t"))?.next().is_none()
+            {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(500)).await
@@ -960,7 +965,7 @@ async fn scoped_spawn_uses_host_path_and_finishes_prompt_after_disconnect() -> R
     script(
         &bin.join("abduco"),
         r#"if [ "$#" -eq 0 ]; then exit 0; fi
- printf '%s\n' "$@" > "$HOME/args"; echo "$PIMATE_INSTANCE_ID" > "$HOME/started""#,
+ echo "$ABDUCO_SOCKET_DIR" > "$HOME/ns"; printf '%s\n' "$@" > "$HOME/args"; echo "$PIMATE_INSTANCE_ID" > "$HOME/started""#,
     )?;
     let s = Server::with(
         t.clone(),
@@ -999,6 +1004,14 @@ async fn scoped_spawn_uses_host_path_and_finishes_prompt_after_disconnect() -> R
     let args = std::fs::read_to_string(root.join("args"))?;
     let args: Vec<_> = args.lines().collect();
     assert_eq!(Path::new(args[2]), bin.join("pi"));
+    assert_eq!(
+        Path::new(args[1]).parent(),
+        Some(root.join("run/t").as_path())
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("ns"))?.trim(),
+        root.join("run/t").to_str().unwrap()
+    );
     assert_eq!(&args[3..], &["-e", "npm:@phni3j9a/pimate"]);
     let listener = tokio::net::UnixListener::bind(root.join("run").join(format!("{id}.sock")))?;
     let mut io = Framed::new(
@@ -1017,53 +1030,77 @@ async fn scoped_spawn_uses_host_path_and_finishes_prompt_after_disconnect() -> R
 }
 
 #[tokio::test]
-async fn list_only_reaps_matching_keeper_from_own_run_dir() -> Result<()> {
-    let t = tempfile::tempdir()?;
-    let root = t.path();
-    let first = root.join("a");
-    let second = root.join("b");
+async fn scoped_sockets_ignore_external_namespace_and_recover_after_probe_failure() -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use tokio::net::UnixListener;
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path();
+    let run = root.join("a");
+    let private = run.join("t");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&private)?;
+    let external = root.join("old");
+    std::fs::create_dir(&external)?;
+    let host = nix::unistd::gethostname()?.into_string().unwrap();
+    let own = private.join(format!("pimate-aaaaaaaa@{host}"));
+    let foreign = external.join(format!("pimate-bbbbbbbb@{host}"));
+    let listener = UnixListener::bind(&own)?;
+    let foreign_listener = UnixListener::bind(&foreign)?;
+    std::fs::set_permissions(&own, std::fs::Permissions::from_mode(0o610))?;
+    // First probe fails; next discovery must still recover this socket, without any record.
+    let probe = tokio::spawn(async move {
+        drop(listener.accept().await?);
+        for _ in 0..2 {
+            let (mut conn, _) = listener.accept().await?;
+            conn.write_all(&5u32.to_ne_bytes()).await?;
+            conn.write_all(&8u32.to_ne_bytes()).await?;
+            conn.write_all(&12345u64.to_ne_bytes()).await?;
+        }
+        Ok::<_, anyhow::Error>(())
+    });
     let fake = root.join("abduco");
-    let mut own = Command::new("sleep").arg("60").kill_on_drop(true).spawn()?;
-    let mut foreign = Command::new("sleep").arg("60").kill_on_drop(true).spawn()?;
-    let mut replaced = Command::new("sleep").arg("60").kill_on_drop(true).spawn()?;
-    let ids = [
-        own.id().unwrap(),
-        foreign.id().unwrap(),
-        replaced.id().unwrap(),
-    ];
     script(
         &fake,
-        &format!(
-            "printf '+ Mon\\tdate\\t{}\\tpimate-aaaaaaaa\\n+ Mon\\tdate\\t{}\\tpimate-bbbbbbbb\\n+ Mon\\tdate\\t{}\\tpimate-cccccccc\\n'",
-            ids[0], ids[1], ids[2]
-        ),
+        "printf '%s\n' \"$ABDUCO_SOCKET_DIR\" \"$@\" >> \"$HOME/calls\"",
     )?;
-    for (dir, name, pid) in [
-        (&first, "pimate-aaaaaaaa", ids[0]),
-        (&second, "pimate-bbbbbbbb", ids[1]),
-        (&first, "pimate-cccccccc", ids[1]),
-    ] {
-        use std::os::unix::fs::DirBuilderExt;
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir.join("terminals"))?;
-        std::fs::write(dir.join("terminals").join(name), pid.to_string())?;
-    }
+    let cmd = |dir: &Path| {
+        let mut c = cli(root);
+        c.env("PIMATE_ABDUCO", &fake)
+            .env("PIMATE_RUN_DIR", dir)
+            .env("ABDUCO_SOCKET_DIR", &external);
+        c
+    };
+    ensure!(cmd(&run).arg("list").output().await?.status.success());
+    ensure!(!root.join("calls").exists());
+    ensure!(cmd(&run).arg("list").output().await?.status.success());
+    let calls = std::fs::read_to_string(root.join("calls"))?;
+    assert_eq!(
+        calls.lines().collect::<Vec<_>>(),
+        [private.to_str().unwrap(), "-a", "--", own.to_str().unwrap()]
+    );
+    let list = cmd(&run).arg("attach").output().await?;
+    let rows: Vec<Value> = serde_json::from_slice(&list.stdout)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "pimate-aaaaaaaa");
+    assert_eq!(rows[0]["terminated"], true);
+    probe.await??;
+    let empty = cmd(&root.join("b")).arg("attach").output().await?;
+    assert_eq!(serde_json::from_slice::<Value>(&empty.stdout)?, json!([]));
     ensure!(
-        cli(root)
-            .env("PIMATE_ABDUCO", fake)
-            .env("PIMATE_RUN_DIR", first)
-            .arg("list")
+        !cmd(&run)
+            .args(["attach", "pimate-bbbbbbbb"])
             .output()
             .await?
             .status
             .success()
     );
-    timeout(Duration::from_secs(2), own.wait()).await??;
-    ensure!(foreign.try_wait()?.is_none() && replaced.try_wait()?.is_none());
-    foreign.kill().await?;
-    replaced.kill().await?;
+    ensure!(
+        timeout(Duration::from_millis(100), foreign_listener.accept())
+            .await
+            .is_err()
+    );
     Ok(())
 }
 
@@ -1125,6 +1162,74 @@ async fn completion_collates_before_cutoff() -> Result<()> {
         let v = until(&mut ws, |v| v["type"] == "dirs_result").await?;
         assert_eq!(v["dirs"][0], first);
         assert_eq!(v["dirs"].as_array().unwrap().len(), 1000);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn released_or_disconnected_auth_waiters_never_launch_another_pi() -> Result<()> {
+    for disconnect in [false, true] {
+        let tmp = std::sync::Arc::new(tempfile::tempdir()?);
+        let root = tmp.path();
+        let fake = root.join("abduco");
+        script(
+            &fake,
+            r#"echo started >> "$HOME/launches"
+ for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+   [ -e "$HOME/proceed" ] && break; /bin/sleep .1
+ done
+ echo finished >> "$HOME/completions"; exit 1"#,
+        )?;
+        let s = Server::with(
+            tmp.clone(),
+            &[
+                ("PIMATE_PI", Path::new("/bin/true")),
+                ("PIMATE_ABDUCO", &fake),
+                ("PATH", root),
+            ],
+        )
+        .await?;
+        let token = s.paired().await?["token"].clone();
+        let mut ws = s.auth(&token).await?;
+        let ask = |n| json!({"type":"auth_session","holdId":"h","requestId":format!("login{n}")});
+        send(&mut ws, ask(0)).await?;
+        timeout(Duration::from_secs(2), async {
+            while !root.join("launches").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await
+            }
+        })
+        .await?;
+        for n in 1..4 {
+            send(&mut ws, ask(n)).await?
+        }
+        send(&mut ws, json!({"type":"ping","t":1})).await?;
+        until(&mut ws, |v| v["type"] == "pong").await?;
+        if disconnect {
+            ws.close(None).await?;
+            drop(ws);
+            ws = s.auth(&token).await?;
+        } else {
+            send(&mut ws, json!({"type":"auth_session_end","holdId":"h"})).await?;
+            send(&mut ws, json!({"type":"ping","t":2})).await?;
+            until(&mut ws, |v| v["type"] == "pong").await?;
+        }
+        send(&mut ws, ask(4)).await?;
+        send(&mut ws, json!({"type":"ping","t":3})).await?;
+        until(&mut ws, |v| v["type"] == "pong").await?;
+        std::fs::write(root.join("proceed"), "")?;
+        until(&mut ws, |v| v["requestId"] == "login4").await?;
+        assert_eq!(
+            std::fs::read_to_string(root.join("launches"))?
+                .lines()
+                .count(),
+            2
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("completions"))?
+                .lines()
+                .count(),
+            2
+        );
     }
     Ok(())
 }

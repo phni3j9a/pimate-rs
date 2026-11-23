@@ -26,10 +26,14 @@ pub struct Login {
     state: Mutex<State>,
     transition: tokio::sync::Mutex<()>,
 }
-pub struct Hold(Arc<Login>);
+pub struct Hold {
+    login: Arc<Login>,
+    pub released: tokio_util::sync::CancellationToken,
+}
 impl Drop for Hold {
     fn drop(&mut self) {
-        let mut s = self.0.state.lock().unwrap();
+        self.released.cancel();
+        let mut s = self.login.state.lock().unwrap();
         s.holders -= 1;
         if s.holders == 0 {
             s.deadline = Some(Instant::now() + GRACE)
@@ -41,13 +45,21 @@ impl Login {
         let mut s = self.state.lock().unwrap();
         s.holders += 1;
         s.deadline = None;
-        Hold(self.clone())
+        Hold {
+            login: self.clone(),
+            released: Default::default(),
+        }
     }
     pub fn owns(&self, id: &str) -> bool {
         self.state.lock().unwrap().id.as_deref() == Some(id)
     }
-    pub async fn acquire(&self, t: &Terminal, dir: &Path) -> Result<String> {
-        let _lock = self.transition.lock().await;
+    pub async fn acquire(
+        &self,
+        t: &Terminal,
+        dir: &Path,
+        released: &tokio_util::sync::CancellationToken,
+    ) -> Result<String> {
+        let _lock = tokio::select! {biased;_=released.cancelled()=>anyhow::bail!("auth hold released"),lock=self.transition.lock()=>lock};
         let old = {
             let s = self.state.lock().unwrap();
             ensure!(!s.closed, "Host stopping");
@@ -76,6 +88,7 @@ impl Login {
             "--no-approve",
         ]
         .map(String::from);
+        ensure!(!released.is_cancelled(), "auth hold released");
         let (id, _) = t
             .launch(dir, &operations::home()?, false, true, &args)
             .await?;
