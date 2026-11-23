@@ -30,7 +30,7 @@ pub enum SubagentState {
     Failed,
     #[serde(rename = "stopped")]
     Stopped,
-    #[serde(rename = "unknown")]
+    #[serde(other, rename = "unknown")]
     Unknown,
 }
 
@@ -44,7 +44,7 @@ pub enum SubagentMode {
     Chain,
     #[serde(rename = "workflow")]
     Workflow,
-    #[serde(rename = "unknown")]
+    #[serde(other, rename = "unknown")]
     Unknown,
 }
 

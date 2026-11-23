@@ -81,6 +81,9 @@ fn ndjson_chunks_errors_and_recovery() {
     d.push("🙂", |_| panic!());
     d.push("x", |r| assert_eq!(r.unwrap_err(), "🙂x"));
     d.push("2\n", |r| assert_eq!(r.unwrap(), 2));
+    d.push(&"🙂".repeat(150), |r| {
+        assert_eq!(r.unwrap_err().encode_utf16().count(), 200)
+    });
 }
 fn image(data: &str) -> Value {
     json!({"type":"image","mimeType":"image/jpeg","data":data})
@@ -159,6 +162,7 @@ fn run(states: &[&str], state: &str) -> SubagentRun {
 }
 #[test]
 fn counts_children_or_run_state() {
+    assert_eq!(run(&[], "future_state").state, SubagentState::Unknown);
     let c = count_subagents(&[
         run(&["running", "waiting", "complete"], "running"),
         run(&["paused", "failed"], "running"),

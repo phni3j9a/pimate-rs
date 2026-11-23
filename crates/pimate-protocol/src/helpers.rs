@@ -229,13 +229,18 @@ impl LineDecoder {
         self.buf.push_str(part);
         self.units += part.encode_utf16().count();
         if self.units > self.max_line {
+            // JS slices the error preview at 200 UTF-16 units. Stop before a split surrogate.
+            let mut units = 0;
             let end = self
                 .buf
                 .char_indices()
-                .nth(200)
-                .map_or(self.buf.len(), |(i, _)| i);
+                .find_map(|(i, c)| {
+                    units += c.len_utf16();
+                    (units > 200).then_some(i)
+                })
+                .unwrap_or(self.buf.len());
             receive(Err(&self.buf[..end]));
-            self.buf.clear();
+            self.buf = String::new();
             self.units = 0;
         }
     }
