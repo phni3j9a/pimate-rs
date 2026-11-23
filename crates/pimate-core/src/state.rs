@@ -421,10 +421,11 @@ impl State {
             let Some(id) = row["instanceId"].as_str() else {
                 continue;
             };
-            if let Some((id, mut f)) = previous.remove_entry(id)
-                && row["startedAt"] == f.started
-                && row["session"]["id"] == f.session
-                && (self.selected.as_ref() == Some(&id) || row["updatedAt"] == f.updated)
+            if previous.get(id).is_some_and(|f| {
+                row["startedAt"] == f.started
+                    && row["session"]["id"] == f.session
+                    && (self.selected.as_deref() == Some(id) || row["updatedAt"] == f.updated)
+            }) && let Some((id, mut f)) = previous.remove_entry(id)
             {
                 f.updated = row["updatedAt"].clone();
                 if row["status"] != "waiting_input"
@@ -434,6 +435,15 @@ impl State {
                 }
                 self.failures.insert(id, f);
             }
+        }
+        // Discovery may still be on A (or missing the Pi) after the subscription switched to B.
+        if self.ready()
+            && let Some(id) = &self.selected
+            && let Some((id, f)) = previous.remove_entry(id)
+            && self.get("view", "startedAt") == &f.started
+            && self.get("view", "session")["id"] == f.session
+        {
+            self.failures.insert(id, f);
         }
         list.sort_by_key(|v| {
             (
@@ -919,7 +929,14 @@ impl State {
                             .cloned()
                             .unwrap_or_default();
                         if tool.is_empty() && e["type"] != "tool_start" {
-                            return false;
+                            // A preview can be evicted; a new update still belongs to a matching open call.
+                            let Some((_, call)) = self
+                                .open_call(id)
+                                .filter(|(_, call)| call["name"] == e["toolName"])
+                            else {
+                                return false;
+                            };
+                            tool.insert("args".into(), call["args"].clone());
                         }
                         if e["type"] == "tool_start" {
                             tool.clear();

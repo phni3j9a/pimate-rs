@@ -1137,3 +1137,57 @@ fn same_seq_restores_observed_turn_start_without_tools() {
     s.apply_at(&snap, 200);
     assert_eq!(s.get("view", "runningSince"), 200);
 }
+
+#[test]
+fn failure_in_new_session_waits_for_matching_discovery() {
+    let mut s = view();
+    let mut list = json!({"type":"instances","instances":[{"instanceId":"i","startedAt":1,"session":{"id":"s"},"status":"idle"}]});
+    s.apply(&list);
+    event(
+        &mut s,
+        3,
+        json!({"type":"session_changed","reason":"resume","session":{"id":"b"}}),
+    );
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"startedAt":1,"seq":4,"status":"idle","session":{"id":"b"}},"history":{"items":[]}}));
+    s.apply(&json!({"type":"event","sessionId":"b","instanceId":"i","seq":5,"event":{"type":"message_end","item":{"kind":"assistant","entryId":"new","stopReason":"error","errorMessage":"B only"}}}));
+    s.apply(&list);
+    assert!(s.get("instance", "i")["failureText"].is_null());
+    assert_eq!(s.get("instance", "i")["section"], "normal");
+    s.apply(&json!({"type":"instances","instances":[]}));
+    list["instances"][0]["session"]["id"] = json!("b");
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["section"], "waiting");
+    assert_eq!(s.get("instance", "i")["failureText"], "B only");
+}
+
+#[test]
+fn live_update_after_oversized_preview_rebuilds_only_open_history_call() {
+    let mut s = view();
+    let item = json!({"entryId":"e","kind":"assistant","toolCalls":[{"id":"t","name":"bash","args":{"command":"build"}}]});
+    event(&mut s, 3, json!({"type":"message_end","item":item}));
+    event(
+        &mut s,
+        4,
+        json!({"type":"tool_start","toolName":"bash","toolCallId":"t"}),
+    );
+    let update = |text: &str| json!({"type":"tool_update","toolName":"bash","toolCallId":"t","partial":{"content":[{"type":"text","text":text}]}});
+    event(&mut s, 5, update(&"x".repeat(1024 * 1024)));
+    let mut snapshot = json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":5,"session":{"id":"s"},"status":"running"},"history":{"items":[item]}});
+    s.reset();
+    s.apply(&snapshot);
+    assert!(s.get("tool", "t").is_null());
+    event(&mut s, 6, update("fresh"));
+    let tool = s.get("tool", "t");
+    assert_eq!(tool["status"], "running");
+    assert_eq!(tool["partial"]["content"][0]["text"], "fresh");
+    assert_eq!(tool["args"]["command"], "build");
+    assert!(tool["startedAt"].is_null());
+    snapshot["history"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"entryId":"r","kind":"tool_result","toolCallId":"t"}));
+    snapshot["snapshot"]["seq"] = json!(7);
+    s.apply(&snapshot);
+    event(&mut s, 8, update("late"));
+    assert!(s.get("tool", "t").is_null());
+}
