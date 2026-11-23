@@ -1,7 +1,6 @@
 //! Terminal keeper boundary: only this module knows the launcher and its list format.
 use anyhow::{Context, Result, ensure};
-use futures_util::{StreamExt, stream};
-use nix::unistd::{AccessFlags, access};
+use nix::unistd::{AccessFlags, Uid, User, access};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -14,7 +13,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
-use tokio::{io::AsyncReadExt, process::Command, time::timeout};
+use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
 fn executable(name: &Path) -> Option<PathBuf> {
@@ -41,80 +40,148 @@ pub struct Terminal(pub Option<PathBuf>);
 #[derive(Serialize)]
 pub struct Session {
     pub name: String,
-    pid: i32,
+    pid: Option<i32>,
+    #[serde(skip)]
+    path: PathBuf,
     pub attached: bool,
     terminated: bool,
 }
-// Explicit absolute socket names bypass abduco's fallback to HOME and /tmp.
+// abduco's list searches $ABDUCO_SOCKET_DIR/<argv[0] basename>/<user>.
+// Pin argv[0] for listing even if the configured executable has another name.
+const LIST_NAME: &str = "pt";
 struct Sockets {
     dir: PathBuf,
-    suffix: String,
+    files: PathBuf,
+    hostname: String,
 }
 impl Sockets {
     fn open(run: &Path) -> Result<Self> {
         crate::config::private(run)?;
         let dir = std::path::absolute(run)?.join("t");
         crate::config::private(&dir)?;
+        let parent = dir.join(LIST_NAME);
+        crate::config::private(&parent)?;
+        let uid = Uid::current();
+        let user = User::from_uid(uid)?
+            .map(|u| u.name)
+            .unwrap_or_else(|| uid.to_string());
+        ensure!(
+            !user.is_empty() && Path::new(&user).file_name() == Some(user.as_ref()),
+            "invalid username"
+        );
+        let files = parent.join(user);
+        crate::config::private(&files)?;
         let hostname = nix::unistd::gethostname()?
             .into_string()
             .map_err(|_| anyhow::anyhow!("invalid hostname"))?;
         ensure!(!hostname.contains('/'), "invalid hostname");
-        let ns = Self {
+        Ok(Self {
             dir,
-            suffix: format!("@{hostname}"),
-        };
-        ns.path("pimate-00000000")?;
-        Ok(ns)
+            files,
+            hostname,
+        })
     }
     fn path(&self, name: &str) -> Result<PathBuf> {
         ensure!(managed(name), "Unknown session");
-        let path = self.dir.join(format!("{name}{}", self.suffix));
-        nix::sys::socket::UnixAddr::new(&path)
+        let p = self.files.join(format!("{name}@{}", self.hostname));
+        nix::sys::socket::UnixAddr::new(&p)
             .context("Terminal socket path too long: choose a shorter PIMATE_RUN_DIR")?;
-        Ok(path)
+        Ok(p)
     }
-    async fn sessions(&self) -> Result<Vec<Session>> {
-        let files = fs::read_dir(&self.dir)?.flatten().filter_map(|entry| {
-            let name = entry
-                .file_name()
-                .to_str()?
-                .strip_suffix(&self.suffix)?
-                .to_owned();
-            let path = self.path(&name).ok()?;
-            Some(session(name, path))
-        });
-        Ok(stream::iter(files)
-            .buffer_unordered(16)
-            .filter_map(std::future::ready)
-            .collect()
-            .await)
+    async fn sessions(&self, ab: &Path) -> Result<Vec<Session>> {
+        if fs::read_dir(&self.files)?.next().is_none() {
+            return Ok(vec![]);
+        }
+        // Do not ask abduco to search its fallback directories if this one is unusable.
+        access(&self.files, AccessFlags::W_OK | AccessFlags::X_OK)?;
+        let mut cmd = Command::new(ab);
+        cmd.as_std_mut().arg0(LIST_NAME);
+        let output = timeout(
+            Duration::from_secs(2),
+            cmd.env("ABDUCO_SOCKET_DIR", &self.dir)
+                .env("HOME", &self.dir)
+                .env("TMPDIR", &self.dir)
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await??;
+        ensure!(output.status.success(), "abduco list failed");
+        let mut rows: Vec<_> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| {
+                let (name, pid, mark) = parse_list(line)?;
+                let path = self.path(name).ok()?;
+                path.symlink_metadata()
+                    .ok()
+                    .filter(|m| m.file_type().is_socket())?;
+                Some(Session {
+                    name: name.into(),
+                    pid,
+                    path,
+                    attached: mark == Some('*'),
+                    terminated: mark == Some('+'),
+                })
+            })
+            .collect();
+        // Native list filters by the current hostname. Old sockets still accept their absolute path.
+        for e in fs::read_dir(&self.files)?.flatten() {
+            let file = e.file_name();
+            let Some((name, host)) = file.to_str().and_then(|s| s.split_once('@')) else {
+                continue;
+            };
+            if !managed(name) || host.is_empty() || self.hostname == host {
+                continue;
+            }
+            let path = e.path();
+            let Ok(meta) = path.symlink_metadata() else {
+                continue;
+            };
+            if !meta.file_type().is_socket() {
+                continue;
+            }
+            match timeout(
+                Duration::from_millis(200),
+                tokio::net::UnixStream::connect(&path),
+            )
+            .await
+            {
+                Ok(Ok(_)) => rows.push(Session {
+                    name: name.into(),
+                    pid: None,
+                    path,
+                    attached: meta.mode() & 0o100 != 0,
+                    terminated: meta.mode() & 0o010 != 0,
+                }),
+                Ok(Err(e))
+                    if e.kind() == std::io::ErrorKind::ConnectionRefused
+                        && path
+                            .symlink_metadata()
+                            .is_ok_and(|m| m.dev() == meta.dev() && m.ino() == meta.ino()) =>
+                {
+                    let _ = fs::remove_file(path);
+                }
+                _ => (),
+            }
+        }
+        Ok(rows)
     }
 }
-async fn session(name: String, path: PathBuf) -> Option<Session> {
-    let meta = path.symlink_metadata().ok()?;
-    if !meta.file_type().is_socket() {
-        return None;
-    }
-    // abduco 0.6 greets even a passive list client with MSG_PID (native endian).
-    let packet = timeout(Duration::from_secs(2), async {
-        let mut conn = tokio::net::UnixStream::connect(&path).await?;
-        let mut buf = [0; 16];
-        conn.read_exact(&mut buf).await?;
-        Ok::<_, std::io::Error>(buf)
-    })
-    .await
-    .ok()?
-    .ok()?;
-    if packet[..4] != 5u32.to_ne_bytes() || packet[4..8] != 8u32.to_ne_bytes() {
-        return None;
-    }
-    let pid = i32::try_from(u64::from_ne_bytes(packet[8..].try_into().ok()?)).ok()?;
-    (pid > 0).then_some(Session {
-        name,
-        pid,
-        attached: meta.mode() & 0o100 != 0,
-        terminated: meta.mode() & 0o010 != 0,
-    })
+// v0.6 has date/name; newer builds insert a PID before the name.
+fn parse_list(line: &str) -> Option<(&str, Option<i32>, Option<char>)> {
+    let cols: Vec<_> = line.split('\t').collect();
+    let (name, pid) = match cols.as_slice() {
+        [_, _, name] => (*name, None),
+        [_, _, pid, name] => (*name, Some(pid.trim().parse().ok()?)),
+        _ => return None,
+    };
+    let name = name.trim();
+    managed(name).then_some((name, pid, line.trim_start().chars().next()))
+}
+fn validate_rc_path(run: &Path, id: &str) -> Result<()> {
+    let p = std::path::absolute(run)?.join(format!("{id}.sock"));
+    nix::sys::socket::UnixAddr::new(&p)
+        .context("RC socket path too long: choose a shorter PIMATE_RUN_DIR")?;
+    Ok(())
 }
 fn managed(s: &str) -> bool {
     s.strip_prefix("pimate-").is_some_and(|v| {
@@ -153,9 +220,7 @@ fn extension_arg(ext: PathBuf) -> Result<PathBuf> {
             return Ok(ext);
         }
         if s.starts_with("file://") {
-            return url::Url::parse(s)?
-                .to_file_path()
-                .map_err(|_| anyhow::anyhow!("invalid local extension URL"));
+            return Ok(ext);
         }
         if s == "~" || s.starts_with("~/") {
             return Ok(
@@ -194,18 +259,15 @@ impl Terminal {
     pub async fn refresh(&self, run: &Path, instances: &mut [serde_json::Value]) {
         let Some(ab) = &self.0 else { return };
         let Ok(ns) = Sockets::open(run) else { return };
-        let Ok(sessions) = ns.sessions().await else {
+        let Ok(sessions) = ns.sessions(ab).await else {
             return;
         };
         for s in sessions {
-            if s.terminated
-                && !s.attached
-                && let Ok(path) = ns.path(&s.name)
-            {
+            if s.terminated && !s.attached {
                 // Consume the exit notification on this socket; never signal a PID supplied by a peer.
                 if let Ok(mut child) = Command::new(ab)
                     .args(["-a", "--"])
-                    .arg(path)
+                    .arg(&s.path)
                     .env("ABDUCO_SOCKET_DIR", &ns.dir)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::null())
@@ -228,13 +290,11 @@ impl Terminal {
     pub async fn attach(&self, run: &Path, name: Option<String>) -> Result<()> {
         let ab = self.0.as_ref().context("abduco not found")?;
         let ns = Sockets::open(run)?;
+        let sessions = ns.sessions(ab).await?;
         if let Some(n) = name {
-            let path = ns.path(&n)?;
-            ensure!(
-                path.symlink_metadata()
-                    .is_ok_and(|m| m.file_type().is_socket()),
-                "Unknown session"
-            );
+            let mut matches = sessions.iter().filter(|s| s.name == n);
+            let path = &matches.next().context("Unknown session")?.path;
+            ensure!(matches.next().is_none(), "Ambiguous session name");
             eprintln!("Detach: Ctrl+\\ (Pi keeps running)");
             return Err(std::process::Command::new(ab)
                 .args(["-a", "--"])
@@ -243,7 +303,7 @@ impl Terminal {
                 .exec()
                 .into());
         }
-        println!("{}", serde_json::to_string_pretty(&ns.sessions().await?)?);
+        println!("{}", serde_json::to_string_pretty(&sessions)?);
         Ok(())
     }
     pub async fn launch(
@@ -260,6 +320,7 @@ impl Terminal {
         ))
         .context("pi not found")?;
         let id = Uuid::new_v4().to_string();
+        validate_rc_path(run, &id)?;
         let name = format!("pimate-{}", &id[..8]);
         let ns = Sockets::open(run)?;
         let path = ns.path(&name)?;
@@ -379,15 +440,27 @@ mod tests {
             "ssh:repo",
             "builtin:foo",
             "github:org/repo",
+            "file:///tmp/a%2Fb.ts",
+            "file:///tmp/space%20name",
         ] {
             assert_eq!(extension_arg(src.into())?, Path::new(src));
         }
         for src in ["extensions/login.ts", "team:rc.ts", "git+ssh:repo", "NPM:x"] {
             assert_eq!(extension_arg(src.into())?, env::current_dir()?.join(src));
         }
-        assert_eq!(
-            extension_arg("file:///tmp/space%20name".into())?,
-            Path::new("/tmp/space name")
+        Ok(())
+    }
+    #[test]
+    fn rc_socket_includes_uuid_and_extension() -> Result<()> {
+        let limit = if cfg!(target_os = "macos") { 104 } else { 108 };
+        let id = Uuid::new_v4().to_string();
+        let run = PathBuf::from(format!("/{}", "a".repeat(limit - id.len() - 6 - 1)));
+        assert!(nix::sys::socket::UnixAddr::new(&run.join("t/pimate-1234abcd@pc")).is_ok());
+        assert!(
+            validate_rc_path(&run, &id)
+                .unwrap_err()
+                .to_string()
+                .contains("RC socket path too long")
         );
         Ok(())
     }
@@ -395,7 +468,8 @@ mod tests {
     fn reject_long_socket_path_before_launch() -> Result<()> {
         let t = tempfile::tempdir()?;
         let run = t.path().join("あ".repeat(34));
-        let msg = Sockets::open(&run)
+        let msg = Sockets::open(&run)?
+            .path("pimate-00000000")
             .err()
             .context("accepted long path")?
             .to_string();

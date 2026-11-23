@@ -28,7 +28,6 @@ tempfile.workspace = true
 qrcode.workspace = true
 icu_collator = "2.4.0"
 icu_locale_core = "2.4.0"
-url = "2"
 
 [dev-dependencies]
 tokio-tungstenite.workspace = true
