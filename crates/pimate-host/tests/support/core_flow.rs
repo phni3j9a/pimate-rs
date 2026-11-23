@@ -80,25 +80,7 @@ async fn until(
     .await
     .with_context(|| format!("waiting for {collection}/{id}"))?
 }
-#[tokio::test]
-async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
-    let s = Server::start().await?;
-    let proxy = TcpListener::bind("127.0.0.1:0").await?;
-    let address = proxy.local_addr()?.to_string();
-    let host = s.addr.clone();
-    let (cut, _) = broadcast::channel::<()>(2);
-    let cutting = cut.clone();
-    tokio::spawn(async move {
-        while let Ok((mut client, _)) = proxy.accept().await {
-            let mut stop = cutting.subscribe();
-            let host = host.clone();
-            tokio::spawn(async move {
-                let mut backend = TcpStream::connect(host).await?;
-                tokio::select! {_ =stop.recv()=>{},_=tokio::io::copy_bidirectional(&mut client,&mut backend)=>{}};
-                Ok::<_, std::io::Error>(())
-            });
-        }
-    });
+fn mock_rc(s: &Server, cut: broadcast::Sender<()>) -> Result<Arc<AtomicUsize>> {
     let run = s.dir.path().join("run");
     let meta = json!({"protocol":1,"instanceId":"stub","pid":std::process::id(),"cwd":"/test","origin":"pc","abducoSession":null,"session":{"id":"s"},"startedAt":1,"updatedAt":1,"status":"idle"});
     std::fs::write(run.join("stub.json"), meta.to_string())?;
@@ -163,6 +145,106 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
             });
         }
     });
+    Ok(sends)
+}
+
+/// Hold acquisition deliberately never replies. Report each wire transition to the
+/// JVM via an instance diff so cancellation does not depend on sleeps or a real Pi.
+async fn login_probe(socket: TcpListener) -> Result<()> {
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+    let mut ws = accept_async(socket.accept().await?.0).await?;
+    ws.next().await.context("probe auth")??;
+    let host = json!({"hostId":"probe","name":"test","protocol":1,"platform":"test","version":"1","authSession":true,"providerAuth":true});
+    ws.send(Message::text(
+        json!({"type":"auth_ok","deviceId":"test","host":host}).to_string(),
+    ))
+    .await?;
+    for (expected, marker) in [
+        ("auth_session", "acquired"),
+        ("auth_session_end", "released"),
+    ] {
+        let msg = ws.next().await.context("probe closed early")??;
+        let frame: Value = serde_json::from_str(msg.to_text()?)?;
+        ensure!(frame["type"] == expected && frame["holdId"] == "screen");
+        let row = json!({"instanceId":marker,"cwd":"/test","origin":"pc","abducoSession":null,"pcAttached":null,"session":null,"status":"idle","startedAt":1,"updatedAt":1});
+        ws.send(Message::text(
+            json!({"type":"instances","instances":[row]}).to_string(),
+        ))
+        .await?;
+    }
+    // Keep the socket open until the client drops its Connection.
+    let _ = ws.next().await;
+    Ok(())
+}
+
+/// The native executable reads a one-use pairing link from stdin, then asserts on listener diffs.
+#[tokio::test]
+#[ignore = "build a native binding smoke client and set PIMATE_FFI_CLIENT"]
+async fn foreign_client_receives_diffs() -> Result<()> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    let client = std::env::var("PIMATE_FFI_CLIENT")?;
+    let s = Server::start().await?;
+    let (cut, _) = broadcast::channel(1);
+    mock_rc(&s, cut)?;
+    // The second, independent one-use link exercises a failing concurrent save.
+    let s2 = Server::start().await?;
+    let mut links = String::new();
+    for server in [&s, &s2] {
+        let o = cli(server.dir.path())
+            .args(["pair", "--address", &server.addr])
+            .output()
+            .await?;
+        ensure!(o.status.success());
+        links.push_str(
+            std::str::from_utf8(&o.stdout)?
+                .lines()
+                .next()
+                .context("missing link")?,
+        );
+        links.push('\n');
+    }
+    let socket = TcpListener::bind("127.0.0.1:0").await?;
+    links.push_str(&format!("{}\n", socket.local_addr()?));
+    let _probe = tokio::spawn(login_probe(socket));
+    let mut child = tokio::process::Command::new(client)
+        .stdin(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(links.as_bytes())
+        .await?;
+    ensure!(
+        timeout(Duration::from_secs(45), child.wait())
+            .await??
+            .success(),
+        "foreign client failed"
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
+    let s = Server::start().await?;
+    let proxy = TcpListener::bind("127.0.0.1:0").await?;
+    let address = proxy.local_addr()?.to_string();
+    let host = s.addr.clone();
+    let (cut, _) = broadcast::channel::<()>(2);
+    let cutting = cut.clone();
+    tokio::spawn(async move {
+        while let Ok((mut client, _)) = proxy.accept().await {
+            let mut stop = cutting.subscribe();
+            let host = host.clone();
+            tokio::spawn(async move {
+                let mut backend = TcpStream::connect(host).await?;
+                tokio::select! {_ =stop.recv()=>{},_=tokio::io::copy_bidirectional(&mut client,&mut backend)=>{}};
+                Ok::<_, std::io::Error>(())
+            });
+        }
+    });
+    let sends = mock_rc(&s, cut)?;
     let o = cli(s.dir.path())
         .args(["pair", "--address", &address])
         .output()

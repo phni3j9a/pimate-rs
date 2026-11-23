@@ -15,3 +15,15 @@ jobs:
         run: |
           cargo run --locked --quiet --example bindings > "$RUNNER_TEMP/index.ts"
           diff -u bindings/ts/index.ts "$RUNNER_TEMP/index.ts"
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+      - run: cargo install --locked cargo-ndk --version 4.1.2
+      - run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.3.13750724" scripts/build-android.sh
+      - name: Kotlin から Host の一覧と逐次差分を検証
+        run: |
+          lib="$(dirname "$(realpath "$(command -v kotlinc)")")/../lib"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/jna.jar" https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+          CARGO_TARGET_DIR=target KOTLIN_CP="$lib/kotlin-stdlib.jar:$lib/kotlinx-coroutines-core-jvm.jar:$RUNNER_TEMP/jna.jar" scripts/test-mobile.sh kotlin

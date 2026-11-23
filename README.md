@@ -47,7 +47,7 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 
 `Document::images` は表示順の画像、`links` は http(s) リンクです。PC パスは `file_images` が true の場合だけ画像になります。解析自体は通信もファイルアクセスもしません。逐次表示では新しい全文を解析して `new.changes_since(&old)` を呼び、最上位 block の削除と追加・更新を ID 順に反映します（ID は同一メッセージ・同じ親の中で安定）。後から届く参照定義も反映するため全文を読み直す方式です。長い会話はチャンクをまとめて UI スレッドの外で解析してください。計測: `cargo run --release -p pimate-markdown --example stream_time`。
 
-選択範囲の `id..end` は UTF-8 のバイト位置で、UTF-16 の添字ではありません。Swift/Kotlin で必要な変換はバインディング側（#14）が担当します。コード全体のコピーには `Content::Code.text`、表示と部分選択にはタブを空白2個にした `plain_text()` を使います。欠けた表セルは格納しないため、UI では空として描きます。参照定義の画像はソースを共有し、分類は同じ定義につき一度だけ行います。
+選択範囲の `id..end` は UTF-8 のバイト位置で、UTF-16 の添字ではありません。Swift/Kotlin では `pimate-ffi` の `utf16Range` を使います。コード全体のコピーには `Content::Code.text`、表示と部分選択にはタブを空白2個にした `plain_text()` を使います。欠けた表セルは格納しないため、UI では空として描きます。参照定義の画像はソースを共有し、分類は同じ定義につき一度だけ行います。
 
 `pulldown-cmark` のイベントから描画用の木を作ります。記号・行数・入力バイト数では装飾を打ち切りません。実際の入れ子が **32 段**に達した部分、またはヘッダーを含む **行数×列数が 8,192 を超える表**だけを原文で表示します。これはネイティブのスタックと UI のセル数を保護するためです。パーサが疎な表に空セルを補う前に、幅の大きな表候補は少数列で実際の行範囲を確認します。これと別に、長い参照リンクや画像の代替文字列を繰り返し展開する追加メモリは文書あたり概算 **4 MiB** までとし、超過した参照だけを原文に戻します。ストレス計測は `cargo run --release -p pimate-markdown --example stress_time` です。
 
@@ -148,12 +148,63 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 - `subscribe(Some(instance_id))` で表示する Pi を切り替え、`None` で解除します。`snapshot()` は現在の revision と全項目。`Listener::changed(revision, changes)` は `collection` と `id` で識別する更新（値と挿入位置）または削除です。UI スレッドへ順に転送し、取り直した snapshot 以前の revision は捨てます。`instance` は表示順で `section` が `waiting` / `normal` / `bot`。`entry`・`stream`・`question`・`run`・`tool`・`quota` は選択中の Pi の項目です。Markdown 本文は文字列のままです。
 - `Target` は**画面を開いた時点の** instance / session ID。`check(operation)` で可否を確認し、`perform(operation).await` で実行します。送信前にも同じ条件を検査します。`Send` は最大4枚・RC の対応枚数と byte 制限を検査して常に steer 指定。`Abort`・`Answer`、モデルやセッションなどの `Rc`、起動・GitHub・端末管理・更新の Host 操作があります。複雑な引数は protocol v1 の params を表す JSON **文字列**（wire envelope ではありません）。中核が検査・ID 採番・ガード付与・応答の照合を行い、RC の成功時は method の result、Host の成功時は結果メッセージの JSON 文字列を返します。失敗は `Error` で、サーバーのエラー本文は転送しません。
 - 切断後に自動で行うのは再認証と再購読です。**操作は再送しません**。結果不明の送信は `draft` として接続オブジェクトに残し、再同期時に同一セッションの新しい entry ID・本文・画像がすべて一致した時だけ照合します。別の内容になった画像は一致扱いしません。確認して破棄する場合は `DismissDraft`。入力中のテキストは UI の編集バッファと区別してください。
-- プロバイダーの設定は `open_login(hold_id)` が専用 Pi を保持し、`hello` と `auth_list` で機能を確認します。認証はこの target へ `Rc`、進捗取得は `follow_login`、画面を閉じたら `EndAuthSession`。`session_stats` / `allowances(now_ms)` / `command_suggestions(text)` で UI 用の集計と候補を取得できます。
+- プロバイダーの設定は `open_login(hold_id)` が専用 Pi を保持し、`hello` と `auth_list` で機能を確認します。認証はこの target へ `Rc`、進捗取得は `follow_login`、画面を閉じたら `close_login(hold_id)`。`session_stats` / `allowances(now_ms)` / `command_suggestions(text)` で UI 用の集計と候補を取得できます。
 
-`cargo test -p pimate-core` は状態・ガードの単体試験、`cargo test -p pimate-host paired_core_recovers` は一時 Host＋Unix socket 模擬 RC の結合試験です。後者はプロンプト受理直後にループバックの TCP 中継を切り、復帰後も送信が一度だけであることと、履歴照合・質問への回答・失効を確認します。Android は NDK のパスを `ANDROID_NDK_HOME` に設定して `cargo ndk -t arm64-v8a check -p pimate-core`。UniFFI と iOS のビルド検証は [#14](https://github.com/phni3j9a/pimate-rs/issues/14)。
+`cargo test -p pimate-core` は状態・ガードの単体試験、`cargo test -p pimate-host paired_core_recovers` は一時 Host＋Unix socket 模擬 RC の結合試験です。後者はプロンプト受理直後にループバックの TCP 中継を切り、復帰後も送信が一度だけであることと、履歴照合・質問への回答・失効を確認します。Android は NDK のパスを `ANDROID_NDK_HOME` に設定して `cargo ndk -t arm64-v8a check -p pimate-core`。端末向けの生成と結合試験は下記の Swift / Kotlin の手順を参照してください。
 
 ### ログと通知配送の契約
 
 - WS の生フレームには端末トークン・プロバイダーの回答が入ります。自由記述の Close reason は受信・自動返信とも [tungstenite 0.29.0 の局所修正](vendor/tungstenite/PATCH.md) で DEBUG に出しません。別 workspace に組み込む場合もルートの `[patch.crates-io]` が必要です（適用漏れはビルドエラー）。通常のデータフレームについては、中核が依存する `log` と `tracing` の静的上限を **debug ビルドで DEBUG、release ビルドで INFO** にして TRACE をコンパイル時に取り除き、ビルド時と試験でも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、生フレームのログは生成されません。Cargo の feature 統合により、同じ Rust バイナリの他の crate の TRACE も出ません。DEBUG / INFO は診断のために残します。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
 - `Listener::changed` は接続ごとの専用スレッドで実行されます。配送待ちは最大8バッチです。UI が追いつかず `Change::ResyncRequired` が届いたら、部分適用せず `snapshot()` で全体を置換し、その snapshot の revision 以下の配送済み／配送待ち通知は無視してください。通常の Upsert は同じ ID があれば一度外し、指定位置に挿入します。
 - `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。受付後の snapshot に完了が含まれない場合、Host が直後に配送するイベントを最大5秒待ちます。この間は操作ロックを保持し、次の snapshot で期限を延ばしません。完了・失敗イベントが来なければ結果不明を一度だけ公開してロックを解放し、古い要求を照合候補に残しません。送信後の切断（ACK 前を含む）や、猶予中の別のセッション移動も結果不明です。`new` / `switch` / `reload` は送信後の移動理由と到着先を snapshot で確認できれば成功とします。`fork` は到着確認後もイベントを待ち、期限を過ぎた場合は成功だけを確定します（選んだ元の本文は `forkText`、RC から受信した `editorText` はイベントにのみ含まれます）。`tree` は同じセッションの snapshot だけでは移動を証明できません。**既知の制限:** 今の RC の完了イベントには要求 ID がないため、再同期をまたいだ操作や同じ種類の連続した操作は結果不明になることがあります。RC が返す `sessionId` は完了時の値なので、セッションをまたいだ同種操作も結果不明になり得ます。送信後に実行の有無が不明なら、開始時の `instanceId`・`startedAt`・操作の種類ごとに未照合件数を記録し、遅着した成功・失敗を次の要求には割り当てません。確定した拒否は数えません。購読中は一覧と snapshot の到着順が前後し得るため、一覧の世代差・欠落では操作や件数を破棄しません。購読の `instance_gone` または新世代の snapshot で件数を破棄し、未照合の最終操作から10分で失効させます。イベントが失われた後に同種の操作を10分以内ごとに続けると結果不明が続くことがありますが、10分空ければ解消します。その期限を過ぎて届いた古い完了は新しい操作と誤って照合する可能性があります。M7 で Extension の完了イベントに `requestId` を付けて解消します。現状は操作中・5秒の猶予中とも、他端末が同じ対象に行った同種操作の結果とは区別できません。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
+
+### Swift / Kotlin から使う（`pimate-ffi`）
+
+UniFFI 0.32 のバインディングは **ネイティブライブラリと同じ checkout・Cargo.lock からビルド時に生成**します。大きな生成コードや OS/ABI 別バイナリをコミットせず、古いラッパーと新しい ABI を混ぜないためです。`pimate-bindgen` は開発機だけで使い、モバイルライブラリに `bindgen` feature は不要です。
+
+- Swift: `let core = Core(store: keychain)` → `let host = try await core.pair(link: link, name: name)` → `let c = try core.connect(id: host.id, listener: listener)` → `try c.subscribe(instance: id)`。
+- Kotlin（`uniffi.pimate_ffi`）: `val core = Core(store)` → coroutine 内で `val host = core.pair(link, name)` → `val c = core.connect(host.id, listener)` → `c.subscribe(id)`。接続を使い終わったら `c.close()`（Swift は ARC）。`perform`・`openLogin`・`followLoginOnce` も async / suspend です。
+- `SecretStore` をアプリ側で実装し、Host メタデータと token を一緒に原子的に更新します（iOS は Keychain、Android は Keystore の鍵で暗号化したストレージなど）。`invalidate` は host ID **と device ID** が一致する場合だけ。保存側は `CallbackError.Failed` / `CallbackException.Failed()` を投げられます。想定外の例外も呼び出し元では詳細を含まない Storage エラーになります。`save`・`invalidate` は通信ワーカーから分離します。リンク・Credential・例外の詳細をログに出しません。
+- `Listener.changed` は UI スレッドではありません。例外が出たら、失敗した revision で `ResyncRequired` を再配送します。後続の差分は不要で、1秒から上限16秒まで間隔を延ばし、成功または接続オブジェクトの解放で再試行を止めます。通信が失効・終了した後も、オブジェクトを保持していれば `snapshot()` を取れます。Swift で snapshot を取り直すリスナーは **接続への逆参照を weak に**してください（例: `weak var connection: Connection?`、アクセスを同一キューまたは lock で同期）。強参照では接続 → リスナー → 接続の循環で切断されません。接続ごとに revision 順を保って UI に配送し、`ResyncRequired` ではバッチを部分適用せず `snapshot()` で置換します（上記のログと通知配送の契約）。起動時に `initLogging()` を呼ぶと Android は logcat、Apple は os_log へ出力します。ログレベルの引数はなく、中核の静的上限と close reason の除去は変わりません。
+- ログイン画面は開くたびに新しい hold ID を用意します。`openLogin` の戻り値は `Target`（値）で、解放に必要なのは **呼ぶ前から分かっている ID だけ**です。取得に失敗・キャンセルした場合も `closeLogin` を呼んでください。未取得・解放済みの ID なら何もしません。切断時には Host がそのソケットの全 hold を解放し、次の接続には持ち越しません。
+
+```kotlin
+val id = UUID.randomUUID().toString()
+try {
+    val target = c.openLogin(id)
+    while (c.followLoginOnce(target)) { /* UI には Listener で反映 */ }
+} finally { c.closeLogin(id) }  // suspend しない
+```
+
+```swift
+let id = UUID().uuidString
+// 画面の async 関数内。openLogin より先に登録する。
+defer { c.closeLogin(holdId: id) }
+let target = try await c.openLogin(holdId: id)
+try await c.followLogin(target: target)
+```
+
+Swift の `withLogin` はこの defer を内包します。Task キャンセルは進行中の要求を中断しないため、解放まで応答またはタイムアウトを待つ場合があります。
+
+- Markdown は `parse` の `Document` から `blocks()`・`images()`・`links()`・`changesSince(previous)` を取得します。大量に参照される画像 URL・href を block ごとに複製しないよう、`MarkdownImage.src`・`Style.href` は `SharedText` ハンドルです。文字列が必要なときだけ `value()` を呼びます。`utf16Range(source, start, end)`（Swift は引数ラベルあり）は元 Markdown の UTF-8 バイト範囲を UTF-16 の **開始・終了（終端を含まない）** に変換します。逆順・範囲外・文字途中は nil / null。Swift では `NSRange(location: start, length: end - start)` 相当で、`String.Index` の文字数ではありません。
+
+**Android**（NDK 27、cargo-ndk 4.1.2）:
+
+```sh
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
+cargo install --locked cargo-ndk --version 4.1.2
+ANDROID_NDK_HOME="$HOME/Android/Sdk/ndk/27.1.12297006" scripts/build-android.sh
+```
+
+`target/mobile/android/{jniLibs,kotlin}` を Android の source set に加え、JNA（Android 用 AAR、5.17.0）と kotlinx-coroutines-core を依存に追加します。
+
+**iOS**（Xcode のある macOS）:
+
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+scripts/build-ios.sh
+```
+
+`target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` と `Login.swift` をアプリのターゲットでコンパイルします。
+
+**接続の結合試験:** `scripts/test-mobile.sh swift`（macOS）または `scripts/test-mobile.sh kotlin`（Linux、JDK・`kotlinc` が必要）。後者は `KOTLIN_CP` に JNA 5.17.0・kotlin-stdlib・kotlinx-coroutines-core-jvm の JAR を `:` 区切りで指定します。どちらも一時ディレクトリ・ポート 0 の Rust Host と Unix socket の模擬 RC を起動し、ペアリングリンクは試験クライアントの標準入力にだけ渡します。実装例は [`crates/pimate-ffi/tests/native`](crates/pimate-ffi/tests/native)（試験専用のメモリ保存）です。

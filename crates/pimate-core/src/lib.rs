@@ -142,7 +142,10 @@ impl Core {
                     device_id: p.device_id,
                     needs_pairing: false,
                 };
-                store.save(host.clone(), p.token)?;
+                let saved = host.clone();
+                tokio::task::spawn_blocking(move || store.save(saved, p.token))
+                    .await
+                    .map_err(|_| Error::Storage)??;
                 Ok(host)
             })
             .await
