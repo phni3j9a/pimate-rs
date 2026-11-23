@@ -1,6 +1,7 @@
 package dev.pimate.app
 
 import androidx.compose.runtime.*
+import kotlinx.coroutines.flow.first
 import org.json.*
 import uniffi.pimate_ffi.*
 
@@ -74,3 +75,32 @@ internal class SpawnForm(val host: String, askDefault: Boolean) {
         return Operation.Spawn(params.toString())
     }
 }
+
+internal sealed interface SpawnOutcome {
+    data class Ready(val instance: String) : SpawnOutcome
+
+    data class NotListed(val instance: String) : SpawnOutcome
+
+    data class MessageUnconfirmed(val instance: String, val attach: String?) : SpawnOutcome
+}
+
+internal suspend fun spawnOutcome(
+    result: JSONObject,
+    listed: suspend (String) -> Boolean,
+): SpawnOutcome {
+    val id = result.getString("instanceId")
+    return when {
+        result.str("messageError").isNotEmpty() ->
+            SpawnOutcome.MessageUnconfirmed(id, terminalCommand(result.str("abducoSession")))
+        listed(id) -> SpawnOutcome.Ready(id)
+        else -> SpawnOutcome.NotListed(id)
+    }
+}
+
+internal suspend fun SessionModel.spawn(form: SpawnForm): SpawnOutcome =
+    spawnOutcome(JSONObject(machineRequest(form.host, form.operation()))) { id ->
+        kotlinx.coroutines.withTimeoutOrNull(20_000) {
+            snapshotFlow { rowsFor(form.host).groups["instance"].orEmpty().any { it.id == id } }
+                .first { it }
+        } ?: false
+    }

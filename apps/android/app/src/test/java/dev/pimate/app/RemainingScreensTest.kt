@@ -105,4 +105,27 @@ class RemainingScreensTest {
         assertEquals("first", p.getString("message"))
         assertEquals("/new", p.getString("cwd"))
     }
+
+    @Test
+    fun confirmedInstructionsStayWithTheirHostAndChild() {
+        val a = ChildKey(EditorKey("a", uniffi.pimate_ffi.Target("pi", "s")), "old", "child")
+        val sent = ChildInstructions()
+        sent.accepted(a, "resume", "continue")
+        assertEquals("resume", sent.forChild(a.copy(run = "new"), "old").single().action)
+        assertTrue(sent.forChild(a.copy(editor = a.editor.copy(host = "b")), null).isEmpty())
+        sent.forget("a")
+        assertTrue(sent.forChild(a, null).isEmpty())
+    }
+
+    @Test
+    fun successfulSpawnDoesNotImplyPromptWasDeliveredOrInstanceAlreadyListed() = runBlocking {
+        val result = JSONObject().put("instanceId", "pi")
+        assertEquals(SpawnOutcome.NotListed("pi"), spawnOutcome(result) { false })
+        assertEquals(SpawnOutcome.Ready("pi"), spawnOutcome(result) { it == "pi" })
+        result.put("messageError", "unknown").put("abducoSession", "unsafe;command")
+        assertEquals(
+            SpawnOutcome.MessageUnconfirmed("pi", null),
+            spawnOutcome(result) { error("must not wait") },
+        )
+    }
 }

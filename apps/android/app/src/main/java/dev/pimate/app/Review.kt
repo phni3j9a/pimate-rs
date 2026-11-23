@@ -82,7 +82,11 @@ internal data class Piece(
 
 internal data class ReviewFile(val path: String, val pieces: List<Piece>)
 
-internal data class Review(val files: List<ReviewFile>, val turn: String?, val latestChangedTurn: String?) {
+internal data class Review(
+    val files: List<ReviewFile>,
+    val turn: String?,
+    val latestChangedTurn: String?,
+) {
     val reference: String
         get() {
             val scope = if (turn == null) "このセッションの変更" else "このターンの変更"

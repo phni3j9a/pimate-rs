@@ -704,7 +704,10 @@ impl Connection {
             .unwrap()
             .get("auth", &target.instance)
             .clone();
-        if !matches!(flow["status"].as_str(), Some("working" | "saving")) {
+        if !matches!(
+            flow["status"].as_str(),
+            Some("working" | "input" | "saving")
+        ) {
             return Ok(false);
         }
         self.perform(Operation::Rc {
@@ -794,7 +797,7 @@ mod regressions {
         }
     }
     #[tokio::test]
-    async fn follow_login_once_never_renews_a_working_flow() {
+    async fn follow_login_once_sends_one_wait_even_while_input_is_shown() {
         let (c, mut commands) = connected();
         let target = crate::Target {
             instance: "login".into(),
@@ -805,7 +808,7 @@ mod regressions {
             s.put(
                 "auth",
                 "login",
-                json!({"status":"working","id":"flow","revision":1}),
+                json!({"status":"input","id":"flow","revision":1}),
             )
         });
         let mut wait = Box::pin(c.follow_login_once(target));
@@ -821,6 +824,26 @@ mod regressions {
         reply.send(Ok("{}".into())).unwrap();
         assert!(wait.await.unwrap());
         assert!(commands.try_recv().is_err());
+    }
+    #[test]
+    fn host_models_reply_does_not_change_the_chat_catalog() {
+        let mut s = State::default();
+        s.put("model", "existing", json!({"favorite":true}));
+        let pending = Pending {
+            reply: oneshot::channel().0,
+            deadline: Instant::now(),
+            kind: "rc".into(),
+            instance: json!("other"),
+            hold: None,
+            method: Some("models".into()),
+            session: Value::Null,
+            host_models: true,
+            thumbnail: false,
+        };
+        let body = json!({"models":[],"current":null,"default":{"model":null,"thinking":null}});
+        let result = resolve(&mut s, &pending, "r", &json!({"ok":true,"result":body})).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), body);
+        assert_eq!(s.get("model", "existing")["favorite"], true);
     }
     #[test]
     fn deadlines_outlast_host_processing() {

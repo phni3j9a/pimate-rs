@@ -402,6 +402,11 @@ impl State {
         if self.get("draft", id)["status"] != "sending" {
             return;
         }
+        if self.get("draft", id)["instanceId"] == json!(self.selected)
+            && self.get("draft", id)["sessionId"] == self.get("view", "session")["id"]
+        {
+            self.prune_watch(true);
+        }
         if matches!(delivery.as_str(), Some("steer" | "followUp")) {
             self.draft_status(id, "queued")
         } else {

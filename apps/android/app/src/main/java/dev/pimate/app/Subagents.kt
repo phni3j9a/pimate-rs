@@ -88,3 +88,47 @@ internal fun SessionModel.workRecord(key: EditorKey, run: String, child: String)
             )
         )
     }
+
+internal data class ChildKey(val editor: EditorKey, val run: String, val child: String)
+
+internal data class SentInstruction(val action: String, val text: String)
+
+internal class ChildInstructions {
+    private val sent = mutableStateMapOf<ChildKey, List<SentInstruction>>()
+
+    fun accepted(key: ChildKey, action: String, text: String) {
+        sent[key] = sent[key].orEmpty() + SentInstruction(action, text)
+    }
+
+    fun forChild(key: ChildKey, resumedFrom: String?) =
+        sent[key].orEmpty() +
+            resumedFrom?.takeUnless { it == key.run }?.let { sent[key.copy(run = it)] }.orEmpty()
+
+    fun forget(host: String) {
+        sent.keys.filter { it.editor.host == host }.forEach(sent::remove)
+    }
+}
+
+internal suspend fun SessionModel.control(
+    key: EditorKey,
+    run: String,
+    child: String?,
+    action: String,
+    text: String? = null,
+): JSONObject {
+    val body = text?.trim()
+    require(action !in listOf("resume", "steer", "follow_up") || !body.isNullOrEmpty())
+    val result =
+        request(
+            key,
+            RcMethod.SUBAGENT_CONTROL,
+            JSONObject()
+                .put("runId", run)
+                .put("childId", child)
+                .put("action", action)
+                .put("text", body),
+        )
+    if (child != null && !body.isNullOrEmpty())
+        instructions.accepted(ChildKey(key, run, child), action, body)
+    return JSONObject(result)
+}

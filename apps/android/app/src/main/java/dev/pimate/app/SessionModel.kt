@@ -135,6 +135,7 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
 
     internal val edits = ChatEdits()
     internal val answers = AnswerEdits()
+    internal val instructions = ChildInstructions()
     var target by mutableStateOf<Target?>(null)
         private set
 
@@ -366,7 +367,8 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
         val c = connection ?: throw CoreException.Offline()
         if (key != edits.current || key.target != target) throw CoreException.StaleTarget()
         val result = c.perform(Operation.Github(key.target.instance, query.toString()))
-        if (c !== connection || key != edits.current || key.target != target) throw CoreException.StaleTarget()
+        if (c !== connection || key != edits.current || key.target != target)
+            throw CoreException.StaleTarget()
         return JSONObject(result)
     }
 
@@ -409,6 +411,8 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
         states.remove(id)
         edits.forget(id)
         answers.forget(id)
+        instructions.forget(id)
+        if (pairedHostId == id) consumePairedHost()
         hosts = hosts.filterNot { it.id == id }
         if (host?.id == id) {
             host = null
