@@ -292,3 +292,10 @@ pub fn decode_json(text: &str) -> serde_json::Result<Value> {
         serde_json::from_str(&fixed)
     })
 }
+
+pub fn valid_instance_id(id: &str) -> bool {
+    (1..=100).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+}

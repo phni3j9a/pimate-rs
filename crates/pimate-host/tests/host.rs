@@ -1972,3 +1972,6 @@ async fn subscribe_starts_monitor_for_already_discovered_pi() -> Result<()> {
     );
     Ok(())
 }
+
+#[path = "support/core_flow.rs"]
+mod core_flow;

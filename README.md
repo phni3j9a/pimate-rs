@@ -140,3 +140,20 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 ## ライセンス
 
 [MIT License](LICENSE)
+
+## アプリ中核（`pimate-core`）
+
+`Core::new` に OS の安全な保存先を実装した `SecretStore` を渡します。`pair(link, device_name)` はリンクの Host ID と `/pair` の応答を照合して保存し、公開の `Host` にはトークンを含めません。保存先は Host とトークンを同じレコードとして読み書きし、失効は同じ device ID のレコードにだけ適用します。`hosts()` で一覧、`connect(id, listener)` で Host ごとの接続を得ます。接続を閉じるにはその `Arc<Connection>` を解放します（端末から Host を消す場合はその後 `forget`）。通信は Tailscale 内の HTTP / WS、ネットワーク処理は中核の Tokio runtime 上です。
+
+- `subscribe(Some(instance_id))` で表示する Pi を切り替え、`None` で解除します。`snapshot()` は現在の revision と全項目。`Listener::changed(revision, changes)` は `collection` と `id` で識別する更新（値と挿入位置）または削除です。UI スレッドへ順に転送し、取り直した snapshot 以前の revision は捨てます。`instance` は表示順で `section` が `waiting` / `normal` / `bot`。`entry`・`stream`・`question`・`run`・`tool`・`quota` は選択中の Pi の項目です。Markdown 本文は文字列のままです。
+- `Target` は**画面を開いた時点の** instance / session ID。`check(operation)` で可否を確認し、`perform(operation).await` で実行します。送信前にも同じ条件を検査します。`Send` は最大4枚・RC の対応枚数と byte 制限を検査して常に steer 指定。`Abort`・`Answer`、モデルやセッションなどの `Rc`、起動・GitHub・端末管理・更新の Host 操作があります。複雑な引数は protocol v1 の params を表す JSON **文字列**（wire envelope ではありません）。中核が検査・ID 採番・ガード付与・応答の照合を行い、RC の成功時は method の result、Host の成功時は結果メッセージの JSON 文字列を返します。失敗は `Error` で、サーバーのエラー本文は転送しません。
+- 切断後に自動で行うのは再認証と再購読です。**操作は再送しません**。結果不明の送信は `draft` として接続オブジェクトに残し、再同期時に同一セッションの新しい entry ID・本文・画像がすべて一致した時だけ照合します。別の内容になった画像は一致扱いしません。確認して破棄する場合は `DismissDraft`。入力中のテキストは UI の編集バッファと区別してください。
+- プロバイダーの設定は `open_login(hold_id)` が専用 Pi を保持し、`hello` と `auth_list` で機能を確認します。認証はこの target へ `Rc`、進捗取得は `follow_login`、画面を閉じたら `EndAuthSession`。`session_stats` / `allowances(now_ms)` / `command_suggestions(text)` で UI 用の集計と候補を取得できます。
+
+`cargo test -p pimate-core` は状態・ガードの単体試験、`cargo test -p pimate-host paired_core_recovers` は一時 Host＋Unix socket 模擬 RC の結合試験です。後者はプロンプト受理直後にループバックの TCP 中継を切り、復帰後も送信が一度だけであることと、履歴照合・質問への回答・失効を確認します。Android は NDK のパスを `ANDROID_NDK_HOME` に設定して `cargo ndk -t arm64-v8a check -p pimate-core`。UniFFI と iOS のビルド検証は [#14](https://github.com/phni3j9a/pimate-rs/issues/14)。
+
+### ログと通知配送の契約
+
+- WS の生フレームには端末トークン・プロバイダーの回答が入ります。自由記述の Close reason は受信・自動返信とも [tungstenite 0.29.0 の局所修正](vendor/tungstenite/PATCH.md) で DEBUG に出しません。別 workspace に組み込む場合もルートの `[patch.crates-io]` が必要です（適用漏れはビルドエラー）。通常のデータフレームについては、中核が依存する `log` と `tracing` の静的上限を **debug ビルドで DEBUG、release ビルドで INFO** にして TRACE をコンパイル時に取り除き、ビルド時と試験でも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、生フレームのログは生成されません。Cargo の feature 統合により、同じ Rust バイナリの他の crate の TRACE も出ません。DEBUG / INFO は診断のために残します。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
+- `Listener::changed` は接続ごとの専用スレッドで実行されます。配送待ちは最大8バッチです。UI が追いつかず `Change::ResyncRequired` が届いたら、部分適用せず `snapshot()` で全体を置換し、その snapshot の revision 以下の配送済み／配送待ち通知は無視してください。通常の Upsert は同じ ID があれば一度外し、指定位置に挿入します。
+- `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。受付後の snapshot に完了が含まれない場合、Host が直後に配送するイベントを最大5秒待ちます。この間は操作ロックを保持し、次の snapshot で期限を延ばしません。完了・失敗イベントが来なければ結果不明を一度だけ公開してロックを解放し、古い要求を照合候補に残しません。送信後の切断（ACK 前を含む）や、猶予中の別のセッション移動も結果不明です。`new` / `switch` / `reload` は送信後の移動理由と到着先を snapshot で確認できれば成功とします。`fork` は到着確認後もイベントを待ち、期限を過ぎた場合は成功だけを確定します（選んだ元の本文は `forkText`、RC から受信した `editorText` はイベントにのみ含まれます）。`tree` は同じセッションの snapshot だけでは移動を証明できません。**既知の制限:** 今の RC の完了イベントには要求 ID がないため、再同期をまたいだ操作や同じ種類の連続した操作は結果不明になることがあります。RC が返す `sessionId` は完了時の値なので、セッションをまたいだ同種操作も結果不明になり得ます。送信後に実行の有無が不明なら、開始時の `instanceId`・`startedAt`・操作の種類ごとに未照合件数を記録し、遅着した成功・失敗を次の要求には割り当てません。確定した拒否は数えません。購読中は一覧と snapshot の到着順が前後し得るため、一覧の世代差・欠落では操作や件数を破棄しません。購読の `instance_gone` または新世代の snapshot で件数を破棄し、未照合の最終操作から10分で失効させます。イベントが失われた後に同種の操作を10分以内ごとに続けると結果不明が続くことがありますが、10分空ければ解消します。その期限を過ぎて届いた古い完了は新しい操作と誤って照合する可能性があります。M7 で Extension の完了イベントに `requestId` を付けて解消します。現状は操作中・5秒の猶予中とも、他端末が同じ対象に行った同種操作の結果とは区別できません。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
