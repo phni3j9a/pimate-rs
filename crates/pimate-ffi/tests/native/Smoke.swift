@@ -6,7 +6,7 @@ private final class Store: SecretStore, @unchecked Sendable {
     func hosts() -> [Host] { lock.withLock { credential.map { [$0.host] } ?? [] } }
     func load(id: String) throws -> Credential {
         try lock.withLock {
-            guard let credential, credential.host.id == id else { throw CoreError.Storage }
+            guard let credential, credential.host.id == id else { throw CallbackError.Failed }
             return credential
         }
     }
@@ -18,9 +18,17 @@ private final class Store: SecretStore, @unchecked Sendable {
     }
     func forget(id: String) { lock.withLock { if credential?.host.id == id { credential = nil } } }
 }
-private final class Updates: Listener {
+private final class Updates: Listener, @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var connection: Connection?
+    func attach(_ c: Connection) { lock.withLock { connection = c } }
+    var detached: Bool { lock.withLock { connection == nil } }
     let (items, writer) = AsyncStream<Item>.makeStream()
     func changed(revision: UInt64, changes: [Change]) {
+        if changes.contains(.resyncRequired), let c = lock.withLock({ connection }) {
+            for item in c.snapshot().items { writer.yield(item) }
+            return
+        }
         for case let .upsert(item) in changes { writer.yield(item) }
     }
 }
@@ -30,7 +38,20 @@ private final class Updates: Listener {
         let host = try await core.pair(link: readLine()!, name: "Swift test")
         let hosts = try core.hosts()
         precondition(hosts == [host])
+        try await receive(core: core, host: host, updates: updates)
+        precondition(updates.detached)
+    }
+    static private func receive(core: Core, host: Host, updates: Updates) async throws {
         let connection = try core.connect(id: host.id, listener: updates)
+        updates.attach(connection)
+        let target = Target(instance: "stub", session: "s")
+        do {
+            try await Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                try await connection.followLogin(target: target)
+            }.value
+            preconditionFailure("cancelled observer returned normally")
+        } catch is CancellationError {}
         defer { withExtendedLifetime(connection) {} }
         var items = updates.items.makeAsyncIterator()
         while let item = await items.next() { if item.collection == "instance" && item.id == "stub" { break } }

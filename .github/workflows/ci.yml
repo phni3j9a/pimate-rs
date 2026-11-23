@@ -26,4 +26,4 @@ jobs:
         run: |
           lib="$(dirname "$(realpath "$(command -v kotlinc)")")/../lib"
           curl --fail --silent --show-error -o "$RUNNER_TEMP/jna.jar" https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
-          KOTLIN_CP="$lib/kotlin-stdlib.jar:$lib/kotlinx-coroutines-core-jvm.jar:$RUNNER_TEMP/jna.jar" scripts/test-mobile.sh kotlin
+          CARGO_TARGET_DIR=target KOTLIN_CP="$lib/kotlin-stdlib.jar:$lib/kotlinx-coroutines-core-jvm.jar:$RUNNER_TEMP/jna.jar" scripts/test-mobile.sh kotlin

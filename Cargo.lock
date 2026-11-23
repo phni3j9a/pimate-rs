@@ -1119,6 +1119,7 @@ dependencies = [
  "pimate-core",
  "pimate-markdown",
  "pimate-protocol",
+ "thiserror",
  "uniffi",
 ]
 

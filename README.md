@@ -163,9 +163,10 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 UniFFI 0.32 のバインディングは **ネイティブライブラリと同じ checkout・Cargo.lock からビルド時に生成**します。大きな生成コードや OS/ABI 別バイナリをコミットせず、古いラッパーと新しい ABI を混ぜないためです。`pimate-bindgen` は開発機だけで使い、モバイルライブラリに `bindgen` feature は不要です。
 
 - Swift: `let core = Core(store: keychain)` → `let host = try await core.pair(link: link, name: name)` → `let c = try core.connect(id: host.id, listener: listener)` → `try c.subscribe(instance: id)`。
-- Kotlin（`uniffi.pimate_ffi`）: `val core = Core(store)` → coroutine 内で `val host = core.pair(link, name)` → `val c = core.connect(host.id, listener)` → `c.subscribe(id)`。接続を使い終わったら `c.close()`（Swift は ARC）。`perform`・`openLogin`・`followLogin` も async / suspend です。
-- `SecretStore` をアプリ側で実装し、Host メタデータと token を一緒に原子的に更新します（iOS は Keychain、Android は Keystore の鍵で暗号化したストレージなど）。`invalidate` は host ID **と device ID** が一致する場合だけ。保存失敗は `CoreError.Storage` / `CoreException.Storage()` に変換し、リンク・Credential・例外の詳細をログに出しません。
-- `Listener.changed` は UI スレッドではありません。接続ごとに revision 順を保って UI に配送し、`ResyncRequired` ではバッチを部分適用せず `snapshot()` で置換します（上記のログと通知配送の契約）。起動時に `initLogging()` を呼ぶと Android は logcat、Apple は os_log へ出力します。ログレベルの引数はなく、中核の静的上限と close reason の除去は変わりません。
+- Kotlin（`uniffi.pimate_ffi`）: `val core = Core(store)` → coroutine 内で `val host = core.pair(link, name)` → `val c = core.connect(host.id, listener)` → `c.subscribe(id)`。接続を使い終わったら `c.close()`（Swift は ARC）。`perform`・`openLogin`・`followLoginOnce` も async / suspend です。
+- `SecretStore` をアプリ側で実装し、Host メタデータと token を一緒に原子的に更新します（iOS は Keychain、Android は Keystore の鍵で暗号化したストレージなど）。`invalidate` は host ID **と device ID** が一致する場合だけ。保存側は `CallbackError.Failed` / `CallbackException.Failed()` を投げられます。想定外の例外も呼び出し元では詳細を含まない Storage エラーになります。`save`・`invalidate` は通信ワーカーから分離します。リンク・Credential・例外の詳細をログに出しません。
+- `Listener.changed` は UI スレッドではありません。例外が出たら次の配送は成功するまで `ResyncRequired` だけを渡します。Swift で snapshot を取り直すリスナーは **接続への逆参照を weak に**してください（例: `weak var connection: Connection?`、アクセスを同一キューまたは lock で同期）。強参照では接続 → リスナー → 接続の循環で切断されません。接続ごとに revision 順を保って UI に配送し、`ResyncRequired` ではバッチを部分適用せず `snapshot()` で置換します（上記のログと通知配送の契約）。起動時に `initLogging()` を呼ぶと Android は logcat、Apple は os_log へ出力します。ログレベルの引数はなく、中核の静的上限と close reason の除去は変わりません。
+- ログイン画面は開くたび一意な hold ID を使い、`LoginSession` がその hold を所有します。Kotlin は `c.openLogin(id).use { login -> /* login.target() を使う */ }`、Swift は同梱の `try await c.withLogin(holdId: id) { target in try await c.followLogin(target: target) }`。取得中に Rust future が破棄された場合も、取得完了後の `close` / ARC と同じく元の接続世代で解放します。`EndAuthSession` を重ねて送る必要はありません。Swift の Task キャンセルは UniFFI の進行中の要求を中断しません。ラッパーが各 await の間で検出し、次の long poll を開始しないため、解放までは進行中の要求の応答またはタイムアウトを待つ場合があります。
 - Markdown は `parse` の `Document` から `blocks()`・`images()`・`links()`・`changesSince(previous)` を取得します。大量に参照される画像 URL・href を block ごとに複製しないよう、`MarkdownImage.src`・`Style.href` は `SharedText` ハンドルです。文字列が必要なときだけ `value()` を呼びます。`utf16Range(source, start, end)`（Swift は引数ラベルあり）は元 Markdown の UTF-8 バイト範囲を UTF-16 の **開始・終了（終端を含まない）** に変換します。逆順・範囲外・文字途中は nil / null。Swift では `NSRange(location: start, length: end - start)` 相当で、`String.Index` の文字数ではありません。
 
 **Android**（NDK 27、cargo-ndk 4.1.2）:
@@ -185,6 +186,6 @@ rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 scripts/build-ios.sh
 ```
 
-`target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` をアプリのターゲットでコンパイルします。
+`target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` と `Login.swift` をアプリのターゲットでコンパイルします。
 
 **接続の結合試験:** `scripts/test-mobile.sh swift`（macOS）または `scripts/test-mobile.sh kotlin`（Linux、JDK・`kotlinc` が必要）。後者は `KOTLIN_CP` に JNA 5.17.0・kotlin-stdlib・kotlinx-coroutines-core-jvm の JAR を `:` 区切りで指定します。どちらも一時ディレクトリ・ポート 0 の Rust Host と Unix socket の模擬 RC を起動し、ペアリングリンクは試験クライアントの標準入力にだけ渡します。実装例は [`crates/pimate-ffi/tests/native`](crates/pimate-ffi/tests/native)（試験専用のメモリ保存）です。

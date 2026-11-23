@@ -112,12 +112,15 @@ impl Connection {
                     st.clear("instance");
                     st.put("host", "listKnown", json!(false));
                 });
-                if matches!(error, Error::Revoked | Error::InvalidToken)
-                    && store
-                        .invalidate(host.id.clone(), host.device_id.clone())
-                        .is_err()
-                {
-                    s.edit(|st| st.put("host", "storageError", json!(true)))
+                if matches!(error, Error::Revoked | Error::InvalidToken) {
+                    let (store, id, device) =
+                        (store.clone(), host.id.clone(), host.device_id.clone());
+                    if !matches!(
+                        tokio::task::spawn_blocking(move || store.invalidate(id, device)).await,
+                        Ok(Ok(()))
+                    ) {
+                        s.edit(|st| st.put("host", "storageError", json!(true)))
+                    }
                 }
                 match error {
                     Error::Revoked => {
@@ -405,7 +408,7 @@ async fn attempt(
                 }
             }
             Event::Command(Command(op, reply)) => {
-                if reply.is_closed() {
+                if reply.is_closed() && !matches!(op, Operation::EndAuthSession { .. }) {
                     continue;
                 }
                 if let Operation::DismissDraft { id } = op {
@@ -437,6 +440,8 @@ async fn attempt(
                 let deadline = Instant::now() + request_timeout(&m);
                 send(&mut ws, m).await?;
                 if kind == "auth_session_end" {
+                    // A late acquisition reply must not re-register an already released target.
+                    pending.retain(|_, p| p.hold != hold);
                     let _ = reply.send(Ok("{}".into()));
                 } else {
                     pending.insert(
@@ -596,64 +601,92 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
 fn unconfirmed(st: &mut State, id: &str) {
     st.draft_status(id, "unconfirmed");
 }
-impl Connection {
-    /// Acquire a login-only Pi and check both Host and RC capabilities. End the hold when the screen closes.
-    pub async fn open_login(&self, hold_id: String) -> Result<crate::Target, Error> {
-        let receipt = self
-            .perform(Operation::AuthSession {
-                hold_id: hold_id.clone(),
-            })
-            .await?;
-        let result = async {
-            let r: Value = serde_json::from_str(&receipt).map_err(|_| Error::InvalidMessage)?;
-            let target = crate::Target {
-                instance: r["instanceId"]
-                    .as_str()
-                    .ok_or(Error::InvalidMessage)?
-                    .into(),
-                session: None,
-            };
-            for method in [
-                pimate_protocol::RcMethod::Hello,
-                pimate_protocol::RcMethod::AuthList,
-            ] {
-                self.perform(Operation::Rc {
-                    target: target.clone(),
-                    method,
-                    params: "{}".into(),
-                })
-                .await?;
-            }
-            Ok(target)
+/// Reserves a release slot in the same socket generation before acquiring the hold.
+pub struct LoginHold(Option<(mpsc::OwnedPermit<Command>, String)>);
+impl Drop for LoginHold {
+    fn drop(&mut self) {
+        if let Some((slot, hold_id)) = self.0.take() {
+            slot.send(Command(
+                Operation::EndAuthSession { hold_id },
+                oneshot::channel().0,
+            ));
         }
-        .await;
-        if result.is_err() {
-            let _ = self.perform(Operation::EndAuthSession { hold_id }).await;
-        }
-        result
     }
-    /// Follow read-only revisions until input or a terminal status (never repeat begin/respond).
-    pub async fn follow_login(&self, target: crate::Target) -> Result<(), Error> {
-        loop {
-            let flow = self
-                .shared
-                .state
-                .lock()
-                .unwrap()
-                .get("auth", &target.instance)
-                .clone();
-            if !matches!(flow["status"].as_str(), Some("working" | "saving")) {
-                return Ok(());
-            }
+}
+impl Connection {
+    /// Rust callers that manage EndAuthSession explicitly retain the original API.
+    pub async fn open_login(&self, hold_id: String) -> Result<crate::Target, Error> {
+        let (target, mut hold) = self.acquire_login(hold_id).await?;
+        hold.0.take();
+        Ok(target)
+    }
+    pub async fn acquire_login(
+        &self,
+        hold_id: String,
+    ) -> Result<(crate::Target, LoginHold), Error> {
+        let tx = self
+            .shared
+            .online
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(Error::Offline)?;
+        let slot = tx.clone().try_reserve_owned().map_err(|_| Error::Offline)?;
+        let (reply, rx) = oneshot::channel();
+        tx.try_send(Command(
+            Operation::AuthSession {
+                hold_id: hold_id.clone(),
+            },
+            reply,
+        ))
+        .map_err(|_| Error::Offline)?;
+        let hold = LoginHold(Some((slot, hold_id)));
+        let receipt = rx.await.unwrap_or(Err(Error::OutcomeUnknown))?;
+        let r: Value = serde_json::from_str(&receipt).map_err(|_| Error::InvalidMessage)?;
+        let target = crate::Target {
+            instance: r["instanceId"]
+                .as_str()
+                .ok_or(Error::InvalidMessage)?
+                .into(),
+            session: None,
+        };
+        for method in [
+            pimate_protocol::RcMethod::Hello,
+            pimate_protocol::RcMethod::AuthList,
+        ] {
             self.perform(Operation::Rc {
                 target: target.clone(),
-                method: pimate_protocol::RcMethod::AuthWait,
-                params:
-                    json!({"flowId":flow["id"],"afterRevision":flow["revision"],"waitMs":25000})
-                        .to_string(),
+                method,
+                params: "{}".into(),
             })
             .await?;
         }
+        Ok((target, hold))
+    }
+    pub async fn follow_login(&self, target: crate::Target) -> Result<(), Error> {
+        while self.follow_login_once(target.clone()).await? {}
+        Ok(())
+    }
+    /// One bounded long poll, so Swift can observe Task cancellation between requests.
+    pub async fn follow_login_once(&self, target: crate::Target) -> Result<bool, Error> {
+        let flow = self
+            .shared
+            .state
+            .lock()
+            .unwrap()
+            .get("auth", &target.instance)
+            .clone();
+        if !matches!(flow["status"].as_str(), Some("working" | "saving")) {
+            return Ok(false);
+        }
+        self.perform(Operation::Rc {
+            target: target.clone(),
+            method: pimate_protocol::RcMethod::AuthWait,
+            params: json!({"flowId":flow["id"],"afterRevision":flow["revision"],"waitMs":25000})
+                .to_string(),
+        })
+        .await?;
+        Ok(true)
     }
 }
 impl Connection {
@@ -671,6 +704,91 @@ impl Connection {
 mod regressions {
     use super::*;
     use std::sync::mpsc as channel;
+    // Drive the command boundary directly so cancellation is deterministic at each await.
+    fn connected() -> (Connection, mpsc::Receiver<Command>) {
+        let (tx, rx) = mpsc::channel(4);
+        (
+            Connection {
+                shared: Arc::new(Shared {
+                    state: Default::default(),
+                    notifications: broadcast::channel(8).0,
+                    online: Mutex::new(Some(tx)),
+                }),
+                selection: watch::channel(None).0,
+                task: tokio::spawn(std::future::pending()),
+                images: Default::default(),
+            },
+            rx,
+        )
+    }
+    #[tokio::test]
+    async fn login_hold_released_at_each_cancellation_point_and_on_owner_drop() {
+        for completed in 0..=3 {
+            let (c, mut commands) = connected();
+            let mut open = Box::pin(c.acquire_login("h".into()));
+            for response in [r#"{"instanceId":"dedicated"}"#, "{}", "{}"]
+                .iter()
+                .take(completed)
+            {
+                assert!(futures_util::poll!(&mut open).is_pending());
+                commands
+                    .recv()
+                    .await
+                    .unwrap()
+                    .1
+                    .send(Ok(response.to_string()))
+                    .unwrap();
+            }
+            if completed == 3 {
+                drop(open.await.unwrap());
+            } else {
+                assert!(futures_util::poll!(&mut open).is_pending());
+                let _in_flight = commands.recv().await.unwrap();
+                // Fill the normal command queue while an acquisition is in flight.
+                while c.enqueue(Operation::Devices).is_ok() {}
+                drop(open);
+            }
+            loop {
+                match commands.try_recv().expect("reserved release command").0 {
+                    Operation::EndAuthSession { hold_id } => {
+                        assert_eq!(hold_id, "h");
+                        break;
+                    }
+                    Operation::Devices => (),
+                    _ => panic!("unexpected command"),
+                }
+            }
+        }
+    }
+    #[tokio::test]
+    async fn follow_login_once_never_renews_a_working_flow() {
+        let (c, mut commands) = connected();
+        let target = crate::Target {
+            instance: "login".into(),
+            session: None,
+        };
+        assert!(!c.follow_login_once(target.clone()).await.unwrap());
+        c.shared.edit(|s| {
+            s.put(
+                "auth",
+                "login",
+                json!({"status":"working","id":"flow","revision":1}),
+            )
+        });
+        let mut wait = Box::pin(c.follow_login_once(target));
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        let Command(op, reply) = commands.recv().await.unwrap();
+        assert!(matches!(
+            op,
+            Operation::Rc {
+                method: pimate_protocol::RcMethod::AuthWait,
+                ..
+            }
+        ));
+        reply.send(Ok("{}".into())).unwrap();
+        assert!(wait.await.unwrap());
+        assert!(commands.try_recv().is_err());
+    }
     #[test]
     fn deadlines_outlast_host_processing() {
         assert!(request_timeout(&json!({"type":"update"})) > Duration::from_secs(600));

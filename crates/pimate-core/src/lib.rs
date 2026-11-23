@@ -3,7 +3,7 @@ mod catalog;
 mod connection;
 mod operation;
 mod state;
-pub use connection::Connection;
+pub use connection::{Connection, LoginHold};
 pub use operation::{Image, Operation, Target};
 use pimate_protocol::{PairRequest, PairResponse, parse_pairing_link};
 pub use state::{Allowance, Change, Item, Listener, QuotaWindow, SessionStats, Snapshot};
@@ -142,7 +142,10 @@ impl Core {
                     device_id: p.device_id,
                     needs_pairing: false,
                 };
-                store.save(host.clone(), p.token)?;
+                let saved = host.clone();
+                tokio::task::spawn_blocking(move || store.save(saved, p.token))
+                    .await
+                    .map_err(|_| Error::Storage)??;
                 Ok(host)
             })
             .await

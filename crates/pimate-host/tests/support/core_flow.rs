@@ -158,15 +158,23 @@ async fn foreign_client_receives_diffs() -> Result<()> {
     let s = Server::start().await?;
     let (cut, _) = broadcast::channel(1);
     mock_rc(&s, cut)?;
-    let o = cli(s.dir.path())
-        .args(["pair", "--address", &s.addr])
-        .output()
-        .await?;
-    ensure!(o.status.success());
-    let link = std::str::from_utf8(&o.stdout)?
-        .lines()
-        .next()
-        .context("missing link")?;
+    // The second, independent one-use link exercises a failing concurrent save.
+    let s2 = Server::start().await?;
+    let mut links = String::new();
+    for server in [&s, &s2] {
+        let o = cli(server.dir.path())
+            .args(["pair", "--address", &server.addr])
+            .output()
+            .await?;
+        ensure!(o.status.success());
+        links.push_str(
+            std::str::from_utf8(&o.stdout)?
+                .lines()
+                .next()
+                .context("missing link")?,
+        );
+        links.push('\n');
+    }
     let mut child = tokio::process::Command::new(client)
         .stdin(Stdio::piped())
         .kill_on_drop(true)
@@ -175,7 +183,7 @@ async fn foreign_client_receives_diffs() -> Result<()> {
         .stdin
         .take()
         .unwrap()
-        .write_all(format!("{link}\n").as_bytes())
+        .write_all(links.as_bytes())
         .await?;
     ensure!(
         timeout(Duration::from_secs(45), child.wait())

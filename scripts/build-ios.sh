@@ -10,6 +10,7 @@ done
 cargo build --locked -p pimate-ffi --lib
 cargo run --locked -p pimate-ffi --features bindgen --bin pimate-bindgen -- generate \
   --no-format -l swift -o "$out" "$CARGO_TARGET_DIR/debug/libpimate_ffi.dylib"
+cp bindings/swift/Login.swift "$out/"
 mkdir -p "$out/include"
 cp "$out/pimate_ffiFFI.h" "$out/include/"
 cp "$out/pimate_ffiFFI.modulemap" "$out/include/module.modulemap"

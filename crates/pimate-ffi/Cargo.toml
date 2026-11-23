@@ -13,6 +13,7 @@ pimate-markdown = { path = "../pimate-markdown" }
 pimate-protocol.workspace = true
 uniffi = "~0.32.2"
 log = "0.4"
+thiserror = "2"
 
 [features]
 bindgen = ["uniffi/cli"]
