@@ -186,7 +186,7 @@ impl State {
             && let Some(id) = self.selected.clone()
         {
             let observed = Observations {
-                session: self.get("view", "session")["id"].clone(),
+                session: self.get("view", "session").clone(),
                 started: self.get("view", "startedAt").clone(),
                 running_since: self.get("view", "runningSince").clone(),
                 tools: self
@@ -491,18 +491,31 @@ impl State {
                     .observations
                     .shift_remove(m["instanceId"].as_str().unwrap())
                     && obs.started == s["startedAt"]
-                    && obs.session == self.get("view", "session")["id"]
                 {
-                    for (id, ms) in obs.thinking {
-                        if !self.get("entry", &id).is_null() {
-                            self.put("thinkingMs", &id, ms);
-                        }
+                    let session = self.get("view", "session");
+                    if obs.session["id"] != session["id"]
+                        && !obs.session.is_null()
+                        && !session.is_null()
+                        && self.get("notice", "sessionChanged").is_null()
+                    {
+                        self.put(
+                            "notice",
+                            "sessionChanged",
+                            json!({"reason":"switch","from":obs.session,"to":session}),
+                        );
                     }
-                    if self.get("view", "agentActive") == true {
-                        for (id, (caller, tool)) in obs.tools {
-                            if self.open_call(&id) == Some(&caller) {
-                                self.put("tool", &id, tool);
-                                self.put("view", "runningSince", obs.running_since.clone());
+                    if obs.session["id"] == self.get("view", "session")["id"] {
+                        for (id, ms) in obs.thinking {
+                            if !self.get("entry", &id).is_null() {
+                                self.put("thinkingMs", &id, ms);
+                            }
+                        }
+                        if self.get("view", "agentActive") == true {
+                            for (id, (caller, tool)) in obs.tools {
+                                if self.open_call(&id) == Some(&caller) {
+                                    self.put("tool", &id, tool);
+                                    self.put("view", "runningSince", obs.running_since.clone());
+                                }
                             }
                         }
                     }
@@ -527,6 +540,7 @@ impl State {
                 }
             }
             "event" => {
+                let now = m["timestamp"].as_u64().unwrap_or(now);
                 let Some(seq) = m["seq"].as_u64() else {
                     return false;
                 };
@@ -613,6 +627,13 @@ impl State {
                             op.as_object_mut().unwrap().remove("snapshotSession");
                             op["arrival"] = e["session"]["id"].clone();
                             self.put("busy", "operation", op)
+                        }
+                        self.remove("notice", "sessionChanged");
+                        if !matches!(
+                            e["reason"].as_str(),
+                            None | Some("reload" | "startup" | "tree")
+                        ) {
+                            self.put("notice", "sessionChanged", json!({"reason":e["reason"],"from":self.get("view", "session"),"to":e["session"]}));
                         }
                         self.reset_view();
                         self.put("view", "phase", json!("resyncing"));

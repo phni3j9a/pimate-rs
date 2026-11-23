@@ -58,8 +58,15 @@ class DemoJourney {
         }
         ui.waitUntil(20000) { ui.onAllNodesWithText("ログイン画面の改修").fetchSemanticsNodes().size == 2 }
         shot("global-attention")
-        ui.onNodeWithContentDescription("Instance・フォルダを検索").performTextInput("/demo/android")
-        ui.waitUntil { ui.onAllNodesWithText("/demo/android").fetchSemanticsNodes().size == 2 }
+        ui.onNodeWithContentDescription("Instance・フォルダを検索").performTextInput("/demo/and")
+        ui.runOnUiThread {
+            ui.activity
+                .getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                .hideSoftInputFromWindow(ui.activity.window.decorView.windowToken, 0)
+        }
+        ui.waitUntil(20000) {
+            ui.onAllNodesWithText("/demo/android").fetchSemanticsNodes().size == 2
+        }
         ui.onAllNodesWithText("接続中").assertCountEquals(2)
         shot("two-machines")
         ui.onAllNodesWithText("/demo/android")[0].performClick()

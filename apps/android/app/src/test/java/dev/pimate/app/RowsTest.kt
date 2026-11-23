@@ -6,6 +6,12 @@ import uniffi.pimate_ffi.*
 
 class RowsTest {
     @Test
+    fun copiedCommandOnlyContainsASingleSafeArgument() {
+        assertEquals("pimate attach pimate-01234567", terminalCommand("pimate-01234567"))
+        for (bad in listOf("", "--help", "host;id", "a\nb")) assertNull(terminalCommand(bad))
+    }
+
+    @Test
     fun photoBudgetIsSharedWithoutCountingBase64Padding() {
         val image = Image("image/jpeg", "YQ==")
         assertEquals((600 * 1024 - 1) / 3, imageBudget(listOf(image), 3, 4))

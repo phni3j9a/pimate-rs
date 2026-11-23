@@ -85,6 +85,7 @@ async def pi(
             instanceId=iid,
             sessionId=session["id"],
             seq=seq,
+            timestamp=int(time.time() * 1000),
             event=dict(type=kind, **data),
         )
         for w in list(clients):

@@ -293,6 +293,7 @@ async fn read(ws: &mut Ws) -> Result<Value, Error> {
                         session_id,
                         seq,
                         event,
+                        ..
                     } if matches!(
                         **event,
                         InstanceEvent::Unknown

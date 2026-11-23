@@ -272,7 +272,10 @@ private fun DrawerContent(
             val (waiting, rest) = shown.partition { it.third.str("section") == "waiting" }
             if (waiting.isNotEmpty()) {
                 item("attention") { GroupHeader(Icons.Bell, "要対応", pi.waitingText) }
-                items(waiting, key = { "w:${it.first.id}:${it.second}" }) { (h, id, o) ->
+                items(
+                    waiting.sortedByDescending { it.third.optLong("updatedAt") },
+                    key = { "w:${it.first.id}:${it.second}" },
+                ) { (h, id, o) ->
                     val asks = o.str("status") == "waiting_input"
                     InstanceRow(
                         o,

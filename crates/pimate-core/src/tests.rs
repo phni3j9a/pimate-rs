@@ -1070,3 +1070,19 @@ fn observed_timing_and_partial_survive_reopening_only_an_unanswered_call() {
     s.apply_at(&snapshot, 6000);
     assert!(s.get("tool", "t").is_null());
 }
+
+#[test]
+fn rc_time_and_session_move_are_not_lost_in_resync() {
+    let mut s = view();
+    s.apply_at(&json!({"type":"event","sessionId":"s","instanceId":"i","seq":3,"timestamp":100,"event":{"type":"agent_start"}}), 999);
+    assert_eq!(s.get("view", "runningSince"), 100);
+    event(
+        &mut s,
+        4,
+        json!({"type":"session_changed","reason":"resume","session":{"id":"b","name":"next"}}),
+    );
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":5,"status":"idle","session":{"id":"b"}},"history":{"items":[]}}));
+    assert_eq!(s.get("notice", "sessionChanged")["reason"], "resume");
+    assert_eq!(s.get("notice", "sessionChanged")["from"]["id"], "s");
+    assert_eq!(s.get("notice", "sessionChanged")["to"]["id"], "b");
+}

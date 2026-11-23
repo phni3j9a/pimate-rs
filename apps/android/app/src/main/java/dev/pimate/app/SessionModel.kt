@@ -63,6 +63,11 @@ data class Rows(val revision: ULong = 0u, val groups: Map<String, List<Item>> = 
     }
 }
 
+internal fun terminalCommand(session: String): String? =
+    session
+        .takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")) }
+        ?.let { "pimate attach $it" }
+
 class SessionModel(app: Application) : AndroidViewModel(app) {
     private val core = Core((app as PiApplication).store)
     private val handler = Handler(Looper.getMainLooper())
@@ -285,6 +290,13 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
             edits.update(key, edits.body.copy(images = existing + photos))
     }
 
+    // Commands are copied to a terminal; never interpolate unchecked peer-provided text.
+    fun attachCommand(): String? =
+        rows.groups["view"]
+            .orEmpty()
+            .find { it.id == "abducoSession" }
+            ?.let { (JSONTokener(it.json).nextValue() as? String)?.let(::terminalCommand) }
+
     fun suggestions(text: String) = connection?.commandSuggestions(text).orEmpty()
 
     fun stats() = connection?.sessionStats()
@@ -293,9 +305,11 @@ class SessionModel(app: Application) : AndroidViewModel(app) {
 
     internal suspend fun request(key: EditorKey, method: RcMethod, params: JSONObject): String {
         val c = connection
-        require(c != null && edits.current == key && target == key.target)
+        if (c == null || edits.current != key || target != key.target)
+            throw CoreException.StaleTarget()
         val result = c.perform(Operation.Rc(key.target, method, params.toString()))
-        check(connection === c && edits.current == key && target == key.target)
+        if (connection !== c || edits.current != key || target != key.target)
+            throw CoreException.StaleTarget()
         return result
     }
 
