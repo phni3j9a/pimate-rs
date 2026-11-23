@@ -38,6 +38,8 @@ private final class Updates: Listener {
         while let item = await items.next() { if item.collection == "stream" && item.id == "text" && item.json == "\"hello\"" { break } }
         let doc = parse(source: "[あ😀](https://example.org)", fileImages: false)
         precondition(plainText(block: doc.blocks()[0]) == "あ😀")
+        let image = parse(source: "![alt](https://example.org/img.png)", fileImages: false).images()[0]
+        precondition(image.src.value() == "https://example.org/img.png")
         precondition(utf16Range(source: "あ😀", start: 3, end: 7) == Utf16Range(start: 1, end: 3))
     }
 }

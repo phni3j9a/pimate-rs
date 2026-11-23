@@ -30,5 +30,6 @@ fun main() = runBlocking {
         }
     }
     parse("[あ😀](https://example.org)", false).use { check(plainText(it.blocks().single()) == "あ😀") }
+    parse("![alt](https://example.org/img.png)", false).use { check(it.images().single().src.value() == "https://example.org/img.png") }
     check(utf16Range("あ😀", 3uL, 7uL) == Utf16Range(1uL, 3uL))
 }

@@ -2,30 +2,44 @@ use pimate_markdown::{
     Alignment, Block, Changes, Content, Image as MarkdownImage, ImageKind, Inline, Style, Table,
 };
 use std::sync::Arc;
-type SharedString = Arc<str>;
-// SAFETY: metadata and every wire operation delegate to UniFFI's String converter.
-// Only the owned Rust representation differs (shared Markdown reference definitions).
 use uniffi::{FfiConverter, FfiConverterArc};
+
+// A reference image can occur thousands of times with the same multi-MiB data URI.
+// Lower only a handle in block arrays/diffs; copy the text on explicit access.
+#[derive(uniffi::Object)]
+pub struct SharedText(Arc<str>);
+#[uniffi::export]
+impl SharedText {
+    #[uniffi::constructor]
+    pub fn new(value: String) -> Self {
+        Self(value.into())
+    }
+    pub fn value(&self) -> String {
+        self.0.to_string()
+    }
+}
+type Handle = Arc<SharedText>;
 type Tag = crate::UniFfiTag;
+// SAFETY: metadata, handle ownership and serialization all use the generated SharedText converter.
 unsafe impl FfiConverterArc<Tag> for str {
-    type FfiType = <String as FfiConverter<Tag>>::FfiType;
-    const TYPE_ID_META: uniffi::MetadataBuffer = <String as FfiConverter<Tag>>::TYPE_ID_META;
+    type FfiType = <Handle as FfiConverter<Tag>>::FfiType;
+    const TYPE_ID_META: uniffi::MetadataBuffer = <Handle as FfiConverter<Tag>>::TYPE_ID_META;
     fn lower(s: Arc<str>) -> Self::FfiType {
-        <String as FfiConverter<Tag>>::lower(s.to_string())
+        <Handle as FfiConverter<Tag>>::lower(Arc::new(SharedText(s)))
     }
     fn try_lift(v: Self::FfiType) -> uniffi::Result<Arc<str>> {
-        Ok(<String as FfiConverter<Tag>>::try_lift(v)?.into())
+        Ok(<Handle as FfiConverter<Tag>>::try_lift(v)?.0.clone())
     }
     fn write(s: Arc<str>, buf: &mut Vec<u8>) {
-        <String as FfiConverter<Tag>>::write(s.to_string(), buf)
+        <Handle as FfiConverter<Tag>>::write(Arc::new(SharedText(s)), buf)
     }
     fn try_read(buf: &mut &[u8]) -> uniffi::Result<Arc<str>> {
-        Ok(<String as FfiConverter<Tag>>::try_read(buf)?.into())
+        Ok(<Handle as FfiConverter<Tag>>::try_read(buf)?.0.clone())
     }
 }
 #[uniffi::remote(Record)]
 pub struct MarkdownImage {
-    pub src: SharedString,
+    pub src: Arc<str>,
     pub alt: String,
     pub kind: ImageKind,
     pub index: u64,
@@ -37,7 +51,7 @@ pub struct Style {
     pub italic: bool,
     pub strike: bool,
     pub code: bool,
-    pub href: Option<SharedString>,
+    pub href: Option<Arc<str>>,
 }
 
 #[uniffi::remote(Enum)]

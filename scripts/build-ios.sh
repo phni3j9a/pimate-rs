@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target}
+export IPHONEOS_DEPLOYMENT_TARGET=${IPHONEOS_DEPLOYMENT_TARGET:-16.0}
 out="$CARGO_TARGET_DIR/mobile/ios"
 for arch in aarch64-apple-ios aarch64-apple-ios-sim; do
   cargo build --locked --release --target "$arch" -p pimate-ffi --lib
