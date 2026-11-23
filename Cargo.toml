@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pimate-protocol", "crates/pimate-host"]
+members = ["crates/pimate-protocol", "crates/pimate-host", "crates/pimate-core"]
 resolver = "3"
 
 [workspace.package]
