@@ -750,6 +750,32 @@ fn session_move_before_mark_creation_cannot_credit_next_session() {
     assert!(s.get("busy", "operation").is_null());
 }
 #[test]
+fn stale_or_absent_discovery_generation_cannot_retire_subscribed_operation() {
+    for instances in [json!([{"instanceId":"i","startedAt":1}]), json!([])] {
+        let mut s = view();
+        let g2 = json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":2,"startedAt":2,"session":{"id":"s"}},"history":{"items":[]}});
+        s.apply(&g2);
+        accepted(&mut s, "compact");
+        let stale = json!({"type":"instances","instances":instances});
+        assert!(!s.apply(&stale));
+        assert_eq!(s.generation("i"), Some(2));
+        assert_eq!(s.get("busy", "operation")["id"], "request");
+        s.apply(&g2);
+        s.expire_result(s.result_deadline.unwrap());
+        assert_eq!(s.get("operationResult", "latest")["outcome"], "unknown");
+        s.apply(&stale);
+        s.prepare("B", rc(pimate_protocol::RcMethod::Compact, json!({})), true)
+            .unwrap();
+        s.accept_op("B");
+        event(&mut s, 3, json!({"type":"compact_done"}));
+        assert_eq!(
+            s.get("operationResult", "latest"),
+            &json!({"id":"B","outcome":"unknown"})
+        );
+        assert!(s.get("busy", "operation").is_null());
+    }
+}
+#[test]
 fn replacement_during_grace_drops_the_old_operation_and_its_marks() {
     for list_first in [true, false] {
         let mut s = view();
@@ -759,10 +785,11 @@ fn replacement_during_grace_drops_the_old_operation_and_its_marks() {
         s.apply(&snap(1));
         let old_deadline = s.result_deadline.unwrap();
         if list_first {
-            assert!(s.apply(
+            assert!(!s.apply(
                 &json!({"type":"instances","instances":[{"instanceId":"i","startedAt":2}]})
             ));
-            assert!(!s.ready());
+            assert!(s.ready());
+            assert_eq!(s.generation("i"), Some(1));
         }
         s.apply(&snap(2));
         assert_eq!(
@@ -789,8 +816,8 @@ fn replacement_during_grace_drops_the_old_operation_and_its_marks() {
 fn missing_marks_end_on_expiry_process_replacement_or_instance_removal() {
     for cleanup in ["expire", "replace", "remove"] {
         let mut s = view();
-        let list = |start| json!({"type":"instances","instances":[{"instanceId":"i","session":{"id":"s"},"startedAt":start}]});
-        s.apply(&list(1));
+        let snap = |start| json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":2,"startedAt":start,"session":{"id":"s"}},"history":{"items":[]}});
+        s.apply(&snap(1));
         accepted(&mut s, "compact");
         sync(&mut s, json!([]));
         let deadline = s.result_deadline.unwrap();
@@ -798,11 +825,11 @@ fn missing_marks_end_on_expiry_process_replacement_or_instance_removal() {
         match cleanup {
             "expire" => s.expire_result(deadline + state::MISSING_TTL),
             "replace" => {
-                s.apply(&list(2));
+                s.apply(&snap(2));
             }
             _ => {
-                s.apply(&json!({"type":"instances","instances":[]}));
-                s.apply(&list(1));
+                s.apply(&json!({"type":"instance_gone","instanceId":"i"}));
+                s.apply(&snap(1));
             }
         }
         sync(&mut s, json!([]));

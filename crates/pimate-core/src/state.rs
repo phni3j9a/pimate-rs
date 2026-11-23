@@ -310,22 +310,22 @@ impl State {
                     Some((v["instanceId"].as_str()?.to_owned(), v))
                 })
                 .collect();
-            let selected = self.selected.clone();
-            if let Some(id) = selected.as_deref()
-                && !next.contains_key(id)
-                && self.generation(id).is_some()
-            {
-                self.retire_generation(id);
-                self.put("view", "phase", json!("instance_gone"));
-            }
-            self.generations.retain(|id, _| next.contains_key(id));
-            self.missing.0.retain(|k, _| next.contains_key(&k.instance));
-            let mut resubscribe = self.get("view", "phase") == "instance_gone"
-                && selected
-                    .as_ref()
-                    .is_some_and(|id| next.contains_key(id) && self.generation(id).is_none());
+            // Discovery and subscription run independently; a list may predate the current snapshot.
+            let selected = self.selected.as_ref();
+            self.generations
+                .retain(|id, _| Some(id) == selected || next.contains_key(id));
+            self.missing
+                .0
+                .retain(|k, _| Some(&k.instance) == selected || next.contains_key(&k.instance));
+            let resubscribe = self.get("view", "phase") == "instance_gone"
+                && selected.is_some_and(|id| next.contains_key(id));
             for (id, row) in &next {
-                resubscribe |= self.observe_generation(id, row["startedAt"].as_u64());
+                if self.selected.as_ref() != Some(id) {
+                    self.observe_generation(id, row["startedAt"].as_u64());
+                }
+            }
+            if resubscribe {
+                self.put("view", "phase", json!("resyncing"));
             }
             let mut prev = self
                 .rows
@@ -675,7 +675,7 @@ impl State {
             self.reset_view();
         }
     }
-    fn observe_generation(&mut self, id: &str, start: Option<u64>) -> bool {
+    fn observe_generation(&mut self, id: &str, start: Option<u64>) {
         if let Some(start) = start
             && self
                 .generations
@@ -683,9 +683,7 @@ impl State {
                 .is_some_and(|prev| prev != start)
         {
             self.retire_generation(id);
-            return self.selected.as_deref() == Some(id);
         }
-        false
     }
     fn busy_scope(&self) -> CompletionScope {
         let op = self.get("busy", "operation");
