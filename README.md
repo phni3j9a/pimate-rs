@@ -273,3 +273,5 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 | Pair／セットアップ／最初の Pi | QR・貼付などの候補は `previewPair(link)` で名前・アドレスを検査してから `pair(link)`。案内ページ・カメラ・外部リンクは画面層。追加登録経路は `showPairing(true/false)`、SavedState に保存するのはフラグだけ。初回成功のみ `pairedHostId` が入る（画面で受け取ったら `consumePairedHost()`）。`rowsFor(id).firstStep()` は loading/offline/empty/list。接続済みでも最初の一覧到着前は empty としない。 |
 
 後半は `MainActivity.kt`・`PairScreen.kt`・`ChatScreen.kt`・新規画面でこれらを接続します。Rust・生成コード・暗号ストア・状態層・既存の編集キーの契約は維持してください。#20 のモック比較と Pixel 3 の実 Pi 確認は後半です。
+
+状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。
