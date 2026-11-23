@@ -150,7 +150,20 @@ impl Config {
         Ok(code)
     }
     pub fn pair(&self, code: &str, name: &str) -> Result<Value> {
-        self.update(|ds|{let p=self.pending(code);let claimed=p.with_extension(format!("{}.claimed",Uuid::new_v4()));if let Err(e)=fs::rename(&p,&claimed){if e.kind()==ErrorKind::NotFound{anyhow::bail!("invalid_code")}return Err(e.into())}let _cleanup=Remove(claimed.clone());let exp:Value=serde_json::from_reader(File::open(claimed)?)?;ensure!(exp["expiresAt"].as_u64().unwrap_or(0)>now(),"expired_code");let token=secret::<32>();let id=Uuid::new_v4().to_string();ds.push(Device{device_id:id.clone(),name:name.into(),token_hash:digest(&token),created_at:now(),last_seen_at:now()});Ok(json!({"hostId":self.host.host_id,"hostName":self.host.name,"token":token,"deviceId":id}))})
+        self.update(|ds| {
+            let p=self.pending(code);
+            let claimed=p.with_extension(format!("json.{}.claimed",Uuid::new_v4()));
+            if let Err(e)=fs::rename(&p,&claimed){
+                if e.kind()==ErrorKind::NotFound{anyhow::bail!("invalid_code")}
+                return Err(e.into())
+            }
+            let _cleanup=Remove(claimed.clone());
+            let exp:Value=serde_json::from_reader(File::open(claimed)?)?;
+            ensure!(exp["expiresAt"].as_u64().unwrap_or(0)>now(),"expired_code");
+            let token=secret::<32>();let id=Uuid::new_v4().to_string();
+            ds.push(Device{device_id:id.clone(),name:name.into(),token_hash:digest(&token),created_at:now(),last_seen_at:now()});
+            Ok(json!({"hostId":self.host.host_id,"hostName":self.host.name,"token":token,"deviceId":id}))
+        })
     }
     pub fn authenticate(&self, t: &str) -> Result<Option<String>> {
         let h = digest(t);
@@ -181,5 +194,47 @@ impl Config {
             ds.retain(|d| d.device_id != id);
             Ok(())
         })
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn ts_files_and_lock() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let p = tmp.path().join("cfg");
+        let c = Config::open(p.clone())?;
+        let id = Uuid::new_v4().to_string();
+        let ds = json!([{"deviceId":id,"name":"TS","createdAt":1,"lastSeenAt":2,"tokenHash":digest("ts-token")}]);
+        let db = p.join("devices.json");
+        fs::write(&db, ds.to_string())?;
+        assert_eq!(c.authenticate("ts-token")?, Some(id.clone()));
+        let lock = p.join("devices.lock");
+        fs::write(&lock, "")?;
+        assert!(c.revoke(&id).is_err());
+        assert!(lock.exists());
+        assert_eq!(c.devices()?.len(), 1);
+        fs::remove_file(lock)?;
+        let code = c.code()?;
+        let pending = c.pending(&code);
+        for (f, mode) in [
+            (p.clone(), 0o700),
+            (p.join("host.json"), 0o600),
+            (pending.clone(), 0o600),
+        ] {
+            assert_eq!(f.metadata()?.mode() & 0o777, mode)
+        }
+        fs::write(&pending, r#"{"expiresAt":0}"#)?;
+        assert_eq!(
+            c.pair(&code, "name").unwrap_err().to_string(),
+            "expired_code"
+        );
+        assert!(!pending.exists());
+        c.revoke(&id)?;
+        assert_eq!(db.metadata()?.mode() & 0o777, 0o600);
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755))?;
+        assert!(Config::open(p).is_err());
+        Ok(())
     }
 }

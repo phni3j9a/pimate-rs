@@ -494,7 +494,9 @@ dependencies = [
  "subtle",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
+ "tungstenite",
  "uuid",
 ]
 

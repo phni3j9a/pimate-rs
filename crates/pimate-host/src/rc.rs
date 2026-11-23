@@ -32,16 +32,20 @@ impl Rc {
         let s = self.io.next().await.ok_or_else(|| anyhow!("RC closed"))??;
         Ok(decode_json(&s)?)
     }
-    pub async fn send(
-        &mut self,
-        mut req: Value,
-        mut event: impl FnMut(Value) -> Result<()>,
-    ) -> Result<Value> {
+    pub async fn write(&mut self, mut req: Value) -> Result<()> {
         req.as_object_mut()
             .ok_or_else(|| anyhow!("request"))?
             .entry("expectInstanceId")
             .or_insert(json!(self.id));
         self.io.send(req.to_string()).await?;
+        Ok(())
+    }
+    pub async fn send(
+        &mut self,
+        req: Value,
+        mut event: impl FnMut(Value) -> Result<()>,
+    ) -> Result<Value> {
+        self.write(req.clone()).await?;
         loop {
             let v = self.next().await?;
             if v["type"] == "response" && v["id"] == req["id"] {
@@ -65,7 +69,12 @@ impl Rc {
 pub fn request(method: &str) -> Value {
     json!({"id":Uuid::new_v4().to_string(),"method":method,"params":{}})
 }
-pub async fn list(dir: &Path) -> Result<Vec<Value>> {
+pub struct Discovery {
+    pub instances: Vec<Value>,
+    pub incompatible: serde_json::Map<String, Value>,
+}
+pub async fn list(dir: &Path) -> Result<Discovery> {
+    let mut incompatible = serde_json::Map::new();
     private(dir)?;
     let mut entries = vec![];
     for e in fs::read_dir(dir)? {
@@ -88,6 +97,10 @@ pub async fn list(dir: &Path) -> Result<Vec<Value>> {
         let Ok(mut v) = serde_json::from_slice::<Value>(&bytes) else {
             continue;
         };
+        if v["protocol"].is_number() && v["protocol"] != PROTOCOL_VERSION {
+            incompatible.insert(id.to_owned(), v["protocol"].clone());
+            continue;
+        }
         let Ok(m) = serde_json::from_value::<InstanceMeta>(v.clone()) else {
             continue;
         };
@@ -131,5 +144,35 @@ pub async fn list(dir: &Path) -> Result<Vec<Value>> {
         entries.push(v)
     }
     entries.sort_by(|a, b| a["instanceId"].as_str().cmp(&b["instanceId"].as_str()));
-    Ok(entries)
+    Ok(Discovery {
+        instances: entries,
+        incompatible,
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[tokio::test]
+    async fn cleanup_only_valid_stale_entries() -> Result<()> {
+        let t = tempfile::tempdir()?;
+        let dir = t.path().join("run");
+        private(&dir)?;
+        let victim = t.path().join("untouched");
+        fs::write(&victim, "")?;
+        for (id, pid, origin) in [
+            ("stale", i32::MAX, "pc"),
+            ("broken", i32::MAX, "bad"),
+            ("live", std::process::id() as i32, "grok-bot"),
+        ] {
+            fs::write(dir.join(format!("{id}.json")),json!({"protocol":1,"instanceId":id,"pid":pid,"origin":origin,"socket":victim,"cwd":".","status":"idle","session":null,"abducoSession":null,"startedAt":1,"updatedAt":1}).to_string())?
+        }
+        fs::write(dir.join("stale.sock"), "")?;
+        let v = list(&dir).await?.instances;
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0]["reachable"], false);
+        assert!(victim.exists() && dir.join("broken.json").exists());
+        assert!(!dir.join("stale.sock").exists() && !dir.join("stale.json").exists());
+        assert!(!valid_id("../stale"));
+        Ok(())
+    }
 }

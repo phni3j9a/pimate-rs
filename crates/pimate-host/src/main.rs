@@ -1,4 +1,5 @@
 mod config;
+mod link;
 mod rc;
 mod relay;
 mod server;
@@ -65,7 +66,7 @@ async fn main() -> Result<()> {
         ensure!(args.next().is_none());
         println!(
             "{}",
-            serde_json::to_string_pretty(&rc::list(&config::run_dir()).await?)?
+            serde_json::to_string_pretty(&rc::list(&config::run_dir()).await?.instances)?
         );
         return Ok(());
     }

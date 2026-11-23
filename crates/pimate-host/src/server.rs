@@ -29,9 +29,10 @@ use uuid::Uuid;
 pub const LIMIT: usize = 8 << 20;
 #[derive(Clone)]
 pub struct Out {
-    q: mpsc::Sender<(String, OwnedSemaphorePermit)>,
+    q: mpsc::Sender<(String, OwnedSemaphorePermit, CancellationToken)>,
     budget: Arc<Semaphore>,
     slow: CancellationToken,
+    generation: CancellationToken,
 }
 impl Out {
     pub fn overflow(&self) {
@@ -46,7 +47,7 @@ impl Out {
             return;
         }
         if let Ok(p) = self.budget.clone().try_acquire_many_owned(s.len() as u32)
-            && self.q.try_send((s, p)).is_ok()
+            && self.q.try_send((s, p, self.generation.clone())).is_ok()
         {
             return;
         }
@@ -54,6 +55,9 @@ impl Out {
     }
 }
 struct App {
+    addresses: Vec<Value>,
+    incompatible: watch::Receiver<serde_json::Map<String, Value>>,
+    links: Arc<crate::link::Links>,
     config: Config,
     dir: PathBuf,
     instances: watch::Receiver<Vec<Value>>,
@@ -82,8 +86,23 @@ fn summaries(list: Vec<Value>) -> Vec<Value> {
 }
 pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     let dir = config::run_dir();
-    let (tx, instances) = watch::channel(summaries(rc::list(&dir).await?));
+    let discovery = rc::list(&dir).await?;
+    let (tx, instances) = watch::channel(summaries(discovery.instances));
+    let (versions, incompatible) = watch::channel(discovery.incompatible);
+    let mut listeners = vec![];
+    let mut addresses = vec![];
+    for ip in ips {
+        let l = TcpListener::bind((ip, port)).await?;
+        let addr = l.local_addr()?;
+        addresses.push(
+            json!({"address":ip,"port":addr.port(),"family":if ip.is_ipv4(){"IPv4"}else{"IPv6"}}),
+        );
+        listeners.push(l);
+    }
     let app = Arc::new(App {
+        addresses,
+        incompatible,
+        links: Default::default(),
         config,
         dir: dir.clone(),
         instances,
@@ -94,8 +113,7 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
         .route("/health", get(health))
         .with_state(app);
     let mut tasks = JoinSet::new();
-    for ip in ips {
-        let listener = TcpListener::bind((ip, port)).await?;
+    for listener in listeners {
         println!("Listening http://{}", listener.local_addr()?);
         let router = router.clone();
         tasks.spawn(async move { axum::serve(listener, router).await });
@@ -104,7 +122,8 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
         loop {
             sleep(Duration::from_millis(1500)).await;
             if let Ok(v) = rc::list(&dir).await {
-                let next = summaries(v);
+                versions.send_replace(v.incompatible);
+                let next = summaries(v.instances);
                 tx.send_if_modified(|prev| {
                     if *prev == next {
                         return false;
@@ -120,7 +139,7 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
+        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":null,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
     )
 }
 async fn pair(State(a): State<Arc<App>>, req: Request) -> (StatusCode, Json<Value>) {
@@ -194,12 +213,24 @@ async fn read(ws: &mut WebSocket) -> Result<Option<Value>> {
         }
     }
 }
+fn read_close(e: &anyhow::Error) -> u16 {
+    if e.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<tungstenite::Error>(),
+            Some(tungstenite::Error::Capacity(_))
+        )
+    }) {
+        1009
+    } else {
+        Code::Protocol as u16
+    }
+}
 async fn peer(mut ws: WebSocket, a: Arc<App>) {
     let m = match timeout(Duration::from_secs(5), read(&mut ws)).await {
         Ok(Ok(Some(v))) => v,
         Ok(Ok(None)) => return,
-        Ok(Err(_)) => {
-            close(&mut ws, Code::Protocol as u16).await;
+        Ok(Err(e)) => {
+            close(&mut ws, read_close(&e)).await;
             return;
         }
         Err(_) => {
@@ -239,6 +270,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         q,
         budget: Arc::new(Semaphore::new(LIMIT)),
         slow: CancellationToken::new(),
+        generation: CancellationToken::new(),
     };
     let c = &a.config;
     out.send(&json!({"type":"auth_ok","deviceId":device,"host":{"hostId":c.host.host_id,"name":c.host.name,"platform":if cfg!(target_os="macos"){"darwin"}else{"linux"},"protocol":VERSION,"version":env!("CARGO_PKG_VERSION"),"pairedDevices":true}}));
@@ -246,14 +278,15 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
     let mut current = list.borrow_and_update().clone();
     out.send(&json!({"type":"instances","instances":current}));
     let mut tick = interval(Duration::from_millis(1500));
-    let mut subs: HashMap<String, AbortOnDropHandle<()>> = HashMap::new();
+    let mut subs: HashMap<String, (tokio_util::sync::DropGuard, AbortOnDropHandle<()>)> =
+        HashMap::new();
     let mut ops = JoinSet::new();
     let mut inflight = std::collections::HashSet::new();
     let end = loop {
         let m = tokio::select! {
             _=out.slow.cancelled()=>break 1009,
             _=tick.tick()=>{if !c.active(&device).unwrap_or(false){break Code::Revoked as u16}continue},
-            Some((text,_permit))=rx.recv()=>{match timeout(Duration::from_secs(5),ws.send(Message::Text(text.into()))).await{Ok(Ok(()))=>continue,Ok(Err(_))=>return,Err(_)=>break 1009}},
+            Some((text,_permit,generation))=rx.recv()=>{if generation.is_cancelled(){continue}match timeout(Duration::from_secs(5),ws.send(Message::Text(text.into()))).await{Ok(Ok(()))=>continue,Ok(Err(_))=>return,Err(_)=>break 1009}},
             Ok(())=list.changed()=>{
                 current=list.borrow_and_update().clone();
                 subs.retain(|id,_|{
@@ -269,7 +302,7 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
         let m = match m {
             Ok(Some(m)) => m,
             Ok(None) => return,
-            Err(_) => break Code::Protocol as u16,
+            Err(e) => break read_close(&e),
         };
         let kind = m["type"].as_str().unwrap_or("");
         match kind {
@@ -298,12 +331,22 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                         subs.remove(id);
                     }
                     "subscribe" if exists => {
-                        let (dir, id, out) = (a.dir.clone(), id.to_owned(), out.clone());
+                        let links = a.links.clone();
+                        let (dir, id) = (a.dir.clone(), id.to_owned());
+                        let generation = CancellationToken::new();
+                        let guard = generation.clone().drop_guard();
+                        let out = Out {
+                            generation,
+                            ..out.clone()
+                        };
                         subs.insert(
                             id.clone(),
-                            AbortOnDropHandle::new(tokio::spawn(async move {
-                                relay::subscribe(&dir, &id, out).await
-                            })),
+                            (
+                                guard,
+                                AbortOnDropHandle::new(tokio::spawn(async move {
+                                    relay::subscribe(links, &dir, &id, out).await
+                                })),
+                            ),
                         );
                     }
                     "subscribe" => out.send(
@@ -320,9 +363,10 @@ async fn peer(mut ws: WebSocket, a: Arc<App>) {
                             continue;
                         }
                         inflight.insert(key.clone());
+                        let links = a.links.clone();
                         let (dir, r, out) = (a.dir.clone(), r.clone(), out.clone());
                         ops.spawn(async move {
-                            relay::forward(&dir, &key.0, r, out).await;
+                            relay::forward(links, &dir, &key.0, r, out).await;
                             key
                         });
                     }
@@ -373,5 +417,23 @@ fn settings(c: &Config, device: &str, m: &Value) -> Result<Value> {
             })
             .collect::<Vec<_>>();
         Ok(json!({"type":"devices_result","requestId":m["requestId"],"devices":ds}))
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn slow_consumer_budget_includes_inflight_frames() {
+        let (q, mut rx) = mpsc::channel(2);
+        let out = Out {
+            q,
+            budget: Arc::new(Semaphore::new(10)),
+            slow: CancellationToken::new(),
+            generation: CancellationToken::new(),
+        };
+        out.send(&"12345");
+        let _sending = rx.try_recv().unwrap();
+        out.send(&"12345");
+        assert!(out.slow.is_cancelled());
     }
 }

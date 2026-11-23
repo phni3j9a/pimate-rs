@@ -1,35 +1,39 @@
 use crate::{
-    rc::{self, Rc},
+    link::Links,
+    rc,
     server::{LIMIT, Out},
 };
 use anyhow::{Result, ensure};
 use pimate_protocol::relay::HostFrame;
 use serde_json::{Value, json};
-use std::{path::Path, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep, sleep_until, timeout};
-pub async fn forward(dir: &Path, id: &str, req: Value, out: Out) {
+pub async fn forward(links: Arc<Links>, dir: &Path, id: &str, req: Value, out: Out) {
     let rid = req["id"].clone();
     let wait = match req["method"].as_str() {
-        Some("auth_wait" | "auth_list") => 32,
-        Some("auth_logout") => 62,
-        Some("subagents_rpc") => {
-            req["params"]["timeoutMs"]
-                .as_u64()
-                .unwrap_or(15000)
-                .min(120000)
-                / 1000
-                + 2
-        }
-        Some("subagent_control") => 17,
-        _ => 5,
+        Some("auth_wait") => pimate_protocol::AUTH_MAX_WAIT_MS + 2000,
+        Some("auth_list") => 32000,
+        Some("auth_logout") => 62000,
+        Some("subagents_rpc") => req["params"]["timeoutMs"]
+            .as_u64()
+            .unwrap_or(15000)
+            .min(120000)
+            .saturating_add(2000)
+            .max(5000),
+        Some("subagent_control") => 17000,
+        _ => 5000,
     };
     let op = async {
-        let mut c = Rc::open(dir, id).await?;
-        c.hello(|_| Ok(())).await?;
-        c.send(req, |_| Ok(())).await
+        let mut c = timeout(Duration::from_secs(5), async {
+            let mut c = links.client(dir, id, &out, false).await?;
+            c.hello(|_| Ok(())).await?;
+            Ok::<_, anyhow::Error>(c)
+        })
+        .await??;
+        timeout(Duration::from_millis(wait), c.send(req, |_| Ok(()))).await?
     };
-    let response = match timeout(Duration::from_secs(wait), op).await {
-        Ok(Ok(v)) => v,
+    let response = match op.await {
+        Ok(v) => v,
         _ => {
             json!({"type":"response","id":rid,"ok":false,"error":{"code":"internal","message":"RC transport failed; outcome unknown, not retried"}})
         }
@@ -39,16 +43,24 @@ pub async fn forward(dir: &Path, id: &str, req: Value, out: Out) {
         response: &response,
     });
 }
-pub async fn subscribe(dir: &Path, id: &str, out: Out) {
+pub async fn subscribe(links: Arc<Links>, dir: &Path, id: &str, out: Out) {
     let mut retry = 250;
+    let mut last = None;
     loop {
-        let _ = stream(dir, id, &out, &mut retry).await;
+        let _ = stream(&links, dir, id, &out, &mut retry, &mut last).await;
         out.send(&json!({"type":"subscribe_error","instanceId":id,"code":"unreachable"}));
         sleep(Duration::from_millis(retry)).await;
         retry = (retry * 2).min(5000)
     }
 }
-async fn stream(dir: &Path, id: &str, out: &Out, retry: &mut u64) -> Result<()> {
+async fn stream(
+    links: &Links,
+    dir: &Path,
+    id: &str,
+    out: &Out,
+    retry: &mut u64,
+    last: &mut Option<u64>,
+) -> Result<()> {
     let mut saved = vec![];
     let mut bytes = 0;
     let mut save = |v: Value| {
@@ -61,7 +73,7 @@ async fn stream(dir: &Path, id: &str, out: &Out, retry: &mut u64) -> Result<()> 
         Ok(())
     };
     let (mut c, s, h) = timeout(Duration::from_secs(10), async {
-        let mut c = Rc::open(dir, id).await?;
+        let mut c = links.client(dir, id, out, true).await?;
         let s = c.hello(&mut save).await?;
         let mut req = rc::request("history");
         if !s["session"].is_null() {
@@ -78,13 +90,16 @@ async fn stream(dir: &Path, id: &str, out: &Out, retry: &mut u64) -> Result<()> 
         .as_u64()
         .ok_or_else(|| anyhow::anyhow!("missing seq"))?;
     for v in &saved {
-        if v["seq"].as_u64().is_some_and(|n| n <= seq)
+        if v["seq"]
+            .as_u64()
+            .is_some_and(|n| n <= seq && last.is_none_or(|p| n > p))
             && matches!(
                 v["event"]["type"].as_str(),
                 Some("notify" | "compact_error" | "compact_done" | "session_op_done")
             )
         {
-            out.send(v)
+            out.send(v);
+            *last = v["seq"].as_u64();
         }
     }
     out.send(&HostFrame::Subscribed {
@@ -100,6 +115,7 @@ async fn stream(dir: &Path, id: &str, out: &Out, retry: &mut u64) -> Result<()> 
             seq = n
         }
     }
+    *last = Some(seq);
     *retry = 250;
     let mut pending: Option<Value> = None;
     let mut due = Instant::now();
@@ -124,6 +140,7 @@ async fn stream(dir: &Path, id: &str, out: &Out, retry: &mut u64) -> Result<()> 
             continue;
         };
         seq = n;
+        *last = Some(seq);
         let delta = matches!(
             v["event"]["type"].as_str(),
             Some("text_delta" | "thinking_delta")
