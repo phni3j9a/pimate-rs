@@ -224,7 +224,7 @@ async fn listen(
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.0,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
+        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION")}),
     )
 }
 async fn pair(State(a): State<Arc<App>>, req: Request) -> (StatusCode, Json<Value>) {
