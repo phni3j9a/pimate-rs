@@ -208,3 +208,17 @@ scripts/build-ios.sh
 `target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` と `Login.swift` をアプリのターゲットでコンパイルします。
 
 **接続の結合試験:** `scripts/test-mobile.sh swift`（macOS）または `scripts/test-mobile.sh kotlin`（Linux、JDK・`kotlinc` が必要）。後者は `KOTLIN_CP` に JNA 5.17.0・kotlin-stdlib・kotlinx-coroutines-core-jvm の JAR を `:` 区切りで指定します。どちらも一時ディレクトリ・ポート 0 の Rust Host と Unix socket の模擬 RC を起動し、ペアリングリンクは試験クライアントの標準入力にだけ渡します。実装例は [`crates/pimate-ffi/tests/native`](crates/pimate-ffi/tests/native)（試験専用のメモリ保存）です。
+
+### Android 開発版と模擬 Host
+
+`apps/android` は API 26 以上の Compose アプリです。上記の Rust ターゲット、cargo-ndk、Android SDK 36、JDK 17 以上を用意し、`ANDROID_HOME`（NDK の版が異なる場合は `ANDROID_NDK_HOME` も）を設定して実行します。
+
+```sh
+(cd apps/android && ./gradlew assembleDebug testDebugUnitTest)
+adb -s SERIAL install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
+scripts/android-demo.py
+```
+
+スクリプトは一時ディレクトリに模擬 RC と Rust Host を作り、loopback の空きポートだけで待機します。表示された `adb -s SERIAL reverse tcp:PORT tcp:PORT` を別端末で実行し、**PiMate RS** (`dev.pimate.app.rs.debug`) に表示されたリンクを貼り付けるか QR を読み取ります。リンクは秘密・1回限りなので別端末で試す時はスクリプトを起動し直します。一覧の `/demo/android` を開くと Markdown が逐次届き、日本語を送ると会話に追加されます。終了は Ctrl+C、そのポートだけ `adb -s SERIAL reverse --remove tcp:PORT`。実際の Pi・常駐サービス・abduco は使いません。
+
+Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面の仕上げは `MainActivity.kt`、`Markdown.kt`、`Theme.kt`、通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。
