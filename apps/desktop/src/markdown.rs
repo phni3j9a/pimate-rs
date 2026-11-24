@@ -124,7 +124,7 @@ fn only_web_links_and_no_image_loads() {
     assert!(out.contains("&lt;&gt;"));
 }
 
-use gpui::{App, SharedString, Task, Window};
+use gpui::{App, SharedString, Styled, Task, Window};
 use gpui_component::text::TextView;
 struct Cached {
     source: String,
@@ -155,5 +155,7 @@ pub fn view(id: String, text: &str, w: &mut Window, cx: &mut App) -> TextView {
             }));
         });
     }
-    TextView::html(id, cache.read(cx).markup.clone(), w, cx).selectable(true)
+    TextView::html(id, cache.read(cx).markup.clone(), w, cx)
+        .selectable(true)
+        .h_auto()
 }

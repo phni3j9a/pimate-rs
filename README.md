@@ -375,8 +375,10 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 
 ### デスクトップ開発版（macOS・#49 前半）
 
-Xcode（Metal Toolchain を含む）と Rust stable で `cargo run --locked -p pimate-desktop`。`apps/desktop` は FFI を使わず、中核と Markdown の Rust API を直接呼びます。`リンクを貼り付ける` → 表示されたマシン名・アドレスを確認 → 登録。左の Pi を選択して会話を開きます。Enter は改行・IME の確定だけで、送信はボタンです。表示は OS の明暗に追従し、文字サイズを3段階で変更できます。
+Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.sh`。開発用 `.app` をビルド先に作り LaunchServices から起動します。ssh から裸の実行ファイルを起動するとウィンドウは出ても日本語 IME が ASCII 入力になったためです。`apps/desktop` は FFI を使わず、中核と Markdown の Rust API を直接呼びます。`リンクを貼り付ける` → 表示されたマシン名・アドレスを確認 → 登録。左の Pi を選択して会話を開きます。Enter は改行・IME の確定だけで、送信はボタンです。表示は OS の明暗に追従し、文字サイズを3段階で変更できます。
 
 - [Linux 試作の結果（#2）](https://github.com/phni3j9a/pimate-rs/issues/2) と同じ `gpui 0.2.2` と型互換な `gpui-component 0.5.1` の複数行 `InputState`・選択可能な `TextView` を使用。`gpui-kit 0.10` は別系列です。共通 Markdown AST から生成した HTML だけを表示し、画像やローカルファイルを自動取得しません。Linux の xattr 0.2.3 は削除された libc の ENOATTR 別名を ENODATA に置換（`vendor/xattr`）。Linux はビルドまで。秘密の平文保存にはフォールバックしません。実際の Linux ログインセッションの IME 検証と保存先は別途必要です。
-- macOS の `store.rs` は登録をメタデータ・token 一体の Keychain 項目に格納します。アプリの複数起動時もファイルロックで置換と条件付き失効を直列化します。ロックファイルに資格情報は書きません。`cargo test --locked -p pimate-desktop` は毎回固有の `.test.*` サービスで試験。模擬 Host（前述の `scripts/android-demo.py`）を試すときは debug ビルドに `--demo` を渡し、使い終えたらアプリ終了後 `security delete-generic-password -s dev.pimate.rs.desktop.demo -a registrations` で模擬登録だけ削除できます。
+- macOS の `store.rs` は登録をメタデータ・token 一体の Keychain 項目に格納します。アプリの複数起動時もファイルロックで置換と条件付き失効を直列化します。ロックファイルに資格情報は書きません。`cargo test --locked -p pimate-desktop` は毎回固有の `.test.*` サービスで試験。模擬 Host（前述の `scripts/android-demo.py`）を試すときは `apps/desktop/run-macos.sh --demo`（先に起動中のアプリを終了）で別サービスを使い、使い終えたらアプリ終了後 `security delete-generic-password -s dev.pimate.rs.desktop.demo -a registrations` で模擬登録だけ削除できます。
 - 画面担当は `screen.rs` と `markdown.rs` を変更できます。`model.rs` の revision と `main.rs` の接続・編集状態は維持してください。Host ごとの配送スレッド → 有界チャネル → GPUI Entity（UI スレッド）。過負荷・大きな差分は snapshot、再登録前の配送は接続の同一性で破棄。編集本文は Host・Pi・session（null 可）別でメモリだけに保持し、送信時のキーを渡します。RC の受付と履歴は別で、結果不明を成功扱いせず自動再送しません。未確認の復元は対象が一致し、入力が空の明示操作だけです。
+
+[VM 2 での登録・一覧・逐次表示・日本語送信の記録](docs/research/desktop-base-vm.webp)。macOS の日本語ローマ字入力では `nihongo` → Space → Return は候補選択で、もう一度 Return で確定・送信ボタン有効化、ボタンを押して初めて送信しました。文字列の貼り付けによる代替ではありません。

@@ -22,6 +22,7 @@ jobs:
           trap 'security delete-keychain "$keychain"' EXIT
           security create-keychain -p test-only "$keychain"
           security unlock-keychain -p test-only "$keychain"
+          security set-keychain-settings -t 3600 "$keychain"
           security list-keychains -d user -s "$keychain"
           security default-keychain -d user -s "$keychain"
           cargo test --locked -p pimate-desktop
