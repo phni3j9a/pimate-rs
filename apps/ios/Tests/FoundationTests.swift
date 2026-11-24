@@ -86,5 +86,46 @@ final class FoundationTests: XCTestCase {
         let sent = try await sendIfConfirmed(); XCTAssertTrue(sent)
         try await wait { users().count > before.count }; XCTAssertEqual(users(), before + [expected])
         XCTAssertEqual(model.body(key).text, "")
+        try await exerciseChatState(model, host: other)
+    }
+
+    @MainActor private func exerciseChatState(_ model: SessionModel, host: String) async throws {
+        func wait(_ description: String, _ predicate: () -> Bool) async throws {
+            for _ in 0..<200 { if predicate() { return }; try await Task.sleep(for: .milliseconds(100)) }
+            XCTFail(description); throw CoreError.Timeout
+        }
+        try model.select(host: host, instance: "images")
+        try await wait("images ready") { model.editor?.target.instance == "images" }
+        let key = try XCTUnwrap(model.editor), opened = try model.openSheet(key, page: .model)
+        try await model.run(.commands, in: opened); XCTAssertTrue(model.suggestions(key, text: "/fix").contains("fix-tests"))
+        try await model.run(.models, in: opened)
+        let m = try XCTUnwrap(model.sheet?.reply?.list("models").first), ref = ModelRef(provider: m.str("provider"), id: m.str("id"))
+        for action: SheetAction in [.select(ref), .thinking("low"), .favorites([ref]), .saveDefault(ref, thinking: "low")] { try await model.run(action, in: opened) }
+        try await wait("model settings") {
+            let rows = model.rows[host]; return rows?.field("thinking") == "\"low\"" && rows?.field("defaultModel")?.contains("low") == true && rows?.groups["model"]?.filter { $0.object["favorite"] as? Bool == true }.count == 1
+        }
+        XCTAssertNotNil(model.stats(key)); XCTAssertTrue(model.allowances(key, nowMs: 0).isEmpty); XCTAssertNotNil(model.rows[host]?.field("context"))
+        let entry = try XCTUnwrap(model.rows[host]?.groups["entry"]?.first { $0.object["imageCount"] as? Int == 5 })
+        let history = try XCTUnwrap(HistoryImages(entry).source(at: 4, thumbnail: true, canFetch: true))
+        for source: ChatImageSource in [history, .file(answer: "A", path: "out/before.png")] {
+            let bytes = try await model.image(key, source: source, thumbnail: true); XCTAssertNotNil(UIImage(data: bytes))
+        }
+        try await model.run(.tree, in: opened); let node = try XCTUnwrap(model.sheet?.reply?.list("nodes").first?.str("id"))
+        try await model.run(.label(entry: node, value: "試験"), in: opened)
+        try await model.run(.tree, in: opened); XCTAssertEqual(model.sheet?.reply?.list("nodes").first?.str("label"), "試験")
+        try await model.run(.sessions, in: opened); let path = try XCTUnwrap(model.sheet?.reply?.list("sessions").first?.str("path"))
+        func complete(_ action: SheetAction) async throws {
+            let previous = model.receipt?.id, source = try XCTUnwrap(model.editor)
+            do { try await model.run(action, in: model.openSheet(source, page: .session)) } catch CoreError.StaleTarget { /* the session changed before receipt */ }
+            try await wait("correlated completion for \(action)") { model.receipt != nil && model.receipt?.id != previous && model.editor != nil }
+            XCTAssertEqual(model.receipt?.outcome, .done)
+        }
+        try await complete(.compact); try await complete(.fork(entry: entry.id))
+        try await wait("fork text belongs to the destination") { model.editor.map { model.body($0).text == entry.object.str("text") } == true }
+        try await complete(.new); try await complete(.resume(path: path)); XCTAssertEqual(model.editor, key)
+        try await complete(.move(entry: node, summarize: false))
+        do { try await model.run(.shutdown, in: model.openSheet(key, page: .session)) } catch CoreError.StaleTarget {}
+        try await wait("shutdown removes only the fixture Pi") { model.rows[host]?.groups["instance"]?.contains { $0.id == "images" } == false }
+
     }
 }
