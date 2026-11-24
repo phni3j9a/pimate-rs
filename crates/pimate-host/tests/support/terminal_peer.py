@@ -38,6 +38,15 @@ def read_until(fd, token):
     return data
 
 
+def settings(fd):
+    attrs = termios.tcgetattr(fd)
+    # Darwin sets PENDIN itself when returning to canonical mode (reprocess queued input).
+    # This transient line-discipline state is not a user setting.
+    if sys.platform == 'darwin':
+        attrs[3] &= ~termios.PENDIN
+    return attrs
+
+
 assert listing() == []
 # A non-exec wrapper waits for a child that redraws *only* on SIGWINCH.
 program = root / 'pi.py'
@@ -57,7 +66,7 @@ keeper = subprocess.Popen([host, '__hold', path, '/bin/sh', '-c', '"$1" "$2"; ex
                            'wrapper', sys.executable, program], stdout=w)
 os.close(w)
 master, slave = pty.openpty()
-saved = termios.tcgetattr(slave)
+saved = settings(slave)
 attach = None
 try:
     until(lambda: (root / 'ready').exists())
@@ -67,7 +76,7 @@ try:
         until(lambda: listing()[0]['attached'] is False)
         attach = subprocess.Popen([host, 'attach', name], stdin=slave, stdout=slave, stderr=slave)
         screen = read_until(master, b'REDRAW')
-        assert enter in screen and termios.tcgetattr(slave) != saved
+        assert enter in screen and settings(slave) != saved
         count = (root / 'signals').read_bytes()
         assert listing()[0]['attached'] is True
         assert (root / 'signals').read_bytes() == count
@@ -86,7 +95,7 @@ try:
             os.write(master, b'stop\n')
         read_until(master, leave)
         assert attach.wait(5) == (42 if why == 'exit' else 0)
-        actual = termios.tcgetattr(slave)
+        actual = settings(slave)
         assert actual == saved, (why, actual, saved)
         if why == 'detach':
             assert victim.stat().st_mode == original_mode
@@ -104,7 +113,7 @@ try:
             conn.sendall(b'PMT2')
             read_until(master, enter)
         read_until(master, leave)
-        assert attach.wait(5) != 0 and termios.tcgetattr(slave) == saved
+        assert attach.wait(5) != 0 and settings(slave) == saved
 finally:
     for child in (attach, keeper):
         if child is not None and child.poll() is None:
