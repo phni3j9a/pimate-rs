@@ -5,6 +5,9 @@ import { cliPath } from "../package.ts";
 
 const exec = promisify(execFile);
 async function run<T>(args: string[], input?: string): Promise<T> {
+	if (!process.env.PIMATE_HOST_BINARY && !(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch))) {
+		throw new Error(`PiMate Host does not support ${process.platform}-${process.arch}; use Linux or macOS on x64 or arm64.`);
+	}
 	try {
 		const result = exec(cliPath, args, { timeout: 30_000 });
 		const [{ stdout }] = await Promise.all([
