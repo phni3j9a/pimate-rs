@@ -411,8 +411,11 @@ async fn attempt(
         match event {
             Event::Select => {
                 let next = selection.borrow_and_update().clone();
-                if next != selected {
-                    if let Some(id) = selected.take() {
+                // A failed subscription keeps its selection; choosing the same Pi again retries it.
+                let retry =
+                    next.is_some() && next == selected && s.edit(|st| st.subscription_failed());
+                if next != selected || retry {
+                    if let Some(id) = selected.take().filter(|_| !retry) {
                         send(&mut ws, json!({"type":"unsubscribe","instanceId":id})).await?
                     }
                     selected = next;

@@ -484,6 +484,20 @@ fn model_preference_receipts_publish_only_changed_rows() {
     assert_eq!(s.get("view", "defaultModel"), &default);
 }
 #[test]
+fn reselecting_a_failed_pi_is_a_retry() {
+    for failure in [
+        json!({"type":"subscribe_error","instanceId":"i","code":"not_found"}),
+        json!({"type":"instance_gone","instanceId":"i"}),
+    ] {
+        let mut s = view();
+        assert!(!s.subscription_failed());
+        s.apply(&failure);
+        assert!(s.subscription_failed());
+        sync(&mut s, json!([]));
+        assert!(!s.subscription_failed());
+    }
+}
+#[test]
 fn buffered_compaction_error_and_notification_survive_subscription_retry() {
     let mut s = view();
     s.prepare(

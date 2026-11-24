@@ -556,6 +556,12 @@ impl State {
         }
         resubscribe
     }
+    pub(crate) fn subscription_failed(&self) -> bool {
+        matches!(
+            self.get("view", "phase").as_str(),
+            Some("subscribe_error" | "instance_gone")
+        )
+    }
     /// Frames have already passed HostMessage validation and normalization.
     pub fn apply(&mut self, m: &Value) -> bool {
         self.apply_at(
