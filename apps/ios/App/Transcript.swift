@@ -3,10 +3,13 @@ import Foundation
 struct WorkLine: Identifiable {
     let id: String, name: String, subject: String
     var output: String, state: String
+    var images: HistoryImages?
 }
 struct ChatTurn: Identifiable {
     let id: String
-    var prompt = "", imageCount = 0
+    var prompt = ""
+    var images: HistoryImages?
+    var imageCount: Int { images?.count ?? 0 }
     var lines: [Line] = []
     enum Line: Identifiable {
         case reply(Reply), work(WorkLine)
@@ -15,8 +18,8 @@ struct ChatTurn: Identifiable {
         }
     }
     var work: [WorkLine] { lines.compactMap { if case .work(let w) = $0 { w } else { nil } } }
-    mutating func updateWork(_ index: Int, output: String, state: String) {
-        guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; lines[index] = .work(w)
+    mutating func updateWork(_ index: Int, output: String, state: String, images: HistoryImages? = nil) {
+        guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; w.images = images; lines[index] = .work(w)
     }
     var start: Int?, end: Int?
     struct Reply: Identifiable { let id: String, text: String, meta: String }
@@ -34,15 +37,15 @@ struct ChatTurn: Identifiable {
             if Task.isCancelled { return [] }
             let o = item.object, kind = o.str("kind"), text = o.str("text"), ts = o["timestamp"] as? Int
             if kind == "user" {
-                let count = max(o["imageCount"] as? Int ?? 0, o.list("images").count)
-                turns.append(Self(id: item.id, prompt: text, imageCount: count, start: ts)); continue
+                let images = HistoryImages(item)
+                turns.append(Self(id: item.id, prompt: text, images: images, start: ts)); continue
             }
             let i = turns.count - 1; turns[i].end = ts
             if kind == "tool_result" {
                 let id = o.str("toolCallId"), pos = pending.removeValue(forKey: id)
                 if pos == nil { turns[i].lines.append(.work(line(item.id, o, o.str("toolName")))) }
                 let (t, w) = pos ?? (i, turns[i].lines.count - 1)
-                turns[t].updateWork(w, output: text, state: o["isError"] as? Bool == true ? "失敗" : "完了")
+                turns[t].updateWork(w, output: text, state: o["isError"] as? Bool == true ? "失敗" : "完了", images: HistoryImages(item))
             } else {
                 if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: "考えた内容", subject: "", output: o.str("thinking"), state: ""))) }
                 let error = o.str("errorMessage"), usage = o.obj("usage")

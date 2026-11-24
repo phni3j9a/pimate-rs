@@ -6,7 +6,7 @@ struct ChatScreen: View {
     var body: some View {
         let r = rows, info = r.groups["instance"]?.first { $0.id == instance }?.object ?? [:]
         Group {
-            if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(key) }
+            if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(r.viewGeneration).id(key) }
             else {
                 VStack {
                     if let problem = Self.connectionProblem(r) { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text(problem)) }
@@ -30,6 +30,10 @@ private struct Conversation: View {
     @State private var turns: [ChatTurn] = []
     private struct OpenTable: Identifiable { let id = UUID(), table: Table }
     @State private var table: OpenTable?
+    @State private var photo: OpenPhoto?
+    private var photos: PhotoContext {
+        PhotoContext(model: model, key: key, entries: rows.field("entryImages") == "true", files: rows.field("fileImages") == "true", open: { photo = $0 })
+    }
     @State private var loaded = false
     @State private var position: String? = "tail"
     private var running: Bool { rows.field("status") == "\"running\"" }
@@ -47,7 +51,7 @@ private struct Conversation: View {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id) }
                         if !thinking.isEmpty { DisclosureGroup("考えています…") { Text(verbatim: thinking) } }
-                        if !text.isEmpty { MarkdownBody(source: text) }
+                        if !text.isEmpty { MarkdownBody(source: text, answer: "stream:" + (entries.last?.id ?? "begin")) }
                         if pc { Label("PC 側で操作を完了してください", systemImage: "desktopcomputer") }
                         ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
                         Color.clear.frame(height: 1).id("tail")
@@ -57,6 +61,15 @@ private struct Conversation: View {
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
             .safeAreaInset(edge: .bottom, spacing: 8) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
+            .environment(\.photoContext, photos)
+            .fullScreenCover(item: $photo) { shown in
+                NavigationStack {
+                    LoadedPhoto(context: photos, label: shown.label, thumbnail: false, source: { shown.source })
+                        .navigationTitle(shown.label).navigationBarTitleDisplayMode(.inline).toolbar {
+                            ToolbarItem(placement: .cancellationAction) { Button("閉じる") { photo = nil } }
+                        }
+                }
+            }
             .environment(\.openPiTable, { table = OpenTable(table: $0) })
             .fullScreenCover(item: $table) { shown in
                 NavigationStack { ScrollView { MarkdownTable(table: shown.table, full: true).padding() }.navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
@@ -80,13 +93,13 @@ private struct TurnView: View {
             if !turn.prompt.isEmpty || turn.imageCount > 0 {
                 VStack(alignment: .leading, spacing: 4) {
                     if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled) }
-                    if turn.imageCount > 0 { Label("画像 \(turn.imageCount) 枚", systemImage: "photo") }
+                    if let images = turn.images { HistoryPhotos(images: images) }
                 }.padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing)
             }
             ForEach(turn.lines) { line in
                 switch line {
                 case .reply(let reply):
-                    MarkdownBody(source: reply.text); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
+                    MarkdownBody(source: reply.text, answer: reply.id); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
                 case .work(let w):
                     if !active && w.id == firstWork {
                         Button { expanded.toggle() } label: {
@@ -100,6 +113,7 @@ private struct TurnView: View {
     }
     private func work(_ line: WorkLine) -> some View {
             DisclosureGroup {
+                if let images = line.images { HistoryPhotos(images: images) }
                 Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
             } label: {
                 HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.name == "考えた内容" ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)

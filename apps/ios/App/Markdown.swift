@@ -2,19 +2,20 @@ import SwiftUI
 
 private actor MarkdownParser {
     static let shared = MarkdownParser()
-    func blocks(_ source: String) throws -> [Block] {
+    func blocks(_ source: String, files: Bool) throws -> [Block] {
         try Task.checkCancellation()
-        return parse(source: source, fileImages: false).blocks()
+        return parse(source: source, fileImages: files).blocks()
     }
 }
 struct MarkdownBody: View {
-    let source: String
+    let source: String, answer: String
+    @Environment(\.photoContext) private var photos
     @State private var blocks: [Block] = []
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            ForEach(blocks, id: \.id) { MarkdownBlock(block: $0) }
-        }.task(id: source) {
-            if let result = try? await MarkdownParser.shared.blocks(source), !Task.isCancelled { blocks = result }
+            ForEach(blocks, id: \.id) { MarkdownBlock(block: $0, answer: answer) }
+        }.task(id: [source, photos?.files == true ? "file" : ""]) {
+            if let result = try? await MarkdownParser.shared.blocks(source, files: photos?.files == true), !Task.isCancelled { blocks = result }
         }
     }
 }
@@ -59,11 +60,11 @@ struct Selectable: UIViewRepresentable {
     }
 }
 private struct MarkdownBlock: View {
-    let block: Block
+    let block: Block, answer: String
     var body: some View {
         switch block.content {
-        case .paragraph(let spans): Selectable(spans: spans)
-        case .heading(_, let spans): Selectable(spans: spans, heading: true)
+        case .paragraph(let spans): PhotoParagraph(spans: spans, answer: answer, heading: false)
+        case .heading(_, let spans): PhotoParagraph(spans: spans, answer: answer, heading: true)
         case .rule: Divider()
         case .code(let language, let text):
             VStack(alignment: .leading, spacing: 4) {
@@ -75,14 +76,14 @@ private struct MarkdownBlock: View {
             VStack(alignment: .leading, spacing: 6) { ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                 HStack(alignment: .top, spacing: 8) {
                     if case .item(let checked?, _) = item.content { Text(checked ? "☑" : "☐").accessibilityLabel(checked ? "完了" : "未完了") }
-                    else { Text(start.map { "\(Int($0) + i)." } ?? "•") }; MarkdownBlock(block: item)
+                    else { Text(start.map { "\(Int($0) + i)." } ?? "•") }; MarkdownBlock(block: item, answer: answer)
                 }
             } }
         case .item(_, let children): nested(children)
         case .table(let table): MarkdownTable(table: table)
         }
     }
-    private func nested(_ children: [Block]) -> some View { VStack(alignment: .leading, spacing: 6) { ForEach(children, id: \.id) { MarkdownBlock(block: $0) } } }
+    private func nested(_ children: [Block]) -> some View { VStack(alignment: .leading, spacing: 6) { ForEach(children, id: \.id) { MarkdownBlock(block: $0, answer: answer) } } }
 }
 private struct OpenTableKey: EnvironmentKey { static let defaultValue: (Table) -> Void = { _ in } }
 extension EnvironmentValues {
@@ -113,5 +114,36 @@ struct MarkdownTable: View {
             grid(full: false).contentShape(Rectangle()).onTapGesture { open(table) }
             Button("表を開く", systemImage: "arrow.up.left.and.arrow.down.right") { open(table) }.font(.caption).frame(minHeight: 44)
         } }
+    }
+}
+
+// Preserve native range selection across adjacent text; only an image splits a run.
+private struct PhotoParagraph: View {
+    let spans: [Inline], answer: String, heading: Bool
+    @Environment(\.photoContext) private var context
+    private enum Part { case text([Inline]), photo(MarkdownImage) }
+    private var parts: [Part] {
+        var parts: [Part] = [], run: [Inline] = []
+        for span in spans {
+            if case .image(let image) = span {
+                if !run.isEmpty { parts.append(.text(run)); run = [] }; parts.append(.photo(image))
+            } else { run.append(span) }
+        }
+        if !run.isEmpty { parts.append(.text(run)) }; return parts
+    }
+    var body: some View {
+        ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+            switch part {
+            case .text(let text): Selectable(spans: text, heading: heading)
+            case .photo(let image):
+                if image.kind == .remote, let url = URL(string: image.src.value()), WebImage.valid(url, scheme: "http") {
+                    Link(image.alt.isEmpty ? "画像をブラウザで開く" : image.alt, destination: url)
+                } else if let context {
+                    PhotoTile(context: context, label: image.alt.isEmpty ? "画像" : image.alt, source: { _ in try? ChatImageSource(markdown: image, answer: answer) })
+                        .frame(maxWidth: 300).frame(height: 144)
+                        .id(image.kind == .data ? "inline:\(image.index)" : image.src.value())
+                }
+            }
+        }
     }
 }
