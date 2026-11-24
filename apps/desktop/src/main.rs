@@ -335,32 +335,6 @@ fn committed_input_matches(
         s.marked_text_range(w, cx).is_none() && s.value().as_str() == expected
     })
 }
-#[cfg(test)]
-mod tests {
-    use super::committed_input_matches;
-    use gpui::{AppContext, EntityInputHandler};
-    use gpui_component::input::InputState;
-    #[gpui::test]
-    fn send_and_ack_require_the_live_committed_input(cx: &mut gpui::TestAppContext) {
-        cx.update(gpui_component::init);
-        let cx = cx.add_empty_window();
-        cx.update(|w, cx| {
-            let input = cx.new(|cx| {
-                InputState::new(w, cx)
-                    .multi_line(true)
-                    .default_value("sent")
-            });
-            assert!(committed_input_matches(&input, "sent", w, cx));
-            input.update(cx, |s, cx| {
-                s.replace_and_mark_text_in_range(Some(4..4), "追加", None, w, cx)
-            });
-            assert!(!committed_input_matches(&input, "sent", w, cx));
-            assert!(!committed_input_matches(&input, "sent追加", w, cx));
-            input.update(cx, |s, cx| s.replace_text_in_range(None, "追加", w, cx));
-            assert!(committed_input_matches(&input, "sent追加", w, cx));
-        });
-    }
-}
 fn main() {
     Application::new().run(|cx| {
         gpui_component::init(cx);
@@ -388,4 +362,31 @@ fn main() {
         .expect("open PiMate window");
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::committed_input_matches;
+    use gpui::{AppContext, EntityInputHandler};
+    use gpui_component::input::InputState;
+    #[gpui::test]
+    fn send_and_ack_require_the_live_committed_input(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        cx.update(|w, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(w, cx)
+                    .multi_line(true)
+                    .default_value("sent")
+            });
+            assert!(committed_input_matches(&input, "sent", w, cx));
+            input.update(cx, |s, cx| {
+                s.replace_and_mark_text_in_range(Some(4..4), "追加", None, w, cx)
+            });
+            assert!(!committed_input_matches(&input, "sent", w, cx));
+            assert!(!committed_input_matches(&input, "sent追加", w, cx));
+            input.update(cx, |s, cx| s.replace_text_in_range(None, "追加", w, cx));
+            assert!(committed_input_matches(&input, "sent追加", w, cx));
+        });
+    }
 }
