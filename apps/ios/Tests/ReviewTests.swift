@@ -17,10 +17,18 @@ private final class TestConnection: Connection, @unchecked Sendable {
 }
 private final class TestCore: Core, @unchecked Sendable {
     var locked = false, blockedHost: String?, attempts: [String] = []
+    var pairCalls = 0, lockAfterPair = false
+    private var registrations = ["a", "b"].map { Host(id: $0, name: $0, address: "unused", deviceId: "d", needsPairing: false) }
+    override func pair(link: String, name: String) async throws -> Host {
+        pairCalls += 1
+        let h = Host(id: "new", name: name, address: "unused", deviceId: "new-device", needsPairing: false)
+        registrations.append(h); locked = lockAfterPair
+        return h
+    }
     let c = TestConnection(noHandle: .init())
     override func hosts() throws -> [Host] {
         if locked { throw CoreError.Storage }
-        return ["a", "b"].map { Host(id: $0, name: $0, address: "unused", deviceId: "d", needsPairing: false) }
+        return registrations
     }
     override func connect(id: String, listener: Listener) throws -> Connection {
         attempts.append(id); if id == blockedHost { throw CoreError.Storage }; return c
@@ -55,6 +63,29 @@ final class ReviewTests: XCTestCase {
         do { try await model.send(key, model.body(key)); XCTFail() } catch CoreError.OutcomeUnknown {}
         XCTAssertTrue(model.message.contains("履歴")); XCTAssertEqual(model.body(key).text, "送信")
         core.c.receipt = {}; try await model.send(key, model.body(key)); XCTAssertEqual(model.message, "")
+    }
+    @MainActor func testWorkerAndHostRefusalsAreNotUnconfirmed() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        model.text("未送信", for: key)
+        for code: CoreError in [.Blocked, .BadRequest, .Unsupported, .Rejected, .BuiltinCommand] {
+            core.c.receipt = { throw code }
+            do { try await model.send(key, model.body(key)); XCTFail() } catch { XCTAssertEqual(error as? CoreError, code) }
+            XCTAssertEqual(model.message, "操作は拒否されました"); XCTAssertEqual(model.body(key).text, "未送信")
+        }
+    }
+    @MainActor func testUnlockAfterPairRetriesOnlyRegistrationReads() async throws {
+        for listFailed in [true, false] {
+            let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+            core.lockAfterPair = listFailed; core.blockedHost = "new"
+            try await model.pair("fixture")
+            XCTAssertFalse(model.message.isEmpty); XCTAssertNil(model.rows["new"])
+            core.locked = false; core.blockedHost = nil; model.retryRegistrations(); model.retryRegistrations()
+            XCTAssertEqual(model.hosts.map(\.id), ["a", "b", "new"])
+            XCTAssertEqual(core.attempts, listFailed ? ["a", "b", "new"] : ["a", "b", "new", "new"])
+            XCTAssertEqual(core.pairCalls, 1); XCTAssertTrue(model.message.isEmpty)
+            try model.select(host: "new", instance: "pi"); XCTAssertEqual(model.editor?.host, "new")
+        }
     }
     @MainActor func testUnlockRetriesFailedReadsWithoutReplacingHealthyConnections() throws {
         let core = TestCore(noHandle: .init()); core.locked = true

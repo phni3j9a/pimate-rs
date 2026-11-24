@@ -56,7 +56,10 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     func pair(_ link: String) async throws {
         guard !busy else { throw CoreError.Blocked }; busy = true; defer { busy = false }
         let h = try await core.pair(link: link, name: "PiMate iOS")
-        hosts = try core.hosts(); try connect(h)
+        // Registration is committed. Retry only local reads, never the one-time pairing request.
+        generations[h.id] = nil; connections[h.id] = nil; rows[h.id] = nil
+        needsReload = true
+        retryRegistrations()
     }
     func select(host id: String, instance next: String?) throws {
         guard let c = connections[id] else { throw CoreError.Offline }
@@ -98,7 +101,13 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         do { _ = try await c.perform(operation: op) }
         catch {
             if editor == key, origin == selection, connections[key.host] === c {
-                message = (error as? CoreError) == .Rejected ? "操作は拒否されました" : "操作を確認できません。再送前に履歴を確認してください"
+                switch error as? CoreError {
+                case .Rejected, .Blocked, .BadRequest, .Unsupported, .BuiltinCommand:
+                    message = "操作は拒否されました"
+                case .Offline: message = "操作は送信されませんでした"
+                case .StaleTarget: message = "操作対象が変わりました。現在の状態を確認してください"
+                default: message = "操作を確認できません。再送前に履歴を確認してください"
+                }
             }
             throw error
         }
