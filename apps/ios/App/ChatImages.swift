@@ -37,11 +37,19 @@ enum ChatImageSource {
     private static func decode(_ text: String) throws -> Data {
         guard !text.isEmpty, text.utf8.count <= 12 * 1024 * 1024, let bytes = Data(base64Encoded: text) else { throw CoreError.BadRequest }; return bytes
     }
-    private static func download(_ url: URL) async throws -> Data {
+    private static func download(_ url: URL, redirects: Int = 5) async throws -> Data {
         guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil, url.user == nil, url.password == nil else { throw CoreError.BadRequest }
+        let limit = 8 * 1024 * 1024
+        if url.scheme?.lowercased() == "http" {
+            switch try await HTTPImage(url: url, limit: limit).get() {
+            case .bytes(let bytes): return bytes
+            case .redirect(let next):
+                guard redirects > 0 else { throw URLError(.httpTooManyRedirects) }; return try await download(next, redirects: redirects - 1)
+            }
+        }
         let config = URLSessionConfiguration.ephemeral; config.httpShouldSetCookies = false; config.urlCredentialStorage = nil; config.timeoutIntervalForResource = 20
         let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(from: url), limit = 8 * 1024 * 1024
+        let (bytes, response) = try await session.bytes(from: url)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), response.expectedContentLength <= Int64(limit) else { throw CoreError.BadRequest }
         var data = Data(); for try await byte in bytes { guard data.count < limit else { throw CoreError.BadRequest }; data.append(byte) }; return data
     }
@@ -58,7 +66,7 @@ enum ChatImageSource {
     func clear() { for load in loads.values { load.task.cancel() }; loads.removeAll(); cached.removeAll(); order.removeAll() }
     func load(_ source: ChatImageSource, thumbnail: Bool, rc: @escaping (RcMethod, Object) async throws -> String) async throws -> Data {
         try Task.checkCancellation(); let key = source.identity + [String(thumbnail)], user = UUID()
-        if let hit = cached[key] { return hit }
+        if let hit = cached[key] { order.removeAll { $0 == key }; order.append(key); return hit }
         if loads[key] == nil { loads[key] = Load(task: Task { try await source.bytes(thumbnail: thumbnail, rc: rc) }, users: []) }
         loads[key]?.users.insert(user); let flight = loads[key]!
         return try await withTaskCancellationHandler {

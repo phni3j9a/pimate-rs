@@ -107,7 +107,9 @@ final class FoundationTests: XCTestCase {
         XCTAssertNotNil(model.stats(key)); XCTAssertEqual(model.allowances(key, nowMs: 0).map(\.gauge), [nil, nil]); XCTAssertNotNil(model.rows[host]?.field("context"))
         let entry = try XCTUnwrap(model.rows[host]?.groups["entry"]?.first { $0.object["imageCount"] as? Int == 5 })
         let history = try XCTUnwrap(HistoryImages(entry).source(at: 4, thumbnail: true, canFetch: true))
-        for source: ChatImageSource in [history, .file(answer: "A", path: "out/before.png")] {
+        let port = try String(contentsOf: URL.cachesDirectory.appending(path: "pimate-test-link-http-port"), encoding: .utf8)
+        let http = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)/pixel.png"))
+        for source: ChatImageSource in [history, .web(http), .file(answer: "A", path: "out/before.png")] {
             let bytes = try await model.image(key, source: source, thumbnail: true); XCTAssertNotNil(UIImage(data: bytes))
         }
         try await model.run(.tree, in: opened); let node = try XCTUnwrap(model.sheet?.reply?.list("nodes").first?.str("id"))

@@ -240,3 +240,17 @@ extension ReviewTests {
         }
     }
 }
+
+extension ReviewTests {
+    @MainActor func testFileImageCacheEvictsLeastRecentlyUsed() async throws {
+        let images = ChatImages(); var requests = [Int: Int]()
+        func show(_ i: Int) async throws {
+            _ = try await images.load(.file(answer: "A", path: "\(i).png"), thumbnail: true) { _, _ in
+                requests[i, default: 0] += 1; return #"{"image":{"data":"YQ=="}}"#
+            }
+        }
+        for i in 0..<64 { try await show(i) }
+        try await show(0); try await show(64); try await show(0); try await show(1)
+        XCTAssertEqual(requests[0], 1); XCTAssertEqual(requests[1], 2)
+    }
+}

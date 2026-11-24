@@ -37,6 +37,20 @@ start_fixture() {
   [[ -s $file ]]
 }
 start_fixture 1; start_fixture 2
+# HTTP-only image fixture, bound to loopback and serving no checkout or pairing data.
+portfile="$link-http-port"; links+=("$portfile")
+python3 - "$portfile" <<'PYHTTP' &
+import base64, http.server, sys
+from pathlib import Path
+class Image(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers()
+        self.wfile.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6pXioAAAAASUVORK5CYII='))
+    def log_message(self, *args): pass
+with http.server.HTTPServer(('127.0.0.1', 0), Image) as server:
+    Path(sys.argv[1]).write_text(str(server.server_port)); server.serve_forever()
+PYHTTP
+fixtures+=("$!")
 result="$build/Tests-$(date +%s).xcresult"
 TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultBundlePath "$result" test-without-building
 [[ ! -e $link-1 && ! -e $link-2 ]]
