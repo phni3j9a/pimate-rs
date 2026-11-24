@@ -178,3 +178,30 @@ extension ReviewTests {
         XCTAssertEqual(DraftList.notices(r, instance: "pi", ready: true).count, 30)
     }
 }
+
+extension ReviewTests {
+    @MainActor func testImageRequestsShareStreamingPathButNotAnswer() async throws {
+        let images = ChatImages(), entered = expectation(description: "file_image"), gate = AsyncStream<Void>.makeStream()
+        var calls = 0
+        func fetch(_ answer: String) async throws -> Data {
+            try await images.load(.file(answer: answer, path: "pic.png"), thumbnail: true) { method, fields in
+                XCTAssertEqual(method, .fileImage); XCTAssertEqual(fields["path"] as? String, "pic.png"); calls += 1
+                if calls == 1 { entered.fulfill(); for await _ in gate.stream { break } }; return #"{"image":{"data":"YQ=="}}"#
+            }
+        }
+        let a = Task { try await fetch("A") }; await fulfillment(of: [entered], timeout: 3)
+        let b = Task { try await fetch("A") }; await Task.yield(); gate.continuation.finish()
+        let first = try await a.value, second = try await b.value; XCTAssertEqual(first, second)
+        _ = try await fetch("A"); XCTAssertEqual(calls, 1); _ = try await fetch("B"); XCTAssertEqual(calls, 2)
+    }
+    @MainActor func testSheetDoesNotDeliverToReopenedSheet() async throws {
+        let core = TestCore(noHandle: .init()), m = SessionModel(core: core)
+        try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor), first = try m.openSheet(key)
+        let wait = expectation(description: "pending"), gate = AsyncStream<Void>.makeStream()
+        core.c.receipt = { wait.fulfill(); for await _ in gate.stream { break } }
+        let task = Task { try await m.run(.sessions, in: first) }; await fulfillment(of: [wait], timeout: 3)
+        let reopened = try m.openSheet(key); gate.continuation.finish()
+        do { try await task.value; XCTFail() } catch CoreError.StaleTarget {}
+        XCTAssertEqual(m.sheet?.id, reopened.id); XCTAssertNil(m.sheet?.reply); XCTAssertNil(m.sheet?.error)
+    }
+}

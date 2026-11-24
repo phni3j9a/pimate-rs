@@ -21,6 +21,42 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         guard let host, let target = rows[host]?.ready(instance) else { return nil }
         return EditorKey(host: host, target: target)
     }
+    private let images = ChatImages()
+    func image(_ key: EditorKey, source: ChatImageSource, thumbnail: Bool) async throws -> Data {
+        guard key == editor else { throw CoreError.StaleTarget }; let origin = selection
+        let data = try await images.load(source, thumbnail: thumbnail) { method, fields in try await self.request(key, method, fields) }
+        guard key == editor, origin == selection else { throw CoreError.StaleTarget }; return data
+    }
+    private(set) var sheet: ChatSheet?
+    func openSheet(_ key: EditorKey) throws -> ChatSheet {
+        guard key == editor else { throw CoreError.StaleTarget }
+        let opened = ChatSheet(key: key); sheet = opened; return opened
+    }
+    func closeSheet(_ opened: ChatSheet) { if sheet?.id == opened.id { sheet = nil } }
+    func run(_ action: SheetAction, in opened: ChatSheet) async throws {
+        guard sheet?.id == opened.id, opened.key == editor else { throw CoreError.StaleTarget }
+        guard sheet?.loading == false else { throw CoreError.Blocked }
+        sheet?.loading = true; sheet?.error = nil; sheet?.reply = nil
+        defer { if sheet?.id == opened.id { sheet?.loading = false } }
+        let (method, fields) = action.request
+        do {
+            let raw = try await request(opened.key, method, fields)
+            guard sheet?.id == opened.id else { throw CoreError.StaleTarget }
+            sheet?.reply = try JSONSerialization.jsonObject(with: Data(raw.utf8)) as? Object
+        } catch {
+            if sheet?.id == opened.id { sheet?.error = (error as? CoreError) ?? .OutcomeUnknown }; throw error
+        }
+    }
+    func request(_ key: EditorKey, _ method: RcMethod, _ fields: Object) async throws -> String {
+        guard key == editor, let c = connections[key.host] else { throw CoreError.StaleTarget }
+        let origin = selection, data = try JSONSerialization.data(withJSONObject: fields)
+        let result = try await c.perform(operation: .rc(target: key.target, method: method, params: String(decoding: data, as: UTF8.self)))
+        guard editor == key, selection == origin, connections[key.host] === c else { throw CoreError.StaleTarget }; return result
+    }
+    func stats(_ key: EditorKey) -> SessionStats? { editor == key ? connections[key.host]?.sessionStats() : nil }
+    func allowances(_ key: EditorKey, nowMs: UInt64) -> [Allowance] {
+        guard editor == key else { return [] }; return connections[key.host]?.allowances(nowMs: nowMs) ?? []
+    }
     private var needsReload = true
     init(core: Core) { self.core = core; retryRegistrations() }
 
@@ -47,7 +83,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     private func publish(_ r: Rows, id: String) {
         let old = editor
         rows[id] = r
-        if editor != old { selection = UUID(); message = "" }
+        if editor != old { images.clear(); sheet = nil; selection = UUID(); message = "" }
         if let key = editor, key.host == id {
             let live = Dictionary(uniqueKeysWithValues: (r.groups["question"] ?? []).map { ($0.id, $0.json) })
             answers = answers.filter { $0.key.editor != key || live[$0.key.requestId] == $0.value.json }
@@ -65,7 +101,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         guard let c = connections[id] else { throw CoreError.Offline }
         if host != id, let host { try connections[host]?.subscribe(instance: nil) }
         try c.subscribe(instance: next)
-        selection = UUID(); host = id; instance = next; message = ""; publish(Rows(c.snapshot()), id: id)
+        images.clear(); sheet = nil; selection = UUID(); host = id; instance = next; message = ""; publish(Rows(c.snapshot()), id: id)
     }
     func body(_ key: EditorKey) -> RestoredDraft { drafts[key] ?? RestoredDraft(text: "", images: []) }
     func text(_ value: String, for key: EditorKey) {
