@@ -207,7 +207,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     }
     // The picker passes the key captured at presentation and temporary local files. Never apply a late result to a new editor.
     private(set) var attaching: EditorKey?
-    func attach(_ key: EditorKey, files: [URL], encode: @escaping @Sendable (URL, Int) throws -> Image = encodePhoto) async throws {
+    func attach(_ key: EditorKey, files: [URL], encode: @escaping @Sendable (URL, Int) throws -> Image = { try encodePhoto($0, budget: $1) }) async throws {
         guard key == editor, let r = rows[key.host], r.field("promptImages") == "true" else { throw CoreError.Blocked }
         guard !files.isEmpty else { return }
         guard attaching == nil, !busy else { throw CoreError.Blocked }

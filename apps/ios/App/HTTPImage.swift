@@ -33,7 +33,7 @@ import Foundation
             guard count >= 0, data.count + count <= limit else { finish(.failure(CoreError.BadRequest)); return }
             data.append(buffer, count: count)
         case .endEncountered:
-            guard let header = CFReadStreamCopyProperty(input as CFReadStream, kCFStreamPropertyHTTPResponseHeader) else { finish(.failure(CoreError.BadRequest)); return }
+            guard let header = input.property(forKey: Stream.PropertyKey(rawValue: kCFStreamPropertyHTTPResponseHeader as String)) else { finish(.failure(CoreError.BadRequest)); return }
             let response = header as! CFHTTPMessage, status = CFHTTPMessageGetResponseStatusCode(response)
             if (200..<300).contains(status) { finish(.success(.bytes(data))) }
             else if [301, 302, 303, 307, 308].contains(status), let location = CFHTTPMessageCopyHeaderFieldValue(response, "Location" as CFString)?.takeRetainedValue(), let next = URL(string: location as String, relativeTo: url)?.absoluteURL { finish(.success(.redirect(next))) }
