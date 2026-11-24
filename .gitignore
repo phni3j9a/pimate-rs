@@ -7,3 +7,5 @@
 
 /packages/pimate/dist/
 /packages/pimate/node_modules/
+
+/packages/pimate/bin/

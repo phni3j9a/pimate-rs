@@ -1,0 +1,153 @@
+name: Host npm package
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing host-vX.Y.Z to verify and build (dispatch from main)'
+        type: string
+      auth:
+        description: 'npm authentication (token only if Trusted Publishing is unavailable)'
+        type: choice
+        options: [oidc, token]
+        default: oidc
+      publish:
+        description: 'Publish to npm latest and attach to the existing host-vX.Y.Z tag'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.select.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: select
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          commit=$GITHUB_SHA
+          if [[ -n "$RELEASE_TAG" || "$PUBLISH" == true ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            commit=$(bash packages/pimate/scripts/check-release.sh "$RELEASE_TAG")
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+  binary:
+    needs: source
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, dir: linux-x64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, dir: linux-arm64 }
+          - { runner: macos-latest, target: x86_64-apple-darwin, dir: darwin-x64 }
+          - { runner: macos-latest, target: aarch64-apple-darwin, dir: darwin-arm64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
+      - run: |
+          rustup target add ${{ matrix.target }}
+          cargo build --release --locked -p pimate-host --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/pimate .
+      - if: runner.os == 'Linux'
+        run: |
+          readelf -l pimate > headers
+          if grep -q INTERP headers; then exit 1; fi
+          ./pimate --help
+      - if: matrix.dir == 'darwin-arm64'
+        run: |
+          codesign --verify --strict pimate
+          codesign -dv --verbose=4 pimate 2>&1 | grep 'Signature=adhoc'
+          ./pimate --help
+      - run: node packages/pimate/scripts/binary-record.mjs pimate ${{ matrix.dir }} > build.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.dir }}
+          path: |
+            pimate
+            build.json
+  pack:
+    needs: [source, binary]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/pimate
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.commit }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages/pimate/bin
+      - run: |
+          npm ci
+          node --test scripts/test-package.mjs
+          bash scripts/test-release.sh
+          npm run package
+          cd dist/package && npm pack --pack-destination ..
+      - run: python3 scripts/pack-smoke.py dist/*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: packages/pimate/dist/*.tgz
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: [source, pack]
+    runs-on: ubuntu-latest
+    environment: npm-release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      # Use the dispatch's main workflow and guard, never scripts from the release tag.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Recheck tag and artifact before publishing
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILT_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash packages/pimate/scripts/check-release.sh "$RELEASE_TAG" "$BUILT_COMMIT" ./*.tgz
+      - name: Publish with npm Trusted Publishing
+        id: oidc
+        if: inputs.auth == 'oidc'
+        run: npm publish --ignore-scripts ./*.tgz --access public
+      - name: Publish with Environment token (explicit fallback)
+        id: token
+        if: inputs.auth == 'token'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo 'Missing Environment token'; exit 1; }
+          npm publish --ignore-scripts ./*.tgz --access public
+      - name: Attach the published tarball
+        if: steps.oidc.outcome == 'success' || steps.token.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release create "$RELEASE_TAG" ./*.tgz --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
