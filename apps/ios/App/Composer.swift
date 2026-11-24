@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 // UIKit owns the marked range. Return only confirms a candidate or inserts a newline.
 @MainActor final class MessageInput: NSObject, ObservableObject, UITextViewDelegate {
@@ -39,6 +40,7 @@ private struct MessageField: UIViewRepresentable {
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
     @State private var sendError = ""
+    @State private var selection: [PhotosPickerItem] = []
     @StateObject private var input = MessageInput()
     var body: some View {
         let draft = model.body(key)
@@ -52,12 +54,23 @@ struct Composer: View {
             if blocked { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10) }
             else {
                 VStack(alignment: .leading, spacing: 0) {
+                    if !draft.images.isEmpty {
+                        DraftPhotos(images: draft.images) { i in
+                            do { try model.removeAttachment(key, shown: draft.images, at: i) } catch { sendError = "画像を取り消せません。添付内容を確認してください。" }
+                        }.disabled(!selection.isEmpty || model.submissionBlocked)
+                    }
                     ZStack(alignment: .topLeading) {
                         if draft.text.isEmpty { Text("メッセージ").foregroundStyle(PiTheme.secondary).padding(.top, 9).accessibilityHidden(true) }
                         MessageField(text: draft.text, input: input) { model.text($0, for: key) }
                     }
                     HStack(spacing: 8) {
-                        if !draft.images.isEmpty { Text("画像 \(draft.images.count)枚").font(.caption) }
+                        if rows.field("promptImages") == "true" {
+                            let remaining = min(4, Int(rows.field("promptImageLimit") ?? "1") ?? 1) - draft.images.count
+                            PhotosPicker(selection: $selection, maxSelectionCount: max(1, remaining), selectionBehavior: .ordered, matching: .images) {
+                                SwiftUI.Image(systemName: "photo.on.rectangle").frame(minWidth: 44, minHeight: 44)
+                            }.accessibilityLabel("画像を添付").disabled(remaining <= 0 || !selection.isEmpty || model.submissionBlocked)
+                        }
+                        if !selection.isEmpty { ProgressView().accessibilityLabel("画像を準備中") }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
                         Button { guard let sent = input.submission(draft) else { return }; Task {
@@ -65,11 +78,25 @@ struct Composer: View {
                             do { try await model.send(key, sent) } catch { if model.editor == key && model.message.isEmpty { sendError = "送信できません。現在の送信先と入力内容を確認してください。" } }
                         } } label: {
                             SwiftUI.Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
-                        }.accessibilityLabel("送信").disabled(input.marked || model.submissionBlocked || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
+                        }.accessibilityLabel("送信").disabled(!selection.isEmpty || input.marked || model.submissionBlocked || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
         }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.background)
+        .task(id: selection) {
+            guard !selection.isEmpty else { return }
+            var files: [URL] = []
+            defer { for url in files { try? FileManager.default.removeItem(at: url) } }
+            do {
+                for item in selection {
+                    try Task.checkCancellation()
+                    guard let photo = try await item.loadTransferable(type: PickedPhoto.self) else { throw CoreError.BadRequest }
+                    files.append(photo.url)
+                }
+                try Task.checkCancellation(); try await model.attach(key, files: files); sendError = ""
+            } catch { if !Task.isCancelled { sendError = "画像を追加できませんでした。写真を選び直してください。" } }
+            if !Task.isCancelled { selection = [] }
+        }
     }
 }
 

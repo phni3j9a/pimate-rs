@@ -19,7 +19,7 @@ final class ProbeTests: XCTestCase {
         insert.tap(); preview.tap(); app.buttons["このマシンに接続"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
-        main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertFalse(app.buttons["画像を添付"].exists)
+        main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)
