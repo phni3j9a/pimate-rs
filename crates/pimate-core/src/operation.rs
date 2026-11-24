@@ -464,7 +464,12 @@ pub(crate) fn rc_result(method: &str, v: &Value) -> Result<Value, Error> {
         "history" => checked::<p::HistoryResult>(v.clone()),
         "entry_image" => checked::<p::EntryImageResult>(v.clone()),
         "file_image" => checked::<p::FileImageResult>(v.clone()),
-        "prompt" => checked::<p::PromptResult>(v.clone()),
+        "prompt" => match serde_json::from_value::<p::PromptResult>(v.clone()) {
+            Ok(receipt) if matches!(receipt.delivered_as, p::Received::Known(_)) => {
+                Ok(json!(receipt))
+            }
+            _ => Err(Error::InvalidMessage),
+        },
         "abort" => checked::<p::Empty>(v.clone()),
         "ui_respond" => checked::<p::Empty>(v.clone()),
         "set_thinking" => checked::<p::SetThinkingResult>(v.clone()),
