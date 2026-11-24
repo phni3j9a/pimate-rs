@@ -4,3 +4,6 @@
 /apps/android/.gradle/
 /apps/android/.kotlin/
 /apps/android/local.properties
+
+/packages/pimate/dist/
+/packages/pimate/node_modules/

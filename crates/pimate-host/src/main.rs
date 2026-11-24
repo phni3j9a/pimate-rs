@@ -81,7 +81,7 @@ async fn main() {
 async fn run() -> Result<()> {
     let mut args = env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
-    const USAGE: &str = "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] [--json] | devices | revoke ID | list | attach [session] | spawn --cwd DIR [-- pi args] | prompt ID TEXT [--steer|--follow-up] [--wait] [--timeout S] | wait ID [--timeout S] | history ID [--last N] | abort ID | shutdown ID | ui ID REQUEST <value|--confirm|--cancel|--answers JSON> | watch ID | webhook <setup|test|status|off|watch|unwatch> | service ACTION | setup-info | pair-pending CODE";
+    const USAGE: &str = "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] [--json] | devices | revoke ID | list | attach [session] | spawn --cwd DIR [-- pi args] | prompt ID TEXT [--steer|--follow-up] [--wait] [--timeout S] | wait ID [--timeout S] | history ID [--last N] | abort ID | shutdown ID | ui ID REQUEST <value|--confirm|--cancel|--answers JSON> | watch ID | webhook <setup|test|status|off|watch|unwatch> | service ACTION | setup-info | pair-pending (code on stdin)";
     if matches!(cmd.as_str(), "--help" | "-h") {
         println!("{USAGE}");
         return Ok(());
@@ -131,11 +131,25 @@ async fn run() -> Result<()> {
             )
         }
         "pair-pending" => {
-            let code = args.next().ok_or_else(|| anyhow::anyhow!("missing code"))?;
-            ensure!(args.next().is_none());
+            use std::io::Read;
+            ensure!(
+                args.next().is_none(),
+                "pair-pending expects a code on stdin"
+            );
+            let mut input = String::new();
+            std::io::stdin().take(35).read_to_string(&mut input)?;
+            let code = input.trim_end_matches(['\r', '\n']);
+            ensure!(
+                input.len() < 35
+                    && code.len() == 32
+                    && code
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                "invalid pairing code"
+            );
             println!(
                 "{}",
-                serde_json::json!({"pending":config.pending(&code).try_exists()?})
+                serde_json::json!({"pending":config.pending(code).try_exists()?})
             )
         }
         "devices" => {

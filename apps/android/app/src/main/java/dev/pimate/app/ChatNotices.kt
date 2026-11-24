@@ -24,11 +24,19 @@ internal class Receipt(val request: String, private var owner: String?) {
 }
 
 /** バナーを閉じることと、再同期後に編集欄へ文を渡すことは別々に一度だけ行う。 */
-internal class ReceivedResult(val host: String, val instance: String, val result: JSONObject) {
+internal class ReceivedResult(val host: String, val instance: String, initial: JSONObject) {
+    var result = initial
+        private set
+
     var dismissed by mutableStateOf(false)
     private var textHandled = false
 
-    fun takeText(editor: EditorKey): String? {
+    fun update(latest: JSONObject) {
+        if (latest.str("id") == result.str("id") && latest.str("sessionId") == result.str("sessionId"))
+            result = latest
+    }
+
+    fun takeText(editor: EditorKey, empty: Boolean = true): String? {
         if (
             textHandled ||
                 editor.host != host ||
@@ -36,11 +44,12 @@ internal class ReceivedResult(val host: String, val instance: String, val result
                 editor.target.session != result.str("sessionId")
         )
             return null
-        textHandled = true
-        return result
+        val text = result
             .str("forkText")
             .ifEmpty { result.optJSONObject("event")?.str("editorText").orEmpty() }
-            .ifEmpty { null }
+            .ifEmpty { return null }
+        textHandled = true
+        return text.takeIf { empty }
     }
 }
 

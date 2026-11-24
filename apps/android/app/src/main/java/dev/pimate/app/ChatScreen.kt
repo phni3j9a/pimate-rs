@@ -56,8 +56,10 @@ internal class ChatUi : ViewModel() {
         if (host == null || instance == null || result == null) return
         val id = result.str("id")
         if (receipt?.take(id, instance) == true) received = ReceivedResult(host, instance, result)
-        else if (resultFor(host, instance)?.result?.str("id")?.let { it != id } == true)
-            received = null // Host の latest が更新された。古い案内・入力文を適用しない。
+        else resultFor(host, instance)?.let {
+            if (it.result.str("id") == id) it.update(result)
+            else received = null // Host の latest が更新された。古い案内・入力文を適用しない。
+        }
     }
 
     fun resultFor(host: String?, instance: String?) =
@@ -219,10 +221,9 @@ internal fun ChatScreen(
     SideEffect {
         ui.receive(hostId, instance, latestResult, receipt)
         if (key != null && key == m.edits.current && key.target == m.target)
-            ui.resultFor(hostId, instance)?.takeText(key)?.let { text ->
-                if (m.edits.body.text.isEmpty() && m.edits.body.images.isEmpty())
-                    m.edits.text(key, text)
-            }
+            ui.resultFor(hostId, instance)
+                ?.takeText(key, m.edits.body.text.isEmpty() && m.edits.body.images.isEmpty())
+                ?.let { m.edits.text(key, it) }
     }
     val fromId = changed?.optJSONObject("from")?.str("id").orEmpty()
     val toId = changed?.optJSONObject("to")?.str("id").orEmpty()
