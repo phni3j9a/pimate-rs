@@ -49,6 +49,7 @@ start_fixture 1; start_fixture 2
 result="$build/Tests-$(date +%s).xcresult"
 TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultBundlePath "$result" test-without-building
 [[ ! -e $link-1 && ! -e $link-2 ]]
+failed=0
 for variant in light dark large; do
   mode=light; size=large
   [[ $variant != dark ]] || mode=dark
@@ -58,7 +59,8 @@ for variant in light dark large; do
   start_fixture "$((${#fixtures[@]} + 1))"
   xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
   result="$build/$variant-$(date +%s).xcresult"
-  TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building
+  TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building || failed=1
   mkdir -p "$build/attachments/$variant"
   xcrun xcresulttool export attachments --path "$result" --output-path "$build/attachments/$variant"
 done
+exit "$failed"

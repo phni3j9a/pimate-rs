@@ -20,24 +20,6 @@ final class ProbeTests: XCTestCase {
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
         main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
-        app.buttons["画像を添付"].tap()
-        let photos = app.images.matching(identifier: "PXGGridLayout-Info")
-        XCTAssertTrue(photos.element(boundBy: 3).waitForExistence(timeout: 10))
-        for i in 0..<4 { photos.element(boundBy: i).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
-        let fourth = app.buttons["画像 4 を取り消す"]
-        // Ordered pickers can finish automatically at the selection limit.
-        if !fourth.waitForExistence(timeout: 3) {
-            let add = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label CONTAINS[c] %@ OR label CONTAINS %@ OR label == %@ OR label == %@", "Add", "Add", "追加", "完了", "Done")).firstMatch
-            if add.waitForExistence(timeout: 4) { add.tap() }
-            else if photos.firstMatch.exists {
-                // Native picker's confirmation is in the trailing edge of its top bar.
-                let bar = app.navigationBars.allElementsBoundByIndex.last { $0.isHittable }
-                bar?.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
-            }
-        }
-        XCTAssertTrue(fourth.waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
-        app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
-        XCTAssertTrue(app.buttons["画像を添付"].isEnabled)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)
@@ -50,10 +32,12 @@ final class ProbeTests: XCTestCase {
         func openPi(_ id: String) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
             let row = app.buttons["pi-" + id]
-            // The sidebar remembers its previous scroll position.
-            for _ in 0..<6 where !row.isHittable { app.swipeDown() }
-            for _ in 0..<8 where !row.isHittable { app.swipeUp() }
+            // A partially visible row is hittable even when its center lands under the tab bar.
+            func visible() -> Bool { row.isHittable && row.frame.midY > 140 && row.frame.midY < app.frame.maxY - 50 }
+            for _ in 0..<6 where !visible() { app.swipeDown() }
+            for _ in 0..<8 where !visible() { app.swipeUp() }
             XCTAssertTrue(row.isHittable); row.tap()
+            if row.waitForExistence(timeout: 1), row.isHittable { row.tap() }
         }
         openPi("attach")
         let terminal = app.buttons["コマンドをコピー"]
@@ -78,6 +62,11 @@ final class ProbeTests: XCTestCase {
         let fix = app.buttons["command-fix-tests"]
         XCTAssertTrue(fix.waitForExistence(timeout: 8)); shot("Commands"); fix.tap()
         XCTAssertEqual(field.value as? String, "/fix-tests ")
+        openPi("edge")
+        XCTAssertTrue(field.waitForExistence(timeout: 12)); field.tap(); field.typeText("draft")
+        let confirm = app.buttons["新しい送信先を確認"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
+        XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
         openPi("demo")
         let receipt = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch
         XCTAssertTrue(receipt.waitForExistence(timeout: 20))
@@ -90,10 +79,25 @@ final class ProbeTests: XCTestCase {
             field.tap(); field.typeText("test"); app.buttons["送信"].tap()
             XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 30))
         }
-        openPi("edge")
-        XCTAssertTrue(field.waitForExistence(timeout: 8)); field.tap(); field.typeText("draft")
-        let confirm = app.buttons["新しい送信先を確認"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
-        XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
+        openPi("main")
+        XCTAssertTrue(app.buttons["画像を添付"].waitForExistence(timeout: 12))
+        app.buttons["画像を添付"].tap()
+        let photos = app.images.matching(identifier: "PXGGridLayout-Info")
+        XCTAssertTrue(photos.element(boundBy: 3).waitForExistence(timeout: 10))
+        for i in 0..<4 { photos.element(boundBy: i).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
+        let fourth = app.buttons["画像 4 を取り消す"]
+        // Ordered pickers can finish automatically at the selection limit.
+        if !fourth.waitForExistence(timeout: 3) {
+            let add = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label CONTAINS[c] %@ OR label CONTAINS %@ OR label == %@ OR label == %@", "Add", "Add", "追加", "完了", "Done")).firstMatch
+            if add.waitForExistence(timeout: 4) { add.tap() }
+            else if photos.firstMatch.exists {
+                // Native picker's confirmation is in the trailing edge of its top bar.
+                let bar = app.navigationBars.allElementsBoundByIndex.last { $0.isHittable }
+                bar?.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+            }
+        }
+        XCTAssertTrue(fourth.waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
+        app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
+        XCTAssertTrue(app.buttons["画像を添付"].isEnabled)
     }
 }
