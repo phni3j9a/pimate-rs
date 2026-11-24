@@ -8,11 +8,21 @@ struct ChatScreen: View {
         Group {
             if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(key) }
             else {
-                let phase = r.groups["view"]?.first { $0.id == "phase" }?.string ?? "", conn = r.groups["host"]?.first { $0.id == "connection" }?.string ?? ""
-                if ["revoked", "invalid_token", "auth_failed", "offline", "protocol_mismatch"].contains(conn) || phase == "instance_gone" { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text("一覧でマシンの接続と起動状態を確認してください。")) }
-                else { ProgressView("同期しています…") }
+                VStack {
+                    if let problem = Self.connectionProblem(r) { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text(problem)) }
+                    else { ProgressView("同期しています…").frame(maxHeight: .infinity) }
+                    DraftList(rows: r, instance: instance, model: model, key: nil)
+                }
             }
         }.navigationTitle(info.piTitle.isEmpty ? instance : info.piTitle).navigationBarTitleDisplayMode(.inline)
+    }
+    static func connectionProblem(_ rows: Rows) -> String? {
+        let phase = rows.field("phase")
+        if phase == "\"subscribe_error\"" || phase == "\"instance_gone\"" {
+            return "この Pi を開けません。一覧に戻り、起動状態を確認して選び直してください。"
+        }
+        let connection = rows.groups["host"]?.first { $0.id == "connection" }?.string ?? ""
+        return ["revoked", "invalid_token", "auth_failed", "offline", "protocol_mismatch"].contains(connection) ? "一覧でマシンの接続と起動状態を確認してください。" : nil
     }
 }
 private struct Conversation: View {

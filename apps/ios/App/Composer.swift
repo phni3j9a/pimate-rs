@@ -26,19 +26,11 @@ private struct MessageField: UIViewRepresentable {
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
     @State private var marked = false
-    @State private var error = ""
     var body: some View {
         let draft = model.body(key)
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(rows.groups["draft"] ?? [], id: \.id) { item in
-                let o = item.object, status = o.str("status")
-                if o.str("instanceId") == key.target.instance && ["queued","unconfirmed","sending"].contains(status) {
-                    Text(status == "queued" ? "割り込み待ち" : status == "sending" ? "送信中" : "届いたか未確認 · 履歴を確認してください").font(.caption.bold())
-                    Text(o.obj("params").str("text")).lineLimit(2)
-                    if status == "unconfirmed" { Button("下書きへ戻す") { do { try model.restore(key, id: item.id) } catch { self.error = "下書きを復元できません" } }.disabled(model.busy || !draft.text.isEmpty || !draft.images.isEmpty || key.target.session != o["sessionId"] as? String) }
-                }
-            }
-            if !model.message.isEmpty || !error.isEmpty { Text(error.isEmpty ? model.message : error).font(.caption).foregroundStyle(PiTheme.failure) }
+            DraftList(rows: rows, instance: key.target.instance, model: model, key: key)
+            if !model.message.isEmpty { Text(model.message).font(.caption).foregroundStyle(PiTheme.failure) }
             if blocked { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10) }
             else {
                 VStack(alignment: .leading, spacing: 0) {
@@ -50,12 +42,55 @@ struct Composer: View {
                         if !draft.images.isEmpty { Text("画像 \(draft.images.count)枚").font(.caption) }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
-                        Button { guard !marked else { return }; error = ""; Task { try? await model.send(key, draft) } } label: {
+                        Button { guard !marked else { return }; Task { try? await model.send(key, draft) } } label: {
                             SwiftUI.Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
                         }.accessibilityLabel("送信").disabled(marked || model.busy || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
         }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.background)
+    }
+}
+
+struct DraftList: View {
+    let rows: Rows, instance: String, model: SessionModel, key: EditorKey?
+    @State private var error = ""
+    struct Notice: Identifiable {
+        let id: String, status: String, text: String, session: String?
+        @MainActor func canRestore(_ key: EditorKey?, model: SessionModel) -> Bool {
+            guard let key, model.editor == key, !model.busy, session == key.target.session, status == "unconfirmed" else { return false }
+            let draft = model.body(key); return draft.text.isEmpty && draft.images.isEmpty
+        }
+    }
+    static func notices(_ rows: Rows, instance: String, ready: Bool) -> [Notice] {
+        (rows.groups["draft"] ?? []).compactMap { item in
+            let o = item.object, status = o.str("status")
+            guard o.str("instanceId") == instance, (ready ? ["queued", "sending", "unconfirmed"] : ["unconfirmed"]).contains(status) else { return nil }
+            return Notice(id: item.id, status: status, text: o.obj("params").str("text"), session: o["sessionId"] as? String)
+        }
+    }
+    var body: some View {
+        let notices = Self.notices(rows, instance: instance, ready: key != nil)
+        if !notices.isEmpty {
+            ViewThatFits(in: .vertical) {
+                content(notices).fixedSize(horizontal: false, vertical: true)
+                ScrollView { content(notices) }.accessibilityLabel("送信状態の一覧")
+            }.frame(maxHeight: 128).padding(.horizontal, 8)
+        }
+    }
+    private func content(_ notices: [Notice]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(notices) { n in
+                Text(n.status == "queued" ? "割り込み待ち" : n.status == "sending" ? "送信中" : "届いたか未確認 · 履歴を確認してください").font(.caption.bold())
+                Text(verbatim: n.text).lineLimit(2)
+                if n.status == "unconfirmed" {
+                    Button("下書きへ戻す") {
+                        guard let key else { return }
+                        do { try model.restore(key, id: n.id); error = "" } catch { self.error = "下書きを復元できません" }
+                    }.disabled(!n.canRestore(key, model: model))
+                }
+            }
+            if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure) }
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
 }
