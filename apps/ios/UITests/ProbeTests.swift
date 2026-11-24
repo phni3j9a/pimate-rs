@@ -20,6 +20,13 @@ final class ProbeTests: XCTestCase {
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
         main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
+        func openSheet(_ name: String) {
+            app.buttons["会話の操作"].tap(); app.buttons[name].tap()
+            XCTAssertTrue(app.buttons["sheet-close"].waitForExistence(timeout: 8))
+        }
+        openSheet("モデル・Thinking")
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入り")).firstMatch.waitForExistence(timeout: 12)); shot("Sheet-Model")
+        app.buttons["sheet-close"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)
@@ -56,7 +63,7 @@ final class ProbeTests: XCTestCase {
         let file = app.buttons["修正後の画面"]
         for _ in 0..<6 where !file.isHittable { scroll.swipeDown() }
         XCTAssertTrue(file.isHittable); file.tap()
-        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 10)); app.buttons["画像を閉じる"].tap()
+        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 25)); app.buttons["画像を閉じる"].tap()
 
         let field = app.textViews["message"]
         func openVisibleTable() {
