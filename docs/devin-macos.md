@@ -91,6 +91,26 @@ $D ssh 'xcrun simctl io <UDID> screenshot ~/sim.png' && $D pull sim.png /tmp/sim
 - Xcode 27 RC を使うときは `DEVELOPER_DIR=/Applications/Xcode-27.0-RC.app/Contents/Developer` を付けます。
 - Rust を iOS 向けにビルドするときは、`rustup target add aarch64-apple-ios-sim aarch64-apple-ios` を実行しておきます。
 
+### iOS の作業の進め方（2026-11 の運用）
+
+iOS の作業中は、VM を手元の速いビルド・試験の場として使い、最後の確認だけを CI で1回行います。GitHub Actions の macOS ランナーでの iOS の試験は1回30〜40分かかり、Linux では Swift をコンパイルできないため、CI だけで回すと修正1回ごとに30分以上待つことになります。
+
+| 作業（PR #44 での実測、VM 1） | 時間 |
+|---|---|
+| Xcode のビルド（初回） | 約25秒 |
+| Xcode の差分ビルド | 2〜5秒 |
+| XCTest 40件 | 約14秒 |
+| シートの UI 試験 | 約57秒 |
+| CI の iOS の試験（参考） | 30〜40分 |
+
+- 作業の最初に `keepalive`（見込みの分）、`sync` で worktree を送り、XcodeGen → xcodebuild → XCTest・必要な UI 試験を繰り返します。通ったら push し、CI で最終の確認をします。
+- 差分ビルドのキャッシュ（`-derivedDataPath`）は `sync` の送信先の外（例 `~/DerivedData/<作業名>`）に置きます。（PR #44 の作業者の助言。送信先の中の生成物と同期が干渉しないようにするため）
+- 試験用のシミュレーターは作業ごとに作って最後に消し（`apps/ios/test-disposable.sh` と同じ考え方）、普段の端末やほかの作業者の端末を使いません。
+- 終わったら、VM の上のシミュレーター・模擬 Host を止め、手元の `devin --cloud`（keepalive）が残っていないことを確かめて `down` します。
+- 手元の keepalive を止めるときは、自分のシェルに一致しない書き方で探します（例: `pgrep -af '^devin --cloud'`、`pgrep -af '^timeout .*devin --cloud'` で PID を確かめてから `kill PID`）。`pkill -f 'devin --cloud -r …'` は、そのコマンドを含む自分のシェルまで止めてしまいます。VM の上の待機ループは `pgrep -fl devin-mac-keepalive` で探して止めます。
+- 小さな修正の確認だけなら、`keepalive 15` → `sync` → `apps/ios/prepare.sh` → `xcodebuild ... -destination "generic/platform=iOS Simulator" build` で、同期とビルドを合わせて約2分でした（#44 の最後の修正）。
+- CI の UI 試験は共有ランナーで遅くなることがあります。画像の取得・復号を待つ箇所は余裕のある待ち時間にしてください（10秒では落ちたことがあります）。
+
 ## macOS アプリ（GPUI など）
 
 ssh から起動すれば、ウィンドウが VM のデスクトップに出ます。`vnc "shot …"` で確かめます。
