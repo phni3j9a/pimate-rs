@@ -74,7 +74,7 @@ private struct Conversation: View {
             .fullScreenCover(item: $table) { shown in
                 NavigationStack { ScrollView { MarkdownTable(table: shown.table, full: true).padding() }.navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("閉じる") { table = nil } }
-                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = shown.table.markdown } }
+                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = shown.table.markdown; UIAccessibility.post(notification: .announcement, argument: "表を Markdown でコピーしました") } }
                 } }
             }
             .task(id: [entries, tools]) {

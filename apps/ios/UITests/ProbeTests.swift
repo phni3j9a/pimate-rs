@@ -29,25 +29,53 @@ final class ProbeTests: XCTestCase {
         for _ in 0..<3 where !answer.isHittable || answer.frame.maxY > app.frame.maxY - 110 { scroll.swipeUp() }
         XCTAssertTrue(answer.isHittable); answer.tap()
         XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 8))
-        if variant == "light" {
-            app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["pi-demo"].tap()
-            // Wait for message_end: an XCTest tap is coordinate-based and can miss a moving streamed row.
-            let receipt = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch
-            XCTAssertTrue(receipt.waitForExistence(timeout: 20))
-            let tables = app.buttons.matching(NSPredicate(format: "label == %@", "表を開く"))
-            guard let table = tables.allElementsBoundByIndex.first(where: { $0.isHittable }) else { XCTFail("No visible table"); return }; table.tap()
-            let copy = app.buttons["表をコピー"]; XCTAssertTrue(copy.waitForExistence(timeout: 5)); copy.tap()
-            app.buttons["閉じる"].tap()
-            let field = app.textViews["message"]; field.tap(); field.typeText("test")
-            app.buttons["送信"].tap()
-            XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 30))
+        func openPi(_ id: String) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
-            let edge = app.buttons["pi-edge"]
-            for _ in 0..<6 where !edge.isHittable { app.swipeUp() }
-            edge.tap(); XCTAssertTrue(field.waitForExistence(timeout: 8)); field.tap(); field.typeText("draft")
-            let confirm = app.buttons["新しい送信先を確認"]
-            XCTAssertTrue(confirm.waitForExistence(timeout: 18)); field.tap(); field.typeText("next")
-            XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
+            let row = app.buttons["pi-" + id]
+            // The sidebar remembers its previous scroll position.
+            for _ in 0..<6 where !row.isHittable { app.swipeDown() }
+            for _ in 0..<8 where !row.isHittable { app.swipeUp() }
+            XCTAssertTrue(row.isHittable); row.tap()
         }
+        openPi("attach")
+        let terminal = app.buttons["コマンドをコピー"]
+        XCTAssertTrue(terminal.waitForExistence(timeout: 10)); shot("Chat-Attach"); terminal.tap()
+        XCTAssertFalse(app.textViews["message"].exists)
+
+        openPi("images")
+        let tile = app.buttons["画像 4 / 5"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 10))
+        for _ in 0..<5 where !tile.isHittable { scroll.swipeUp() }
+        shot("Images"); tile.tap()
+        let next = app.buttons["次の画像"]
+        XCTAssertTrue(next.waitForExistence(timeout: 8)); next.tap()
+        XCTAssertTrue(app.images["画像 5 / 5"].waitForExistence(timeout: 8)); shot("Viewer")
+        app.buttons["閉じる"].tap()
+        let file = app.buttons["修正後の画面"]
+        for _ in 0..<6 where !file.isHittable { scroll.swipeDown() }
+        XCTAssertTrue(file.isHittable); file.tap()
+        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 10)); app.buttons["閉じる"].tap()
+
+        let field = app.textViews["message"]; field.tap(); field.typeText("/fix")
+        let fix = app.buttons["command-fix-tests"]
+        XCTAssertTrue(fix.waitForExistence(timeout: 8)); shot("Commands"); fix.tap()
+        XCTAssertEqual(field.value as? String, "/fix-tests ")
+        openPi("demo")
+        let receipt = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch
+        XCTAssertTrue(receipt.waitForExistence(timeout: 20))
+        let tables = app.buttons.matching(NSPredicate(format: "label == %@", "表を開く"))
+        for _ in 0..<8 where !tables.allElementsBoundByIndex.contains(where: { $0.isHittable }) { scroll.swipeDown() }
+        guard let table = tables.allElementsBoundByIndex.first(where: { $0.isHittable }) else { XCTFail("No visible table"); return }; table.tap()
+        let copy = app.buttons["表をコピー"]; XCTAssertTrue(copy.waitForExistence(timeout: 5)); shot("Table"); copy.tap()
+        app.buttons["閉じる"].tap()
+        if variant == "light" {
+            field.tap(); field.typeText("test"); app.buttons["送信"].tap()
+            XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 30))
+        }
+        openPi("edge")
+        XCTAssertTrue(field.waitForExistence(timeout: 8)); field.tap(); field.typeText("draft")
+        let confirm = app.buttons["新しい送信先を確認"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
+        XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
     }
 }
