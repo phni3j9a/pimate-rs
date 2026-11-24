@@ -65,7 +65,7 @@ jobs:
           path: packages/pimate/bin
       - run: |
           npm ci
-          node --test scripts/package.test.mjs
+          node --test scripts/test-package.mjs
           bash scripts/test-release.sh
           npm run package
           cd dist/package && npm pack --pack-destination ..
