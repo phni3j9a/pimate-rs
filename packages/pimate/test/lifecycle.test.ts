@@ -232,21 +232,52 @@ it("advertises provider auth and disposes pending auth on runtime replacement, s
 	expect(h.auth).toBeUndefined();
 });
 
-it("summarizes only parent failures without exposing provider messages, and clears them on session change", () => {
-	const { h } = setup();
-	h.server = {} as NonNullable<Hub["server"]>;
-	h.emit({
-		type: "message_end",
-		item: {
-			kind: "assistant",
-			text: "",
-			toolCalls: [],
-			entryId: "e",
-			stopReason: "error",
-			errorMessage: "401 API key TOP_SECRET",
-		},
+it.each(["new", "reload"] as const)(
+	"retains safe failure on same-session reload, clears on %s to a new session",
+	(reason) => {
+		const { h } = setup();
+		h.session = { id: "s" };
+		h.server = {} as NonNullable<Hub["server"]>;
+		h.emit({
+			type: "message_end",
+			item: {
+				kind: "assistant",
+				text: "",
+				toolCalls: [],
+				entryId: "e",
+				stopReason: "error",
+				errorMessage: "401 API key TOP_SECRET",
+			},
+		});
+		expect(h.snapshot().failureSummary).toBe("プロバイダーの認証に失敗しました");
+		h.emit({ type: "session_changed", reason: "reload", session: { id: "s" } });
+		expect(h.snapshot().failureSummary).toBe("プロバイダーの認証に失敗しました");
+		h.emit({ type: "session_changed", reason, session: { id: "next" } });
+		expect(h.snapshot().failureSummary).toBeUndefined();
+	},
+);
+
+it("attests the fork destination from the replacement context, not the session active at completion", async () => {
+	const { h, pi } = setup();
+	const command = vi.mocked(pi.registerCommand).mock.calls.find(([name]) => name === "pimate-session")![1].handler;
+	const fork = vi.fn(async (_: string, options: { withSession: (next: unknown) => Promise<void> }) => {
+		await options.withSession({ sessionManager: { getSessionId: () => "forked" } });
+		h.session = { id: "unrelated" };
+		return { cancelled: false };
 	});
-	expect(h.snapshot().failureSummary).toBe("プロバイダーの認証に失敗しました");
-	h.emit({ type: "session_changed", reason: "new", session: { id: "next" } });
-	expect(h.snapshot().failureSummary).toBeUndefined();
+	const ctx = {
+		sessionManager: { getSessionId: () => "source" },
+		fork,
+	} as unknown as import("@earendil-works/pi-coding-agent").ExtensionCommandContext;
+	const emit = vi.spyOn(h, "emit");
+	await command('{"op":"fork","arg":"node","expectSessionId":"stale"}', ctx);
+	expect(fork).not.toHaveBeenCalled();
+	await command('{"op":"fork","arg":"node","expectSessionId":"source","requestId":"r"}', ctx);
+	expect(emit).toHaveBeenLastCalledWith({
+		type: "session_op_done",
+		op: "fork",
+		requestId: "r",
+		cancelled: false,
+		forkSessionId: "forked",
+	});
 });

@@ -144,7 +144,7 @@ Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘ�
 
 Linux の user systemd の登録・確認・削除は `pimate service install|status|uninstall`。`start|stop|health|has-systemd` と `command-status|command-install|command-remove` も `service` のサブコマンドです。登録・削除は実際にサービス状態を変えます。**稼働中の TS Host と同じポート・サービス名で試さないでください。** `XDG_CONFIG_HOME` を変えても systemd の user manager は分離されません。Rust の管理印・設定ディレクトリと異なる unit は上書きしません。linger の設定は行いません。
 
-Extension のために `setup-info`、`pair --json [--address host:port]`（秘密のリンクと失効時刻）、`pair-pending CODE`、`devices`、`revoke ID --json` と各 `service` 操作が JSON を返します。Extension はこれらの JSON を使い、Host の資格情報・管理処理を再実装しません。テストは管理コマンドを偽物、Webhook を loopback に切り替えます。`PIMATE_SERVICE_PORT` はサービス管理・health 確認用のポート（通常 47800）です。
+Extension のために `setup-info`、`pair --json [--address host:port]`（秘密のリンクと失効時刻）、`pair-pending`（コードは標準入力のみ）、`devices`、`revoke ID --json` と各 `service` 操作が JSON を返します。Extension はこれらの JSON を使い、Host の資格情報・管理処理を再実装しません。テストは管理コマンドを偽物、Webhook を loopback に切り替えます。`PIMATE_SERVICE_PORT` はサービス管理・health 確認用のポート（通常 47800）です。
 
 TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMate/packages/pimate/dist/package/dist/cli.js cargo test -p pimate-host agent_cli_contract` で、同じ模擬 RC に対する両 CLI の JSON・終了コードを検査できます。上記の `real_pi` 試験には、実物の Pi + faux を使った `prompt --wait` → `wait` → `history --last` も含みます。
 
@@ -180,7 +180,7 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 
 - WS の生フレームには端末トークン・プロバイダーの回答が入ります。自由記述の Close reason は受信・自動返信とも [tungstenite 0.29.0 の局所修正](vendor/tungstenite/PATCH.md) で DEBUG に出しません。別 workspace に組み込む場合もルートの `[patch.crates-io]` が必要です（適用漏れはビルドエラー）。通常のデータフレームについては、中核が依存する `log` と `tracing` の静的上限を **debug ビルドで DEBUG、release ビルドで INFO** にして TRACE をコンパイル時に取り除き、ビルド時と試験でも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、生フレームのログは生成されません。Cargo の feature 統合により、同じ Rust バイナリの他の crate の TRACE も出ません。DEBUG / INFO は診断のために残します。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
 - `Listener::changed` は接続ごとの専用スレッドで実行されます。配送待ちは最大8バッチです。UI が追いつかず `Change::ResyncRequired` が届いたら、部分適用せず `snapshot()` で全体を置換し、その snapshot の revision 以下の配送済み／配送待ち通知は無視してください。通常の Upsert は同じ ID があれば一度外し、指定位置に挿入します。
-- `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。受付後の snapshot に完了が含まれない場合、Host が直後に配送するイベントを最大5秒待ちます。この間は操作ロックを保持し、次の snapshot で期限を延ばしません。完了・失敗イベントが来なければ結果不明を一度だけ公開してロックを解放し、古い要求を照合候補に残しません。送信後の切断（ACK 前を含む）や、猶予中の別のセッション移動も結果不明です。このリポジトリの Extension は `completionRequestIds: true` を通知し、完了・失敗イベントに元の RC 要求の `requestId` を付けます。他端末・遅着した別 ID の完了は無視し、セッション移動だけでは成功としません。`forkText` は選んだ元の本文、`editorText` は対応が取れた完了イベントの値です。旧 Extension だけは従来通り、操作種別・同世代の未照合件数・移動先で判定します。曖昧な結果は不明ですが、他端末からの同種操作や10分の失効後に遅着した完了は区別できません。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
+- `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。受付後の snapshot に完了が含まれない場合、Host が直後に配送するイベントを最大5秒待ちます。この間は操作ロックを保持し、次の snapshot で期限を延ばしません。完了・失敗イベントが来なければ結果不明を一度だけ公開してロックを解放し、古い要求を照合候補に残しません。送信後の切断（ACK 前を含む）や、猶予中の別のセッション移動も結果不明です。このリポジトリの Extension は `completionRequestIds: true` を通知し、完了・失敗イベントに元の RC 要求の `requestId` を付けます。他端末・遅着した別 ID の完了は無視し、セッション移動だけでは成功としません。`editorText`・`forkText` は成否とは別に宛先を検査します。tree は開始セッション、fork は Pi の `withSession` が返した分岐先に一致しないと本文を渡しません。旧 Extension だけは従来通り、操作種別・同世代の未照合件数・移動先で判定します。曖昧な結果は不明ですが、他端末からの同種操作や10分の失効後に遅着した完了は区別できません。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
 
 ### Swift / Kotlin から使う（`pimate-ffi`）
 

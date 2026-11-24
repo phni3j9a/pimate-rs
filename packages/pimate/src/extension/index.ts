@@ -105,19 +105,26 @@ export default function pimate(pi: ExtensionAPI): void {
 			}
 			try {
 				let r: { cancelled: boolean; editorText?: string } | undefined;
+				let forkSessionId: string | undefined;
+				if ((p.op === "tree" || p.op === "fork") && expectSessionId !== ctx.sessionManager.getSessionId())
+					throw new Error("会話が切り替わりました。開き直してください");
 				if (p.op === "tree") {
-					if (expectSessionId !== ctx.sessionManager.getSessionId())
-						throw new Error("会話が切り替わりました。開き直してください");
 					r = await navigateTree(ctx, p.arg!, p.summarize);
 				} else if (p.op === "new") r = await ctx.newSession();
 				else if (p.op === "switch") r = await ctx.switchSession(p.arg!);
-				else if (p.op === "fork") r = await ctx.fork(p.arg!);
+				else if (p.op === "fork")
+					r = await ctx.fork(p.arg!, {
+						withSession: async (next) => {
+							forkSessionId = next.sessionManager.getSessionId();
+						},
+					});
 				else await ctx.reload();
 				h.emit({
 					type: "session_op_done",
 					requestId,
 					op: p.op,
 					cancelled: r?.cancelled ?? false,
+					...(forkSessionId ? { forkSessionId } : {}),
 					...(r?.editorText !== undefined ? { editorText: r.editorText } : {}),
 				});
 			} catch (e) {

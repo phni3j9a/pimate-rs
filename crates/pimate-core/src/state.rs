@@ -1109,11 +1109,29 @@ impl State {
         let op = self.get("busy", "operation");
         debug_assert!(!op.is_null());
         result["id"] = op["id"].clone();
-        // Like TS forkText: the fork source is known locally; tree editorText only comes from RC.
-        if !op["forkText"].is_null()
-            && (result["outcome"] == "done"
-                || (result["event"]["cancelled"] == false && result["event"]["error"].is_null()))
-        {
+        // A correlated receipt is not itself proof that its text belongs in the current editor.
+        let e = &result["event"];
+        let dest = &result["sessionId"];
+        let success =
+            result["outcome"] == "done" || (e["cancelled"] == false && e["error"].is_null());
+        let text_ok = match op["op"].as_str() {
+            Some("tree") => success && dest.is_string() && dest == &op["sessionId"],
+            Some("fork") => {
+                success
+                    && dest.is_string()
+                    && dest != &op["sessionId"]
+                    && if e["requestId"].is_string() {
+                        dest == &e["forkSessionId"]
+                    } else {
+                        op["provenFork"] == true && dest == &op["arrival"]
+                    }
+            }
+            _ => !e["requestId"].is_string(),
+        };
+        if !text_ok && let Some(event) = result.get_mut("event").and_then(Value::as_object_mut) {
+            event.remove("editorText");
+        }
+        if text_ok && !op["forkText"].is_null() {
             result["forkText"] = op["forkText"].clone();
         }
         self.put("operationResult", "latest", result);

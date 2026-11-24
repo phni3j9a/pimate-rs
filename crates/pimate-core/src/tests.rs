@@ -1433,3 +1433,51 @@ fn tagged_extension_does_not_credit_a_session_move_without_its_event() {
         &json!({"id":"ours","outcome":"unknown"})
     );
 }
+
+#[test]
+fn tagged_receipt_only_releases_text_to_its_proven_editor() {
+    for (op, envelope, fork_dst, text_ok) in [
+        ("tree", "s", None, true),
+        ("tree", "other", None, false),
+        ("fork", "other", None, false),
+        ("fork", "other", Some("destination"), false),
+        ("fork", "destination", Some("destination"), true),
+    ] {
+        let mut s = view();
+        sync(
+            &mut s,
+            json!([{"kind":"user","entryId":"node","text":"from source"}]),
+        );
+        accepted(&mut s, op);
+        let mut e = json!({"type":"session_op_done","op":op,"requestId":"request","cancelled":false,"editorText":"from event"});
+        if let Some(dst) = fork_dst {
+            e["forkSessionId"] = json!(dst);
+        }
+        s.apply(&json!({"type":"event","instanceId":"i","sessionId":envelope,"seq":3,"event":e}));
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["id"], "request");
+        assert_eq!(result["event"]["cancelled"], false);
+        assert_eq!(
+            result["event"]["editorText"].as_str(),
+            text_ok.then_some("from event")
+        );
+        assert_eq!(
+            result["forkText"].as_str(),
+            (text_ok && op == "fork").then_some("from source")
+        );
+    }
+}
+
+#[test]
+fn legacy_fork_event_without_arrival_does_not_release_text() {
+    let mut s = view();
+    sync(
+        &mut s,
+        json!([{"kind":"user","entryId":"node","text":"from source"}]),
+    );
+    accepted(&mut s, "fork");
+    s.apply(&json!({"type":"event","instanceId":"i","sessionId":"unverified","seq":3,"event":{"type":"session_op_done","op":"fork","cancelled":false,"editorText":"from event"}}));
+    let result = s.get("operationResult", "latest");
+    assert_eq!(result["event"]["cancelled"], false);
+    assert!(result["forkText"].is_null() && result["event"]["editorText"].is_null());
+}

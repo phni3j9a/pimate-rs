@@ -161,7 +161,8 @@ export function createHandlers(h: Hub): Handlers {
 				h.treeNavigating = true;
 			}
 			try {
-				const command = p.op === "tree" ? { ...p, expectSessionId: ctx.sessionManager.getSessionId() } : p;
+				const command =
+					p.op === "tree" || p.op === "fork" ? { ...p, expectSessionId: ctx.sessionManager.getSessionId() } : p;
 				pi.sendUserMessage(`/pimate-session ${JSON.stringify({ ...command, requestId })}`, {
 					expandPromptTemplates: true,
 				});

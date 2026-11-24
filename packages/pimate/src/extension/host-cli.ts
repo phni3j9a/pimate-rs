@@ -1,17 +1,24 @@
 import { execFile } from "node:child_process";
+import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
 import { cliPath } from "../package.ts";
 
 const exec = promisify(execFile);
-export async function cli<T>(...args: string[]): Promise<T> {
+async function run<T>(args: string[], input?: string): Promise<T> {
 	try {
-		const { stdout } = await exec(cliPath, args, { timeout: 30_000 });
+		const result = exec(cliPath, args, { timeout: 30_000 });
+		const [{ stdout }] = await Promise.all([
+			result,
+			input === undefined ? undefined : pipeline([input], result.child.stdin!),
+		]);
 		return JSON.parse(stdout);
 	} catch {
 		// execFile errors can contain private arguments and pairing links.
 		throw new Error(`PiMate Host command failed: ${args[0]}`);
 	}
 }
+export const cli = <T>(...args: string[]) => run<T>(args);
+export const pairPending = (code: string) => run<{ pending: boolean }>(["pair-pending"], code);
 export type Device = { deviceId: string; name: string; lastSeenAt: number };
 export const devices = () => cli<Device[]>("devices");
 export const setupInfo = () => cli<{ host: { hostId: string }; configDir: string; addresses: string[] }>("setup-info");

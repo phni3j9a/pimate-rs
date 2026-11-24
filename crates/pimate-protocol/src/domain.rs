@@ -966,6 +966,9 @@ instance_events! {
     },
     #[serde(rename = "session_op_done")]
     SessionOpDone {
+        #[serde(rename = "forkSessionId", default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        fork_session_id: Option<String>,
         #[serde(rename = "requestId", default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         request_id: Option<String>,

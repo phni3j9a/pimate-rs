@@ -1975,3 +1975,41 @@ async fn subscribe_starts_monitor_for_already_discovered_pi() -> Result<()> {
 
 #[path = "support/core_flow.rs"]
 mod core_flow;
+
+#[tokio::test]
+async fn pair_pending_reads_a_private_code_from_stdin_only() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let output = cli(dir.path())
+        .args(["pair", "--json", "--address", "127.0.0.1:47801"])
+        .output()
+        .await?;
+    ensure!(output.status.success());
+    let pair: Value = serde_json::from_slice(&output.stdout)?;
+    let code = pair["code"].as_str().context("missing code")?;
+    for (input, ok) in [(code.to_owned(), true), (code.repeat(10), false)] {
+        let mut child = cli(dir.path())
+            .arg("pair-pending")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .await?;
+        let output = child.wait_with_output().await?;
+        assert_eq!(output.status.success(), ok);
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(bytes).contains(code));
+        }
+        if ok {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout)?,
+                json!({"pending":true})
+            );
+        }
+    }
+    Ok(())
+}

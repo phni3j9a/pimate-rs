@@ -5,7 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { afterEach, expect, it, vi } from "vitest";
 import { hintSetup, registerSetup } from "../src/extension/setup.ts";
 import { hasTailscaleAddress, pairedDeviceCount, pairingNotice, SETUP_HINT } from "../src/extension/pairing-guide.ts";
-import { hostHealth, cli, setupInfo, devices } from "../src/extension/host-cli.ts";
+import { hostHealth, cli, pairPending, setupInfo, devices } from "../src/extension/host-cli.ts";
 vi.mock("../src/extension/host-cli.ts");
 const dirs: string[] = [];
 const temp = () => {
@@ -73,8 +73,11 @@ it("the QR screen notices the phone's pairing, then shows the next step instead 
 	vi.mocked(devices).mockImplementation(async () =>
 		paired ? [{ deviceId: "d", name: "Pixel 8", lastSeenAt: 0 }] : [],
 	);
+	vi.mocked(pairPending).mockImplementation(async (code) => {
+		expect(code).toBe("private");
+		return { pending: !paired };
+	});
 	vi.mocked(cli).mockImplementation(async (...args) => {
-		if (args[0] === "pair-pending") return { pending: !paired };
 		expect(args).toEqual(["pair", "--json", "--address", "100.101.102.103:47801"]);
 		return { code: "private", link: "pimate://pair?code=private", expiresAt: Date.now() + 60000 };
 	});

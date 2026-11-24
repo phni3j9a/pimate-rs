@@ -77,7 +77,7 @@ export class Hub {
 		this.sockPath = join(this.dir, `${this.instanceId}.sock`);
 		this.metaPath = join(this.dir, `${this.instanceId}.json`);
 	}
-	private failureSummary?: string;
+	private failedSession?: { id: string; summary: string };
 	isIdle = () => this.ctx?.isIdle() ?? true;
 	emit = (event: InstanceEvent): void => {
 		// The server only runs in UI sessions; don't read ctx here, it may be stale during session switches.
@@ -85,20 +85,22 @@ export class Hub {
 		if (event.type === "message_end" && event.item.kind === "assistant" && event.item.stopReason === "error") {
 			// Provider errors may contain credentials or prompt text. Only send fixed categories in discovery.
 			const message = event.item.errorMessage ?? "";
-			this.failureSummary = /rate.?limit|too many requests|\b429\b/i.test(message)
+			const summary = /rate.?limit|too many requests|\b429\b/i.test(message)
 				? "プロバイダーの利用制限に達しました"
 				: /unauthorized|authentication|invalid api key|\b401\b/i.test(message)
 					? "プロバイダーの認証に失敗しました"
 					: /timeout|timed out/i.test(message)
 						? "プロバイダーが時間内に応答しませんでした"
 						: "Pi の実行に失敗しました";
+			this.failedSession = this.session ? { id: this.session.id, summary } : undefined;
 		} else if (
 			event.type === "message_end" ||
 			event.type === "agent_start" ||
-			event.type === "session_changed" ||
+			(event.type === "session_changed" &&
+				(event.reason !== "reload" || event.session.id !== this.failedSession?.id)) ||
 			event.type === "ui_request"
 		) {
-			this.failureSummary = undefined;
+			this.failedSession = undefined;
 		}
 		if (event.type === "text_delta") this.streaming.text += event.delta;
 		else if (event.type === "thinking_delta") this.streaming.thinking += event.delta;
@@ -145,7 +147,7 @@ export class Hub {
 	snapshot(): InstanceSnapshot {
 		return {
 			protocol: PROTOCOL_VERSION,
-			failureSummary: this.failureSummary,
+			failureSummary: this.failedSession?.id === this.session?.id ? this.failedSession?.summary : undefined,
 			completionRequestIds: true,
 			version: PACKAGE_VERSION,
 			instanceId: this.instanceId,

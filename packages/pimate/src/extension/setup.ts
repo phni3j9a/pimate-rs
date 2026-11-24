@@ -9,6 +9,7 @@ import {
 	commandStatus,
 	devices as listDevices,
 	hostHealth,
+	pairPending,
 	service,
 	serviceStatus,
 	setupInfo,
@@ -86,7 +87,7 @@ async function pair(ctx: ExtensionCommandContext): Promise<void> {
 			checking = true;
 			try {
 				progress = pairingProgress({
-					codePending: (await cli<{ pending: boolean }>("pair-pending", code)).pending,
+					codePending: (await pairPending(code)).pending,
 					before,
 					devices: await listDevices(),
 					expiresAt,
