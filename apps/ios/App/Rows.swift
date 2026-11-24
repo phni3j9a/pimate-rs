@@ -5,6 +5,7 @@ struct Rows {
     var groups: [String: [Item]] = [:]
     var notices = ChatNotices()
     private(set) var viewGeneration = UUID()
+    private(set) var connectionGeneration = UUID()
     init() {}
     init(_ snapshot: Snapshot) {
         revision = snapshot.revision
@@ -20,6 +21,7 @@ struct Rows {
             case .remove(let g, let i): (group, id) = (g, i)
             case .resyncRequired: continue
             }
+            if group == "host" && id == "connection" { connectionGeneration = UUID() }
             let tracksTarget = group == "view" && ["phase", "instanceId", "session", "startedAt"].contains(id)
             let before = tracksTarget ? ready(pi) : nil
             let start = tracksTarget ? field("startedAt") : nil
@@ -49,7 +51,9 @@ struct Rows {
         guard snapshot.revision >= revision else { return }
         let previous = revision; var tracked = notices
         let generation = viewGeneration, target = ready(pi), start = field("startedAt")
+        let connection = connectionGeneration
         self = Rows(snapshot)
+        if revision == previous { connectionGeneration = connection }
         if target == ready(pi), start == field("startedAt") { viewGeneration = generation }
         for (group, id) in [("operationResult", "latest"), ("busy", "operation"), ("notice", "sessionChanged")] {
             if group != "notice" || previous != revision { tracked.update(group, id, groups[group]?.first { $0.id == id }, instance: pi, snapshot: true) }
