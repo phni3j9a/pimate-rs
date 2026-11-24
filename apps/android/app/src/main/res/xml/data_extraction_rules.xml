@@ -1,4 +1,4 @@
 <data-extraction-rules>
-    <cloud-backup><exclude domain="sharedpref" path="hosts.xml" /></cloud-backup>
-    <device-transfer><exclude domain="sharedpref" path="hosts.xml" /></device-transfer>
+    <cloud-backup><include domain="sharedpref" path="display.xml" /></cloud-backup>
+    <device-transfer><include domain="sharedpref" path="display.xml" /></device-transfer>
 </data-extraction-rules>

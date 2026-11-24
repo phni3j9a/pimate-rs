@@ -16,6 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.input.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.journeyapps.barcodescanner.*
+import java.io.File
 
 /**
  * ペアリングの最初の画面（docs/design/html/Pair.html）。準備済みならそのまま QR を読める。 onBack があるのは、接続済みのマシンがあって追加で開いたとき。
@@ -107,8 +109,15 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                     Modifier.padding(top = 18.dp).semantics { heading() },
                     style = Type.title,
                 )
+                val context = LocalContext.current
+                // TS 版の残りのデータは消さないので、案内は最初のペアリングだけに出す。
+                val fromTs =
+                    remember(context) {
+                        onBack == null && File(context.dataDir, "shared_prefs/SecureStore.xml").isFile
+                    }
                 Text(
-                    "PC で動いている Pi を、このスマホから確認・操作できます。",
+                    if (fromTs) "以前の接続は引き継がれません。PC とペアリングし直してください。"
+                    else "PC で動いている Pi を、このスマホから確認・操作できます。",
                     Modifier.padding(top = 8.dp),
                     pi.textSecondary,
                     style = Type.lead.copy(lineBreak = Type.phrase),
