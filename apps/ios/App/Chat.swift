@@ -9,7 +9,9 @@ struct ChatScreen: View {
             if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(r.viewGeneration).id(key) }
             else {
                 VStack {
-                    if let problem = Self.connectionProblem(r) { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text(problem)) }
+                    if model.edge?.connection == "offline" || model.edge?.connection == "connecting" {
+                        ContentUnavailableView("再接続中", systemImage: "wifi.slash", description: Text("マシンとの接続を待っています。未確認のメッセージは自動で再送しません。"))
+                    } else if let problem = Self.connectionProblem(r) { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text(problem)) }
                     else { ProgressView("同期しています…").frame(maxHeight: .infinity) }
                     DraftList(rows: r, instance: instance, model: model, key: nil)
                 }
@@ -39,12 +41,13 @@ private struct Conversation: View {
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
         let groups = rows.groups, questions = groups["question"] ?? [], stream = groups["stream"] ?? []
-        let entries = groups["entry"] ?? [], tools = groups["tool"] ?? [], pc = rows.field("pcPrompt").map { $0 != "null" } ?? false
+        let entries = groups["entry"] ?? [], tools = groups["tool"] ?? [], edge = model.edge
+        let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Circle().fill(questions.isEmpty && !pc ? PiTheme.accent : PiTheme.waiting).frame(width: 6, height: 6)
-                Text(!questions.isEmpty || pc ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
+                Text(pc && questions.isEmpty ? "PC で操作待ち" : !questions.isEmpty ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
             }.foregroundStyle(PiTheme.secondary).padding(.bottom, 6).accessibilityElement(children: .combine)
             ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
@@ -52,7 +55,9 @@ private struct Conversation: View {
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id) }
                         if !thinking.isEmpty { DisclosureGroup("考えています…") { Text(verbatim: thinking) } }
                         if !text.isEmpty { MarkdownBody(source: text, answer: "stream:" + (entries.last?.id ?? "begin")) }
-                        if pc { Label("PC 側で操作を完了してください", systemImage: "desktopcomputer") }
+                        if let move = model.move { MoveNote(move: move) }
+                        if let result = model.receipt { ReceiptNote(receipt: result) { model.dismissReceipt(host: key.host, result) } }
+                        if let prompt = edge?.pcPrompt, questions.isEmpty { TerminalCard(title: prompt.str("title"), command: edge?.attachCommand) }
                         ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
                         Color.clear.frame(height: 1).id("tail")
                     }.scrollTargetLayout().padding(.horizontal, 20).padding(.vertical, 12)

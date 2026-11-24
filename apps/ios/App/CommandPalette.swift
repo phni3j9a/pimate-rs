@@ -24,7 +24,6 @@ struct CommandPalette: View {
                 } }
             }.fixedSize(horizontal: false, vertical: true)
         }.task(id: attempt) {
-            guard commands.isEmpty || failed else { loading = false; return }
             loading = true; defer { loading = false }
             do {
                 let opened = try model.openSheet(key, page: .commands); defer { model.closeSheet(opened) }

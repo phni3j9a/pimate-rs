@@ -47,8 +47,12 @@ struct Composer: View {
         VStack(alignment: .leading, spacing: 4) {
             DraftList(rows: rows, instance: key.target.instance, model: model, key: key)
             if model.needsMoveConfirmation, let move = model.move {
-                Text("送信先の会話が変わりました。前の会話に下書きが残っています。").font(.caption)
-                Button("新しい送信先を確認") { model.confirmMove(key, id: move.id) }
+                VStack(alignment: .leading, spacing: 3) {
+                    Label("送信先が変わりました", systemImage: "arrow.triangle.swap").font(.subheadline.bold())
+                    let name = move.notice.obj("to").str("name")
+                    Text(name.isEmpty ? "前の会話に下書きが残っています。" : "前の下書きは移動しません。これからの送信先は「\(name)」です。").font(.caption)
+                    Button("新しい送信先を確認") { model.confirmMove(key, id: move.id) }.frame(minHeight: 44)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(PiTheme.waiting.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             }
             if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).font(.caption).foregroundStyle(PiTheme.failure) }
             if blocked { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10) }
@@ -113,7 +117,7 @@ struct DraftList: View {
     let rows: Rows, instance: String, model: SessionModel, key: EditorKey?
     @State private var error = ""
     struct Notice: Identifiable {
-        let id: String, status: String, text: String, session: String?
+        let id: String, status: String, text: String, session: String?, imageCount: Int
         @MainActor func canRestore(_ key: EditorKey?, model: SessionModel) -> Bool {
             guard let key, model.editor == key, !model.busy, session == key.target.session, status == "unconfirmed" else { return false }
             let draft = model.body(key); return draft.text.isEmpty && draft.images.isEmpty
@@ -123,7 +127,7 @@ struct DraftList: View {
         (rows.groups["draft"] ?? []).compactMap { item in
             let o = item.object, status = o.str("status")
             guard o.str("instanceId") == instance, (ready ? ["queued", "sending", "unconfirmed"] : ["unconfirmed"]).contains(status) else { return nil }
-            return Notice(id: item.id, status: status, text: o.obj("params").str("text"), session: o["sessionId"] as? String)
+            return Notice(id: item.id, status: status, text: o.obj("params").str("text"), session: o["sessionId"] as? String, imageCount: o.obj("params").list("images").count)
         }
     }
     var body: some View {
@@ -139,12 +143,14 @@ struct DraftList: View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(notices) { n in
                 Text(n.status == "queued" ? "割り込み待ち" : n.status == "sending" ? "送信中" : "届いたか未確認 · 履歴を確認してください").font(.caption.bold())
-                Text(verbatim: n.text).lineLimit(2)
+                if n.imageCount > 0 { Label("画像 \(n.imageCount) 枚", systemImage: "photo").font(.caption) }
+                if !n.text.isEmpty { Text(verbatim: n.text).lineLimit(2) }
                 if n.status == "unconfirmed" {
+                    Text("自動で再送しません。").font(.caption).foregroundStyle(PiTheme.secondary)
                     Button("下書きへ戻す") {
                         guard let key else { return }
                         do { try model.restore(key, id: n.id); error = "" } catch { self.error = "下書きを復元できません" }
-                    }.disabled(!n.canRestore(key, model: model))
+                    }.frame(minHeight: 44).disabled(!n.canRestore(key, model: model))
                 }
             }
             if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure) }
