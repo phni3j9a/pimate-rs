@@ -12,7 +12,7 @@ enum ChatImageSource {
             guard let comma = src.firstIndex(of: ",") else { throw CoreError.BadRequest }
             self = .inline(String(src[src.index(after: comma)...]))
         case .remote:
-            guard let url = URL(string: src) else { throw CoreError.BadRequest }; self = .web(url)
+            guard let url = URL(string: src), WebImage.valid(url, scheme: "https") else { throw CoreError.BadRequest }; self = .web(url)
         }
     }
     fileprivate var identity: [String] {
@@ -29,7 +29,7 @@ enum ChatImageSource {
         case .entry(let id, let index): raw = try await rc(.entryImage, ["entryId": id, "index": index, "thumbnail": thumbnail])
         case .file(_, let path): raw = try await rc(.fileImage, ["path": path, "thumbnail": thumbnail])
         case .inline(let text): return try Self.decode(text)
-        case .web(let url): return try await Self.download(url)
+        case .web(let url): return try await WebImage.download(url)
         }
         struct Payload: Decodable { struct Body: Decodable { let data: String }; let image: Body }
         return try Self.decode(JSONDecoder().decode(Payload.self, from: Data(raw.utf8)).image.data)
@@ -37,22 +37,7 @@ enum ChatImageSource {
     private static func decode(_ text: String) throws -> Data {
         guard !text.isEmpty, text.utf8.count <= 12 * 1024 * 1024, let bytes = Data(base64Encoded: text) else { throw CoreError.BadRequest }; return bytes
     }
-    private static func download(_ url: URL, redirects: Int = 5) async throws -> Data {
-        guard ["http", "https"].contains(url.scheme?.lowercased() ?? ""), url.host != nil, url.user == nil, url.password == nil else { throw CoreError.BadRequest }
-        let limit = 8 * 1024 * 1024
-        if url.scheme?.lowercased() == "http" {
-            switch try await HTTPImage(url: url, limit: limit).get() {
-            case .bytes(let bytes): return bytes
-            case .redirect(let next):
-                guard redirects > 0 else { throw URLError(.httpTooManyRedirects) }; return try await download(next, redirects: redirects - 1)
-            }
-        }
-        let config = URLSessionConfiguration.ephemeral; config.httpShouldSetCookies = false; config.urlCredentialStorage = nil; config.timeoutIntervalForResource = 20
-        let session = URLSession(configuration: config); defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(from: url)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), response.expectedContentLength <= Int64(limit) else { throw CoreError.BadRequest }
-        var data = Data(); for try await byte in bytes { guard data.count < limit else { throw CoreError.BadRequest }; data.append(byte) }; return data
-    }
+
 }
 
 // One current conversation. Cancelling a tile releases its lease, not the viewer's request.
