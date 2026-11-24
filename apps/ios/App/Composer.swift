@@ -53,6 +53,9 @@ struct Composer: View {
             if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).font(.caption).foregroundStyle(PiTheme.failure) }
             if blocked { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10) }
             else {
+                if rows.field("slashCommands") == "true", !input.marked, draft.text.hasPrefix("/"), !draft.text.contains(where: { $0.isWhitespace }) {
+                    CommandPalette(model: model, key: key, text: draft.text, commands: rows.groups["command"] ?? [])
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     if !draft.images.isEmpty {
                         DraftPhotos(images: draft.images) { i in
@@ -75,7 +78,13 @@ struct Composer: View {
                         if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
                         Button { guard let sent = input.submission(draft) else { return }; Task {
                             sendError = ""
-                            do { try await model.send(key, sent) } catch { if model.editor == key && model.message.isEmpty { sendError = "送信できません。現在の送信先と入力内容を確認してください。" } }
+                            do {
+                                let line = sent.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if let command = rows.groups["command"]?.first(where: { "/" + $0.id == line && $0.object.str("source") == "builtin" }) {
+                                    if ["model", "resume", "fork", "tree"].contains(command.id) { sendError = "この操作は PC のターミナルで行ってください。" }
+                                    else { _ = try await model.builtin(key, sent) }
+                                } else { try await model.send(key, sent) }
+                            } catch { if model.editor == key && model.message.isEmpty { sendError = "送信できません。現在の送信先と入力内容を確認してください。" } }
                         } } label: {
                             SwiftUI.Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
                         }.accessibilityLabel("送信").disabled(!selection.isEmpty || input.marked || model.submissionBlocked || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
