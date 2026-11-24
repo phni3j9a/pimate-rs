@@ -196,11 +196,11 @@ extension ReviewTests {
     }
     @MainActor func testSheetDoesNotDeliverToReopenedSheet() async throws {
         let core = TestCore(noHandle: .init()), m = SessionModel(core: core)
-        try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor), first = try m.openSheet(key)
+        try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor), first = try m.openSheet(key, page: .resume)
         let wait = expectation(description: "pending"), gate = AsyncStream<Void>.makeStream()
         core.c.receipt = { wait.fulfill(); for await _ in gate.stream { break } }
         let task = Task { try await m.run(.sessions, in: first) }; await fulfillment(of: [wait], timeout: 3)
-        let reopened = try m.openSheet(key); gate.continuation.finish()
+        let reopened = try m.openSheet(key, page: .resume); gate.continuation.finish()
         do { try await task.value; XCTFail() } catch CoreError.StaleTarget {}
         XCTAssertEqual(m.sheet?.id, reopened.id); XCTAssertNil(m.sheet?.reply); XCTAssertNil(m.sheet?.error)
     }

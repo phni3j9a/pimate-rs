@@ -34,7 +34,8 @@ enum SheetAction {
 }
 
 struct ChatSheet {
-    let id = UUID(), key: EditorKey
+    enum Page { case model, usage, session, resume, fork, tree, commands }
+    let id = UUID(), key: EditorKey, page: Page
     var loading = false, reply: Object?, error: CoreError?
 }
 

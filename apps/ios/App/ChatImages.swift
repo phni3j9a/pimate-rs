@@ -73,3 +73,24 @@ enum ChatImageSource {
         loads.removeValue(forKey: key)?.task.cancel()
     }
 }
+
+// Keep only supplied previews; imageCount can be much larger than the history page.
+struct HistoryImages {
+    let entry: String, count: Int
+    private let previews: [Int: String]
+    init(_ row: Item) {
+        let o = row.object, images = o.list("images"), indices = o["imageIndices"] as? [Int]
+        entry = row.id; count = max(images.count, o["imageCount"] as? Int ?? 0)
+        var slots: [Int: String] = [:]
+        for (i, image) in images.enumerated() {
+            let slot = indices.map { $0.indices.contains(i) ? $0[i] : -1 } ?? i
+            if (0..<count).contains(slot) { slots[slot] = image["data"] as? String }
+        }
+        previews = slots
+    }
+    func source(at index: Int, thumbnail: Bool, canFetch: Bool) -> ChatImageSource? {
+        guard (0..<count).contains(index) else { return nil }
+        if let text = previews[index], thumbnail || !canFetch { return .inline(text) }
+        return canFetch ? .entry(id: entry, index: index) : nil
+    }
+}
