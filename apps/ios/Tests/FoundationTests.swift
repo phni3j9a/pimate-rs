@@ -104,7 +104,7 @@ final class FoundationTests: XCTestCase {
         try await wait("model settings") {
             let rows = model.rows[host]; return rows?.field("thinking") == "\"low\"" && rows?.field("defaultModel")?.contains("low") == true && rows?.groups["model"]?.filter { $0.object["favorite"] as? Bool == true }.count == 1
         }
-        XCTAssertNotNil(model.stats(key)); XCTAssertTrue(model.allowances(key, nowMs: 0).isEmpty); XCTAssertNotNil(model.rows[host]?.field("context"))
+        XCTAssertNotNil(model.stats(key)); XCTAssertEqual(model.allowances(key, nowMs: 0).map(\.gauge), [nil, nil]); XCTAssertNotNil(model.rows[host]?.field("context"))
         let entry = try XCTUnwrap(model.rows[host]?.groups["entry"]?.first { $0.object["imageCount"] as? Int == 5 })
         let history = try XCTUnwrap(HistoryImages(entry).source(at: 4, thumbnail: true, canFetch: true))
         for source: ChatImageSource in [history, .file(answer: "A", path: "out/before.png")] {
