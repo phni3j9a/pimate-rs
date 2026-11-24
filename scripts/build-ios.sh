@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$PWD/target}
 export IPHONEOS_DEPLOYMENT_TARGET=${IPHONEOS_DEPLOYMENT_TARGET:-16.0}
 out="$CARGO_TARGET_DIR/mobile/ios"
-for arch in aarch64-apple-ios aarch64-apple-ios-sim; do
+for arch in aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios; do
   cargo build --locked --release --target "$arch" -p pimate-ffi --lib
 done
 cargo build --locked -p pimate-ffi --lib
@@ -14,8 +14,11 @@ cp bindings/swift/Login.swift "$out/"
 mkdir -p "$out/include"
 cp "$out/pimate_ffiFFI.h" "$out/include/"
 cp "$out/pimate_ffiFFI.modulemap" "$out/include/module.modulemap"
+mkdir -p "$out/simulator"
+lipo -create "$CARGO_TARGET_DIR/aarch64-apple-ios-sim/release/libpimate_ffi.a" \
+  "$CARGO_TARGET_DIR/x86_64-apple-ios/release/libpimate_ffi.a" -output "$out/simulator/libpimate_ffi.a"
 rm -rf "$out/PiMate.xcframework"
 xcodebuild -create-xcframework \
   -library "$CARGO_TARGET_DIR/aarch64-apple-ios/release/libpimate_ffi.a" -headers "$out/include" \
-  -library "$CARGO_TARGET_DIR/aarch64-apple-ios-sim/release/libpimate_ffi.a" -headers "$out/include" \
+  -library "$out/simulator/libpimate_ffi.a" -headers "$out/include" \
   -output "$out/PiMate.xcframework"

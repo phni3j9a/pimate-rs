@@ -1,0 +1,50 @@
+name: PiMate
+options:
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+    GENERATE_INFOPLIST_FILE: YES
+    SWIFT_INCLUDE_PATHS: $(SRCROOT)/../../target/mobile/ios/include
+    TARGETED_DEVICE_FAMILY: '1,2'
+targets:
+  PiMate:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - ../../target/mobile/ios/pimate_ffi.swift
+      - ../../bindings/swift/Login.swift
+    dependencies:
+      - framework: ../../target/mobile/ios/PiMate.xcframework
+        embed: false
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: dev.pimate.app.rs.debug
+      INFOPLIST_KEY_CFBundleDisplayName: PiMate RS
+      INFOPLIST_KEY_UILaunchScreen_Generation: YES
+      INFOPLIST_KEY_NSLocalNetworkUsageDescription: ペアリングしたマシンに接続します。
+      INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+  PiMateTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies: [{target: PiMate}]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: dev.pimate.app.rs.debug.tests
+  PiMateUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies: [{target: PiMate}]
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: dev.pimate.app.rs.debug.uitests
+schemes:
+  PiMate:
+    build:
+      targets:
+        PiMate: all
+    test:
+      targets: [PiMateTests, PiMateUITests]

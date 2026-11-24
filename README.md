@@ -260,7 +260,7 @@ Kotlin の suspend API は Main 限定ではありません。生成時にすべ
 **iOS**（Xcode のある macOS）:
 
 ```sh
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 scripts/build-ios.sh
 ```
 
@@ -339,3 +339,11 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 **専用の画面試験**: 既定の `scripts/android-demo.py` は今までどおり Rust Host と模擬 Pi だけです。保守・ログイン・GitHub の成功状態も安全に試す場合だけ `PIMATE_DEMO_NAME='デモ PC' PIMATE_DEMO_SCREENS=list scripts/android-demo.py` を使用します（Node.js と Node から `require('ws')` できる環境。なければ一時ディレクトリで `npm install --prefix "$lab" ws@8`、`NODE_PATH="$lab/node_modules"`）。`android-screen-fixture.cjs` は loopback だけで待ち、ペアリングとチャットは専用 Rust Host、保守・GitHub・認証は固定のテスト応答です。systemctl・更新・実認証を呼びません。空一覧は `PIMATE_DEMO_SCREENS=empty`。再接続の試験は `PIMATE_DEMO_SCREENS=reconnect`・`cache/reconnect-link`・`RemainingJourney#loginHoldRecoversAfterDisconnect` で、最初の認証一覧のあとに一度だけ接続を閉じます。登録のない**専用 APK** と1回限りのリンクを使い、上記 `demo-link` の手順で `cache/ui-link`（空は `cache/empty-link`）に渡します。模擬保守を使う場合だけ `cache/mock-maintenance` に空ファイルを用意し、`RemainingJourney#screens`（空は `#firstEmpty`）を実行します。実 Pi の `#realFaux` は `cache/real-link` と、`検証用 PC` という名前の一時 Host・`work` フォルダ内の本物の Pi + faux が必要です。各試験はリンクがなければスキップします。
 
 状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。
+
+### iOS 開発版（#37 前半）
+
+Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を使います。macOS で `brew install xcodegen` と前述の Rust 3 ターゲットを用意し、`apps/ios/prepare.sh` → `open apps/ios/PiMate.xcodeproj`。Rust や binding の変更後も prepare を実行します。XcodeGen は差分が読める `apps/ios/project.yml` だけを管理し、同じ checkout でビルドした XCFramework（arm64 実機／arm64 + x86_64 simulator）と Swift を組み込みます。生成プロジェクト、バイナリ、テスト結果はコミットしません。
+
+`apps/ios/test.sh [UDID]` が CI と同じビルド・XCTest・画面撮影を実行します。停止中の検証専用 iPhone シミュレーターを指定してください。一時ディレクトリの loopback 模擬 Host で登録→一覧→日本語送信→履歴到着を通し、終了時に模擬 Host とシミュレーターを止めます。添付は `apps/ios/build/attachments` または Actions の `ios-probe`。Devin は [既存 VM の使い方](docs/devin-macos.md)に従い、`use` → 必要な分だけ `keepalive` → `sync` → 同期先で同じ `test.sh` を実行。個人の認証情報は転送せず、終了時は待機を終了し `devin-mac down`。
+
+画面担当は `apps/ios/App/Probe.swift` と `Theme.swift` を置換できます。`SessionModel` は App 所有で scene の再生成後も維持。マシン別の `hosts` / `rows[id].groups` と `select(host:instance:)`、表示時に捕捉した `editor` と `body/text/send/attach/abort/restore`、`QuestionKey` と `answer` を使ってください。`draft` は履歴と区別し `restore` は明示操作だけ。確認の途中で別の対象に変わったら閉じ、送信失敗時にも自動再送しません。`SessionModel`・`Rows`・`Photo`・`KeychainStore`、FFI と生成物を画面から変更しないでください。QR、Markdown、完成画面、実機確認は後半です。

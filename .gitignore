@@ -9,3 +9,6 @@
 /packages/pimate/node_modules/
 
 /packages/pimate/bin/
+
+/apps/ios/*.xcodeproj/
+/apps/ios/build/

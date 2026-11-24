@@ -1,0 +1,21 @@
+name: iOS
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - run: command -v xcodegen || brew install xcodegen
+      - run: apps/ios/test.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-probe
+          path: apps/ios/build/attachments
+          if-no-files-found: error
