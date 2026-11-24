@@ -19,10 +19,9 @@ struct UsageSheet: View {
                     let tokens = (context["tokens"] as? NSNumber)?.int64Value.formatted() ?? "不明"
                     let capacity = (context["contextWindow"] as? NSNumber)?.int64Value.formatted() ?? "不明"
                     UsageMeter(label: "\(tokens) / \(capacity) トークン", percent: context["percent"] as? Double)
-                    if let stats { Text("このセッション · \(stats.cost.formatted(.currency(code: "USD")))").font(.footnote).foregroundStyle(.secondary) }
+                    if let stats, stats.cost > 0 { Text("このセッションの記録済みコスト · \(stats.cost.formatted(.currency(code: "USD")))").font(.footnote).foregroundStyle(.secondary) }
                     Button("コンテキストを圧縮") { panel.act(.compact) }.disabled(!panel.ready)
                 }
-                panel.feedback
                 ForEach(panel.model.allowances(panel.opened.key, nowMs: now), id: \.source) { allowance in
                     let name = allowance.source == "claude" ? "Claude" : "Codex"
                     Section {

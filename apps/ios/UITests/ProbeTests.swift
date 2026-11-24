@@ -21,7 +21,7 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
         main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
         func openSheet(_ name: String) {
-            app.buttons["会話の操作"].tap(); app.buttons[name].tap()
+            app.buttons["chat-options"].tap(); app.buttons[name].tap()
             XCTAssertTrue(app.buttons["sheet-close"].waitForExistence(timeout: 8))
         }
         openSheet("モデル・Thinking")
@@ -77,6 +77,8 @@ final class ProbeTests: XCTestCase {
         let file = app.buttons["修正後の画面"]
         for _ in 0..<6 where !file.isHittable { scroll.swipeDown() }
         XCTAssertTrue(file.isHittable); file.tap()
+        // Distinguish presenting the viewer from receiving and decoding the full PC file.
+        XCTAssertTrue(app.navigationBars["修正後の画面"].waitForExistence(timeout: 12))
         XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 25)); app.buttons["画像を閉じる"].tap()
 
         let field = app.textViews["message"]
@@ -109,6 +111,11 @@ final class ProbeTests: XCTestCase {
         let fix = app.buttons["command-fix-tests"]
         XCTAssertTrue(fix.waitForExistence(timeout: 8)); shot("Commands"); fix.tap()
         XCTAssertEqual(field.value as? String, "/fix-tests ")
+        if variant == "light" {
+            openSheet("使用状況"); app.buttons["コンテキストを圧縮"].tap()
+            XCTAssertTrue(app.staticTexts["操作が完了しました"].waitForExistence(timeout: 12))
+            app.buttons["sheet-close"].tap()
+        }
         openPi("edge")
         XCTAssertTrue(field.waitForExistence(timeout: 12)); field.tap(); field.typeText("draft")
         let confirm = app.buttons["新しい送信先を確認"]

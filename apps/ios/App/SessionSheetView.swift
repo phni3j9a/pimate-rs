@@ -11,10 +11,13 @@ struct SessionSheetView: View {
                 Text(verbatim: name.isEmpty ? "このセッション" : name).font(.headline)
                 if !cwd.isEmpty { Text(verbatim: cwd).font(.footnote.monospaced()).foregroundStyle(.secondary) }
                 if let stats = panel.model.stats(panel.opened.key) {
-                    Text("メッセージ \(stats.messages.formatted()) · \(stats.tokens.formatted()) トークン · \(stats.cost.formatted(.currency(code: "USD")))").font(.footnote).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("メッセージ \(stats.messages.formatted()) 件")
+                        if stats.tokens > 0 { Text("記録済みトークン · \(stats.tokens.formatted())") }
+                        if stats.cost > 0 { Text("記録済みコスト · \(stats.cost.formatted(.currency(code: "USD")))") }
+                    }.font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            panel.feedback
             Section("会話") {
                 Button("新しいセッション", systemImage: "square.and.pencil") { panel.act(.new) }
                 NavigationLink { ResumeSheet(panel: panel) } label: { Label("過去のセッションを開く", systemImage: "clock.arrow.circlepath") }
@@ -46,7 +49,6 @@ struct ResumeSheet: View {
     var body: some View {
         let sessions = panel.rows.groups["session"] ?? []
         List {
-            panel.feedback
             if sessions.isEmpty && panel.live?.error == nil && panel.live?.loading == false { Text("保存されたセッションはありません").foregroundStyle(.secondary) }
             ForEach(sessions, id: \.id) { item in
                 let o = item.object, path = o.str("path"), current = o["current"] as? Bool == true
@@ -70,7 +72,6 @@ struct ForkSheet: View {
         let entries = (panel.rows.groups["entry"] ?? []).reversed().filter { $0.object.str("kind") == "user" }
         List {
             Text("選んだメッセージの直前までを新しいセッションに写します。入力欄が空なら、選んだ文が入ります。").font(.footnote).foregroundStyle(.secondary)
-            panel.feedback
             if entries.isEmpty { Text("分岐できるメッセージはありません") }
             ForEach(entries, id: \.id) { entry in
                 let text = entry.object.str("text")

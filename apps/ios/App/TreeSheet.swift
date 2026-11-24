@@ -47,7 +47,6 @@ struct TreeSheet: View {
                     }.accessibilityIdentifier("branch-" + row.id).disabled(!panel.ready || !loaded)
                 }
             } header: { Text("移動先のメッセージを選択") }
-            panel.feedback
         }.navigationTitle("セッションツリー").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("更新", systemImage: "arrow.clockwise") { attempt += 1 }.disabled(!panel.ready) } }
             .task(id: attempt) {
@@ -74,7 +73,6 @@ private struct TreeDestination: View {
             Section {
                 Button("ここへ移動") { panel.act(.move(entry: row.id, summarize: summarize), closeOnAck: true) }.disabled(!idle || !panel.ready)
             } footer: { Text(idle ? "ユーザーのメッセージを選ぶと、その直前へ戻ります。入力欄が空なら、選んだ文が入ります。" : "Pi の処理が終わるまで移動できません。") }
-            panel.feedback
         }.navigationTitle("移動先を確認").navigationBarTitleDisplayMode(.inline)
     }
 }
