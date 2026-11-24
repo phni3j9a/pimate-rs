@@ -27,14 +27,27 @@ xcrun simctl install "$id" "$build/Build/Products/Debug-iphonesimulator/PiMate.a
 link="$(xcrun simctl get_app_container "$id" dev.pimate.app.rs.debug data)/Library/Caches/pimate-test-link"
 mkdir -p "$(dirname "$link")"
 cargo build --locked -p pimate-host
-for n in 1 2; do
+start_fixture() {
+  local n=$1
   file="$link-$n"; links+=("$file")
-  scripts/android-demo.py >"$lab/fixture-$n" 2>&1 & fixtures+=("$!")
+  PIMATE_DEMO_NAME="デモ PC" scripts/android-demo.py >"$lab/fixture-$n" 2>&1 & fixtures+=("$!")
   for _ in {1..60}; do grep -q '^pimate://pair?' "$lab/fixture-$n" && break; kill -0 "${fixtures[$((n-1))]}"; sleep 1; done
   grep -m1 '^pimate://pair?' "$lab/fixture-$n" | tr -d '\r\n' >"$file"
   [[ -s $file ]]
-done
+}
+start_fixture 1; start_fixture 2
 result="$build/Tests-$(date +%s).xcresult"
-TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -resultBundlePath "$result" test-without-building
-[[ ! -e $link-1 && ! -e $link-2 ]] # A skipped fixture test must never make CI green.
-xcrun xcresulttool export attachments --path "$result" --output-path "$build/attachments"
+TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultBundlePath "$result" test-without-building
+[[ ! -e $link-1 && ! -e $link-2 ]]
+for variant in light dark large; do
+  mode=light; size=large
+  [[ $variant != dark ]] || mode=dark
+  [[ $variant != large ]] || size=extra-extra-extra-large
+  xcrun simctl ui "$id" appearance "$mode"
+  xcrun simctl ui "$id" content_size "$size"
+  start_fixture "$((${#fixtures[@]} + 1))"
+  xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
+  result="$build/$variant-$(date +%s).xcresult"
+  TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building
+  xcrun xcresulttool export attachments --path "$result" --output-path "$build/attachments/$variant"
+done

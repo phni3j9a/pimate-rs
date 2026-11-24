@@ -3,7 +3,9 @@ import SwiftUI
 struct Drawer: View {
     let model: SessionModel
     let select: (String, String) -> Void
-    @State private var query = "", pair = false, settings = false
+    @State private var query = ""
+    @State private var pair = false
+    @State private var settings = false
     @AppStorage("appearance") private var appearance = Appearance.system
     @AppStorage("typeSize") private var size = TypeSize.standard
     private func items(_ host: Host, _ section: String) -> [Item] {

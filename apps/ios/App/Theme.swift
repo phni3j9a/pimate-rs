@@ -25,6 +25,7 @@ enum PiTheme {
     static let background = color(0xffffff, 0x131618), surface = color(0xf1f3f4, 0x1e2326)
     static let text = color(0x1f2326, 0xe4e8ea), secondary = color(0x5e686d, 0x9aa5aa)
     static let accent = color(0x155a7a, 0x7cbede), failure = color(0xa84d45, 0xf09c91)
+    static let waiting = color(0x83641e, 0xe6c47c)
 }
 struct PiPrimary: ButtonStyle {
     @Environment(\.isEnabled) private var enabled

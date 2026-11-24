@@ -4,12 +4,14 @@ import AVFoundation
 struct PairScreen: View {
     let model: SessionModel
     let done: () -> Void
-    @State private var link = "", error = ""
-    @State private var entering = false, scanning = false
+    @State private var link = ""
+    @State private var error = ""
+    @State private var entering = false
+    @State private var scanning = false
     @FocusState private var focused: Bool
     private func pair(_ value: String) {
         focused = false; link = ""; error = ""
-        Task { do { try await model.pair(value); done() } catch { error = "接続できません。ネットワークとリンクの有効期限を確認してください。" } }
+        Task { do { try await model.pair(value); done() } catch { self.error = "接続できません。ネットワークとリンクの有効期限を確認してください。" } }
     }
     var body: some View {
         ScrollView {
@@ -59,7 +61,8 @@ struct PairScreen: View {
 private struct ScannerSheet: View {
     @Environment(\.dismiss) private var dismiss
     let scanned: (String) -> Void
-    @State private var granted = false, message = ""
+    @State private var granted = false
+    @State private var message = ""
     var body: some View {
         NavigationStack {
             Group {
