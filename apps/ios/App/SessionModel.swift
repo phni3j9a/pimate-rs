@@ -135,8 +135,9 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     func text(_ value: String, for key: EditorKey) {
         guard editor == key else { return }; var d = body(key); d.text = value; drafts[key] = d
     }
+    var submissionBlocked: Bool { needsMoveConfirmation || attaching != nil || busy }
     func send(_ key: EditorKey, _ sent: RestoredDraft) async throws {
-        guard !needsMoveConfirmation, attaching == nil else { throw CoreError.Blocked }
+        guard !submissionBlocked else { throw CoreError.Blocked }
         guard sent == body(key) else { throw CoreError.StaleTarget }
         try await perform(.send(target: key.target, text: sent.text, images: sent.images), key) {
             if self.body(key) == sent { self.drafts[key] = nil }
@@ -154,6 +155,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     // Returns the sheet to present, or nil after a command was accepted by the host.
     func builtin(_ key: EditorKey, _ sent: RestoredDraft) async throws -> String? {
         guard editor == key, body(key) == sent else { throw CoreError.StaleTarget }
+        guard !submissionBlocked else { throw CoreError.Blocked }
         let line = sent.text.trimmingCharacters(in: .whitespacesAndNewlines), name = String(line.dropFirst())
         guard line.first == "/", sent.images.isEmpty,
               rows[key.host]?.groups["command"]?.contains(where: { $0.id == name && $0.object["source"] as? String == "builtin" }) == true else { throw CoreError.BadRequest }

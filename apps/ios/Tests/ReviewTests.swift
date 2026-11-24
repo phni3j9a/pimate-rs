@@ -6,13 +6,14 @@ import UIKit
 // UniFFI's no-handle fakes: no network or Keychain, and the test controls exactly when ACK arrives.
 private final class TestConnection: Connection, @unchecked Sendable {
     var items: [Item] = []
+    var revision: UInt64 = 1
     var checkError: CoreError?
     var receipt: @Sendable () async throws -> Void = {}
     var restored = RestoredDraft(text: "restored", images: [Image(mimeType: "image/jpeg", data: "YQ==")])
     override func takeUnconfirmed(target: Target, id: String) throws -> RestoredDraft { restored }
     override func subscribe(instance: String?) throws {}
     override func snapshot() -> Snapshot {
-        Snapshot(revision: 1, items: items + [field("phase", "\"ready\""), field("instanceId", "\"pi\""), field("promptImages", "true"), field("promptImageLimit", "4")])
+        Snapshot(revision: revision, items: items + [field("phase", "\"ready\""), field("instanceId", "\"pi\""), field("promptImages", "true"), field("promptImageLimit", "4")])
     }
     private func field(_ id: String, _ json: String) -> Item { Item(collection: "view", id: id, position: 0, json: json) }
     override func check(operation: PiMate.Operation) throws { if let checkError { throw checkError } }
@@ -203,5 +204,21 @@ extension ReviewTests {
         let reopened = try m.openSheet(key, page: .resume); gate.continuation.finish()
         do { try await task.value; XCTFail() } catch CoreError.StaleTarget {}
         XCTAssertEqual(m.sheet?.id, reopened.id); XCTAssertNil(m.sheet?.reply); XCTAssertNil(m.sheet?.error)
+    }
+}
+
+
+extension ReviewTests {
+    @MainActor func testMoveConfirmationBlocksBuiltinBeforeRouting() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        func session(_ id: String) -> Item { Item(collection: "view", id: "session", position: 0, json: "{\"id\":\"\(id)\"}") }
+        core.c.items = [session("A")]; try model.select(host: "a", instance: "pi")
+        model.text("old", for: try XCTUnwrap(model.editor))
+        core.c.items = [session("B"), Item(collection: "notice", id: "sessionChanged", position: 0, json: #"{"reason":"resume","from":{"id":"A"},"to":{"id":"B"}}"#), Item(collection: "command", id: "compact", position: 0, json: #"{"source":"builtin"}"#)]
+        core.c.revision += 1; try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        model.text("/compact", for: key); core.c.receipt = { XCTFail("must not submit") }
+        do { _ = try await model.builtin(key, model.body(key)); XCTFail() } catch CoreError.Blocked {}
+        model.confirmMove(key, id: try XCTUnwrap(model.move?.id)); core.c.receipt = {}
+        _ = try await model.builtin(key, model.body(key)); XCTAssertEqual(model.body(key).text, "")
     }
 }

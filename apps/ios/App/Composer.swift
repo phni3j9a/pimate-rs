@@ -38,12 +38,17 @@ private struct MessageField: UIViewRepresentable {
 }
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
+    @State private var sendError = ""
     @StateObject private var input = MessageInput()
     var body: some View {
         let draft = model.body(key)
         VStack(alignment: .leading, spacing: 4) {
             DraftList(rows: rows, instance: key.target.instance, model: model, key: key)
-            if !model.message.isEmpty { Text(model.message).font(.caption).foregroundStyle(PiTheme.failure) }
+            if model.needsMoveConfirmation, let move = model.move {
+                Text("送信先の会話が変わりました。前の会話に下書きが残っています。").font(.caption)
+                Button("新しい送信先を確認") { model.confirmMove(key, id: move.id) }
+            }
+            if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).font(.caption).foregroundStyle(PiTheme.failure) }
             if blocked { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10) }
             else {
                 VStack(alignment: .leading, spacing: 0) {
@@ -55,9 +60,12 @@ struct Composer: View {
                         if !draft.images.isEmpty { Text("画像 \(draft.images.count)枚").font(.caption) }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
-                        Button { guard let sent = input.submission(draft) else { return }; Task { try? await model.send(key, sent) } } label: {
+                        Button { guard let sent = input.submission(draft) else { return }; Task {
+                            sendError = ""
+                            do { try await model.send(key, sent) } catch { if model.editor == key && model.message.isEmpty { sendError = "送信できません。現在の送信先と入力内容を確認してください。" } }
+                        } } label: {
                             SwiftUI.Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
-                        }.accessibilityLabel("送信").disabled(input.marked || model.busy || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
+                        }.accessibilityLabel("送信").disabled(input.marked || model.submissionBlocked || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
