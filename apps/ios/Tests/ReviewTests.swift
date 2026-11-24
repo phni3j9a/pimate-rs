@@ -12,8 +12,8 @@ private final class TestConnection: Connection, @unchecked Sendable {
         Snapshot(revision: 1, items: items + [field("phase", "\"ready\""), field("instanceId", "\"pi\""), field("promptImages", "true"), field("promptImageLimit", "4")])
     }
     private func field(_ id: String, _ json: String) -> Item { Item(collection: "view", id: id, position: 0, json: json) }
-    override func check(operation: Operation) throws { if let checkError { throw checkError } }
-    override func perform(operation: Operation) async throws -> String { try await receipt(); return "{}" }
+    override func check(operation: PiMate.Operation) throws { if let checkError { throw checkError } }
+    override func perform(operation: PiMate.Operation) async throws -> String { try await receipt(); return "{}" }
 }
 private final class TestCore: Core, @unchecked Sendable {
     var locked = false, blockedHost: String?, attempts: [String] = []
