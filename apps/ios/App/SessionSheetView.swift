@@ -18,6 +18,9 @@ struct SessionSheetView: View {
             Section("会話") {
                 Button("新しいセッション", systemImage: "square.and.pencil") { panel.act(.new) }
                 NavigationLink { ResumeSheet(panel: panel) } label: { Label("過去のセッションを開く", systemImage: "clock.arrow.circlepath") }
+                if panel.rows.field("sessionTree") == "true" {
+                    NavigationLink { TreeSheet(panel: panel) } label: { Label("セッションツリー", systemImage: "point.3.connected.trianglepath.dotted") }.accessibilityIdentifier("session-tree")
+                }
                 NavigationLink { ForkSheet(panel: panel) } label: { Label("ここから分岐", systemImage: "arrow.triangle.branch") }
                 Button("コンテキストを圧縮", systemImage: "arrow.down.right.and.arrow.up.left") { panel.act(.compact) }
             }.disabled(!panel.ready)

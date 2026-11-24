@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from PIL import Image
 
-SCREENS = ('Pair', 'Drawer', 'Main', 'Chat-Waiting', 'Chat-Attach', 'Chat-Edge', 'Attachments', 'Images', 'Viewer', 'Table', 'Commands', 'Sheet-Model', 'Sheet-Usage', 'Sheet-Session')
+SCREENS = ('Pair', 'Drawer', 'Main', 'Chat-Waiting', 'Chat-Attach', 'Chat-Edge', 'Attachments', 'Images', 'Viewer', 'Table', 'Commands', 'Sheet-Model', 'Sheet-Usage', 'Sheet-Session', 'Sheet-Tree')
 
 
 def captures(root, screen, partial):

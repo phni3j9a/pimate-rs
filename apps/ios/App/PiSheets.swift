@@ -32,11 +32,14 @@ struct PiSheetPanel: View {
     func field(_ key: String) -> Item? { rows.groups["view"]?.first { $0.id == key } }
     var live: ChatSheet? { model.sheet?.id == opened.id ? model.sheet : nil }
     var ready: Bool { live?.loading == false && model.editor == opened.key && !model.busy && (rows.groups["busy"] ?? []).isEmpty }
-    func act(_ action: SheetAction) {
+    func act(_ action: SheetAction, closeOnAck: Bool = false) {
         guard ready else { return }
         acknowledged = false
         Task {
-            do { try await model.run(action, in: opened); acknowledged = true }
+            do {
+                try await model.run(action, in: opened); acknowledged = true
+                if closeOnAck { model.closeSheet(opened) }
+            }
             catch { /* run publishes the error to this presentation only. */ }
         }
     }
@@ -65,7 +68,8 @@ struct PiSheetPanel: View {
                 case .session: SessionSheetView(panel: self)
                 case .resume: ResumeSheet(panel: self)
                 case .fork: ForkSheet(panel: self)
-                default: EmptyView()
+                case .tree: TreeSheet(panel: self)
+                case .commands: EmptyView()
                 }
             }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { model.closeSheet(opened) }.accessibilityIdentifier("sheet-close") } }
         }.tint(PiTheme.accent)

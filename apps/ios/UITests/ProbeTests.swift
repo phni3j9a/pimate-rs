@@ -32,6 +32,14 @@ final class ProbeTests: XCTestCase {
         app.buttons["sheet-close"].tap()
         openSheet("セッション")
         XCTAssertTrue(app.buttons["新しいセッション"].waitForExistence(timeout: 8)); shot("Sheet-Session")
+        let tree = app.buttons["session-tree"]
+        for _ in 0..<4 where !tree.isHittable { app.swipeUp() }
+        XCTAssertTrue(tree.isHittable); tree.tap()
+        let branch = app.buttons["branch-side-user"]
+        XCTAssertTrue(branch.waitForExistence(timeout: 12)); shot("Sheet-Tree"); branch.tap()
+        XCTAssertTrue(app.buttons["ここへ移動"].waitForExistence(timeout: 8)); XCTAssertFalse(app.buttons["ここへ移動"].isEnabled)
+        app.navigationBars["移動先を確認"].buttons.element(boundBy: 0).tap()
+        app.navigationBars["セッションツリー"].buttons.element(boundBy: 0).tap()
         app.buttons["sheet-close"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
