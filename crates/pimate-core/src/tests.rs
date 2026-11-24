@@ -1378,7 +1378,7 @@ fn exact_completion_skips_other_devices_and_stale_requests() {
         let mut e = e;
         for (seq, id) in [(3, "foreign"), (4, "A"), (5, "B")] {
             e["requestId"] = json!(id);
-            event(&mut s, seq, e.clone());
+            s.apply(&json!({"type":"event","seq":seq,"sessionId":"switched-after-request","instanceId":"i","event":e}));
             if id != "B" {
                 assert_eq!(s.get("busy", "operation")["id"], "B");
             }

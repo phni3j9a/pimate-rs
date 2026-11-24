@@ -786,11 +786,14 @@ impl State {
                         && op["op"] == e["op"]
                         || k.starts_with("compact_")
                             && op["method"] == "compact"
-                            && (stale || op["sessionId"] == m["sessionId"]);
+                            && (tagged || stale || op["sessionId"] == m["sessionId"]);
                     if !matches {
                         return false;
                     }
-                    if stale {
+                    if tagged {
+                        // The envelope session is current at callback time, not the request target.
+                        self.finish_op(json!({"sessionId":m["sessionId"],"event":e}));
+                    } else if stale {
                         // This event may belong to A. B still has one outstanding completion.
                         self.finish_without_event(json!({"outcome":"unknown"}));
                     } else if matches!(e["op"].as_str(), Some("reload" | "tree"))
@@ -810,6 +813,7 @@ impl State {
                 // Even when the view is resyncing, a second move invalidates the
                 // grace window. Do not mistake that move's result for our own.
                 if k == "session_changed"
+                    && !self.tagged_completions
                     && self.result_deadline.is_some()
                     && self.seq.max(self.effect_seq).is_none_or(|n| seq > n)
                 {
@@ -1096,7 +1100,7 @@ impl State {
     }
     fn finish_without_event(&mut self, result: Value) {
         let scope = self.busy_scope();
-        if self.generation(&scope.instance) == scope.started_at {
+        if !self.tagged_completions && self.generation(&scope.instance) == scope.started_at {
             self.missing.add(scope);
         }
         self.finish_op(result)
