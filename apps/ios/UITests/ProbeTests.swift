@@ -23,8 +23,11 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 8))
         if variant == "light" {
             app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["pi-demo"].tap()
-            let table = app.buttons["表を開く"].firstMatch
-            XCTAssertTrue(table.waitForExistence(timeout: 15)); table.tap()
+            // Wait for message_end: an XCTest tap is coordinate-based and can miss a moving streamed row.
+            let receipt = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch
+            XCTAssertTrue(receipt.waitForExistence(timeout: 20))
+            let tables = app.buttons.matching(NSPredicate(format: "label == %@", "表を開く"))
+            guard let table = tables.allElementsBoundByIndex.first(where: { $0.isHittable }) else { XCTFail("No visible table"); return }; table.tap()
             let copy = app.buttons["表をコピー"]; XCTAssertTrue(copy.waitForExistence(timeout: 5)); copy.tap()
             app.buttons["閉じる"].tap()
             let field = app.textViews["message"]; field.tap(); field.typeText("test")
