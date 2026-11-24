@@ -1,0 +1,25 @@
+name: iOS
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  simulator:
+    runs-on: macos-15
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+      - run: command -v xcodegen || brew install xcodegen
+      - name: Verify a test UDID is required
+        run: |
+          rc=0; apps/ios/test.sh || rc=$?; test "$rc" = 64
+      - name: Test on a new disposable simulator
+        run: apps/ios/test-disposable.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-probe
+          path: apps/ios/build/attachments
+          if-no-files-found: error

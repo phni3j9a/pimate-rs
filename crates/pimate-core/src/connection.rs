@@ -600,6 +600,8 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     }
     if method == "prompt" {
         st.prompt_ack(id, &body["deliveredAs"]);
+        // This validated receipt only acknowledges the original send, even after a view switch.
+        return Ok(body.to_string());
     }
     if p.host_models {
         // The spawn picker must not overwrite the selected chat’s model catalog.
@@ -845,6 +847,36 @@ mod regressions {
         let result = resolve(&mut s, &pending, "r", &json!({"ok":true,"result":body})).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&result).unwrap(), body);
         assert_eq!(s.get("model", "existing")["favorite"], true);
+    }
+    #[test]
+    fn validated_prompt_ack_belongs_to_sender_after_view_switch() {
+        let mut s = State::default();
+        s.selected = Some("other".into());
+        let p = Pending {
+            reply: oneshot::channel().0,
+            deadline: Instant::now(),
+            kind: "rc".into(),
+            instance: json!("sender"),
+            hold: None,
+            method: Some("prompt".into()),
+            session: json!("s"),
+            host_models: false,
+            thumbnail: false,
+        };
+        let valid = json!({"deliveredAs":"prompt"});
+        assert_eq!(
+            resolve(&mut s, &p, "r", &json!({"ok":true,"result":valid})),
+            Ok(valid.to_string())
+        );
+        assert!(
+            resolve(
+                &mut s,
+                &p,
+                "r",
+                &json!({"ok":true,"result":{"deliveredAs":"unknown"}})
+            )
+            .is_err()
+        );
     }
     #[test]
     fn deadlines_outlast_host_processing() {
