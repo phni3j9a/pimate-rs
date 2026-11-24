@@ -110,8 +110,11 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                     style = Type.title,
                 )
                 val context = LocalContext.current
+                // TS 版の残りのデータは消さないので、案内は最初のペアリングだけに出す。
                 val fromTs =
-                    remember(context) { File(context.dataDir, "shared_prefs/SecureStore.xml").isFile }
+                    remember(context) {
+                        onBack == null && File(context.dataDir, "shared_prefs/SecureStore.xml").isFile
+                    }
                 Text(
                     if (fromTs) "以前の接続は引き継がれません。PC とペアリングし直してください。"
                     else "PC で動いている Pi を、このスマホから確認・操作できます。",
