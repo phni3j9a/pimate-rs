@@ -9,7 +9,15 @@ struct PairScreen: View {
     @State private var entering = false
     @State private var scanning = false
     @FocusState private var focused: Bool
+    private struct Candidate { let link: String, preview: PairPreview }
+    @State private var candidate: Candidate?
+    private func preview(_ value: String) {
+        focused = false; link = ""; error = ""
+        guard let parsed = previewPair(link: value) else { error = "有効なペアリングリンクを指定してください。"; return }
+        candidate = Candidate(link: value, preview: parsed)
+    }
     private func pair(_ value: String) {
+        candidate = nil
         focused = false; link = ""; error = ""
         Task { do { try await model.pair(value); done() } catch { self.error = "接続できません。ネットワークとリンクの有効期限を確認してください。" } }
     }
@@ -35,12 +43,18 @@ struct PairScreen: View {
             }.padding(20).frame(maxWidth: 540, alignment: .leading).frame(maxWidth: .infinity)
         }.safeAreaInset(edge: .bottom) {
             VStack(spacing: 8) {
-                if entering {
+                if let candidate {
+                    Text("接続先を確認").font(.headline).accessibilityAddTraits(.isHeader)
+                    Text(verbatim: candidate.preview.name).accessibilityIdentifier("pair-name")
+                    Text(verbatim: candidate.preview.address).font(.callout.monospaced()).accessibilityIdentifier("pair-address")
+                    Button("このマシンに接続") { pair(candidate.link) }.buttonStyle(PiPrimary()).disabled(model.busy)
+                    Button("キャンセル") { self.candidate = nil }.frame(minHeight: 44)
+                } else if entering {
                     HStack {
                         SecureField("ペアリングリンク", text: $link).focused($focused).textInputAutocapitalization(.never).autocorrectionDisabled().accessibilityIdentifier("link")
                         PasteButton(payloadType: String.self) { if let s = $0.first { link = s } }.labelStyle(.iconOnly).accessibilityIdentifier("paste")
                     }.padding(.horizontal, 16).frame(minHeight: 48).background(PiTheme.surface, in: Capsule())
-                    Button("接続") { pair(link) }.buttonStyle(PiPrimary()).disabled(link.isEmpty || model.busy)
+                    Button("接続先を確認") { preview(link) }.buttonStyle(PiPrimary()).disabled(link.isEmpty || model.busy)
                 } else {
                     Button { scanning = true } label: { Label("QRコードを読み取る", systemImage: "qrcode.viewfinder") }.buttonStyle(PiPrimary())
                     Button("リンクを貼り付ける") { entering = true }.frame(minHeight: 44)
@@ -48,7 +62,7 @@ struct PairScreen: View {
                 if model.busy { ProgressView("接続しています…") }
             }.padding(.horizontal, 20).padding(.vertical, 6).frame(maxWidth: 540).background(PiTheme.background)
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
-            .sheet(isPresented: $scanning) { ScannerSheet { value in scanning = false; pair(value) } }
+            .sheet(isPresented: $scanning) { ScannerSheet { value in scanning = false; preview(value) } }
     }
     private func step(_ n: String, _ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: 14) {

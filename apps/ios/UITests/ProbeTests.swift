@@ -12,10 +12,14 @@ final class ProbeTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["PIMATE_REQUIRE_DEMO"] == "1" else { throw XCTSkip("Run apps/ios/test-disposable.sh to include the loopback Host") }
         let insert = app.descendants(matching: .any)["paste"].firstMatch
         XCTAssertTrue(insert.waitForExistence(timeout: 5)); insert.tap()
-        let connect = app.buttons["接続"]; XCTAssertTrue(connect.isEnabled); connect.tap()
+        let preview = app.buttons["接続先を確認"]; XCTAssertTrue(preview.isEnabled); preview.tap()
+        XCTAssertEqual(app.staticTexts["pair-name"].label, "デモ PC")
+        XCTAssertTrue(app.staticTexts["pair-address"].label.hasPrefix("127.0.0.1:"))
+        app.buttons["キャンセル"].tap(); XCTAssertTrue(insert.exists); XCTAssertFalse(app.buttons["pi-waiting"].exists)
+        insert.tap(); preview.tap(); app.buttons["このマシンに接続"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); shot("Drawer")
-        main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main")
+        main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertFalse(app.buttons["画像を添付"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)

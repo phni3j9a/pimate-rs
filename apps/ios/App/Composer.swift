@@ -1,5 +1,4 @@
 import SwiftUI
-import UniformTypeIdentifiers
 
 // UIKit owns the marked range. Return is always a newline/IME confirmation, never a send shortcut.
 private struct MessageField: UIViewRepresentable {
@@ -27,7 +26,6 @@ private struct MessageField: UIViewRepresentable {
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
     @State private var marked = false
-    @State private var importing = false
     @State private var error = ""
     var body: some View {
         let draft = model.body(key)
@@ -49,9 +47,6 @@ struct Composer: View {
                         MessageField(text: draft.text) { value, composing in model.text(value, for: key); marked = composing }
                     }
                     HStack(spacing: 8) {
-                        if rows.field("promptImages") == "true" {
-                            Button("画像を添付", systemImage: "paperclip") { importing = true }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(draft.images.count >= min(4, Int(rows.field("promptImageLimit") ?? "1") ?? 1))
-                        }
                         if !draft.images.isEmpty { Text("画像 \(draft.images.count)枚").font(.caption) }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
@@ -62,9 +57,5 @@ struct Composer: View {
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
         }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.background)
-            .fileImporter(isPresented: $importing, allowedContentTypes: [.image], allowsMultipleSelection: true) { result in
-                guard case .success(let files) = result, !files.isEmpty else { return }; let scoped = files.filter { $0.startAccessingSecurityScopedResource() }
-                Task { defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }; do { try await model.attach(key, files: files) } catch { self.error = "画像を添付できません。枚数とサイズを確認してください。" } }
-            }
     }
 }
