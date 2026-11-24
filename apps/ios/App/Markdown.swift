@@ -178,11 +178,11 @@ struct TableViewer: View {
                 .modifier(PhotoViewport()).environment(\.markdownGallery, shown.gallery)
                 .environment(\.photoContext, PhotoContext(model: context.model, key: context.key, entries: context.entries, files: context.files, open: { photo = $0 }))
                 .navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
+                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() }.accessibilityLabel("表を閉じる") }
                     ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = shown.table.markdown; UIAccessibility.post(notification: .announcement, argument: "表を Markdown でコピーしました")
                     } }
                 }
-        }.fullScreenCover(item: $photo) { PhotoViewer(gallery: $0, context: context) }
+        }.accessibilityHidden(photo != nil).fullScreenCover(item: $photo) { PhotoViewer(gallery: $0, context: context) }
     }
 }

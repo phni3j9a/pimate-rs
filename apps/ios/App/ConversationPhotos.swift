@@ -94,7 +94,7 @@ struct PhotoViewer: View {
                     index = min(gallery.count - 1, max(0, index + (dx < 0 ? 1 : -1)))
                 }).navigationTitle(gallery.label(index)).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
+                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() }.accessibilityLabel("画像を閉じる") }
                     if gallery.count > 1 {
                         ToolbarItemGroup(placement: .bottomBar) {
                             Button("前の画像", systemImage: "chevron.left") { index -= 1 }.disabled(index == 0)

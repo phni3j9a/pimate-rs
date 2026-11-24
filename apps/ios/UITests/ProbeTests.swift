@@ -52,11 +52,11 @@ final class ProbeTests: XCTestCase {
         let next = app.buttons["次の画像"]
         XCTAssertTrue(next.waitForExistence(timeout: 8)); next.tap()
         XCTAssertTrue(app.images["画像 5 / 5"].waitForExistence(timeout: 8)); shot("Viewer")
-        app.buttons["閉じる"].tap()
+        app.buttons["画像を閉じる"].tap()
         let file = app.buttons["修正後の画面"]
         for _ in 0..<6 where !file.isHittable { scroll.swipeDown() }
         XCTAssertTrue(file.isHittable); file.tap()
-        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 10)); app.buttons["閉じる"].tap()
+        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 10)); app.buttons["画像を閉じる"].tap()
 
         let field = app.textViews["message"]
         func openVisibleTable() {
@@ -82,8 +82,8 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.images["確認結果"].waitForExistence(timeout: 10)); XCTAssertTrue(app.staticTexts["3 / 4"].exists)
         app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 8))
         app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正前の画面"].waitForExistence(timeout: 8))
-        app.buttons["閉じる"].tap(); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8)); shot("Table")
-        app.buttons["閉じる"].tap()
+        app.buttons["画像を閉じる"].tap(); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8)); shot("Table")
+        app.buttons["表を閉じる"].tap()
         field.tap(); field.typeText("/fix")
         let fix = app.buttons["command-fix-tests"]
         XCTAssertTrue(fix.waitForExistence(timeout: 8)); shot("Commands"); fix.tap()
@@ -99,7 +99,7 @@ final class ProbeTests: XCTestCase {
         openVisibleTable()
         let copy = app.buttons["表をコピー"]
         guard copy.waitForExistence(timeout: 8) else { XCTFail("Table viewer did not open"); return }; copy.tap()
-        app.buttons["閉じる"].tap()
+        app.buttons["表を閉じる"].tap()
         if variant == "light" {
             field.tap(); field.typeText("test"); app.buttons["送信"].tap()
             XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 30))
