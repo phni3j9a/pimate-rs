@@ -23,9 +23,9 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     }
     private let images = ChatImages()
     func image(_ key: EditorKey, source: ChatImageSource, thumbnail: Bool) async throws -> Data {
-        guard key == editor else { throw CoreError.StaleTarget }; let origin = selection
+        guard key == editor else { throw CoreError.StaleTarget }; let origin = selection, generation = rows[key.host]?.viewGeneration
         let data = try await images.load(source, thumbnail: thumbnail) { method, fields in try await self.request(key, method, fields) }
-        guard key == editor, origin == selection else { throw CoreError.StaleTarget }; return data
+        guard key == editor, origin == selection, generation == rows[key.host]?.viewGeneration else { throw CoreError.StaleTarget }; return data
     }
     private(set) var sheet: ChatSheet?
     func openSheet(_ key: EditorKey, page: ChatSheet.Page) throws -> ChatSheet {
@@ -83,7 +83,9 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     private func publish(_ r: Rows, id: String) {
         let old = editor, changedView = host == id && rows[id]?.viewGeneration != r.viewGeneration
         rows[id] = r
-        if editor != old || changedView { images.clear(); sheet = nil; selection = UUID(); message = "" }
+        if editor != old || changedView { images.clear(); sheet = nil }
+        // A proven prompt receipt stays valid in the same editor even if presentation was invalidated.
+        if editor != old { selection = UUID(); message = "" }
         if let key = editor, key.host == id {
             if let result = r.notices.receipt, !result.textHandled, result.instance == key.target.instance,
                result.outcome == .done, let dest = result.value["sessionId"] as? String, dest == key.target.session,
@@ -212,7 +214,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         guard !files.isEmpty else { return }
         guard attaching == nil, !busy else { throw CoreError.Blocked }
         attaching = key; defer { attaching = nil }
-        let existing = body(key).images, origin = selection, count = files.count
+        let existing = body(key).images, origin = selection, generation = r.viewGeneration, count = files.count
         let limit = min(4, Int(r.field("promptImageLimit") ?? "1") ?? 1)
         guard count > 0, count <= limit - existing.count else { throw CoreError.Blocked }
         let used = existing.reduce(0) { $0 + $1.data.utf8.count / 4 * 3 - $1.data.suffix(2).filter { $0 == "=" }.count }
@@ -222,7 +224,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         } }
         let images = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
         try Task.checkCancellation()
-        guard editor == key, origin == selection, body(key).images == existing else { throw CoreError.StaleTarget }
+        guard editor == key, origin == selection, generation == rows[key.host]?.viewGeneration, body(key).images == existing else { throw CoreError.StaleTarget }
         var d = body(key); d.images += images; drafts[key] = d
     }
     func restore(_ key: EditorKey, id: String) throws {
