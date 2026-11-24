@@ -274,3 +274,21 @@ extension ReviewTests {
         gate.signal(); try await task.value; XCTAssertEqual(model.body(key).images.count, 1)
     }
 }
+
+extension ReviewTests {
+    @MainActor func testLargeCatalogSnapshotKeepsSheetOnlyForSameTarget() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        try model.select(host: "a", instance: "pi"); let sheet = try model.openSheet(XCTUnwrap(model.editor), page: .model)
+        let listener = try XCTUnwrap(core.listeners["a"])
+        let catalog = (0..<65).map { Item(collection: "model", id: String($0), position: UInt64($0), json: "{}") }
+        for restart in [false, true] {
+            core.c.items = catalog
+            if restart { core.c.items.append(Item(collection: "view", id: "startedAt", position: 0, json: "123")) }
+            core.c.revision += 1
+            try listener.changed(revision: core.c.revision, changes: core.c.items.map { .upsert($0) })
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            XCTAssertEqual(model.rows["a"]?.groups["model"]?.count, 65)
+            XCTAssertEqual(model.sheet?.id, restart ? nil : sheet.id)
+        }
+    }
+}

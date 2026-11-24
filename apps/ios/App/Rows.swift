@@ -48,7 +48,9 @@ struct Rows {
     mutating func replace(_ snapshot: Snapshot) {
         guard snapshot.revision >= revision else { return }
         let previous = revision; var tracked = notices
+        let generation = viewGeneration, target = ready(pi), start = field("startedAt")
         self = Rows(snapshot)
+        if target == ready(pi), start == field("startedAt") { viewGeneration = generation }
         for (group, id) in [("operationResult", "latest"), ("busy", "operation"), ("notice", "sessionChanged")] {
             if group != "notice" || previous != revision { tracked.update(group, id, groups[group]?.first { $0.id == id }, instance: pi, snapshot: true) }
         }
