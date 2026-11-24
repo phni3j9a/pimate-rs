@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import PiMate
 
 final class FoundationTests: XCTestCase {
@@ -60,7 +61,30 @@ final class FoundationTests: XCTestCase {
         do { try await model.send(key, model.body(key)); XCTFail("old screen sent a prompt") } catch CoreError.StaleTarget {}
         XCTAssertTrue(model.body(otherKey).text.isEmpty)
         try model.select(host: host, instance: "demo"); try await wait { model.editor == key }; XCTAssertEqual(model.body(key).text, text)
-        try await model.send(key, model.body(key)); try await wait { model.rows[host]?.groups["entry"]?.contains { $0.json.contains(text) } == true }
+        // Exercise the same UIKit delegate and submission gate used by Composer. A real
+        // loopback Host supplies the history; the fixture's generic follow-up is not a receipt.
+        let window = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows).first(where: \.isKeyWindow))
+        let field = UITextView(frame: CGRect(x: 0, y: 0, width: 260, height: 80)), input = MessageInput()
+        window.addSubview(field); defer { field.resignFirstResponder(); field.removeFromSuperview() }
+        input.bind(field) { model.text($0, for: key) }; XCTAssertTrue(field.becomeFirstResponder())
+        func sendIfConfirmed() async throws -> Bool {
+            guard let draft = input.submission(model.body(key)) else { return false }
+            try await model.send(key, draft); return true
+        }
+        func users() -> [String] {
+            (model.rows[host]?.groups["entry"] ?? []).map(\.object).filter { $0.str("kind") == "user" }.map { $0.str("text") }
+        }
+        let before = users()
+        field.setMarkedText("にほんご", selectedRange: NSRange(location: 4, length: 0)); XCTAssertNotNil(field.markedTextRange)
+        try await wait { input.marked && model.body(key).text == "にほんご" }
+        let premature = try await sendIfConfirmed(); XCTAssertFalse(premature)
+        field.setMarkedText("日本語", selectedRange: NSRange(location: 3, length: 0)); field.unmarkText()
+        field.insertText("\n"); field.insertText("確定")
+        let expected = "日本語\n確定"
+        try await wait { !input.marked && model.body(key).text == expected }
+        XCTAssertNil(field.markedTextRange); XCTAssertEqual(users(), before) // Return did not send.
+        let sent = try await sendIfConfirmed(); XCTAssertTrue(sent)
+        try await wait { users().count > before.count }; XCTAssertEqual(users(), before + [expected])
         XCTAssertEqual(model.body(key).text, "")
     }
 }

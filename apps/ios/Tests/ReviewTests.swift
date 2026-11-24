@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 import UIKit
 @testable import PiMate
 
@@ -120,5 +121,44 @@ final class ReviewTests: XCTestCase {
         let h = Host(id: "fixture", name: "must not appear", address: "unused", deviceId: "d", needsPairing: true)
         defer { try? first.forget(id: h.id) }; try first.save(host: h, token: "")
         XCTAssertTrue(try KeychainStore.forLaunch(environment: env).hosts().isEmpty)
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testEmptyListRequiresFirstListAfterConnectOrReconnect() {
+        var rows = Rows()
+        XCTAssertEqual(Drawer.emptyMessage(connection: "接続中", rows: rows), "Pi 一覧を取得しています…")
+        for (flag, expected) in [("true", "起動中の Pi はありません"), ("false", "Pi 一覧を取得しています…")] {
+            rows.groups["host"] = [Item(collection: "host", id: "listKnown", position: 0, json: flag)]
+            XCTAssertEqual(Drawer.emptyMessage(connection: "接続中", rows: rows), expected)
+        }
+        XCTAssertEqual(Drawer.emptyMessage(connection: "オフライン", rows: rows), "オフライン")
+    }
+    @MainActor func testSubscribeRejectionIsNotASpinner() {
+        for code in ["unreachable", "not_found"] {
+            let rows = Rows(Snapshot(revision: 1, items: [
+                Item(collection: "view", id: "phase", position: 0, json: "\"subscribe_error\""),
+                Item(collection: "view", id: "error", position: 1, json: "\"\(code)\""),
+                Item(collection: "host", id: "connection", position: 0, json: "\"connected\"")]))
+            XCTAssertTrue(ChatScreen.connectionProblem(rows)?.contains("一覧") == true)
+        }
+        XCTAssertNil(ChatScreen.connectionProblem(Rows()))
+    }
+    @MainActor func testOfflineUnconfirmedShownOnlyForSelectedPiAndCannotRestore() {
+        var r = Rows(); r.groups["draft"] = [draftItem(1), draftItem(2, status: "queued"), draftItem(3, instance: "other")]
+        let notices = DraftList.notices(r, instance: "pi", ready: false)
+        XCTAssertEqual(notices.map(\.id), ["1"]); XCTAssertEqual(notices.first?.text, "例1")
+        XCTAssertEqual(notices.first?.canRestore(nil, model: SessionModel(core: TestCore(noHandle: .init()))), false)
+    }
+    private func draftItem(_ n: Int, instance: String = "pi", status: String = "unconfirmed") -> Item {
+        Item(collection: "draft", id: String(n), position: UInt64(n), json: "{\"instanceId\":\"\(instance)\",\"status\":\"\(status)\",\"params\":{\"text\":\"例\(n)\"}}")
+    }
+    @MainActor func testQueueHeightBoundAtLargeType() {
+        var r = Rows(); r.groups["draft"] = (0..<30).map { draftItem($0, status: "queued") }
+        let model = SessionModel(core: TestCore(noHandle: .init()))
+        let view = DraftList(rows: r, instance: "pi", model: model, key: EditorKey(host: "a", target: Target(instance: "pi", session: nil)))
+        let size = UIHostingController(rootView: view.dynamicTypeSize(.accessibility3)).sizeThatFits(in: CGSize(width: 320, height: 600))
+        XCTAssertGreaterThan(size.height, 0); XCTAssertLessThanOrEqual(size.height, 128)
+        XCTAssertEqual(DraftList.notices(r, instance: "pi", ready: true).count, 30)
     }
 }
