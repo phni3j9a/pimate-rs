@@ -14,6 +14,19 @@ extension EnvironmentValues {
     var photoContext: PhotoContext? { get { self[PhotoContextKey.self] } set { self[PhotoContextKey.self] = newValue } }
 }
 
+private struct PhotoViewportKey: EnvironmentKey { static let defaultValue = CGRect.zero }
+private extension EnvironmentValues {
+    var photoViewport: CGRect { get { self[PhotoViewportKey.self] } set { self[PhotoViewportKey.self] = newValue } }
+}
+struct PhotoViewport: ViewModifier {
+    @State private var viewport = CGRect.zero
+    func body(content: Content) -> some View {
+        content.environment(\.photoViewport, viewport).onGeometryChange(for: CGRect.self) { proxy in
+            let inset = proxy.safeAreaInsets
+            return proxy.frame(in: .global).inset(by: UIEdgeInsets(top: inset.top, left: inset.leading, bottom: inset.bottom, right: inset.trailing))
+        } action: { viewport = $0 }
+    }
+}
 struct HistoryPhotos: View {
     let images: HistoryImages
     @Environment(\.photoContext) private var context
@@ -34,10 +47,18 @@ struct HistoryPhotos: View {
 }
 struct PhotoTile: View {
     let context: PhotoContext, gallery: OpenPhoto
+    @Environment(\.photoViewport) private var viewport
+    @State private var visible = false
     var body: some View {
         Button { context.open(gallery) } label: {
-            LoadedPhoto(context: context, label: gallery.label(gallery.start), thumbnail: true, source: { gallery.source(gallery.start, true) })
-                .frame(maxWidth: .infinity, maxHeight: .infinity).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+            Group {
+                if visible { LoadedPhoto(context: context, label: gallery.label(gallery.start), thumbnail: true, source: { gallery.source(gallery.start, true) }) }
+                else { Color.clear }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onGeometryChange(for: Bool.self) { proxy in
+                    !viewport.isEmpty && viewport.intersects(proxy.frame(in: .global))
+                } action: { visible = $0 }
+                .background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
         }.buttonStyle(.plain).accessibilityLabel(gallery.label(gallery.start)).accessibilityHint("全画面で開く")
     }
 }
@@ -84,7 +105,9 @@ struct LoadedPhoto: View {
                 guard let source = source() else { throw CoreError.Unsupported }
                 let data = try await context.model.image(context.key, source: source, thumbnail: thumbnail)
                 let pixels = thumbnail ? 500 : 2400
-                let result = await Task.detached(priority: .userInitiated) { scaledPhoto(data, pixels: pixels) }.value
+                try Task.checkCancellation()
+                let decode = Task.detached(priority: .userInitiated) { Task.isCancelled ? nil : scaledPhoto(data, pixels: pixels) }
+                let result = await withTaskCancellationHandler { await decode.value } onCancel: { decode.cancel() }
                 try Task.checkCancellation(); guard let result else { throw CoreError.BadRequest }; image = result
             } catch { if !Task.isCancelled { failed = true } }
         }
