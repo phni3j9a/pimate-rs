@@ -15,6 +15,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async, tungstenite::Message};
+const EXTENSION_PACKAGE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../packages/pimate");
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 fn cli(dir: &Path) -> Command {
     cli_exe(dir, Path::new(env!("CARGO_BIN_EXE_pimate")))
@@ -170,20 +171,18 @@ async fn pairing_auth_and_revocation() -> Result<()> {
     closed(&mut s.ws().await?, 4408).await
 }
 #[tokio::test]
-#[ignore = "requires Pi and a TS PiMate checkout with dependencies"]
+#[ignore = "requires Pi and npm ci/build in packages/pimate"]
 async fn real_pi() -> Result<()> {
     real_turn(false).await
 }
 #[tokio::test]
-#[ignore = "requires real Pi and faux fixture"]
+#[ignore = "requires Pi and npm ci/build in packages/pimate"]
 async fn real_pi_agent_cli() -> Result<()> {
     real_turn(true).await
 }
 async fn real_turn(agent_cli: bool) -> Result<()> {
     let pi = PathBuf::from(env::var("PIMATE_TEST_PI")?).canonicalize()?;
-    let pkg = PathBuf::from(env::var("PIMATE_TEST_TS")?)
-        .canonicalize()?
-        .join("packages/pimate");
+    let pkg = Path::new(EXTENSION_PACKAGE);
     let s = Server::start().await?;
     let v = s.paired().await?;
     let dir = s.dir.path();
@@ -213,7 +212,7 @@ async fn real_turn(agent_cli: bool) -> Result<()> {
         .env("PIMATE_E2E", "1")
         .env("PI_OFFLINE", "1")
         .args(["--no-extensions", "-e"])
-        .arg(pkg.join("src/extension/index.ts"))
+        .arg(pkg.join("dist/extension.js"))
         .arg("-e")
         .arg(pkg.join("test/fixtures/faux.ts"))
         .args([
@@ -704,14 +703,12 @@ impl Drop for Cleanup {
     }
 }
 #[tokio::test]
-#[ignore = "requires Pi and TS PiMate faux fixture"]
+#[ignore = "requires Pi and npm ci in packages/pimate"]
 async fn real_pi_spawn_attach_restart_login() -> Result<()> {
     let tmp = std::sync::Arc::new(tempfile::tempdir()?);
     let path = tmp.path().to_path_buf();
     let pi = PathBuf::from(env::var("PIMATE_TEST_PI")?).canonicalize()?;
-    let pkg = PathBuf::from(env::var("PIMATE_TEST_TS")?)
-        .canonicalize()?
-        .join("packages/pimate");
+    let pkg = Path::new(EXTENSION_PACKAGE);
     let ext = pkg.join("test/fixtures/m2.ts");
     let wrapper = path.join("test-pi");
     let _guard = Cleanup::install(&path)?;
@@ -1963,5 +1960,43 @@ async fn keeper_attach_lifecycle() -> Result<()> {
         .status()
         .await?;
     ensure!(status.success());
+    Ok(())
+}
+
+#[tokio::test]
+async fn pair_pending_reads_a_private_code_from_stdin_only() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let output = cli(dir.path())
+        .args(["pair", "--json", "--address", "127.0.0.1:47801"])
+        .output()
+        .await?;
+    ensure!(output.status.success());
+    let pair: Value = serde_json::from_slice(&output.stdout)?;
+    let code = pair["code"].as_str().context("missing code")?;
+    for (input, ok) in [(code.to_owned(), true), (code.repeat(10), false)] {
+        let mut child = cli(dir.path())
+            .arg("pair-pending")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .await?;
+        let output = child.wait_with_output().await?;
+        assert_eq!(output.status.success(), ok);
+        for bytes in [&output.stdout, &output.stderr] {
+            assert!(!String::from_utf8_lossy(bytes).contains(code));
+        }
+        if ok {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout)?,
+                json!({"pending":true})
+            );
+        }
+    }
     Ok(())
 }

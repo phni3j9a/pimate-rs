@@ -39,3 +39,24 @@ jobs:
           export TMPDIR=/tmp PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config" PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg" PIMATE_SERVICE_PORT=47807
           cargo test --locked -p pimate-host keeper_
           cargo test --locked -p pimate-host launch_agent
+  extension:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/pimate
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: packages/pimate/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck && npm run build
+      - run: npm test
+        env:
+          PIMATE_RUN_DIR: ${{ runner.temp }}/run
+          PIMATE_CONFIG_DIR: ${{ runner.temp }}/config
+          PI_CODING_AGENT_DIR: ${{ runner.temp }}/agent
+          XDG_CONFIG_HOME: ${{ runner.temp }}/xdg
+          PIMATE_SERVICE_PORT: '47801'

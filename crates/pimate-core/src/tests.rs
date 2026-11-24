@@ -1352,3 +1352,221 @@ fn auth_wait_is_exclusive_per_login_pi_until_the_receipt_or_timeout() {
     s.release("2");
     s.prepare("4", wait("a"), true).unwrap();
 }
+
+#[test]
+fn exact_completion_skips_other_devices_and_stale_requests() {
+    use pimate_protocol::RcMethod::*;
+    for (method, params, e) in [
+        (Compact, json!({}), json!({"type":"compact_done"})),
+        (
+            Compact,
+            json!({}),
+            json!({"type":"compact_error","error":"bad"}),
+        ),
+        (
+            SessionOp,
+            json!({"op":"tree","arg":"node"}),
+            json!({"type":"session_op_done","op":"tree","cancelled":false}),
+        ),
+    ] {
+        let mut s = view();
+        s.prepare("A", rc(method, params.clone()), true).unwrap();
+        s.accept_op("A");
+        sync(&mut s, json!([]));
+        s.expire_result(s.result_deadline.unwrap());
+        s.prepare("B", rc(method, params), true).unwrap();
+        let mut e = e;
+        for (seq, id) in [(3, "foreign"), (4, "A"), (5, "B")] {
+            e["requestId"] = json!(id);
+            s.apply(&json!({"type":"event","seq":seq,"sessionId":"switched-after-request","instanceId":"i","event":e}));
+            if id != "B" {
+                assert_eq!(s.get("busy", "operation")["id"], "B");
+            }
+        }
+        assert_eq!(s.get("operationResult", "latest")["event"], e);
+        assert_eq!(s.get("operationResult", "latest")["id"], "B");
+    }
+}
+
+#[test]
+fn unopened_instance_uses_discovery_failure_until_opened_or_cleared() {
+    let mut s = State::default();
+    let mut list = json!({"type":"instances","instances":[{"instanceId":"i","status":"idle","session":{"id":"s"},"failureSummary":"認証失敗"}]});
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["section"], "waiting");
+    assert_eq!(s.get("instance", "i")["failureText"], "認証失敗");
+    s.selected = Some("i".into());
+    sync(&mut s, json!([]));
+    assert!(s.get("instance", "i")["failureText"].is_null());
+    event(
+        &mut s,
+        3,
+        json!({"type":"message_end","item":{"kind":"assistant","entryId":"e","stopReason":"error","errorMessage":"observed"}}),
+    );
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["failureText"], "observed");
+    s.selected = None;
+    list["instances"][0] = json!({"instanceId":"i","status":"idle","session":{"id":"next"}});
+    s.apply(&list);
+    assert!(s.get("instance", "i")["failureText"].is_null());
+}
+
+#[test]
+fn tagged_extension_does_not_credit_a_session_move_without_its_event() {
+    let mut s = view();
+    s.prepare(
+        "ours",
+        rc(pimate_protocol::RcMethod::SessionOp, json!({"op":"new"})),
+        true,
+    )
+    .unwrap();
+    s.accept_op("ours");
+    event(
+        &mut s,
+        3,
+        json!({"type":"session_changed","reason":"new","session":{"id":"next"}}),
+    );
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":4,"session":{"id":"next"},"completionRequestIds":true},"history":{"items":[]}}));
+    s.expire_result(s.result_deadline.unwrap());
+    assert_eq!(
+        s.get("operationResult", "latest"),
+        &json!({"id":"ours","outcome":"unknown"})
+    );
+}
+
+#[test]
+fn tagged_receipt_only_releases_text_to_its_proven_editor() {
+    for (op, envelope, fork_dst, text_ok) in [
+        ("tree", "s", None, true),
+        ("tree", "other", None, false),
+        ("fork", "other", None, false),
+        ("fork", "other", Some("destination"), false),
+        ("fork", "destination", Some("destination"), true),
+    ] {
+        let mut s = view();
+        sync(
+            &mut s,
+            json!([{"kind":"user","entryId":"node","text":"from source"}]),
+        );
+        accepted(&mut s, op);
+        let mut e = json!({"type":"session_op_done","op":op,"requestId":"request","cancelled":false,"editorText":"from event"});
+        if let Some(dst) = fork_dst {
+            e["forkSessionId"] = json!(dst);
+        }
+        s.apply(&json!({"type":"event","instanceId":"i","sessionId":envelope,"seq":3,"event":e}));
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["id"], "request");
+        assert_eq!(result["event"]["cancelled"], false);
+        assert_eq!(
+            result["event"]["editorText"].as_str(),
+            text_ok.then_some("from event")
+        );
+        assert_eq!(
+            result["forkText"].as_str(),
+            (text_ok && op == "fork").then_some("from source")
+        );
+    }
+}
+
+#[test]
+fn legacy_fork_event_without_arrival_does_not_release_text() {
+    let mut s = view();
+    sync(
+        &mut s,
+        json!([{"kind":"user","entryId":"node","text":"from source"}]),
+    );
+    accepted(&mut s, "fork");
+    s.apply(&json!({"type":"event","instanceId":"i","sessionId":"unverified","seq":3,"event":{"type":"session_op_done","op":"fork","cancelled":false,"editorText":"from event"}}));
+    let result = s.get("operationResult", "latest");
+    assert_eq!(result["event"]["cancelled"], false);
+    assert!(result["forkText"].is_null() && result["event"]["editorText"].is_null());
+}
+
+#[test]
+fn legacy_fork_text_requires_next_matching_snapshot_in_either_delivery_order() {
+    for scenario in [
+        "snapshot first",
+        "snapshot before ack",
+        "event first",
+        "different session",
+        "replacement",
+        "expired",
+        "superseded",
+        "disconnected",
+    ] {
+        let mut s = view();
+        let snapshot = |session: &str, seq, start| json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":seq,"startedAt":start,"session":{"id":session}},"history":{"items":[]}});
+        let mut source = snapshot("s", 2, 1);
+        source["history"]["items"] = json!([{"kind":"user","entryId":"node","text":"from source"}]);
+        s.apply(&source);
+        s.prepare(
+            "request",
+            rc(
+                pimate_protocol::RcMethod::SessionOp,
+                json!({"op":"fork","arg":"node"}),
+            ),
+            true,
+        )
+        .unwrap();
+        if scenario != "snapshot before ack" {
+            s.accept_op("request");
+        }
+        event(
+            &mut s,
+            3,
+            json!({"type":"session_changed","reason":"fork","session":{"id":"dst"}}),
+        );
+        let first = scenario.starts_with("snapshot");
+        if first {
+            s.apply(&snapshot("dst", 4, 1));
+        }
+        s.apply(&json!({"type":"event","instanceId":"i","sessionId":"dst","seq":5,"event":{"type":"session_op_done","op":"fork","cancelled":false,"editorText":"from wire"}}));
+        assert!(s.get("busy", "operation").is_null());
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["event"]["cancelled"], false);
+        assert_eq!(result["forkText"].as_str(), first.then_some("from source"));
+        assert_eq!(
+            result["event"]["editorText"].as_str(),
+            first.then_some("from wire")
+        );
+        if scenario == "expired" {
+            s.expire_result(tokio::time::Instant::now() + state::MISSING_TTL);
+        }
+        if scenario == "disconnected" {
+            s.reset();
+        }
+        if scenario == "superseded" {
+            s.apply(&json!({"type":"instances","instances":[{"instanceId":"i","startedAt":1}]}));
+            s.prepare(
+                "other",
+                Operation::HostModels {
+                    instance: "i".into(),
+                },
+                true,
+            )
+            .unwrap();
+        }
+        s.apply(&snapshot(
+            if scenario == "different session" {
+                "other"
+            } else {
+                "dst"
+            },
+            6,
+            if scenario == "replacement" { 2 } else { 1 },
+        ));
+        s.apply(&snapshot("dst", 7, 1)); // the first snapshot consumed the pending text, even on mismatch
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["id"], "request");
+        let proven = first || scenario == "event first";
+        assert_eq!(
+            result["forkText"].as_str(),
+            proven.then_some("from source"),
+            "{scenario}"
+        );
+        assert_eq!(
+            result["event"]["editorText"].as_str(),
+            proven.then_some("from wire")
+        );
+    }
+}

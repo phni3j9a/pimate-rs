@@ -154,6 +154,7 @@ fn summaries(list: Vec<Value>) -> Vec<Value> {
                         | "startedAt"
                         | "updatedAt"
                         | "questionTitle"
+                        | "failureSummary"
                         | "subagents"
                 )
             });

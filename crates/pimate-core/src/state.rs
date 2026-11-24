@@ -81,6 +81,9 @@ pub(crate) struct State {
     failures: std::collections::HashMap<String, Failure>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
+    tagged_completions: bool,
+    summaries: std::collections::HashMap<String, String>,
+    pending_fork_text: std::collections::HashMap<String, PendingForkText>,
     missing: MissingCompletions,
     generations: std::collections::HashMap<String, u64>,
     pub(crate) result_deadline: Option<Instant>,
@@ -88,6 +91,14 @@ pub(crate) struct State {
     pub drafts: Vec<Draft>,
 }
 const UNKNOWN_FAILURE: &str = "Pi の実行に失敗しました";
+struct PendingForkText {
+    request: Value,
+    started_at: Value,
+    session: Value,
+    fork: Value,
+    editor: Value,
+    until: Instant,
+}
 struct Failure {
     entry: Value,
     session: Value,
@@ -219,6 +230,8 @@ impl State {
         }
         self.clear("busy");
         self.result_deadline = None;
+        // The confirming snapshot can only come from this subscription; don't keep text past it.
+        self.pending_fork_text.clear();
         self.clear("notice");
         self.reset_view()
     }
@@ -234,7 +247,9 @@ impl State {
                     text: text.chars().take(240).collect(),
                 },
             );
-        } else if self.failures.remove(id).is_none() {
+        } else if self.failures.remove(id).is_none()
+            && self.get("instance", id)["failureText"].is_null()
+        {
             return;
         }
         if let Some(rows) = self.rows.get("instance") {
@@ -443,9 +458,17 @@ impl State {
             if let Some(obj) = row.as_object_mut() {
                 obj.remove("failureText");
             }
-            let Some(id) = row["instanceId"].as_str() else {
+            let Some(key) = row["instanceId"].as_str().map(str::to_owned) else {
                 continue;
             };
+            let id = key.as_str();
+            if row["status"] == "idle"
+                && row["subagents"]["waiting"].as_u64().unwrap_or(0) == 0
+                && !(self.ready() && self.selected.as_deref() == Some(id))
+                && let Some(summary) = self.summaries.get(id)
+            {
+                row["failureText"] = json!(summary);
+            }
             if previous.get(id).is_some_and(|f| {
                 row["startedAt"] == f.started
                     && row["session"]["id"] == f.session
@@ -547,7 +570,17 @@ impl State {
         let t = m["type"].as_str().unwrap_or("");
         if t == "instances" {
             self.put("host", "listKnown", json!(true));
-            let list = m["instances"].as_array().cloned().unwrap_or_default();
+            let mut list = m["instances"].as_array().cloned().unwrap_or_default();
+            self.summaries.clear();
+            for row in &mut list {
+                if let Some(summary) = row.as_object_mut().and_then(|o| o.remove("failureSummary"))
+                    && let Some(text) = summary.as_str().filter(|t| !t.is_empty())
+                    && let Some(id) = row["instanceId"].as_str()
+                {
+                    self.summaries
+                        .insert(id.into(), text.chars().take(240).collect());
+                }
+            }
             return self.instances(list);
         }
         if self.selected.is_none() || self.selected.as_deref() != m["instanceId"].as_str() {
@@ -560,6 +593,8 @@ impl State {
                     m["instanceId"].as_str().unwrap(),
                     m["snapshot"]["startedAt"].as_u64(),
                 );
+                self.tagged_completions = m["snapshot"]["completionRequestIds"] == true;
+                self.confirm_fork_text(m["instanceId"].as_str().unwrap(), &m["snapshot"]);
                 self.snapshot_op(&m["snapshot"]["session"]["id"]);
                 self.reset_view();
                 let s = &m["snapshot"];
@@ -567,6 +602,7 @@ impl State {
                 self.effect_seq = self.seq;
                 for (k, v) in s.as_object().into_iter().flatten() {
                     match k.as_str() {
+                        "completionRequestIds" | "failureSummary" => (),
                         "pendingUI" => {
                             for q in v.as_array().into_iter().flatten() {
                                 self.keyed("question", "requestId", q)
@@ -632,7 +668,16 @@ impl State {
                                 && f.session == s["session"]["id"]
                         }) =>
                     {
-                        self.set_failure(id, Some((&e["entryId"], UNKNOWN_FAILURE)))
+                        self.set_failure(
+                            id,
+                            Some((
+                                &e["entryId"],
+                                s["failureSummary"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(UNKNOWN_FAILURE),
+                            )),
+                        )
                     }
                     None => self.set_failure(id, None),
                     _ => (),
@@ -739,18 +784,28 @@ impl State {
                         started_at: self.generation(instance),
                         kind: kind.into(),
                     };
-                    let stale = self.missing.consume(&scope);
+                    let tagged = e["requestId"].is_string();
+                    if self.tagged_completions && !tagged {
+                        return false; // Local/manual activity is not proof of a remote completion.
+                    }
+                    if tagged && self.get("busy", "operation")["id"] != e["requestId"] {
+                        return false;
+                    }
+                    let stale = !tagged && self.missing.consume(&scope);
                     let op = self.get("busy", "operation");
                     let matches = k == "session_op_done"
                         && op["method"] == "session_op"
                         && op["op"] == e["op"]
                         || k.starts_with("compact_")
                             && op["method"] == "compact"
-                            && (stale || op["sessionId"] == m["sessionId"]);
+                            && (tagged || stale || op["sessionId"] == m["sessionId"]);
                     if !matches {
                         return false;
                     }
-                    if stale {
+                    if tagged {
+                        // The envelope session is current at callback time, not the request target.
+                        self.finish_op(json!({"sessionId":m["sessionId"],"event":e}));
+                    } else if stale {
                         // This event may belong to A. B still has one outstanding completion.
                         self.finish_without_event(json!({"outcome":"unknown"}));
                     } else if matches!(e["op"].as_str(), Some("reload" | "tree"))
@@ -770,6 +825,7 @@ impl State {
                 // Even when the view is resyncing, a second move invalidates the
                 // grace window. Do not mistake that move's result for our own.
                 if k == "session_changed"
+                    && !self.tagged_completions
                     && self.result_deadline.is_some()
                     && self.seq.max(self.effect_seq).is_none_or(|n| seq > n)
                 {
@@ -1027,6 +1083,7 @@ impl State {
         self.generations.get(id).copied()
     }
     fn retire_generation(&mut self, id: &str) {
+        self.pending_fork_text.remove(id);
         self.missing.0.retain(|k, _| k.instance != id);
         if self.selected.as_deref() == Some(id) {
             let op = self.get("busy", "operation");
@@ -1056,27 +1113,92 @@ impl State {
     }
     fn finish_without_event(&mut self, result: Value) {
         let scope = self.busy_scope();
-        if self.generation(&scope.instance) == scope.started_at {
+        if !self.tagged_completions && self.generation(&scope.instance) == scope.started_at {
             self.missing.add(scope);
         }
         self.finish_op(result)
+    }
+    pub(crate) fn discard_fork_text(&mut self, instance: &str) {
+        self.pending_fork_text.remove(instance);
+    }
+    fn confirm_fork_text(&mut self, instance: &str, snapshot: &Value) {
+        let Some(text) = self.pending_fork_text.remove(instance) else {
+            return;
+        };
+        let latest = self.get("operationResult", "latest");
+        if text.until <= Instant::now()
+            || text.started_at != snapshot["startedAt"]
+            || text.session != snapshot["session"]["id"]
+            || text.request != latest["id"]
+            || self.tagged_completions
+        {
+            return;
+        }
+        let mut latest = latest.clone();
+        if !text.fork.is_null() {
+            latest["forkText"] = text.fork;
+        }
+        if !text.editor.is_null() {
+            latest["event"]["editorText"] = text.editor;
+        }
+        self.put("operationResult", "latest", latest);
     }
     fn finish_op(&mut self, mut result: Value) {
         let op = self.get("busy", "operation");
         debug_assert!(!op.is_null());
         result["id"] = op["id"].clone();
-        // Like TS forkText: the fork source is known locally; tree editorText only comes from RC.
-        if !op["forkText"].is_null()
-            && (result["outcome"] == "done"
-                || (result["event"]["cancelled"] == false && result["event"]["error"].is_null()))
-        {
+        // A correlated receipt is not itself proof that its text belongs in the current editor.
+        let e = &result["event"];
+        let dest = &result["sessionId"];
+        let success =
+            result["outcome"] == "done" || (e["cancelled"] == false && e["error"].is_null());
+        let fork_destination = success && dest.is_string() && dest != &op["sessionId"];
+        let legacy_arrival =
+            fork_destination && !e["requestId"].is_string() && dest == &op["arrival"];
+        let text_ok = match op["op"].as_str() {
+            Some("tree") => success && dest.is_string() && dest == &op["sessionId"],
+            Some("fork") if e["requestId"].is_string() => {
+                fork_destination && dest == &e["forkSessionId"]
+            }
+            Some("fork") => {
+                legacy_arrival
+                    && (op["provenFork"] == true
+                        || (self.ready()
+                            && op["snapshotSession"] == *dest
+                            && self.get("view", "session")["id"] == *dest))
+            }
+            _ => !e["requestId"].is_string(),
+        };
+        if text_ok && !op["forkText"].is_null() {
             result["forkText"] = op["forkText"].clone();
+        } else if legacy_arrival
+            && e["op"] == "fork"
+            && !self.ready()
+            && !text_ok
+            && (!op["forkText"].is_null() || !e["editorText"].is_null())
+        {
+            // v1 Host forwards this completion before the resync snapshot proves the destination.
+            let text = PendingForkText {
+                request: op["id"].clone(),
+                started_at: op["startedAt"].clone(),
+                session: dest.clone(),
+                fork: op["forkText"].clone(),
+                editor: e["editorText"].clone(),
+                until: Instant::now() + MISSING_TTL,
+            };
+            self.pending_fork_text
+                .insert(self.selected.clone().unwrap(), text);
         }
+        if !text_ok && let Some(event) = result.get_mut("event").and_then(Value::as_object_mut) {
+            event.remove("editorText");
+        }
+
         self.put("operationResult", "latest", result);
         self.remove("busy", "operation");
         self.result_deadline = None;
     }
     pub(crate) fn expire_result(&mut self, now: Instant) {
+        self.pending_fork_text.retain(|_, text| text.until > now);
         self.missing.expire(now);
         if self.result_deadline.is_some_and(|t| t <= now) {
             let op = self.get("busy", "operation");
@@ -1114,7 +1236,8 @@ impl State {
             self.put("busy", "operation", op);
             return;
         }
-        let proven = !self.missing.contains(&self.busy_scope())
+        let proven = !self.tagged_completions
+            && !self.missing.contains(&self.busy_scope())
             && !session.is_null()
             && op["arrival"] == *session
             && match op["op"].as_str() {

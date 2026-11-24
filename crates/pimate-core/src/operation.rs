@@ -85,6 +85,13 @@ fn checked<T: serde::de::DeserializeOwned + serde::Serialize>(p: Value) -> Resul
 }
 impl State {
     pub fn prepare(&mut self, id: &str, op: Operation, commit: bool) -> Result<Value, Error> {
+        let msg = self.prepare_request(id, op, commit)?;
+        if commit && let Some(instance) = msg["instanceId"].as_str() {
+            self.discard_fork_text(instance);
+        }
+        Ok(msg)
+    }
+    fn prepare_request(&mut self, id: &str, op: Operation, commit: bool) -> Result<Value, Error> {
         let msg = self.build(id, op, commit)?;
         let method = &msg["request"]["method"];
         let lock = match method.as_str() {
