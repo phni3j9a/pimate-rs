@@ -31,10 +31,12 @@ use tokio::{
 const MAGIC: &[u8; 4] = b"PMT2";
 const PROBE: &[u8; 4] = b"PMS2";
 fn verify_uid(sock: &UnixStream, expected: u32) -> Result<()> {
-    ensure!(
-        sock.peer_cred()?.uid() == expected,
-        "terminal peer UID mismatch"
-    );
+    // Darwin's LOCAL_PEEREPID is not always available; only the UID is needed.
+    #[cfg(target_os = "macos")]
+    let uid = unistd::getpeereid(sock)?.0.as_raw();
+    #[cfg(not(target_os = "macos"))]
+    let uid = sock.peer_cred()?.uid();
+    ensure!(uid == expected, "terminal peer UID mismatch");
     Ok(())
 }
 async fn connect(path: &Path) -> Result<UnixStream> {
@@ -314,11 +316,14 @@ mod tests {
     use super::*;
     #[tokio::test]
     async fn keeper_checks_peer_uid_on_both_ends() -> Result<()> {
-        let (a, b) = UnixStream::pair()?;
+        let d = tempfile::tempdir_in("/tmp")?;
+        let path = d.path().join("t");
+        let listener = UnixListener::bind(&path)?;
+        let (a, (b, _)) = tokio::try_join!(UnixStream::connect(&path), listener.accept())?;
         let uid = unistd::geteuid().as_raw();
-        for sock in [a, b] {
-            verify_uid(&sock, uid)?;
-            assert!(verify_uid(&sock, uid.wrapping_add(1)).is_err());
+        for sock in [&a, &b] {
+            verify_uid(sock, uid)?;
+            assert!(verify_uid(sock, uid.wrapping_add(1)).is_err());
         }
         Ok(())
     }
