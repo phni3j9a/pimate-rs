@@ -76,11 +76,12 @@ private struct TreeDestination: View {
         List {
             Section(row.detail) { Text(verbatim: row.preview) }
             Section {
-                TextField("ラベル", text: $label).submitLabel(.done)
+                TextField("ラベル", text: $label).submitLabel(.done).disabled(!panel.ready) // edits during the save would be dropped by dismiss()
+                // RC limits labels by JavaScript .length, i.e. UTF-16 units.
                 Button("ラベルを保存") { save(trimmed) }
-                    .disabled(!panel.ready || trimmed.isEmpty || trimmed.count > 200 || trimmed == row.node.str("label"))
+                    .disabled(!panel.ready || trimmed.isEmpty || trimmed.utf16.count > 200 || trimmed == row.node.str("label"))
                 if !row.node.str("label").isEmpty { Button("ラベルを外す") { save(nil) }.disabled(!panel.ready) }
-            } header: { Text("ラベル") } footer: { if trimmed.count > 200 { Text("200文字以内で入力してください。") } }
+            } header: { Text("ラベル") } footer: { if trimmed.utf16.count > 200 { Text("200文字以内で入力してください。") } }
             Section {
                 Toggle("離れる枝を要約する", isOn: $summarize)
             } footer: { Text("要約には時間と利用料金がかかります。要約しなくても元の枝は残ります。") }
