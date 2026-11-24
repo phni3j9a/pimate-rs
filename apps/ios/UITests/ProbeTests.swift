@@ -41,6 +41,13 @@ final class ProbeTests: XCTestCase {
             let field = app.textViews["message"]; field.tap(); field.typeText("test")
             app.buttons["送信"].tap()
             XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 30))
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            let edge = app.buttons["pi-edge"]
+            for _ in 0..<6 where !edge.isHittable { app.swipeUp() }
+            edge.tap(); XCTAssertTrue(field.waitForExistence(timeout: 8)); field.tap(); field.typeText("draft")
+            let confirm = app.buttons["新しい送信先を確認"]
+            XCTAssertTrue(confirm.waitForExistence(timeout: 18)); field.tap(); field.typeText("next")
+            XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
         }
     }
 }

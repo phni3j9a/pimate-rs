@@ -41,12 +41,17 @@ struct Selectable: UIViewRepresentable {
                 if style.code { attrs[.backgroundColor] = UIColor(PiTheme.surface) }
                 if links, let href = style.href?.value(), let url = URL(string: href), ["https", "http"].contains(url.scheme?.lowercased() ?? "") { attrs[.link] = url }
                 result.append(NSAttributedString(string: text, attributes: attrs))
-            case .image(let image): result.append(NSAttributedString(string: image.alt.isEmpty ? "画像" : image.alt, attributes: [.font: UIFont.systemFont(ofSize: scale), .foregroundColor: UIColor.secondaryLabel]))
+            case .image(let image): result.append(Self.imageLabel(image, links: links, size: scale))
             }
         }
         if v.attributedText != result { v.attributedText = result }
         v.linkTextAttributes = [.foregroundColor: UIColor(PiTheme.accent), .underlineStyle: NSUnderlineStyle.single.rawValue]
         if heading { v.accessibilityTraits.insert(.header) }
+    }
+    static func imageLabel(_ image: MarkdownImage, links: Bool, size: CGFloat) -> NSAttributedString {
+        var attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: size), .foregroundColor: UIColor.secondaryLabel]
+        if links, image.kind == .remote, let url = URL(string: image.src.value()), WebImage.valid(url, scheme: "http") { attrs[.link] = url }
+        return NSAttributedString(string: image.alt.isEmpty ? "画像" : image.alt, attributes: attrs)
     }
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width.isFinite else { return nil }

@@ -6,17 +6,21 @@ import UIKit
 // UniFFI's no-handle fakes: no network or Keychain, and the test controls exactly when ACK arrives.
 private final class TestConnection: Connection, @unchecked Sendable {
     var items: [Item] = []
+    var revision: UInt64 = 1
     var checkError: CoreError?
     var receipt: @Sendable () async throws -> Void = {}
+    var restored = RestoredDraft(text: "restored", images: [Image(mimeType: "image/jpeg", data: "YQ==")])
+    override func takeUnconfirmed(target: Target, id: String) throws -> RestoredDraft { restored }
     override func subscribe(instance: String?) throws {}
     override func snapshot() -> Snapshot {
-        Snapshot(revision: 1, items: items + [field("phase", "\"ready\""), field("instanceId", "\"pi\""), field("promptImages", "true"), field("promptImageLimit", "4")])
+        Snapshot(revision: revision, items: items + [field("phase", "\"ready\""), field("instanceId", "\"pi\""), field("promptImages", "true"), field("promptImageLimit", "4")])
     }
     private func field(_ id: String, _ json: String) -> Item { Item(collection: "view", id: id, position: 0, json: json) }
     override func check(operation: PiMate.Operation) throws { if let checkError { throw checkError } }
     override func perform(operation: PiMate.Operation) async throws -> String { try await receipt(); return "{}" }
 }
 private final class TestCore: Core, @unchecked Sendable {
+    var listeners: [String: Listener] = [:]
     var locked = false, blockedHost: String?, attempts: [String] = []
     var pairCalls = 0, lockAfterPair = false
     private var registrations = ["a", "b"].map { Host(id: $0, name: $0, address: "unused", deviceId: "d", needsPairing: false) }
@@ -32,7 +36,7 @@ private final class TestCore: Core, @unchecked Sendable {
         return registrations
     }
     override func connect(id: String, listener: Listener) throws -> Connection {
-        attempts.append(id); if id == blockedHost { throw CoreError.Storage }; return c
+        listeners[id] = listener; attempts.append(id); if id == blockedHost { throw CoreError.Storage }; return c
     }
 }
 
@@ -116,6 +120,20 @@ final class ReviewTests: XCTestCase {
         XCTAssertTrue(model.body(key).images.isEmpty)
         try await model.attach(key, files: Array(repeating: url, count: 4)); XCTAssertEqual(model.body(key).images.map(\.mimeType), Array(repeating: "image/jpeg", count: 4))
     }
+    @MainActor func testRemoveRestoredPhotoAndPreserveEditingDuringBuiltin() async throws {
+        let core = TestCore(noHandle: .init()), m = SessionModel(core: core)
+        core.c.items = [Item(collection: "command", id: "compact", position: 0, json: #"{"source":"builtin"}"#)]
+        try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
+        try m.restore(key, id: "draft"); XCTAssertEqual(m.body(key), core.c.restored)
+        try m.removeAttachment(key, shown: core.c.restored.images, at: 0)
+        XCTAssertThrowsError(try m.removeAttachment(key, shown: core.c.restored.images, at: 0)); XCTAssertEqual(m.body(key).text, "restored")
+        m.text("/compact", for: key); let sent = m.body(key)
+        let gate = AsyncStream<Void>.makeStream(), wait = expectation(description: "awaiting builtin")
+        core.c.receipt = { wait.fulfill(); for await _ in gate.stream { break } }
+        let task = Task { try await m.builtin(key, sent) }; await fulfillment(of: [wait], timeout: 3)
+        m.text("次の本文", for: key); gate.continuation.finish(); let sheet = try await task.value
+        XCTAssertNil(sheet); XCTAssertEqual(m.body(key).text, "次の本文")
+    }
     func testTestLaunchCannotReusePriorRegistration() throws {
         let env = ["PIMATE_TEST_STORE": "1"], first = KeychainStore.forLaunch(environment: env)
         let h = Host(id: "fixture", name: "must not appear", address: "unused", deviceId: "d", needsPairing: true)
@@ -160,5 +178,117 @@ extension ReviewTests {
         let size = UIHostingController(rootView: view.dynamicTypeSize(.accessibility3)).sizeThatFits(in: CGSize(width: 320, height: 600))
         XCTAssertGreaterThan(size.height, 0); XCTAssertLessThanOrEqual(size.height, 128)
         XCTAssertEqual(DraftList.notices(r, instance: "pi", ready: true).count, 30)
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testImageRequestsShareStreamingPathButNotAnswer() async throws {
+        let images = ChatImages(), entered = expectation(description: "file_image"), gate = AsyncStream<Void>.makeStream()
+        var calls = 0
+        func fetch(_ answer: String) async throws -> Data {
+            try await images.load(.file(answer: answer, path: "pic.png"), thumbnail: true) { method, fields in
+                XCTAssertEqual(method, .fileImage); XCTAssertEqual(fields["path"] as? String, "pic.png"); calls += 1
+                if calls == 1 { entered.fulfill(); for await _ in gate.stream { break } }; return #"{"image":{"data":"YQ=="}}"#
+            }
+        }
+        let a = Task { try await fetch("A") }; await fulfillment(of: [entered], timeout: 3)
+        let b = Task { try await fetch("A") }; await Task.yield(); gate.continuation.finish()
+        let first = try await a.value, second = try await b.value; XCTAssertEqual(first, second)
+        _ = try await fetch("A"); XCTAssertEqual(calls, 1); _ = try await fetch("B"); XCTAssertEqual(calls, 2)
+    }
+    @MainActor func testSheetDoesNotDeliverToReopenedSheet() async throws {
+        let core = TestCore(noHandle: .init()), m = SessionModel(core: core)
+        try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor), first = try m.openSheet(key, page: .resume)
+        let wait = expectation(description: "pending"), gate = AsyncStream<Void>.makeStream()
+        core.c.receipt = { wait.fulfill(); for await _ in gate.stream { break } }
+        let task = Task { try await m.run(.sessions, in: first) }; await fulfillment(of: [wait], timeout: 3)
+        let reopened = try m.openSheet(key, page: .resume); gate.continuation.finish()
+        do { try await task.value; XCTFail() } catch CoreError.StaleTarget {}
+        XCTAssertEqual(m.sheet?.id, reopened.id); XCTAssertNil(m.sheet?.reply); XCTAssertNil(m.sheet?.error)
+    }
+}
+
+
+extension ReviewTests {
+    @MainActor func testMoveConfirmationBlocksBuiltinBeforeRouting() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        func session(_ id: String) -> Item { Item(collection: "view", id: "session", position: 0, json: "{\"id\":\"\(id)\"}") }
+        core.c.items = [session("A")]; try model.select(host: "a", instance: "pi")
+        model.text("old", for: try XCTUnwrap(model.editor))
+        core.c.items = [session("B"), Item(collection: "notice", id: "sessionChanged", position: 0, json: #"{"reason":"resume","from":{"id":"A"},"to":{"id":"B"}}"#), Item(collection: "command", id: "compact", position: 0, json: #"{"source":"builtin"}"#)]
+        core.c.revision += 1; try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        model.text("/compact", for: key); core.c.receipt = { XCTFail("must not submit") }
+        do { _ = try await model.builtin(key, model.body(key)); XCTFail() } catch CoreError.Blocked {}
+        model.confirmMove(key, id: try XCTUnwrap(model.move?.id)); core.c.receipt = {}
+        _ = try await model.builtin(key, model.body(key)); XCTAssertEqual(model.body(key).text, "")
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testRestartWithinDeliveryBatchInvalidatesDestructiveSheet() async throws {
+        for restart in [true, false] {
+            let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+            try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor), sheet = try model.openSheet(key, page: .session)
+            let listener = try XCTUnwrap(core.listeners["a"])
+            if restart { try listener.changed(revision: 2, changes: [.upsert(Item(collection: "view", id: "startedAt", position: 0, json: "2"))]) }
+            else {
+                try listener.changed(revision: 2, changes: [.remove(collection: "view", id: "phase")]); try listener.changed(revision: 3, changes: [.upsert(Item(collection: "view", id: "phase", position: 0, json: #""ready""#))])
+            }
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            XCTAssertEqual(model.editor, key); XCTAssertNil(model.sheet); core.c.receipt = { XCTFail("old confirmation reached a new Pi") }
+            do { try await model.run(.shutdown, in: sheet); XCTFail() } catch CoreError.StaleTarget {}
+        }
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testFileImageCacheEvictsLeastRecentlyUsed() async throws {
+        let images = ChatImages(); var requests = [Int: Int]()
+        func show(_ i: Int) async throws {
+            _ = try await images.load(.file(answer: "A", path: "\(i).png"), thumbnail: true) { _, _ in
+                requests[i, default: 0] += 1; return #"{"image":{"data":"YQ=="}}"#
+            }
+        }
+        for i in 0..<64 { try await show(i) }
+        try await show(0); try await show(64); try await show(0); try await show(1)
+        XCTAssertEqual(requests[0], 1); XCTAssertEqual(requests[1], 2)
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testAttachmentInProgressBlocksBothBuiltinRoutes() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        core.c.items = ["model", "new"].map { Item(collection: "command", id: $0, position: 0, json: #"{"source":"builtin"}"#) }
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        let gate = DispatchSemaphore(value: 0), started = expectation(description: "encoding on worker")
+        let task = Task { try await model.attach(key, files: [URL(fileURLWithPath: "/fixture")]) { _, _ in
+            started.fulfill(); guard gate.wait(timeout: .now() + 5) == .success else { throw CoreError.Timeout }
+            return Image(mimeType: "image/jpeg", data: "YQ==")
+        } }
+        await fulfillment(of: [started], timeout: 3); core.c.receipt = { XCTFail("command sent while attaching") }
+        for cmd in ["/model", "/new"] {
+            model.text(cmd, for: key)
+            do { _ = try await model.builtin(key, model.body(key)); XCTFail() } catch CoreError.Blocked {}
+            XCTAssertEqual(model.body(key).text, cmd)
+        }
+        gate.signal(); try await task.value; XCTAssertEqual(model.body(key).images.count, 1)
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testLargeCatalogSnapshotKeepsSheetOnlyForSameTarget() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        try model.select(host: "a", instance: "pi"); let sheet = try model.openSheet(XCTUnwrap(model.editor), page: .model)
+        let listener = try XCTUnwrap(core.listeners["a"])
+        let catalog = (0..<65).map { Item(collection: "model", id: String($0), position: UInt64($0), json: "{}") }
+        for restart in [false, true] {
+            core.c.items = catalog
+            if restart { core.c.items.append(Item(collection: "view", id: "startedAt", position: 0, json: "123")) }
+            core.c.revision += 1
+            try listener.changed(revision: core.c.revision, changes: core.c.items.map { .upsert($0) })
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            XCTAssertEqual(model.rows["a"]?.groups["model"]?.count, 65)
+            XCTAssertEqual(model.sheet?.id, restart ? nil : sheet.id)
+        }
     }
 }

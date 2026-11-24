@@ -357,6 +357,16 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 
 `apps/ios/test-disposable.sh` が CI と同じビルド・XCTest・画面撮影を実行します。`simctl create` で新規の iPhone 15 を作成し、成功・失敗によらず今回の UDID だけを削除します。既存の UDID を `test.sh` に直接渡す方法は、開発版アプリを上書きするため非推奨です。試験起動は毎回空の試験専用 Keychain サービスを使います。一時ディレクトリの loopback 模擬 Host で登録→一覧→日本語送信→履歴到着を通し、終了時に模擬 Host とシミュレーターを止めます。UI 試験は専用 Host のリンクをシミュレーターのペーストボードに渡して、Pair → 一覧 → 会話 → 質問への回答を操作します。CI の `ios-comparison` はモック｜ライト｜ダーク｜OS の文字が大きい場合の WebP 4 枚です。Devin は [既存 VM の使い方](docs/devin-macos.md)に従い、`use` → 必要な分だけ `keepalive` → `sync` → 同期先で同じ `apps/ios/test-disposable.sh` を実行。個人の認証情報は転送せず、終了時は待機を終了し `devin-mac down`。
 
-初回は QR（タップしたときだけカメラを許可）またはリンクで接続先の名前・アドレスを確認してから登録します。画像を1枚ずつ外す状態APIがないため、誤送信を避けるために新規添付の入口は表示しません。iPhone は Pi 一覧から会話に入り、戻る操作で切り替えます。iPad は標準のサイドバー。設定は一覧のスライダーです。質問には会話内で回答。本文は長押しで部分コピー、表はタップで拡大して選択、コードは全体コピーもできます。Return は改行・変換確定だけで、送信（作業中は割り込み）は矢印。
+初回は QR（タップしたときだけカメラを許可）またはリンクで接続先の名前・アドレスを確認してから登録します。画像添付の状態 API は実装済みですが、ピッカーなどの画面の入口は #41 後半で追加します。iPhone は Pi 一覧から会話に入り、戻る操作で切り替えます。iPad は標準のサイドバー。設定は一覧のスライダーです。質問には会話内で回答。本文は長押しで部分コピー、表はタップで拡大して選択、コードは全体コピーもできます。Return は改行・変換確定だけで、送信（作業中は割り込み）は矢印。
 
 `SessionModel` は App 所有で scene の再生成後も維持。マシン別の `hosts` / `rows[id].groups` と `select(host:instance:)`、表示時に捕捉した `editor` と `body/text/send/attach/abort/restore`、`QuestionKey(editor:requestId:)` と表示時の質問 JSON を渡す `answer` を使ってください。`attach` に渡すのは選択時のキーとローカルの一時ファイル URL（完了まで保持）。1枚ずつ縮小します。`draft` は履歴と区別し `restore` は明示操作だけ。確認の途中で別の対象に変わったら閉じ、送信失敗時にも自動再送しません。`SessionModel`・`Rows`・`Photo`・`KeychainStore`、FFI と生成物を画面から変更しないでください。実カメラでの読み取りは実機確認が必要です。
+
+### iOS チャット状態（#41 前半、画面担当への申し送り）
+
+- **添付**: ピッカーを開く時の `EditorKey` を `attach(_:files:)` に渡します。`attaching` の間は追加・送信不可。ローカル一時ファイルを1枚ずつ縮小し、最大4枚、1枚512 KiB・計600 KiB以内。`removeAttachment(_:shown:at:)` に表示時の画像列を渡して1枚だけ削除。`restore(_:id:)` は画像ごと空の入力欄へ戻すだけで送信しません。
+- **履歴・Markdown 画像**: `HistoryImages(row).source(at:thumbnail:canFetch:)` は元の画像位置を維持し、プレビューのない位置を `entry_image` で取得可。`ChatImageSource(markdown:answer:)` は**画面に入った画像だけ**で生成し、回答の安定した ID を渡します（逐次本文や SharedText のインスタンスを ID にしない）。`image(_:source:thumbnail:)` は圧縮済み `Data` を返し、同じ参照を共有します。`file_image` は回答間で共有しません。Web 画像は cookie・資格情報を付けずメモリでのみ取得します。HTTPS は ATS を維持し、画像1件の上限は20秒・8 MiB・HTTPS リダイレクト5回です。LRU は使用時に更新。表示終了で Swift Task を cancel、画面では縮小して復号してください。UniFFI に送信済みの要求を撤回する API はなく、キャンセル後の返答を表示・保存しません。
+- **Android との既知の差**: iOS の Markdown は HTTP 画像を自動取得せず、タップできるリンクとして表示します。
+- **シート**: `openSheet(_:page:)` の戻り値で `run(_:in:)`。App 所有の `sheet` がページ・読み込み・返答・エラーを保持するので、scene 再生成時に開き直さずそのまま描画。`closeSheet(_:)`。`SheetAction` がモデル選択・Thinking・お気に入りの一覧・既定・セッション一覧/新規/再開/分岐/ツリー移動/ラベル/圧縮/終了を型付きで表します。`rows[host].groups` の `model`・`session`・`node`、`view/defaultModel`・`view/context`、`stats(_:)`・`allowances(_:nowMs:)` を参照。不明な値をゼロと表示しないでください。
+- **コマンド・通知**: `.commands` で一覧を取得した後 `suggestions(_:text:)`。`builtin(_:_:)` に表示時の `RestoredDraft` を渡します。コマンドの受付とセッション操作の完了は別です。`receipt` だけが開始した Host・Pi に結び付いた結果で、`.unknown` は成功ではありません。閉じる操作は `dismissReceipt(host:_:)`。分岐・ツリーの返却本文は同じ Pi の宛先セッションが ready になった時、その空の入力欄に一度だけ反映します。
+- **Chat-Edge**: `edge` の connection・phase / unconfirmed / pcPrompt / attachCommand、`move` の from・to と `local`。`needsMoveConfirmation` のときは前の会話に下書きを保持、入力欄の「新しい送信先を確認」から `confirmMove(_:id:)` で今回だけ確認（端末の操作元は推定しない）。`attachCommand` が nil ならコピー操作を出さないこと。
+- 画面は `Chat.swift`・`Composer.swift`・`Markdown.swift`・`Transcript.swift`・`Question.swift` と新規 View を変更可。`SessionModel.swift`・`Rows.swift`・`ChatSheet.swift`・`ChatImages.swift`・`ChatNotices.swift`・`Photo.swift`・Keychain・Rust/FFI と生成物は維持してください。実機・見た目・スクリーンショット比較は後半の範囲です。
