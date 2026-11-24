@@ -59,7 +59,20 @@ for variant in light dark large; do
   start_fixture "$((${#fixtures[@]} + 1))"
   xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
   result="$build/$variant-$(date +%s).xcresult"
-  TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building || failed=1
+  if TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building; then
+    # The last copy is a table from the demo, not just its visible cells. Never log the clipboard.
+    xcrun simctl pbpaste "$id" >"$lab/copied"
+    python3 - "$lab/copied" <<'TABLE' || failed=1
+import runpy, sys
+from pathlib import Path
+body = runpy.run_path('scripts/android-demo.py')['BODY']
+tables = [p for p in body.split('\n\n') if p.startswith('|')]
+if Path(sys.argv[1]).read_text().rstrip('\n') not in tables:
+    sys.exit('Copied text did not match a complete fixture Markdown table')
+TABLE
+  else
+    failed=1
+  fi
   mkdir -p "$build/attachments/$variant"
   xcrun xcresulttool export attachments --path "$result" --output-path "$build/attachments/$variant"
 done

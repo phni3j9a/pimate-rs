@@ -71,9 +71,22 @@ final class ProbeTests: XCTestCase {
         let receipt = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch
         XCTAssertTrue(receipt.waitForExistence(timeout: 20))
         let tables = app.buttons.matching(NSPredicate(format: "label == %@", "表を開く"))
-        for _ in 0..<8 where !tables.allElementsBoundByIndex.contains(where: { $0.isHittable }) { scroll.swipeDown() }
-        guard let table = tables.allElementsBoundByIndex.first(where: { $0.isHittable }) else { XCTFail("No visible table"); return }; table.tap()
-        let copy = app.buttons["表をコピー"]; XCTAssertTrue(copy.waitForExistence(timeout: 5)); shot("Table"); copy.tap()
+        // Hittable includes partially obscured buttons. Keep the entire label between the header and the composer.
+        let top = app.navigationBars.firstMatch.frame.maxY + 44, bottom = field.frame.minY - 20
+        func visibleTable() -> XCUIElement? {
+            tables.allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY > top && $0.frame.maxY < bottom }
+        }
+        for _ in 0..<20 {
+            if visibleTable() != nil { break }
+            let frames = tables.allElementsBoundByIndex.map(\.frame).filter { !$0.isEmpty }
+            let dy: CGFloat = frames.first.map { $0.minY >= bottom - $0.height ? -180 : 180 } ?? 180
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: 35, dy: (top + bottom - dy) / 2))
+            start.press(forDuration: 0.15, thenDragTo: start.withOffset(CGVector(dx: 0, dy: dy)))
+        }
+        guard let table = visibleTable() else { XCTFail("No table button fully inside the transcript"); return }; table.tap()
+        let copy = app.buttons["表をコピー"]
+        guard copy.waitForExistence(timeout: 8) else { XCTFail("Table viewer did not open"); return }; shot("Table"); copy.tap()
         app.buttons["閉じる"].tap()
         if variant == "light" {
             field.tap(); field.typeText("test"); app.buttons["送信"].tap()

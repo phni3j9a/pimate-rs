@@ -116,7 +116,10 @@ struct MarkdownTable: View {
         if full { grid(full: true) }
         else { VStack(alignment: .trailing, spacing: 0) {
             grid(full: false).contentShape(Rectangle()).onTapGesture { open(table) }
-            Button("表を開く", systemImage: "arrow.up.left.and.arrow.down.right") { open(table) }.font(.caption).frame(minHeight: 44)
+            Button { open(table) } label: {
+                Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption).frame(minHeight: 44).contentShape(Rectangle())
+            }
         } }
     }
 }
