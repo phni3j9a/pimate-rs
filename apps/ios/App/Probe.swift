@@ -1,8 +1,15 @@
 import SwiftUI
 
 @main @MainActor struct PiMateApp: App {
-    @State private var model = SessionModel()
-    var body: some Scene { WindowGroup { Probe(model: model) } }
+    @Environment(\.scenePhase) private var phase
+    @State private var model = SessionModel(core: Core(store: KeychainStore.forLaunch()))
+    var body: some Scene {
+        WindowGroup {
+            Probe(model: model)
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.protectedDataDidBecomeAvailableNotification)) { _ in model.retryRegistrations() }
+                .onChange(of: phase) { _, next in if next == .active { model.retryRegistrations() } }
+        }
+    }
 }
 
 struct Probe: View {
@@ -22,6 +29,7 @@ struct Probe: View {
                     }.disabled(link.isEmpty || model.busy)
                     if !notice.isEmpty { Text(notice) }
                 }
+                if model.hosts.isEmpty { Text("登録済みのマシンはありません").accessibilityIdentifier("emptyHosts") }
                 ForEach(model.hosts, id: \.id) { host in
                     Section(host.name) {
                         ForEach(model.rows[host.id]?.groups["instance"] ?? [], id: \.id) { row in

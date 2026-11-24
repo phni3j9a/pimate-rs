@@ -13,7 +13,13 @@ jobs:
       - uses: actions/checkout@v6
       - run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
       - run: command -v xcodegen || brew install xcodegen
-      - run: apps/ios/test.sh
+      - name: Verify a test UDID is required
+        run: |
+          rc=0; apps/ios/test.sh || rc=$?; test "$rc" = 64
+      - name: Test on the disposable Actions runner
+        run: |
+          id=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for k,ds in json.load(sys.stdin)["devices"].items() if ".iOS-" in k for d in ds if d["name"].startswith("iPhone") and d["state"]=="Shutdown"))')
+          apps/ios/test.sh "$id"
       - uses: actions/upload-artifact@v4
         with:
           name: ios-probe

@@ -47,4 +47,6 @@ schemes:
       targets:
         PiMate: all
     test:
+      environmentVariables:
+        PIMATE_TEST_STORE: "1"
       targets: [PiMateTests, PiMateUITests]

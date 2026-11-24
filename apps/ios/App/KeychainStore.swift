@@ -12,6 +12,13 @@ final class KeychainStore: SecretStore, @unchecked Sendable {
     private static let lock = NSLock()
     init(service: String = "dev.pimate.app.rs.debug.hosts.v1") { self.service = service }
 
+    static func forLaunch(environment: [String: String] = ProcessInfo.processInfo.environment) -> KeychainStore {
+        if environment["PIMATE_TEST_STORE"] == "1" || environment["XCTestConfigurationFilePath"] != nil {
+            return KeychainStore(service: "dev.pimate.tests.\(UUID())")
+        }
+        return KeychainStore()
+    }
+
     private func query(_ id: String? = nil) -> [CFString: Any] {
         var q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service]
         if let id { q[kSecAttrAccount] = id }

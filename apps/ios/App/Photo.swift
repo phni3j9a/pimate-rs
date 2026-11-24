@@ -2,8 +2,8 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-func encodePhoto(_ data: Data, budget: Int) throws -> Image {
-    guard budget > 0, let src = CGImageSourceCreateWithData(data as CFData, nil) else { throw CoreError.BadRequest }
+func encodePhoto(_ url: URL, budget: Int) throws -> Image {
+    guard url.isFileURL, budget > 0, let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { throw CoreError.BadRequest }
     for (edge, quality) in [(1600, 0.85), (1200, 0.7), (800, 0.55), (512, 0.4), (320, 0.3)] {
         let options: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true, kCGImageSourceThumbnailMaxPixelSize: edge]

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # Run on a *disposable*, shut-down simulator. No personal registration or TS Host is used.
 set -euo pipefail
+if [[ $# != 1 || ! $1 =~ ^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$ ]]; then
+  echo 'usage: apps/ios/test.sh <disposable-simulator-UDID>' >&2; exit 64
+fi
+id=$1
 umask 077
 cd "$(dirname "$0")/../.."
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$PWD/target"
 apps/ios/prepare.sh
-id=${1:-$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for k,ds in json.load(sys.stdin)["devices"].items() if ".iOS-" in k for d in ds if d["name"].startswith("iPhone") and d["state"]=="Shutdown"))')}
 lab=$(mktemp -d /tmp/pimate-ios.XXXXXX)
 fixtures=(); links=(); booted=
 cleanup() {

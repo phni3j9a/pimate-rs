@@ -41,7 +41,7 @@ final class FoundationTests: XCTestCase {
         func consume(_ url: URL) throws -> String {
             let link = try String(contentsOf: url, encoding: .utf8); try FileManager.default.removeItem(at: url); return link
         }
-        let store = KeychainStore(service: "dev.pimate.tests.\(UUID())"), model = SessionModel(store: store)
+        let store = KeychainStore(service: "dev.pimate.tests.\(UUID())"), model = SessionModel(core: Core(store: store))
         defer { for h in model.hosts { try? store.forget(id: h.id) } }
         try await model.pair(consume(url)); let host = try XCTUnwrap(model.hosts.first?.id)
         func wait(_ predicate: () -> Bool) async throws {
