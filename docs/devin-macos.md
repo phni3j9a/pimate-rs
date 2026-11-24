@@ -2,7 +2,7 @@
 
 開発機（Mac mini 2018 / Ubuntu）では Xcode 26.4 以降を動かせません。そのため iOS・macOS のビルドと確認には、Devin Cloud の macOS VM を使います。Linux 側で実装し、VM には ssh で入ってビルドと確認だけを行います。そのための道具が [`scripts/devin-mac/`](../scripts/devin-mac/devin-mac) にあります。
 
-VM の中で Devin（エージェント）に作業させるのではなく、Linux 側のエージェントや人が ssh で VM を直接操作する使い方です。
+実装・判断は Linux 側で行います。セッション内の Devin（SWE2）には、待機や手順を指定した画面操作・確認の補助だけを頼み、実装はさせません。個人の資格情報や実運用のペアリングリンク・トークンは VM に送りません。
 
 ## できること・できないこと
 
@@ -40,6 +40,18 @@ scripts/devin-mac/devin-mac setup    # ssh 鍵の登録・転送の開始・IME 
 - 状態は `~/.cache/pimate-devin-mac/` に、鍵は `~/.ssh/pimate_devin_mac_ed25519` に置きます。
 - **新しいセッションは blueprint から作り直した別の VM** なので、`setup` とアクセシビリティの許可をやり直す必要があります。
 
+## セッションを選ぶ
+
+セットアップ済みの2台を使い回します。**1台を同時に操作するのは1人だけ**です。作業前に割り当てを確認してください。たとえば iOS 担当が1台目（既定: SSH 2222 / VNC 16080）なら Host 担当は2台目を使います。2台目では下記の関数を使い、`keepalive` から `down` まで毎回同じ状態ディレクトリとポートを指定します。`use` / `setup` のやり直しや `create` は不要です。
+
+```sh
+mac2() {
+  DEVIN_MAC_STATE_DIR="$HOME/.cache/pimate-devin-mac-2" \
+  DEVIN_MAC_SSH_PORT=2223 DEVIN_MAC_VNC_PORT=16081 \
+    scripts/devin-mac/devin-mac "$@"
+}
+```
+
 ## 毎回の流れ
 
 ```sh
@@ -56,6 +68,13 @@ $D pull path/on/vm.png /tmp/x.png
 - `keepalive` を頼まずに作業すると、数分で VM が眠り、ビルドや起動中のアプリが止まります。眠っている間は、転送が「administratively prohibited」で失敗します。
 - 待機は、前の待機が終わってから頼みます。`status` の `keepalive (VM time)` が進んでいれば待機中です。
 - `vnc` の座標はスクリーンショットの画素（1600x1200）です。操作は `"click X Y"`、`"type TEXT"`（ASCII のみ）、`"key Return"`、`"sleep 0.5"` を並べて書けます。日本語の入力を試すときは、次の節の `devin-mac key` を使います。
+
+## Host の LaunchAgent を確認する
+
+1. `mac2 keepalive 10` のように必要な分だけ頼み、`mac2 sync`。同期先はリポジトリ名でなく **worktree のディレクトリ名**です。`mac2 ssh 'cd ~/work/<同期先名> && cargo build --locked -p pimate-host'` で arm64 の Host を作り、同じツリーの `packages/pimate` で `npm ci && npm run build`。#45 の VM では debug ビルドは約20秒、同期から試験・片付けまでは数分でした（キャッシュ・通信状態で変動）。開発途中は VM で確認し、最後の検証に CI を使います。
+2. VM に短い `lab=$(mktemp -d /tmp/p45.XXXXXX)` を作り、その配下に `PIMATE_RUN_DIR`・`PIMATE_CONFIG_DIR`・`PI_CODING_AGENT_DIR`・`XDG_CONFIG_HOME` を指定。macOS の既定の一時パスは長く、Unix socket の上限に注意。未使用の `PIMATE_SERVICE_PORT`（例: 47845）を指定します。Pi は `npm install --prefix "$lab/pi" @earendil-works/pi-coding-agent@1.6.0`。`PIMATE_EXTENSION` はビルドした `dist/extension.js`、`PIMATE_PI` は `PI_OFFLINE=1` と `-e <同期先>/packages/pimate/test/fixtures/faux.ts` を追加する一時ラッパーを絶対パスで指定し、モデルは `pimate-faux/scripted` に限定します。
+3. **GUI ユーザーのジョブ名は一つだけ**です。`service status` で未登録・非稼働、plist 不在を確認してから `service install`。`plutil -p` で実行ファイル・引数・環境・`StandardErrorPath` を照合し、`launchctl print gui/$(id -u)/dev.pimate.rs.host` の PID と `/health` の PID を突き合わせます。隔離 Host に一時クライアントをペアリングし WS `spawn` → `attach` → Ctrl+\ で切り離し。**異常終了からの復帰**はこの Host PID だけを `kill -KILL` して検査します。`SIGTERM` は正常終了扱いで、`KeepAlive.SuccessfulExit=false` の検査にはなりません。新 PID の health、同じ Pi PID・Instance の再発見、faux 応答、再 attach、RC `shutdown` とソケット消失を確認します。
+4. 再 `install` 後も plist が同一で health が成功することを確認。`service uninstall` → ジョブ・PID・plist・待受の消失を確かめ、試験プロセス・一時ディレクトリを片付けます。早く終わったらこの VM の待機ループと対応する手元の `devin --cloud -r <セッション>` だけを停止し、`mac2 down`。`down` はトンネルを閉じるだけです。別の作業者の待機は止めません。節目ごとに keepalive の依頼分数と実使用の目安を報告します。
 
 ## iOS（SwiftUI / Expo）
 
