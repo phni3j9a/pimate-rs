@@ -45,7 +45,7 @@ from pathlib import Path
 class Image(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.end_headers()
-        self.wfile.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO6pXioAAAAASUVORK5CYII='))
+        self.wfile.write(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4IGQKAAMtATiYJHYjAAAAAElFTkSuQmCC'))
     def log_message(self, *args): pass
 with http.server.HTTPServer(('127.0.0.1', 0), Image) as server:
     Path(sys.argv[1]).write_text(str(server.server_port)); server.serve_forever()

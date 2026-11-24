@@ -207,7 +207,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     }
     // The picker passes the key captured at presentation and temporary local files. Never apply a late result to a new editor.
     private(set) var attaching: EditorKey?
-    func attach(_ key: EditorKey, files: [URL]) async throws {
+    func attach(_ key: EditorKey, files: [URL], encode: @escaping @Sendable (URL, Int) throws -> Image = encodePhoto) async throws {
         guard key == editor, let r = rows[key.host], r.field("promptImages") == "true" else { throw CoreError.Blocked }
         guard !files.isEmpty else { return }
         guard attaching == nil, !busy else { throw CoreError.Blocked }
@@ -218,7 +218,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         let used = existing.reduce(0) { $0 + $1.data.utf8.count / 4 * 3 - $1.data.suffix(2).filter { $0 == "=" }.count }
         let budget = min(512 * 1024, (600 * 1024 - used) / count)
         let work = Task.detached { try files.map { url in
-            try Task.checkCancellation(); return try autoreleasepool { try encodePhoto(url, budget: budget) }
+            try Task.checkCancellation(); return try autoreleasepool { try encode(url, budget) }
         } }
         let images = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
         try Task.checkCancellation()

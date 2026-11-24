@@ -254,3 +254,23 @@ extension ReviewTests {
         XCTAssertEqual(requests[0], 1); XCTAssertEqual(requests[1], 2)
     }
 }
+
+extension ReviewTests {
+    @MainActor func testAttachmentInProgressBlocksBothBuiltinRoutes() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        core.c.items = ["model", "new"].map { Item(collection: "command", id: $0, position: 0, json: #"{"source":"builtin"}"#) }
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        let gate = DispatchSemaphore(value: 0), started = expectation(description: "encoding on worker")
+        let task = Task { try await model.attach(key, files: [URL(fileURLWithPath: "/fixture")]) { _, _ in
+            started.fulfill(); guard gate.wait(timeout: .now() + 5) == .success else { throw CoreError.Timeout }
+            return Image(mimeType: "image/jpeg", data: "YQ==")
+        } }
+        await fulfillment(of: [started], timeout: 3); core.c.receipt = { XCTFail("command sent while attaching") }
+        for cmd in ["/model", "/new"] {
+            model.text(cmd, for: key)
+            do { _ = try await model.builtin(key, model.body(key)); XCTFail() } catch CoreError.Blocked {}
+            XCTAssertEqual(model.body(key).text, cmd)
+        }
+        gate.signal(); try await task.value; XCTAssertEqual(model.body(key).images.count, 1)
+    }
+}
