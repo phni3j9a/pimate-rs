@@ -54,12 +54,14 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
       - uses: actions/download-artifact@v4
         with:
           path: packages/pimate/bin
       - run: |
           npm ci
-          test "$(node -p 'require("./package.json").version')" = "$(sed -n 's/^version = "\(.*\)"/\1/p' ../../crates/pimate-host/Cargo.toml)"
           npm run package
           cd dist/package && npm pack --pack-destination ..
       - run: python3 scripts/pack-smoke.py dist/*.tgz

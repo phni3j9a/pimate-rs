@@ -13,6 +13,7 @@ import tempfile
 import threading
 from contextlib import ExitStack
 from pathlib import Path
+from urllib.parse import urlsplit, parse_qs
 
 pkg = Path(__file__).resolve().parents[1]
 tarball = Path(sys.argv[1]).resolve(strict=True)
@@ -81,7 +82,9 @@ def smoke(lab, stack):
     health = json.loads(run(linked, 'service', 'health'))
     assert health['pid'] == host.pid and health['version'] == manifest['version']
     pair = json.loads(run(cli, 'pair', '--json', '--port', port))
-    assert pair['link'].startswith('pimate://pair?')
+    link = urlsplit(pair['link'])
+    query = parse_qs(link.query)
+    assert (link.scheme, link.netloc) == ('pimate', 'pair') and query['h'] == [f'127.0.0.1:{port}']
 
     shutil.copy(pkg / 'test/fixtures/faux.ts', 'faux.ts')
     master, slave = pty.openpty()
@@ -102,7 +105,7 @@ def smoke(lab, stack):
 
     threading.Thread(target=drain, daemon=True).start()
     # Observe discovery through the running Host, not just the CLI's filesystem scan.
-    run('node', str(pkg / 'scripts/verify-registration.mjs'), port, input=pair['code'], timeout=45)
+    run('node', str(pkg / 'scripts/verify-registration.mjs'), port, input=query['c'][0], timeout=45)
     answer = json.loads(run(cli, 'prompt', 'pack-smoke', 'hello', '--wait', '--timeout', '20'))
     assert answer['reply'] == 'Hello from the PiMate faux model.'
     print('PASS: tarball hashes, isolated Pi install, both CLI paths, Host version, pairing, discovery and faux reply')
