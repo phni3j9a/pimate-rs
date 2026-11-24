@@ -28,8 +28,7 @@ struct CommandPalette: View {
         }.task(id: attempt) {
             loading = true; defer { loading = false }
             do {
-                let opened = try model.openSheet(key, page: .commands); defer { model.closeSheet(opened) }
-                try await model.run(.commands, in: opened); failed = false
+                _ = try await model.request(key, .commands, [:]); failed = false
             } catch { if !Task.isCancelled { failed = true } }
         }
     }

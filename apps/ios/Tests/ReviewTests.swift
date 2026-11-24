@@ -337,3 +337,20 @@ extension ReviewTests {
         defer { window.isHidden = true }; await fulfillment(of: [first], timeout: 5); await fulfillment(of: [outside], timeout: 0.5)
     }
 }
+
+extension ReviewTests {
+    @MainActor func testComposerOpensSheetCommandsForTheEditorInsteadOfSendingThem() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        let routes: [(String, ChatSheet.Page)] = [("model", .model), ("fork", .fork), ("resume", .resume), ("tree", .tree)]
+        core.c.items = routes.map { Item(collection: "command", id: $0.0, position: 0, json: #"{"source":"builtin"}"#) }
+        core.c.observe = { _ in XCTFail("sheet command was sent as a Host operation") }
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        for (name, page) in routes {
+            model.text("/" + name, for: key)
+            _ = try await Composer.submit(model, key: key, sent: model.body(key))
+            let opened = try XCTUnwrap(model.sheet)
+            XCTAssertEqual(opened.key, key); XCTAssertEqual(opened.page, page); XCTAssertEqual(model.body(key).text, "")
+            model.closeSheet(opened)
+        }
+    }
+}

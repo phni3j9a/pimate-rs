@@ -50,8 +50,15 @@ struct Composer: View {
             let name = String(token)
             if model.rows[key.host]?.groups["command"]?.contains(where: { $0.id == name && $0.object.str("source") == "builtin" }) == true {
                 guard tail.dropFirst(token.count).allSatisfy(whitespace), sent.images.isEmpty else { return "この操作には引数や画像を付けずに送信してください。" }
-                if ["model", "resume", "fork", "tree"].contains(name) { return "この操作は PC のターミナルで行ってください。" }
-                _ = try await model.builtin(key, sent); return ""
+                if let page = try await model.builtin(key, sent) {
+                    switch page {
+                    case "model": _ = try model.openSheet(key, page: .model)
+                    case "resume": _ = try model.openSheet(key, page: .resume)
+                    case "fork": _ = try model.openSheet(key, page: .fork)
+                    case "tree": _ = try model.openSheet(key, page: .tree)
+                    default: throw CoreError.Unsupported
+                    }
+                }; return ""
             }
         }
         try await model.send(key, sent); return ""

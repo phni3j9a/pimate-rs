@@ -69,6 +69,7 @@ private struct Conversation: View {
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
             .safeAreaInset(edge: .bottom, spacing: 8) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
+            .modifier(PiSheetMenu(model: model, key: key))
             .environment(\.photoContext, photos)
             .fullScreenCover(item: $photo) { shown in
                 PhotoViewer(gallery: shown, context: photos)

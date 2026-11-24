@@ -158,6 +158,7 @@ async def pi(
     model, thinking = dict(MODEL), "high"
     scoped = [dict(provider=m["provider"], id=m["id"]) for m in MODELS[:2] + MODELS[3:4]]
     default = dict(model=dict(MODEL), thinking="medium")
+    reject_tree = iid == "main" and os.getenv("PIMATE_DEMO_REJECT_FIRST_TREE") == "1"
     labels, prompt = {}, pc_prompt
     # Saved sessions by id: the current one shares `history`.
     saved = {session["id"]: dict(session=dict(session), items=history, modified=NOW - age)}
@@ -358,7 +359,7 @@ async def pi(
                 row.setdefault("toolCalls", [])
             rows.append(row)
         saved[sid] = dict(
-            session=dict(id=sid, name=title), items=rows, modified=NOW - (26 + n) * HOUR
+            session=dict(id=sid, **({"name": title} if title else {})), items=rows, modified=NOW - (26 + n) * HOUR
         )
 
     def write_meta():
@@ -469,7 +470,7 @@ async def pi(
         hooks[iid] = (pc_resume, pc_done)
 
     async def rc(reader, w):
-        nonlocal task, model, thinking, scoped, default
+        nonlocal task, model, thinking, scoped, default, reject_tree
         clients.add(w)
         try:
             while line := await reader.readline():
@@ -597,7 +598,11 @@ async def pi(
                 elif method == "session_op":
                     asyncio.create_task(session_op(params["op"], params.get("arg")))
                 elif method == "session_tree":
-                    reply = tree()
+                    if reject_tree:
+                        reject_tree = False
+                        error = dict(code="busy", message="tree unavailable")
+                    else:
+                        reply = tree()
                 elif method == "set_label":
                     if params.get("label"):
                         labels[params["entryId"]] = params["label"]
