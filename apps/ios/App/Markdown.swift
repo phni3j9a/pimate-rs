@@ -121,11 +121,11 @@ struct MarkdownTable: View {
     }
 }
 
-// Preserve native range selection across adjacent text; only an image splits a run.
 private struct GalleryKey: EnvironmentKey { static let defaultValue: [MarkdownImage] = [] }
 private extension EnvironmentValues {
     var markdownGallery: [MarkdownImage] { get { self[GalleryKey.self] } set { self[GalleryKey.self] = newValue } }
 }
+// Preserve native range selection across adjacent text; only an image splits a run.
 private struct PhotoParagraph: View {
     let spans: [Inline], answer: String, heading: Bool
     @Environment(\.photoContext) private var context
@@ -152,7 +152,7 @@ private struct PhotoParagraph: View {
                     PhotoTile(context: context, gallery: OpenPhoto(start: start, count: gallery.count, label: { gallery[$0].alt.isEmpty ? "画像" : gallery[$0].alt }, source: { i, _ in try? ChatImageSource(markdown: gallery[i], answer: answer) }))
                         .frame(maxWidth: 300).frame(height: 144)
                         .id(image.kind == .data ? "inline:\(image.index)" : image.src.value())
-                }
+                } else { Text(image.alt.isEmpty ? "画像を表示できません" : image.alt).foregroundStyle(PiTheme.secondary) }
             }
         }
     }

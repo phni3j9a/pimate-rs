@@ -20,6 +20,15 @@ cleanup() {
 trap cleanup EXIT
 xcrun simctl boot "$id"; booted=yes
 xcrun simctl bootstatus "$id" -b
+# Only generated swatches enter this disposable photo library.
+python3 - "$lab" <<'PHOTOS'
+import base64, runpy, sys
+from pathlib import Path
+picture = runpy.run_path('scripts/android-demo.py')['picture']
+for n in range(4):
+    (Path(sys.argv[1]) / f'swatch-{n}.png').write_bytes(base64.b64decode(picture(n, True)['data']))
+PHOTOS
+xcrun simctl addmedia "$id" "$lab"/swatch-*.png
 build="$PWD/apps/ios/build"
 xcb=(xcodebuild -project apps/ios/PiMate.xcodeproj -scheme PiMate -destination "id=$id" -derivedDataPath "$build" -parallel-testing-enabled NO)
 "${xcb[@]}" build-for-testing

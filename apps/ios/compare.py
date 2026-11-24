@@ -7,7 +7,7 @@ from PIL import Image
 here = Path(__file__).resolve().parent
 out = here / 'build/comparison'
 out.mkdir(exist_ok=True)
-for screen in ('Pair', 'Drawer', 'Main', 'Chat-Waiting', 'Chat-Attach', 'Chat-Edge', 'Images', 'Viewer', 'Table', 'Commands'):
+for screen in ('Pair', 'Drawer', 'Main', 'Chat-Waiting', 'Chat-Attach', 'Chat-Edge', 'Attachments', 'Images', 'Viewer', 'Table', 'Commands'):
     mock = here.parents[1] / 'docs/design/png' / f'{screen}.png'
     paths = [mock] if mock.exists() else []
     for variant in ('light', 'dark', 'large'):
