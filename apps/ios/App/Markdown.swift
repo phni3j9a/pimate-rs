@@ -152,9 +152,8 @@ private struct PhotoParagraph: View {
                     Link(image.alt.isEmpty ? "画像をブラウザで開く" : image.alt, destination: url)
                 } else if let context, let start = images.firstIndex(where: { $0.index == image.index }) {
                     let gallery = images // Capture the opened answer, not subsequent streamed text.
-                    PhotoTile(context: context, gallery: OpenPhoto(start: start, count: gallery.count, label: { gallery[$0].alt.isEmpty ? "画像" : gallery[$0].alt }, source: { i, _ in try? ChatImageSource(markdown: gallery[i], answer: answer) }))
+                    PhotoTile(context: context, gallery: OpenPhoto(start: start, count: gallery.count, label: { gallery[$0].alt.isEmpty ? "画像" : gallery[$0].alt }, source: { i, _ in try? ChatImageSource(markdown: gallery[i], answer: answer) }), answer: answer)
                         .frame(maxWidth: 300).frame(height: 144)
-                        .id(image.kind == .data ? "inline:\(image.index)" : image.src.value())
                 } else { Text(image.alt.isEmpty ? "画像を表示できません" : image.alt).foregroundStyle(PiTheme.secondary) }
             }
         }

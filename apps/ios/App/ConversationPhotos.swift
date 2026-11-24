@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 struct OpenPhoto: Identifiable {
     let id = UUID()
@@ -47,12 +48,26 @@ struct HistoryPhotos: View {
 }
 struct PhotoTile: View {
     let context: PhotoContext, gallery: OpenPhoto
+    var answer = ""
+    static func imageID(_ source: ChatImageSource?, answer: String) -> [String] {
+        switch source {
+        case .file(let id, let path): return ["file", id, path]
+        case .entry(let id, let index): return ["entry", id, String(index)]
+        case .web(let url): return ["web", answer, url.absoluteString]
+        case .inline(let text): return ["inline", answer, Data(SHA256.hash(data: Data(text.utf8))).base64EncodedString()]
+        case nil: return ["unavailable", answer]
+        }
+    }
     @Environment(\.photoViewport) private var viewport
     @State private var visible = false
     var body: some View {
         Button { context.open(gallery) } label: {
             Group {
-                if visible { LoadedPhoto(context: context, label: gallery.label(gallery.start), thumbnail: true, source: { gallery.source(gallery.start, true) }) }
+                if visible {
+                    let source = gallery.source(gallery.start, true)
+                    LoadedPhoto(context: context, label: gallery.label(gallery.start), thumbnail: true, source: { source })
+                        .id(Self.imageID(source, answer: answer))
+                }
                 else { Color.clear }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 .onGeometryChange(for: Bool.self) { proxy in
