@@ -976,7 +976,7 @@ async def demo(lab, binary):
                 ),
                 (
                     "assistant",
-                    "ボタンの位置が 8px ずれています。\n\n![修正前の画面](out/before.png)\n\n修正後は次のとおりです。\n\n![修正後の画面](out/after.png)\n\n読めない画像: ![見つからない画像](out/missing.png)",
+                    "ボタンの位置が 8px ずれています。\n\n### ![修正前の画面](out/before.png)\n\n修正後は次のとおりです。\n\n![修正後の画面](out/after.png)\n\n| 確認箇所 | プレビュー |\n| --- | --- |\n| ログイン | ![確認結果](out/result.png) |\n\n読めない画像: ![見つからない画像](out/missing.png)",
                     dict(stopReason="stop"),
                 ),
                 (

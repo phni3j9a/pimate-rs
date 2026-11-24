@@ -30,7 +30,6 @@ struct ChatScreen: View {
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     @State private var turns: [ChatTurn] = []
-    private struct OpenTable: Identifiable { let id = UUID(), table: Table }
     @State private var table: OpenTable?
     @State private var photo: OpenPhoto?
     private var photos: PhotoContext {
@@ -70,13 +69,8 @@ private struct Conversation: View {
             .fullScreenCover(item: $photo) { shown in
                 PhotoViewer(gallery: shown, context: photos)
             }
-            .environment(\.openPiTable, { table = OpenTable(table: $0) })
-            .fullScreenCover(item: $table) { shown in
-                NavigationStack { ScrollView { MarkdownTable(table: shown.table, full: true).padding() }.navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { table = nil } }
-                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = shown.table.markdown; UIAccessibility.post(notification: .announcement, argument: "表を Markdown でコピーしました") } }
-                } }
-            }
+            .environment(\.openPiTable, { table = $0 })
+            .fullScreenCover(item: $table) { TableViewer(shown: $0, context: photos) }
             .task(id: [entries, tools]) {
                 let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools) }
                 let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }

@@ -84,17 +84,22 @@ private struct MarkdownBlock: View {
                 }
             } }
         case .item(_, let children): nested(children)
-        case .table(let table): MarkdownTable(table: table)
+        case .table(let table): MarkdownTable(table: table, answer: answer)
         }
     }
     private func nested(_ children: [Block]) -> some View { VStack(alignment: .leading, spacing: 6) { ForEach(children, id: \.id) { MarkdownBlock(block: $0, answer: answer) } } }
 }
-private struct OpenTableKey: EnvironmentKey { static let defaultValue: (Table) -> Void = { _ in } }
+struct OpenTable: Identifiable {
+    let id = UUID()
+    let table: Table, answer: String, gallery: [MarkdownImage]
+}
+private struct OpenTableKey: EnvironmentKey { static let defaultValue: (OpenTable) -> Void = { _ in } }
 extension EnvironmentValues {
-    var openPiTable: (Table) -> Void { get { self[OpenTableKey.self] } set { self[OpenTableKey.self] = newValue } }
+    var openPiTable: (OpenTable) -> Void { get { self[OpenTableKey.self] } set { self[OpenTableKey.self] = newValue } }
 }
 struct MarkdownTable: View {
-    let table: Table
+    let table: Table, answer: String
+    @Environment(\.markdownGallery) private var gallery
     var full = false
     @Environment(\.openPiTable) private var open
     @State private var width: CGFloat = 300
@@ -107,7 +112,10 @@ struct MarkdownTable: View {
         return ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) { ForEach(rows.indices, id: \.self) { i in
                 HStack(alignment: .top, spacing: 0) { ForEach(rows[i].indices, id: \.self) { j in
-                    Selectable(spans: rows[i][j], heading: i == 0, links: full).allowsHitTesting(full).padding(8).frame(width: widths[j], alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if full { PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0) }
+                        else { Selectable(spans: rows[i][j], heading: i == 0, links: false).allowsHitTesting(false) }
+                    }.padding(8).frame(width: widths[j], alignment: .leading)
                 } }.background(i == 0 ? PiTheme.surface : PiTheme.background); Divider()
             } }
         }.background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
@@ -115,8 +123,8 @@ struct MarkdownTable: View {
     var body: some View {
         if full { grid(full: true) }
         else { VStack(alignment: .trailing, spacing: 0) {
-            grid(full: false).contentShape(Rectangle()).onTapGesture { open(table) }
-            Button { open(table) } label: {
+            grid(full: false).contentShape(Rectangle()).onTapGesture { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
+            Button { open(OpenTable(table: table, answer: answer, gallery: gallery)) } label: {
                 Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right")
                     .font(.caption).frame(minHeight: 44).contentShape(Rectangle())
             }
@@ -157,5 +165,24 @@ private struct PhotoParagraph: View {
                 } else { Text(image.alt.isEmpty ? "画像を表示できません" : image.alt).foregroundStyle(PiTheme.secondary) }
             }
         }
+    }
+}
+
+struct TableViewer: View {
+    let shown: OpenTable, context: PhotoContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var photo: OpenPhoto?
+    var body: some View {
+        NavigationStack {
+            ScrollView { MarkdownTable(table: shown.table, answer: shown.answer, full: true).padding() }
+                .modifier(PhotoViewport()).environment(\.markdownGallery, shown.gallery)
+                .environment(\.photoContext, PhotoContext(model: context.model, key: context.key, entries: context.entries, files: context.files, open: { photo = $0 }))
+                .navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() } }
+                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = shown.table.markdown; UIAccessibility.post(notification: .announcement, argument: "表を Markdown でコピーしました")
+                    } }
+                }
+        }.fullScreenCover(item: $photo) { PhotoViewer(gallery: $0, context: context) }
     }
 }
