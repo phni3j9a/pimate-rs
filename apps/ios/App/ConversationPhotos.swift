@@ -21,7 +21,7 @@ private extension EnvironmentValues {
 }
 struct PhotoViewport: ViewModifier {
     @State private var viewport = CGRect.zero
-    func body(content: Content) -> some View {
+    func body(content: PhotoViewport.Content) -> some View {
         content.environment(\.photoViewport, viewport).onGeometryChange(for: CGRect.self) { proxy in
             let inset = proxy.safeAreaInsets
             return proxy.frame(in: .global).inset(by: UIEdgeInsets(top: inset.top, left: inset.leading, bottom: inset.bottom, right: inset.trailing))
