@@ -759,6 +759,18 @@ async fn real_pi_spawn_attach_restart_login() -> Result<()> {
             .is_some_and(|rows| rows.iter().any(|r| r["instanceId"] == *id))
     })
     .await?;
+    let result = timeout(
+        Duration::from_secs(10),
+        cli(&path)
+            .args(["wait", id.as_str().unwrap(), "--timeout", "8"])
+            .output(),
+    )
+    .await??;
+    ensure!(result.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&result.stdout)?["reply"],
+        "Hello from the PiMate faux model."
+    );
     let pty = nix::pty::openpty(
         Some(&nix::pty::Winsize {
             ws_row: 40,

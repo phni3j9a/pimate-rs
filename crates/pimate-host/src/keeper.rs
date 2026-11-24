@@ -74,7 +74,7 @@ async fn hold() -> Result<()> {
     unsafe {
         cmd.pre_exec(|| {
             unistd::setsid()?;
-            nix::errno::Errno::result(libc::ioctl(0, libc::TIOCSCTTY, 0))?;
+            nix::errno::Errno::result(libc::ioctl(0, libc::TIOCSCTTY as _, 0))?;
             Ok(())
         });
     }
