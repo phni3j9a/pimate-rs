@@ -6,7 +6,7 @@ settings:
   base:
     SWIFT_VERSION: '5.0'
     GENERATE_INFOPLIST_FILE: YES
-    SWIFT_INCLUDE_PATHS: $(SRCROOT)/../../target/mobile/ios/include
+    SWIFT_INCLUDE_PATHS: $(BUILT_PRODUCTS_DIR)/include
     TARGETED_DEVICE_FAMILY: '1,2'
 targets:
   PiMate:
