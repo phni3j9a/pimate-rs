@@ -2,7 +2,7 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux の常駐登録にも対応しています。Android 開発版では Rust Host にペアリングし、チャット、変更レビュー、サブエージェント、新しい Pi の起動、マシン管理、Issue / PR の閲覧ができます。他の OS と Extension の切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** protocol v1 と Host 基盤（発見・ペアリング・認証・中継）を実装しました。スマホからの Pi の起動・PC での attach・ログイン専用 Pi にも対応しました。外部エージェント用 CLI・Webhook・GitHub 閲覧・Linux / macOS の常駐登録にも対応しています。Android 開発版では Rust Host にペアリングし、チャット、変更レビュー、サブエージェント、新しい Pi の起動、マシン管理、Issue / PR の閲覧ができます。他の OS と Extension の切替は今後の範囲です（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
 
 ## 目的
 
@@ -175,7 +175,7 @@ Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘ�
 
 Linux の user systemd の登録・確認・削除は `pimate service install|status|uninstall`。`start|stop|health|has-systemd` と `command-status|command-install|command-remove` も `service` のサブコマンドです。登録・削除は実際にサービス状態を変えます。**稼働中の TS Host と同じポート・サービス名で試さないでください。** `XDG_CONFIG_HOME` を変えても systemd の user manager は分離されません。Rust の管理印・設定ディレクトリと異なる unit は上書きしません。linger の設定は行いません。
 
-macOS ではログインしたユーザーで `pimate service install` を実行すると、`~/Library/LaunchAgents/dev.pimate.rs.host.plist` を作成して GUI ログインドメインに登録します。`pimate service status` で登録・稼働状態を確認し、`stop` / `start` で停止・再開、`uninstall` で登録と plist を削除します。起動エラーは非公開の設定ディレクトリの `host.log` に記録します。別の設定の plist や同名の別ジョブは置換しません。WS のパッケージ更新・再起動は引き続き Linux の管理サービスだけが対象です。
+macOS ではログインしたユーザーで `pimate service install` を実行すると、`~/Library/LaunchAgents/dev.pimate.rs.host.plist` を作成して GUI ログインドメインに登録します。`pimate service status` で登録・稼働状態を確認し、`stop` / `start` で停止・再開、`uninstall` で登録と plist を削除します。ログイン中の実 launchd で異常終了後の Host 復帰と、同じ Pi の継続・再 attach を[確認しました](docs/devin-macos.md#host-の-launchagent-を確認する)。起動エラーは非公開の設定ディレクトリの `host.log` に記録します。別の設定の plist や同名の別ジョブは置換しません。WS のパッケージ更新・再起動は引き続き Linux の管理サービスだけが対象です。
 
 Extension のために `setup-info`、`pair --json [--address host:port]`（秘密のリンクと失効時刻）、`pair-pending`（コードは標準入力のみ）、`devices`、`revoke ID --json` と各 `service` 操作が JSON を返します。Extension はこれらの JSON を使い、Host の資格情報・管理処理を再実装しません。テストは管理コマンドを偽物、Webhook を loopback に切り替えます。`PIMATE_SERVICE_PORT` はサービス管理・health 確認用のポート（通常 47800）です。
 
