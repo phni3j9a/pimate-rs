@@ -8,6 +8,8 @@ private final class TestConnection: Connection, @unchecked Sendable {
     var items: [Item] = []
     var checkError: CoreError?
     var receipt: @Sendable () async throws -> Void = {}
+    var restored = RestoredDraft(text: "restored", images: [Image(mimeType: "image/jpeg", data: "YQ==")])
+    override func takeUnconfirmed(target: Target, id: String) throws -> RestoredDraft { restored }
     override func subscribe(instance: String?) throws {}
     override func snapshot() -> Snapshot {
         Snapshot(revision: 1, items: items + [field("phase", "\"ready\""), field("instanceId", "\"pi\""), field("promptImages", "true"), field("promptImageLimit", "4")])
@@ -115,6 +117,20 @@ final class ReviewTests: XCTestCase {
         do { try await model.attach(key, files: [url, URL(string: "https://invalid.example/test")!]); XCTFail() } catch CoreError.BadRequest {}
         XCTAssertTrue(model.body(key).images.isEmpty)
         try await model.attach(key, files: Array(repeating: url, count: 4)); XCTAssertEqual(model.body(key).images.map(\.mimeType), Array(repeating: "image/jpeg", count: 4))
+    }
+    @MainActor func testRemoveRestoredPhotoAndPreserveEditingDuringBuiltin() async throws {
+        let core = TestCore(noHandle: .init()), m = SessionModel(core: core)
+        core.c.items = [Item(collection: "command", id: "compact", position: 0, json: #"{"source":"builtin"}"#)]
+        try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
+        try m.restore(key, id: "draft"); XCTAssertEqual(m.body(key), core.c.restored)
+        try m.removeAttachment(key, shown: core.c.restored.images, at: 0)
+        XCTAssertThrowsError(try m.removeAttachment(key, shown: core.c.restored.images, at: 0)); XCTAssertEqual(m.body(key).text, "restored")
+        m.text("/compact", for: key); let sent = m.body(key)
+        let gate = AsyncStream<Void>.makeStream(), wait = expectation(description: "awaiting builtin")
+        core.c.receipt = { wait.fulfill(); for await _ in gate.stream { break } }
+        let task = Task { try await m.builtin(key, sent) }; await fulfillment(of: [wait], timeout: 3)
+        m.text("次の本文", for: key); gate.continuation.finish(); let sheet = try await task.value
+        XCTAssertNil(sheet); XCTAssertEqual(m.body(key).text, "次の本文")
     }
     func testTestLaunchCannotReusePriorRegistration() throws {
         let env = ["PIMATE_TEST_STORE": "1"], first = KeychainStore.forLaunch(environment: env)

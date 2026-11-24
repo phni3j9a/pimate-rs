@@ -77,6 +77,30 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
             if self.body(key) == sent { self.drafts[key] = nil }
         }
     }
+    func removeAttachment(_ key: EditorKey, shown: [Image], at index: Int) throws {
+        guard editor == key, body(key).images == shown, shown.indices.contains(index) else { throw CoreError.StaleTarget }
+        var d = body(key); d.images.remove(at: index); drafts[key] = d
+    }
+
+    func suggestions(_ key: EditorKey, text: String) -> [String] {
+        guard editor == key else { return [] }; return connections[key.host]?.commandSuggestions(text: text) ?? []
+    }
+
+    // Returns the sheet to present, or nil after a command was accepted by the host.
+    func builtin(_ key: EditorKey, _ sent: RestoredDraft) async throws -> String? {
+        guard editor == key, body(key) == sent else { throw CoreError.StaleTarget }
+        let line = sent.text.trimmingCharacters(in: .whitespacesAndNewlines), name = String(line.dropFirst())
+        guard line.first == "/", sent.images.isEmpty,
+              rows[key.host]?.groups["command"]?.contains(where: { $0.id == name && $0.object["source"] as? String == "builtin" }) == true else { throw CoreError.BadRequest }
+        switch name {
+        case "model", "resume", "fork", "tree": drafts[key] = nil; return name
+        case "compact", "new", "reload":
+            let op = Operation.rc(target: key.target, method: name == "compact" ? .compact : .sessionOp,
+                                  params: name == "compact" ? "{}" : "{\"op\":\"\(name)\"}")
+            try await perform(op, key) { if self.body(key) == sent { self.drafts[key] = nil } }; return nil
+        default: throw CoreError.Unsupported
+        }
+    }
     func abort(_ key: EditorKey) async throws { try await perform(.abort(target: key.target), key) }
     func answerText(_ q: QuestionKey) -> String { answers[q]?.text ?? "" }
     private func live(_ q: QuestionKey, shown: String) -> Bool {
