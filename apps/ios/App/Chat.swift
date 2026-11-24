@@ -53,7 +53,11 @@ private struct Conversation: View {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id) }
                         if !thinking.isEmpty { DisclosureGroup("考えています…") { Text(verbatim: thinking) } }
-                        if !text.isEmpty { MarkdownBody(source: text, answer: "stream:" + (entries.last?.id ?? "begin")) }
+                        if !text.isEmpty {
+                            // A new streamed answer must not render with the previous answer's parsed blocks.
+                            let answer = "stream:" + (entries.last?.id ?? "begin")
+                            MarkdownBody(source: text, answer: answer).id(answer)
+                        }
                         if let move = model.move { MoveNote(move: move) }
                         if let result = model.receipt { ReceiptNote(receipt: result) { model.dismissReceipt(host: key.host, result) } }
                         if let prompt = edge?.pcPrompt, questions.isEmpty { TerminalCard(title: prompt.str("title"), command: edge?.attachCommand) }
