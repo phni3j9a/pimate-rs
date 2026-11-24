@@ -68,12 +68,7 @@ private struct Conversation: View {
             // A streaming block can disappear at message_end; the presented table must outlive it.
             .environment(\.photoContext, photos)
             .fullScreenCover(item: $photo) { shown in
-                NavigationStack {
-                    LoadedPhoto(context: photos, label: shown.label, thumbnail: false, source: { shown.source })
-                        .navigationTitle(shown.label).navigationBarTitleDisplayMode(.inline).toolbar {
-                            ToolbarItem(placement: .cancellationAction) { Button("閉じる") { photo = nil } }
-                        }
-                }
+                PhotoViewer(gallery: shown, context: photos)
             }
             .environment(\.openPiTable, { table = OpenTable(table: $0) })
             .fullScreenCover(item: $table) { shown in
@@ -112,13 +107,13 @@ private struct TurnView: View {
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                     }
                     if active || expanded { work(w) }
+                    if let images = w.images { HistoryPhotos(images: images) }
                 }
             }
         }
     }
     private func work(_ line: WorkLine) -> some View {
             DisclosureGroup {
-                if let images = line.images { HistoryPhotos(images: images) }
                 Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
             } label: {
                 HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.name == "考えた内容" ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)

@@ -2,7 +2,9 @@ import SwiftUI
 
 struct CommandPalette: View {
     let model: SessionModel, key: EditorKey, text: String, commands: [Item]
-    @State private var attempt = 0, loading = true, failed = false
+    @State private var attempt = 0
+    @State private var loading = true
+    @State private var failed = false
     var body: some View {
         let names = model.suggestions(key, text: text)
         VStack(alignment: .leading, spacing: 4) {

@@ -2,20 +2,24 @@ import SwiftUI
 
 private actor MarkdownParser {
     static let shared = MarkdownParser()
-    func blocks(_ source: String, files: Bool) throws -> [Block] {
+    func blocks(_ source: String, files: Bool) throws -> ([Block], [MarkdownImage]) {
         try Task.checkCancellation()
-        return parse(source: source, fileImages: files).blocks()
+        let doc = parse(source: source, fileImages: files)
+        return (doc.blocks(), doc.images().filter { image in
+            image.kind != .remote || URL(string: image.src.value()).map { WebImage.valid($0, scheme: "https") } == true
+        })
     }
 }
 struct MarkdownBody: View {
     let source: String, answer: String
     @Environment(\.photoContext) private var photos
     @State private var blocks: [Block] = []
+    @State private var gallery: [MarkdownImage] = []
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(blocks, id: \.id) { MarkdownBlock(block: $0, answer: answer) }
-        }.task(id: [source, photos?.files == true ? "file" : ""]) {
-            if let result = try? await MarkdownParser.shared.blocks(source, files: photos?.files == true), !Task.isCancelled { blocks = result }
+        }.environment(\.markdownGallery, gallery).task(id: [source, photos?.files == true ? "file" : ""]) {
+            if let result = try? await MarkdownParser.shared.blocks(source, files: photos?.files == true), !Task.isCancelled { (blocks, gallery) = result }
         }
     }
 }
@@ -118,9 +122,14 @@ struct MarkdownTable: View {
 }
 
 // Preserve native range selection across adjacent text; only an image splits a run.
+private struct GalleryKey: EnvironmentKey { static let defaultValue: [MarkdownImage] = [] }
+private extension EnvironmentValues {
+    var markdownGallery: [MarkdownImage] { get { self[GalleryKey.self] } set { self[GalleryKey.self] = newValue } }
+}
 private struct PhotoParagraph: View {
     let spans: [Inline], answer: String, heading: Bool
     @Environment(\.photoContext) private var context
+    @Environment(\.markdownGallery) private var images
     private enum Part { case text([Inline]), photo(MarkdownImage) }
     private var parts: [Part] {
         var parts: [Part] = [], run: [Inline] = []
@@ -138,8 +147,9 @@ private struct PhotoParagraph: View {
             case .photo(let image):
                 if image.kind == .remote, let url = URL(string: image.src.value()), WebImage.valid(url, scheme: "http") {
                     Link(image.alt.isEmpty ? "画像をブラウザで開く" : image.alt, destination: url)
-                } else if let context {
-                    PhotoTile(context: context, label: image.alt.isEmpty ? "画像" : image.alt, source: { _ in try? ChatImageSource(markdown: image, answer: answer) })
+                } else if let context, let start = images.firstIndex(where: { $0.index == image.index }) {
+                    let gallery = images // Capture the opened answer, not subsequent streamed text.
+                    PhotoTile(context: context, gallery: OpenPhoto(start: start, count: gallery.count, label: { gallery[$0].alt.isEmpty ? "画像" : gallery[$0].alt }, source: { i, _ in try? ChatImageSource(markdown: gallery[i], answer: answer) }))
                         .frame(maxWidth: 300).frame(height: 144)
                         .id(image.kind == .data ? "inline:\(image.index)" : image.src.value())
                 }
