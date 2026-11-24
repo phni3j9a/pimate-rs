@@ -1,3 +1,6 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     id("com.android.application") version "8.12.0"
     id("org.jetbrains.kotlin.android") version "2.2.10"
@@ -28,6 +31,13 @@ val buildRust by
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
 
+val appVersion = rootDir.resolve("version.txt").readText().trim()
+val versionParts = appVersion.split('.').map {
+    require(it.matches(Regex("0|[1-9][0-9]{0,2}"))) { "Expected a stable Android release version" }
+    it.toInt()
+}
+require(versionParts.size == 3)
+
 android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -36,16 +46,32 @@ android {
     namespace = "dev.pimate.app"
     compileSdk = 36
     defaultConfig {
-        applicationId = "dev.pimate.app.rs"
+        applicationId = "dev.pimate.app"
         minSdk = 26
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        targetSdk = 36
+        versionCode = versionParts[0] * 1_000_000 + versionParts[1] * 1_000 + versionParts[2]
+        versionName = appVersion
         ndk { abiFilters += setOf("arm64-v8a", "armeabi-v7a", "x86_64") }
     }
 
-    buildTypes { debug { applicationIdSuffix = ".debug" } }
+    val releaseSigning = System.getenv("PIMATE_SIGNING_PROPERTIES")?.let { path ->
+        val file = File(path).canonicalFile
+        val key = file.resolveSibling("pimate-release.jks").canonicalFile
+        require(!file.startsWith(repo) && !key.startsWith(repo) && key.isFile)
+        val props = Properties().apply { file.reader(Charsets.UTF_8).use { load(it) } }
+        require(File(props.getProperty("storeFile")).canonicalFile == key)
+        signingConfigs.create("pimateRelease") {
+            storeFile = key
+            storePassword = props.getProperty("storePassword")
+            keyAlias = props.getProperty("keyAlias")
+            keyPassword = props.getProperty("keyPassword")
+        }
+    }
+    buildTypes {
+        debug { applicationIdSuffix = ".rs.debug" }
+        release { signingConfig = releaseSigning }
+    }
     buildFeatures { compose = true }
     sourceSets["main"].java.srcDir(mobile.resolve("kotlin"))
     sourceSets["main"].jniLibs.srcDir(mobile.resolve("jniLibs"))

@@ -3,6 +3,7 @@
 /apps/android/**/build/
 /apps/android/.gradle/
 /apps/android/.kotlin/
+/apps/android/dist/
 /apps/android/local.properties
 
 /packages/pimate/dist/

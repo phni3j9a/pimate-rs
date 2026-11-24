@@ -268,6 +268,17 @@ scripts/build-ios.sh
 
 **接続の結合試験:** `scripts/test-mobile.sh swift`（macOS）または `scripts/test-mobile.sh kotlin`（Linux、JDK・`kotlinc` が必要）。後者は `KOTLIN_CP` に JNA 5.17.0・kotlin-stdlib・kotlinx-coroutines-core-jvm の JAR を `:` 区切りで指定します。どちらも一時ディレクトリ・ポート 0 の Rust Host と Unix socket の模擬 RC を起動し、ペアリングリンクは試験クライアントの標準入力にだけ渡します。実装例は [`crates/pimate-ffi/tests/native`](crates/pimate-ffi/tests/native)（試験専用のメモリ保存）です。
 
+### Android release APK（TS 版の上書き更新）
+
+リポジトリルートで `scripts/build-android-release.sh` を実行します。下記の開発環境に加え、Build Tools 36.0.0 と GitHub Release を読める `gh` が必要です。`~/.config/pimate-release/` に **TS 版で使用中の** `pimate-release.jks` と `signing.properties` がそろっていることを確認してください。鍵は作成・変更せず、Gradle に渡すのは外部 properties のパスだけです。鍵がなければ中止します。[TS 版の署名鍵のバックアップ手順](https://github.com/phni3j9a/PiMate/blob/main/apps/mobile/README.md#署名鍵を必ずバックアップする)を参照してください。CI は鍵を使わず debug のみをビルドします。
+
+- `apps/android/version.txt` が版の正本です。安定版の3要素（各 0〜999）を指定し、`versionCode = major × 1,000,000 + minor × 1,000 + patch` が既公開版より大きくなるようにします。初回は 0.2.0（2000）、TS 版 0.1.23（1023）の続きです。
+- `:app:assembleRelease` は Rust を release ビルドしてから `dev.pimate.app` の APK を作ります。ARM 実機（arm64-v8a / armeabi-v7a）と x86_64 エミュレーターを1本に含めます。従来の Rust アプリと同じ API 26 以上で、TS 版の API 24–25 と 32 bit x86 専用端末は更新対象外です。UniFFI / JNA の呼び出しを保つため R8 とリソース縮小は無効のままです。
+- スクリプトは一時取得した [TS 版 0.1.23](https://github.com/phni3j9a/PiMate/releases/tag/app-v0.1.23) とビルド結果を `apksigner verify --print-certs` で検証し、証明書 SHA-256 が一致した APK だけを `apps/android/dist/pimate-<版>.apk` にコピーします。表示された証明書と APK の SHA-256 を公開時の照合に使います。
+- APK を上書きインストールしてください（アンインストール不要）。TS 版のホストや設定は移行しません。旧 SecureStore のファイルがあれば未接続の初回画面に再ペアリングを案内します。旧ファイルの中身・鍵・DB は読み取らず削除もしません。Rust 版は別の Keystore alias・`hosts` と `display` の設定を使います。
+
+**M8 の公開担当者へ:** 検証した commit の `pimate-rs` Releases に `app-v<版>` の正式リリースを作成し、検証済み APK・両 SHA-256・対応端末・再ペアリング手順を掲載します。Rust 版の「更新の確認」はインストール済みの `versionName` とこのリポジトリの `app-v…` を比較します。一方 TS 版が開けるのは旧 `phni3j9a/PiMate` Releases だけです。そちらにも同じ **正式** `app-v<版>` で同一 APK（再ビルドせず SHA-256 を照合）、移行案内、新リポジトリへのリンクを掲載してください。PC パッケージ用の `v…` タグを使わず、公開済み APK を差し替えません。
+
 ### Android 開発版と模擬 Host
 
 `apps/android` は API 26 以上の Compose アプリです。上記の Rust ターゲット、cargo-ndk、Android SDK 36、JDK 17 以上（JRE のみの環境では `JAVA_HOME` を JDK に向ける）を用意し、`ANDROID_HOME`（NDK の版が異なる場合は `ANDROID_NDK_HOME` も）を設定して実行します。
@@ -293,7 +304,7 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 端末試験は `apps/android/app/src/androidTest`。`StoreContract` はランダムな試験用 Host だけで Keystore の置き換えを検査します。`UiContract` はドロワーの幅・会話内の表のリンク・Markdown の解析を UI スレッドの外で行うことを検査します（模擬 Host 不要）。`DemoJourney` は初回ペアリング画面からの試験用です（アプリのデータが空で、模擬 Host を起動し直した直後に実行します）。debug APK と `assembleDebugAndroidTest` の APK を試験端末に入れ、上記の reverse 後、模擬リンクを標準入力で `adb -s SERIAL shell "run-as dev.pimate.app.rs.debug sh -c 'mkdir -p cache; cat > cache/demo-link'"` へ渡します（履歴やログに残さない）。`adb -s SERIAL shell am instrument -w dev.pimate.app.rs.debug.test/androidx.test.runner.AndroidJUnitRunner` で実行できます。リンクがなければ会話試験はスキップします。
 
-開発用会話で作業中に割り込み、消費される前に停止すると「割り込み待ち」→「届いていない可能性があります」になります。同じセッションで入力欄が空なら本文を下書きへ戻せますが、自動再送はしません。編集本文は Host・Instance・セッションごとに ViewModel のメモリだけで保持します（画面回転・一時切断では保持、プロセス終了で消去）。質問カードは `QuestionCard.kt` で5種類を描画し、回答の送信可否は中核に委ねます。Android 12 以降のクラウドバックアップ・端末間転送は `hosts.xml` を除外します。
+開発用会話で作業中に割り込み、消費される前に停止すると「割り込み待ち」→「届いていない可能性があります」になります。同じセッションで入力欄が空なら本文を下書きへ戻せますが、自動再送はしません。編集本文は Host・Instance・セッションごとに ViewModel のメモリだけで保持します（画面回転・一時切断では保持、プロセス終了で消去）。質問カードは `QuestionCard.kt` で5種類を描画し、回答の送信可否は中核に委ねます。Android 12 以降のクラウドバックアップ・端末間転送は `display.xml` だけを対象とし、新旧の認証情報を除外します。
 
 未確認の復元は `Connection.takeUnconfirmed(target, id)` で行います。現在の対象・未確認状態を中核の同じロック内で照合し、本文と画像を返して draft を削除します。遅着した履歴と照合済み・対象違いなら失敗し、UI の編集内容は変更しません。確定した拒否は操作エラーとして通知し、復元可能な draft には残しません。Android の入力イベントは表示時の編集キーに限定し、質問の書きかけも `ChatEdits.kt` のメモリ上で Host・対象・requestId ごとに保持します。同じ対象の質問一覧から消えたときに破棄します。
 
