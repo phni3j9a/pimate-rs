@@ -7,7 +7,9 @@ import SwiftUI
 
 struct Probe: View {
     let model: SessionModel
-    @State private var link = "", notice = ""
+    @State private var link = ""
+    @State private var notice = ""
+    @AppStorage("appearance") private var appearance = Appearance.system
     @AppStorage("typeSize") private var size = TypeSize.standard
     var body: some View {
         NavigationStack {
@@ -37,9 +39,10 @@ struct Probe: View {
                         if !model.message.isEmpty { Text(model.message).foregroundStyle(PiTheme.failure) }
                     }
                 } else if !model.message.isEmpty { Text(model.message) }
+                Picker("配色", selection: $appearance) { ForEach(Appearance.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
                 Picker("文字サイズ", selection: $size) { ForEach(TypeSize.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
             }.modifier(PiFont(.body)).foregroundStyle(PiTheme.text).tint(PiTheme.accent)
                 .scrollContentBackground(.hidden).background(PiTheme.background).navigationTitle("接続の確認")
-        }
+        }.preferredColorScheme(appearance.scheme)
     }
 }

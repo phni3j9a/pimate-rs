@@ -8,9 +8,12 @@ struct QuestionKey: Hashable { let editor: EditorKey; let item: Item }
     private let core: Core
     private var connections: [String: Connection] = [:]
     private var generations: [String: UUID] = [:]
-    private(set) var hosts: [Host] = [], rows: [String: Rows] = [:]
-    private(set) var host: String?, instance: String?
-    private(set) var busy = false, message = ""
+    private(set) var hosts: [Host] = []
+    private(set) var rows: [String: Rows] = [:]
+    private(set) var host: String?
+    private(set) var instance: String?
+    private(set) var busy = false
+    private(set) var message = ""
     private var drafts: [EditorKey: RestoredDraft] = [:]
     private var answers: [QuestionKey: String] = [:]
     private var selection = UUID()

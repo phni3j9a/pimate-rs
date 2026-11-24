@@ -1,15 +1,18 @@
 import SwiftUI
 
 // docs/design/html/Tokens.html; app multiplier is applied *in addition* to Dynamic Type.
+enum Appearance: String, CaseIterable { case system = "端末に合わせる", light = "ライト", dark = "ダーク"
+    var scheme: ColorScheme? { switch self { case .system: nil; case .light: .light; case .dark: .dark } }
+}
 enum TypeSize: String, CaseIterable { case small = "小", standard = "標準", large = "大"
     var factor: CGFloat { switch self { case .small: 0.875; case .standard: 1; case .large: 1.15 } }
 }
 enum TypeRole: CGFloat { case title = 22, sheet = 17, lead = 15, body = 14, caption = 12, meta = 11 }
 struct PiFont: ViewModifier {
     @AppStorage("typeSize") private var size = TypeSize.standard
-    @ScaledMetric(relativeTo: .body) private var points: CGFloat
+    @ScaledMetric private var points: CGFloat
     init(_ role: TypeRole) { _points = ScaledMetric(wrappedValue: role.rawValue, relativeTo: .body) }
-    func body(content: Content) -> some View { content.font(.system(size: points * size.factor)) }
+    func body(content: PiFont.Content) -> some View { content.font(.system(size: points * size.factor)) }
 }
 enum PiTheme {
     static let gutter: CGFloat = 20, turnGap: CGFloat = 32

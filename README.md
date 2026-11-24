@@ -264,7 +264,7 @@ rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
 scripts/build-ios.sh
 ```
 
-`target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` と `Login.swift` をアプリのターゲットでコンパイルします。
+`target/mobile/ios/PiMate.xcframework`（iOS 16.0 以降の端末と Apple Silicon・Intel シミュレーターの静的ライブラリ・ヘッダー・module map）をリンクし、同じ場所の `pimate_ffi.swift` と `Login.swift` をアプリのターゲットでコンパイルします。
 
 **接続の結合試験:** `scripts/test-mobile.sh swift`（macOS）または `scripts/test-mobile.sh kotlin`（Linux、JDK・`kotlinc` が必要）。後者は `KOTLIN_CP` に JNA 5.17.0・kotlin-stdlib・kotlinx-coroutines-core-jvm の JAR を `:` 区切りで指定します。どちらも一時ディレクトリ・ポート 0 の Rust Host と Unix socket の模擬 RC を起動し、ペアリングリンクは試験クライアントの標準入力にだけ渡します。実装例は [`crates/pimate-ffi/tests/native`](crates/pimate-ffi/tests/native)（試験専用のメモリ保存）です。
 
