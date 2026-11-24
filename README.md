@@ -66,8 +66,6 @@ cargo build -p pimate-host
 export PATH="$PWD/target/debug:$PATH"
 lab=$(mktemp -d /tmp/pimate.XXXXXX); export PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config"
 export PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg"
-# Linux x64 の開発用（他の OS / CPU では対応する abduco の絶対パス）
-export PIMATE_ABDUCO="$PWD/bin/linux-x64/abduco"
 export PIMATE_EXTENSION=/path/to/PiMate/packages/pimate/src/extension/index.ts
 pimate serve --port 47801 & host_pid=$!
 pimate pair --port 47801          # URL と QR（10分・1回限り）
@@ -90,15 +88,15 @@ TMPDIR=/tmp PIMATE_TEST_PI="$HOME/.pi/agent/bin/pi" PIMATE_TEST_TS=/path/to/PiMa
 
 ### スマホからの起動とログイン
 
-ペアリング済み WS の `folders` / `dirs` で起動先を選び、`spawn` へ `cwd` と任意の `model`・`thinking`・`askTool`・`trust`・初回 `message` を渡します。受理した起動はスマホが切断しても初回メッセージ送信まで継続します。初回メッセージの失敗で Pi や prompt を自動再試行しません。終了は既存の RC `shutdown`。Rust Host は `PIMATE_RUN_DIR/t/`（0700）を端末専用の名前空間にします。起動・一覧・attach・終了済み端末の回収はこの中だけで行い、環境の `ABDUCO_SOCKET_DIR`・`~/.abduco`・他の runDir は使いません。ソケットは `<runDir>/t/<名前>` に置き、所有記録・ホスト名・abduco の一覧には依存しません。Host はソケットのモードから接続中・終了済みを判定し、名前指定の attach はそのパスだけを見ます。一覧は接続できる端末だけを表示します。
+ペアリング済み WS の `folders` / `dirs` で起動先を選び、`spawn` へ `cwd` と任意の `model`・`thinking`・`askTool`・`trust`・初回 `message` を渡します。受理した起動はスマホが切断しても初回メッセージ送信まで継続します。初回メッセージの失敗で Pi や prompt を自動再試行しません。終了は既存の RC `shutdown`。Rust Host は `PIMATE_RUN_DIR/t/`（0700）を端末専用の名前空間にします。同じ `pimate` バイナリの保持プロセスが Pi ごとに PTY と `<runDir>/t/<名前>` を持ち、Host を再起動・更新しても Pi は続きます。誰も attach していない間の出力は読み捨てます。`attach` は一度に1クライアントで、接続時に Pi を再描画し、端末のリサイズを反映します。名前指定の attach はそのパスだけを見ます。一覧には接続可能なソケットだけを表示し、接続中かどうかはモードから判定します。Pi が終了すると保持プロセス自身がソケットを回収します。
 
-制限: keeper が異常終了した場合、到達不能なソケットファイルを自動削除せず runDir に残します（通常の一時 runDir は再起動・ログアウトで消えます）。
+**既知の制限:** 保持プロセスの異常終了で残ったソケットは自動削除しません。TS 版から置き換える際、同じ runDir に互換 RC を登録した生存中の Pi は `list`・チャット・`shutdown` などを引き続き利用できます。旧 abduco セッションに Rust 版からは attach できません（`~/.abduco` は探索しません）。その端末には従来の CLI から接続するか、Pi を終了して Rust Host から起動し直してください。既存セッションを自動移行・終了することはありません。
 
-`PIMATE_PI`（既定 `pi`）と TS Extension が必要です。`PIMATE_EXTENSION` はファイルパスまたは Pi のパッケージ指定（`npm:`、`git:` など）です。端末管理は `terminal.rs` に隔離し、`PIMATE_ABDUCO` → `pimate` と同じディレクトリの検証済みバイナリ（現在 Linux x64、[チェックサム](bin/SHA256SUMS.json)）→ PATH の順で解決します。配布時は `bin/<platform>-<arch>/` に並べ、Extension の既定はパッケージの `dist/extension.js` です。Linux の user systemd が使えれば Pi ごとの scope、それ以外は独立した端末セッションを使います。後者はログアウトやサービスの cgroup 終了に対する保証はありません。
+`PIMATE_PI`（既定 `pi`）と TS Extension が必要です。`PIMATE_EXTENSION` はファイルパスまたは Pi のパッケージ指定（`npm:`、`git:` など）で、既定は配布パッケージの `dist/extension.js` です。Linux の user systemd が使えれば Pi ごとの scope、それ以外は独立した端末セッションを使います。後者はログアウトやサービスの cgroup 終了に対する保証はありません。
 
 `auth_session` のログイン専用 Pi は接続・`holdId` ごとに保持し、`auth_session_end` または切断で解放します。通常の一覧・購読には出さず、`hello` と認証用 RC だけを許可します。起動待ちの保持を解放・切断すると、新たなログイン Pi は起動しません。すでに始まった起動は完了させます。最後の解放から60秒経過後、保存中なら延期し、対話中ならキャンセルして終了します。
 
-上記の `real_pi -- --ignored` は WS 起動・初回 prompt・Host 再起動・PTY attach・専用 Pi の保持と終了まで検査します（1分強）。Linux x64 以外の実 Pi 試験には `PIMATE_TEST_ABDUCO=/absolute/path/to/abduco` も指定してください。Linux x64 でも同じ指定で upstream v0.6 のバイナリを検証できます。`serve` / `attach` / `list` には同じ短い絶対パスの `PIMATE_RUN_DIR` を指定してください。端末ソケットのパス、または RC の `<runDir>/<UUID>.sock` が OS のバイト長上限に達する場合、起動はエラーになります。
+上記の `real_pi -- --ignored` は WS 起動・初回 prompt・Host 再起動・PTY attach・専用 Pi の保持と終了まで検査します（1分強）。`serve` / `attach` / `list` には同じ短い絶対パスの `PIMATE_RUN_DIR` を指定してください。端末ソケットのパス、または RC の `<runDir>/<UUID>.sock` が OS のバイト長上限に達する場合、起動はエラーになります。
 
 ### 外部エージェントと Webhook
 
@@ -119,6 +117,8 @@ Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘ�
 認証済み WS の `github` は対象の Pi の作業ディレクトリに限り Issue / PR を読みます。`github_status` は github.com のログイン名だけを取得します。`update_check` は npmjs.org の最新版を確認し、`update` は公開 npm パッケージに同梱され、かつ `pimate-host.service` で稼働する場合だけ固定引数で更新します。`host_restart` はこの常駐サービスだけが対象です。比較元は起動時の npm 版（パッケージ外は crate の版・更新不可）です。更新と再起動は端末をまたいで排他し、競合時は更新に `busy`、再起動に `failed` を返します。`gh` の stderr には認証情報が含まれ得るため、TS 版とは異なり、失敗は分類コードと固定文言のみを返します。
 
 Linux の user systemd の登録・確認・削除は `pimate service install|status|uninstall`。`start|stop|health|has-systemd` と `command-status|command-install|command-remove` も `service` のサブコマンドです。登録・削除は実際にサービス状態を変えます。**稼働中の TS Host と同じポート・サービス名で試さないでください。** `XDG_CONFIG_HOME` を変えても systemd の user manager は分離されません。Rust の管理印・設定ディレクトリと異なる unit は上書きしません。linger の設定は行いません。
+
+macOS ではログインしたユーザーで `pimate service install` を実行すると、`~/Library/LaunchAgents/dev.pimate.rs.host.plist` を作成して GUI ログインドメインに登録します。`pimate service status` で登録・稼働状態を確認し、`stop` / `start` で停止・再開、`uninstall` で登録と plist を削除します。別の設定の plist や同名の別ジョブは置換しません。WS のパッケージ更新・再起動は引き続き Linux の管理サービスだけが対象です。
 
 Extension のために `setup-info`、`pair --json [--address host:port]`（秘密のリンクと失効時刻）、`pair-pending CODE`、`devices`、`revoke ID --json` と各 `service` 操作が JSON を返します。TS Extension の変更は M7 です。テストは管理コマンドを偽物、Webhook を loopback に切り替えます。`PIMATE_SERVICE_PORT` はサービス管理・health 確認用のポート（通常 47800）です。
 

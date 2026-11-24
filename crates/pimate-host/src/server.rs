@@ -179,7 +179,7 @@ async fn listen(
 ) -> Result<()> {
     let dir = config::run_dir();
     let mut discovery = rc::list(&dir).await?;
-    let terminal = crate::terminal::Terminal::resolve();
+    let terminal = crate::terminal::Terminal;
     terminal.refresh(&dir, &mut discovery.instances).await;
     let (tx, instances) = watch::channel(summaries(discovery.instances));
     let (versions, incompatible) = watch::channel(discovery.incompatible);
@@ -246,7 +246,7 @@ async fn listen(
 }
 async fn health(State(a): State<Arc<App>>) -> Json<Value> {
     Json(
-        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"abduco":a.terminal.executable,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":a.package.current()}),
+        json!({"ok":true,"protocol":VERSION,"rcProtocol":pimate_protocol::PROTOCOL_VERSION,"addresses":a.addresses,"incompatible":*a.incompatible.borrow(),"hostId":a.config.host.host_id,"pid":std::process::id(),"version":a.package.current()}),
     )
 }
 async fn pair(State(a): State<Arc<App>>, req: Request) -> (StatusCode, Json<Value>) {

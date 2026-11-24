@@ -28,3 +28,14 @@ jobs:
           lib="$(dirname "$(realpath "$(command -v kotlinc)")")/../lib"
           curl --fail --silent --show-error -o "$RUNNER_TEMP/jna.jar" https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
           CARGO_TARGET_DIR=target KOTLIN_CP="$lib/kotlin-stdlib.jar:$lib/kotlinx-coroutines-core-jvm.jar:$RUNNER_TEMP/jna.jar" scripts/test-mobile.sh kotlin
+  macos-host:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: cargo build --locked -p pimate-host
+      - name: PTY keeper and LaunchAgent
+        run: |
+          lab=$(mktemp -d /tmp/pimate.XXXXXX)
+          export TMPDIR=/tmp PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config" PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg" PIMATE_SERVICE_PORT=47807
+          cargo test --locked -p pimate-host keeper_drains
+          cargo test --locked -p pimate-host launch_agent

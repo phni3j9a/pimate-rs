@@ -2,6 +2,8 @@ mod agent_cli;
 mod alerts;
 mod config;
 mod github;
+mod keeper;
+mod launchd;
 mod link;
 mod login;
 mod operations;
@@ -71,9 +73,19 @@ async fn addresses() -> Result<Vec<IpAddr>> {
     }
     Ok(ips)
 }
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
+fn main() {
+    let result = if env::args_os().nth(1).is_some_and(|a| a == "__hold") {
+        keeper::run()
+    } else {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run());
+        rt.shutdown_background();
+        result
+    };
+    if let Err(e) = result {
         eprintln!("{e}");
         std::process::exit(1)
     }
@@ -109,15 +121,13 @@ async fn run() -> Result<()> {
     if cmd == "attach" {
         let name = args.next();
         ensure!(args.next().is_none());
-        return terminal::Terminal::resolve()
-            .attach(&config::run_dir(), name)
-            .await;
+        return terminal::Terminal.attach(&config::run_dir(), name).await;
     }
     if cmd == "list" {
         ensure!(args.next().is_none());
         let run = config::run_dir();
         let mut rows = rc::list(&run).await?.instances;
-        terminal::Terminal::resolve().refresh(&run, &mut rows).await;
+        terminal::Terminal.refresh(&run, &mut rows).await;
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
@@ -127,7 +137,7 @@ async fn run() -> Result<()> {
             ensure!(args.next().is_none());
             println!(
                 "{}",
-                serde_json::json!({"host":config.host,"configDir":config::config_dir()?,"addresses":addresses().await?,"abduco":terminal::Terminal::resolve().executable})
+                serde_json::json!({"host":config.host,"configDir":config::config_dir()?,"addresses":addresses().await?})
             )
         }
         "pair-pending" => {
