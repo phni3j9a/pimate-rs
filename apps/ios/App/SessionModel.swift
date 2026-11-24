@@ -104,7 +104,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         guard !busy else { throw CoreError.Blocked }; busy = true; defer { busy = false }
         let first = hosts.isEmpty && !needsReload
         let h = try await core.pair(link: link, name: "PiMate iOS")
-        if first { pairedHostId = h.id }
+        pairedHostId = first ? h.id : nil
         // Registration is committed. Retry only local reads, never the one-time pairing request.
         generations[h.id] = nil; connections[h.id] = nil; rows[h.id] = nil
         needsReload = true
@@ -240,6 +240,10 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
 }
 
 extension SessionModel {
+    func currentRows(_ id: String) throws -> Rows {
+        guard let c = connections[id] else { throw CoreError.Offline }; return Rows(c.snapshot())
+    }
+
     func machineRequest(_ id: String, _ operation: Operation) async throws -> Object {
         switch operation {
         case .folders, .dirs, .hostModels, .spawn, .githubStatus, .devices, .revoke, .updateCheck, .update, .restart: break

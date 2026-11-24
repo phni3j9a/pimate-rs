@@ -46,8 +46,13 @@ extension Rows {
 }
 
 @MainActor @Observable final class WorkRecord {
-    private(set) var items: [Object] = [], task = "", truncated = false, more = false, loading = false
-    private var cursor: String?, again = false
+    private(set) var items: [Object] = []
+    private(set) var task = ""
+    private(set) var truncated = false
+    private(set) var more = false
+    private(set) var loading = false
+    private var cursor: String?
+    private var again = false
     private var indices: [String: Int] = [:]
     private let page: (String?) async throws -> Object
     init(page: @escaping (String?) async throws -> Object) { self.page = page }
@@ -97,6 +102,10 @@ extension SessionModel {
     func control(_ target: StopTarget) async throws -> Object {
         let key = target.editor
         guard key == editor, rows[key.host]?.stopTarget(key, run: target.run, viewedChild: target.viewedChild) == target else { throw CoreError.StaleTarget }
+        // The Host can finish the viewed child before its delta drains onto the main actor.
+        let snapshot = try currentRows(key.host)
+        guard snapshot.ready(key.target.instance) == key.target,
+              snapshot.stopTarget(key, run: target.run, viewedChild: target.viewedChild)?.action == target.action else { throw CoreError.StaleTarget }
         var fields: Object = ["action": target.action, "runId": target.run]; fields["childId"] = target.child
         return try decodeObject(await request(key, .subagentControl, fields))
     }

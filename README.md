@@ -372,3 +372,19 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 - **コマンド・通知**: `.commands` で一覧を取得した後 `suggestions(_:text:)`。`builtin(_:_:)` に表示時の `RestoredDraft` を渡します。コマンドの受付とセッション操作の完了は別です。`receipt` だけが開始した Host・Pi に結び付いた結果で、`.unknown` は成功ではありません。閉じる操作は `dismissReceipt(host:_:)`。分岐・ツリーの返却本文は同じ Pi の宛先セッションが ready になった時、その空の入力欄に一度だけ反映します。
 - **Chat-Edge**: `edge` の connection・phase / unconfirmed / pcPrompt / attachCommand、`move` の from・to と `local`。`needsMoveConfirmation` のときは前の会話に下書きを保持、入力欄の「新しい送信先を確認」から `confirmMove(_:id:)` で今回だけ確認（端末の操作元は推定しない）。`attachCommand` が nil ならコピー操作を出さないこと。
 - 画面は `Chat.swift`・`Composer.swift`・`Markdown.swift`・`Transcript.swift`・`Question.swift` と新規 View を変更可。`SessionModel.swift`・`Rows.swift`・`ChatSheet.swift`・`ChatImages.swift`・`ChatNotices.swift`・`Photo.swift`・Keychain・Rust/FFI と生成物は維持してください。実機・見た目・スクリーンショット比較は後半の範囲です。
+
+### iOS の残りの画面で使う状態（#48 前半）
+
+画面を開いた時のマシン ID／`EditorKey` を捕捉し、画面を閉じたら Task をキャンセルします。操作の失敗や切断は空一覧・成功に変換せず、書き込みを自動再送しません。
+
+| 画面 | 状態と操作 |
+| --- | --- |
+| 変更レビュー | `await model.review(key, turn: userEntryID)`、セッション全体は `nil`。読み込み済み履歴から、開始したターンに属する edit/write を順に集計。`files[].pieces` に元の patch、行番号・件数・末尾改行、作成根拠、差分なしの理由。`askAbout(review)` で元のチャットの下書きへ追記（画像を残し送信しない）。 |
+| サブエージェント | `rows.subagentCounts`・`runs`。ツール行は `originalRun(toolCallId:)`、詳細は `workRecord(key, AgentChild(...))` を開いた子ごとに生成。`load()` は8ページまで、`more` なら続き、戻り値 true は取得中に更新あり。指示は子の `actions` にある場合だけ `control(key, child, action:text:)`。送信者のヒントは `instructions.forChild`。resume の前に子の index を記録し、返った `newRunId` で `resumedChild(run:index:)` が **非 nil になってから run と子を一緒に**切り替える。停止・一時停止は `rows.stopTarget(_:run:viewedChild:)` を確認時に固定し、現在の表示対象と一致する間だけ `control(approved)`。run 全体／親が止まる場合は影響範囲を明記。 |
+| 新しい Pi | Host ごとに `SpawnForm(host:askTool:)` を作成。`machineRequest(id,.folders/.dirs(path:))` の結果から `folder(_:knownTrusted:)`。パスは空白を含め書き換えない。`hostModels(id)` は未購読でも最大3つの Pi に照会。Pi がない場合は PC の既定モデルを使える。`spawn(form)` の `.ready` のみその Host で select。`.messageUnconfirmed` は起動済みで初回本文だけ未確認、`.notListed` は起動済みで一覧未到着（20秒）。 |
+| マシン | 接続・能力は `rows[id].groups["host"]`。`machineRequest(id,.updateCheck/.githubStatus/.devices)`。更新・再起動・端末取消・登録削除は `confirmation(host:action)` と `warning` を表示し、確認した値を `confirm(_:)` に渡す。更新先は**実行時の最新版**、結果は Host の返した版。登録削除と PC 側の端末取消は別操作。 |
+| プロバイダー | `ProviderState(host:)` を作り、`.task(id: rows.connectionGeneration)` 内で `hold(model,generation:)`。接続世代の変化で専用 Pi を解放・再取得し、一覧も取り直す。`page.login` の `target.instance` で `provider`／`auth` 行を参照。入力 UI も世代で破棄。`login.request(.authBegin/.authRespond/.authCancel/.authLogout, fields)`、対象プロバイダーを固定してログアウトを確認。状態更新後は `.authList`、working/input/saving なら `followOnce()` をループ（Rust が接続・専用 Pi ごとの同時 wait を拒否）。`CredentialOutcome.storageUnknown` は一覧再確認、`savedNeedsReload` は保存済み・Pi 再読込。中核が検証した authorization のみ明示タップで開く。API キー・コードは入力時だけ使い、復元・ログ・画面撮影の対象外。 |
+| GitHub | `github(key,query:)` は `kind=list` または `kind=issue/pr,number`。`data` に一覧／詳細・省略フラグ。`GithubStatus` は CLI なし・未ログイン・未確認を区別する。`GithubItem(key,item)` の検証済み URL だけを開き、`askAbout(item)` は元の下書きに追記するだけ。 |
+| 設定・初回案内 | `PiSettings` の `appearance/typeSize/askTool`（表示は既存と同じ AppStorage）、`version`・`issueURL`。`AppUpdate.check()` はインストール中の bundle ID で App Store の公開版を照会。未配布・通信失敗は `.unknown`（Android の APK や PC のリリースは比較しない）。`pairedHostId` は初回の成功後のみ。案内先を取り出したら `consumePairedHost()`。`rows[id].firstStep` は loading/offline/empty/list。初期一覧到着前を empty と扱わない。 |
+
+画面担当は新規 View、`Probe.swift`・`Pair.swift`・`Drawer.swift`・チャットの View を変更可。状態は `SessionModel.swift`・`Rows.swift`・`ChangeReview.swift`・`SubagentState.swift`・`MachineState.swift`・`PiSettings.swift` を使用し、Keychain・Rust／FFI・生成物は変更不要です。実機・見た目・モックとの比較は画面の PR で扱います。

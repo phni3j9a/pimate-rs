@@ -37,7 +37,7 @@ struct SpawnForm {
         return .spawn(params: try jsonString(fields))
     }
 }
-enum SpawnOutcome: Equatable { case ready(String), notListed(String), messageUnconfirmed(String) }
+enum SpawnOutcome: Equatable { case ready(String), notListed(String), messageUnconfirmed(String, attach: String?) }
 extension SessionModel {
     func hostModels(_ id: String) async throws -> Object? {
         let recent = (rows[id]?.groups["instance"] ?? []).sorted { ($0.object["updatedAt"] as? Int64 ?? 0) > ($1.object["updatedAt"] as? Int64 ?? 0) }
@@ -51,7 +51,7 @@ extension SessionModel {
     func spawn(_ form: SpawnForm) async throws -> SpawnOutcome {
         let value = try await machineRequest(form.host, form.operation())
         guard let id = value["instanceId"] as? String, !id.isEmpty else { throw CoreError.OutcomeUnknown }
-        guard value.str("messageError").isEmpty else { return .messageUnconfirmed(id) }
+        guard value.str("messageError").isEmpty else { return .messageUnconfirmed(id, attach: Rows.attachCommand(value["abducoSession"] as? String)) }
         let deadline = ContinuousClock.now + .seconds(20)
         repeat {
             if rows[form.host]?.groups["instance"]?.contains(where: { $0.id == id }) == true { return .ready(id) }
@@ -62,8 +62,11 @@ extension SessionModel {
 }
 
 @MainActor struct LoginSession {
-    let connection: Connection, target: Target
-    let valid: () -> Bool
+    private let connection: Connection, valid: () -> Bool
+    let target: Target
+    init(connection: Connection, target: Target, valid: @escaping () -> Bool) {
+        self.connection = connection; self.target = target; self.valid = valid
+    }
     func check() throws { try Task.checkCancellation(); guard valid() else { throw CoreError.StaleTarget } }
     func request(_ method: RcMethod, _ fields: Object = [:]) async throws -> Object {
         switch method { case .authList, .authBegin, .authRespond, .authCancel, .authLogout: break; default: throw CoreError.BadRequest }
@@ -89,10 +92,74 @@ enum CredentialOutcome: Equatable {
 }
 
 struct GithubItem {
-    let number: Int, title: String, url: URL?
-    init?(_ item: Object) {
+    let editor: EditorKey, number: Int, title: String, url: URL?
+    init?(_ editor: EditorKey, _ item: Object) {
+        self.editor = editor
         guard let n = item["number"] as? Int, n > 0 else { return nil }; number = n; title = item.str("title")
         let link = URL(string: item.str("url")); url = WebImage.valid(link, scheme: "https") || WebImage.valid(link, scheme: "http") ? link : nil
     }
     var reference: String { "#\(number)「\(title)」" + (url.map { " \($0.absoluteString)" } ?? "") }
+}
+
+struct MachineConfirmation: Equatable {
+    enum Action: Equatable { case update, restart, revoke(String), forget }
+    let host: String, device: String, generation: UUID?, action: Action
+    var warning: String {
+        switch action {
+        case .update: "このマシンの PiMate を実行時の最新版に更新します。確認時に表示した版と異なる場合があります。"
+        case .restart: "このマシンの Host を再起動します。接続が一時切断されます。"
+        case .revoke: "選んだ端末の登録を PC から取り消します。"
+        case .forget: "この iPhone / iPad から選んだマシンの登録を削除します。"
+        }
+    }
+}
+extension SessionModel {
+    func confirmation(host id: String, _ action: MachineConfirmation.Action) throws -> MachineConfirmation {
+        guard let registration = hosts.first(where: { $0.id == id }) else { throw CoreError.StaleTarget }
+        return .init(host: id, device: registration.deviceId, generation: rows[id]?.connectionGeneration, action: action)
+    }
+    func confirm(_ approved: MachineConfirmation) async throws -> Object {
+        guard try confirmation(host: approved.host, approved.action) == approved else { throw CoreError.StaleTarget }
+        switch approved.action {
+        case .update: return try await machineRequest(approved.host, .update)
+        case .restart: return try await machineRequest(approved.host, .restart)
+        case .revoke(let device): return try await machineRequest(approved.host, .revoke(deviceId: device))
+        case .forget: try forget(approved.host); return [:]
+        }
+    }
+}
+
+
+enum GithubStatus: Equatable {
+    case unknown, notInstalled, loggedOut, loggedIn(String)
+    init(_ status: Object?) {
+        guard let status, let installed = status["installed"] as? Bool else { self = .unknown; return }
+        if !installed { self = .notInstalled }
+        else if let loggedIn = status["loggedIn"] as? Bool { self = loggedIn ? .loggedIn(status.str("login")) : .loggedOut }
+        else { self = .unknown }
+    }
+}
+extension SessionModel {
+    func askAbout(_ item: GithubItem) throws { try appendReference(item.reference, to: item.editor) }
+}
+
+// Own this state for one provider sheet. SwiftUI cancels hold() when the sheet or generation changes.
+@MainActor @Observable final class ProviderState {
+    let host: String
+    private(set) var login: LoginSession?
+    private var owner: UUID?
+    init(host: String) { self.host = host }
+    func hold(_ model: SessionModel, generation: UUID) async throws {
+        let ticket = UUID(); owner = ticket; login = nil
+        defer { if owner == ticket { login = nil; owner = nil } }
+        guard let rows = model.rows[host], rows.connectionGeneration == generation,
+              rows.groups["host"]?.first(where: { $0.id == "connection" })?.string == "connected" else { return }
+        try await model.withLogin(host) { session in
+            guard owner == ticket else { throw CoreError.StaleTarget }
+            login = session
+            // Cancellation ends the stream and releases the dedicated Pi, including on navigation away.
+            let (lifetime, end) = AsyncStream<Void>.makeStream(); defer { end.finish() }
+            for await _ in lifetime {}
+        }
+    }
 }

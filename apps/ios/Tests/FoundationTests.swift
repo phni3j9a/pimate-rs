@@ -45,6 +45,7 @@ final class FoundationTests: XCTestCase {
         let store = KeychainStore(service: "dev.pimate.tests.\(UUID())"), model = SessionModel(core: Core(store: store))
         defer { for h in model.hosts { try? store.forget(id: h.id) } }
         try await model.pair(consume(url)); let host = try XCTUnwrap(model.hosts.first?.id)
+        XCTAssertEqual(model.pairedHostId, host); model.consumePairedHost(); XCTAssertNil(model.pairedHostId)
         func wait(_ predicate: () -> Bool) async throws {
             for _ in 0..<200 { if predicate() { return }; try await Task.sleep(for: .milliseconds(100)) }; throw CoreError.Timeout
         }
@@ -53,6 +54,7 @@ final class FoundationTests: XCTestCase {
         let key = try XCTUnwrap(model.editor), text = "確認用の送信 \(UUID())"
         model.text(text, for: key)
         try await model.pair(consume(URL.cachesDirectory.appending(path: "pimate-test-link-2")))
+        XCTAssertNil(model.pairedHostId)
         let other = try XCTUnwrap(model.hosts.first { $0.id != host }?.id)
         try await wait { model.rows[other]?.groups["instance"]?.contains { $0.id == "demo" } == true }
         try model.select(host: other, instance: "demo"); try await wait { model.editor?.host == other }
@@ -94,6 +96,18 @@ final class FoundationTests: XCTestCase {
             for _ in 0..<200 { if predicate() { return }; try await Task.sleep(for: .milliseconds(100)) }
             XCTFail(description); throw CoreError.Timeout
         }
+        let models = try await model.hostModels(host); XCTAssertFalse(models?.list("models").isEmpty ?? true)
+        let devices = try await model.machineRequest(host, .devices); XCTAssertEqual(devices.list("devices").first?["current"] as? Bool, true)
+        XCTAssertEqual(model.rows[host]?.firstStep, .list)
+        try model.select(host: host, instance: "main"); try await wait("main ready") { model.editor?.target.instance == "main" }
+        let reviewing = try XCTUnwrap(model.editor), review = try await model.review(reviewing, turn: nil)
+        XCTAssertEqual(review.files.count, 2); XCTAssertNotNil(review.latestChangedTurn)
+        try model.askAbout(review); XCTAssertEqual(model.body(reviewing).text, review.reference)
+        try model.select(host: host, instance: "api"); try await wait("agent ready") { model.editor?.target.instance == "api" }
+        let parent = try XCTUnwrap(model.editor), child = AgentChild(run: "run", child: "0"), record = try model.workRecord(parent, child)
+        _ = try await record.load(); XCTAssertFalse(record.items.isEmpty)
+        _ = try await model.control(parent, child, action: "steer", text: "試験指示")
+        _ = try await record.load(); XCTAssertEqual(record.items.last?.str("text"), "試験指示")
         try model.select(host: host, instance: "images")
         try await wait("images ready") { model.editor?.target.instance == "images" }
         let key = try XCTUnwrap(model.editor), opened = try model.openSheet(key, page: .model)
