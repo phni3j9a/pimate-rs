@@ -26,6 +26,7 @@ targets:
       INFOPLIST_KEY_CFBundleDisplayName: PiMate RS
       INFOPLIST_KEY_UILaunchScreen_Generation: YES
       INFOPLIST_KEY_NSLocalNetworkUsageDescription: ペアリングしたマシンに接続します。
+      INFOPLIST_KEY_NSCameraUsageDescription: PC に表示されたペアリング用 QR コードを読み取ります。
       INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
   PiMateTests:
     type: bundle.unit-test

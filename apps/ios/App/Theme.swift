@@ -26,3 +26,10 @@ enum PiTheme {
     static let text = color(0x1f2326, 0xe4e8ea), secondary = color(0x5e686d, 0x9aa5aa)
     static let accent = color(0x155a7a, 0x7cbede), failure = color(0xa84d45, 0xf09c91)
 }
+struct PiPrimary: ButtonStyle {
+    @Environment(\.isEnabled) private var enabled
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.fontWeight(.semibold).frame(maxWidth: .infinity, minHeight: 46)
+            .foregroundStyle(PiTheme.background).background(PiTheme.accent, in: Capsule()).opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
+    }
+}
