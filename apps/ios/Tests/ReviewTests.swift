@@ -230,9 +230,9 @@ extension ReviewTests {
             let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
             try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor), sheet = try model.openSheet(key, page: .session)
             let listener = try XCTUnwrap(core.listeners["a"])
-            if restart { listener.changed(revision: 2, changes: [.upsert(Item(collection: "view", id: "startedAt", position: 0, json: "2"))]) }
+            if restart { try listener.changed(revision: 2, changes: [.upsert(Item(collection: "view", id: "startedAt", position: 0, json: "2"))]) }
             else {
-                listener.changed(revision: 2, changes: [.remove(collection: "view", id: "phase")]); listener.changed(revision: 3, changes: [.upsert(Item(collection: "view", id: "phase", position: 0, json: #""ready""#))])
+                try listener.changed(revision: 2, changes: [.remove(collection: "view", id: "phase")]); try listener.changed(revision: 3, changes: [.upsert(Item(collection: "view", id: "phase", position: 0, json: #""ready""#))])
             }
             await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
             XCTAssertEqual(model.editor, key); XCTAssertNil(model.sheet); core.c.receipt = { XCTFail("old confirmation reached a new Pi") }
