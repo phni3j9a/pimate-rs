@@ -74,14 +74,15 @@ final class ProbeTests: XCTestCase {
         shot("Images"); tile.tap()
         let next = app.buttons["次の画像"]
         XCTAssertTrue(next.waitForExistence(timeout: 8)); next.tap()
-        XCTAssertTrue(app.images["画像 5 / 5"].waitForExistence(timeout: 8)); shot("Viewer")
+        // Image fetch + decode on shared CI runners has exceeded 10 s; give image waits a longer budget.
+        XCTAssertTrue(app.images["画像 5 / 5"].waitForExistence(timeout: 30)); shot("Viewer")
         app.buttons["画像を閉じる"].tap()
         let file = app.buttons["修正後の画面"]
         for _ in 0..<6 where !file.isHittable { scroll.swipeDown() }
         XCTAssertTrue(file.isHittable); file.tap()
         // Distinguish presenting the viewer from receiving and decoding the full PC file.
         XCTAssertTrue(app.navigationBars["修正後の画面"].waitForExistence(timeout: 12))
-        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 25)); app.buttons["画像を閉じる"].tap()
+        XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 30)); app.buttons["画像を閉じる"].tap()
 
         let field = app.textViews["message"]
         func openVisibleTable() {
@@ -104,9 +105,9 @@ final class ProbeTests: XCTestCase {
         openVisibleTable()
         let cell = app.buttons["確認結果"]
         XCTAssertTrue(cell.waitForExistence(timeout: 8)); cell.tap()
-        XCTAssertTrue(app.images["確認結果"].waitForExistence(timeout: 10)); XCTAssertTrue(app.staticTexts["3 / 4"].exists)
-        app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 8))
-        app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正前の画面"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.images["確認結果"].waitForExistence(timeout: 30)); XCTAssertTrue(app.staticTexts["3 / 4"].exists)
+        app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 30))
+        app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正前の画面"].waitForExistence(timeout: 30))
         app.buttons["画像を閉じる"].tap(); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8)); shot("Table")
         app.buttons["表を閉じる"].tap()
         field.tap(); field.typeText("/fix")
