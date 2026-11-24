@@ -15,7 +15,8 @@ struct ChatReceipt {
     }
 }
 struct ChatMove {
-    let id = UUID(), instance: String, notice: Object, local: Bool
+    let id = UUID()
+    let instance: String, notice: Object, local: Bool
     var confirmed = false
 }
 

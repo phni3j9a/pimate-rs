@@ -49,7 +49,11 @@ enum ChatImageSource {
 
 // One current conversation. Cancelling a tile releases its lease, not the viewer's request.
 @MainActor final class ChatImages {
-    private struct Load { let id = UUID(), task: Task<Data, Error>; var users: Set<UUID> }
+    private struct Load {
+        let id = UUID()
+        let task: Task<Data, Error>
+        var users: Set<UUID>
+    }
     private var loads: [[String]: Load] = [:], cached: [[String]: Data] = [:], order: [[String]] = []
     func clear() { for load in loads.values { load.task.cancel() }; loads.removeAll(); cached.removeAll(); order.removeAll() }
     func load(_ source: ChatImageSource, thumbnail: Bool, rc: @escaping (RcMethod, Object) async throws -> String) async throws -> Data {
