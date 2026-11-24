@@ -7,6 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - run: bash scripts/devin-mac/test-ssh-stdin.sh
       - run: rustup update stable && rustup default stable && rustup component add rustfmt clippy
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings

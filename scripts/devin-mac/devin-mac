@@ -141,7 +141,7 @@ cmd_status() {
 }
 
 cmd_ssh() {
-	cmd_up
+	cmd_up </dev/null
 	if [ $# -eq 0 ]; then exec ssh -t "${SSH_OPTS[@]}" devin@127.0.0.1; fi
 	vm "$@"
 }
