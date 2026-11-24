@@ -661,7 +661,6 @@ async def demo(lab, binary):
         PIMATE_RUN_DIR=str(run),
         HOME=str(lab),
         PIMATE_PI="/bin/false",
-        PIMATE_ABDUCO="/bin/false",
         XDG_CONFIG_HOME=str(lab / "xdg"),
         PI_CODING_AGENT_DIR=str(lab / "agent"),
     )

@@ -2,6 +2,8 @@ mod agent_cli;
 mod alerts;
 mod config;
 mod github;
+mod keeper;
+mod launchd;
 mod link;
 mod login;
 mod operations;
@@ -71,12 +73,34 @@ async fn addresses() -> Result<Vec<IpAddr>> {
     }
     Ok(ips)
 }
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run().await {
-        eprintln!("{e}");
-        std::process::exit(1)
-    }
+fn main() -> std::process::ExitCode {
+    let result = if env::args_os().nth(1).is_some_and(|a| a == "__hold") {
+        keeper::run()
+    } else {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        if env::args_os().nth(1).is_some_and(|a| a == "attach") {
+            let result = rt.block_on(async {
+                let mut args = env::args().skip(2);
+                let name = args.next();
+                ensure!(args.next().is_none());
+                terminal::Terminal.attach(&config::run_dir(), name).await
+            });
+            // An attach worker may still be blocked on terminal input or output.
+            rt.shutdown_background();
+            result
+        } else {
+            rt.block_on(run()).map(|()| 0)
+        }
+    };
+    result
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            1
+        })
+        .into()
 }
 async fn run() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -106,18 +130,11 @@ async fn run() -> Result<()> {
     ) {
         return agent_cli::run(&cmd, args.collect()).await;
     }
-    if cmd == "attach" {
-        let name = args.next();
-        ensure!(args.next().is_none());
-        return terminal::Terminal::resolve()
-            .attach(&config::run_dir(), name)
-            .await;
-    }
     if cmd == "list" {
         ensure!(args.next().is_none());
         let run = config::run_dir();
         let mut rows = rc::list(&run).await?.instances;
-        terminal::Terminal::resolve().refresh(&run, &mut rows).await;
+        terminal::Terminal.refresh(&run, &mut rows).await;
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
@@ -127,7 +144,7 @@ async fn run() -> Result<()> {
             ensure!(args.next().is_none());
             println!(
                 "{}",
-                serde_json::json!({"host":config.host,"configDir":config::config_dir()?,"addresses":addresses().await?,"abduco":terminal::Terminal::resolve().executable})
+                serde_json::json!({"host":config.host,"configDir":config::config_dir()?,"addresses":addresses().await?})
             )
         }
         "pair-pending" => {

@@ -1,5 +1,6 @@
 use crate::{
     config::{self, Config},
+    launchd,
     operations::home,
     process::{command, output},
 };
@@ -70,7 +71,7 @@ fn quote(s: &str) -> Result<String> {
             .replace('%', "%%")
     ))
 }
-fn abs(p: PathBuf) -> Result<String> {
+pub(super) fn abs(p: PathBuf) -> Result<String> {
     Ok(std::path::absolute(p)?
         .to_str()
         .context("non UTF-8 path")?
@@ -92,17 +93,16 @@ fn config_line() -> Result<String> {
         ))?
     ))
 }
-fn port() -> Result<u16> {
+pub(super) fn port() -> Result<u16> {
     Ok(env::var("PIMATE_SERVICE_PORT")
         .map(|s| s.parse())
         .unwrap_or(Ok(pimate_protocol::DEFAULT_HOST_PORT))?)
 }
-fn host_env() -> Result<Vec<String>> {
+pub(super) fn host_env() -> Result<Vec<String>> {
     let mut out = vec![format!("PIMATE_CONFIG_DIR={}", abs(config::config_dir()?)?)];
     for k in [
         "PATH",
         "PIMATE_RUN_DIR",
-        "PIMATE_ABDUCO",
         "PIMATE_PI",
         "PIMATE_EXTENSION",
         "PI_CODING_AGENT_DIR",
@@ -120,7 +120,7 @@ fn host_env() -> Result<Vec<String>> {
                 )?
                 .into_string()
                 .map_err(|_| anyhow::anyhow!("invalid PATH"))?
-            } else if matches!(k, "PIMATE_ABDUCO" | "PIMATE_PI") && !v.contains('/')
+            } else if k == "PIMATE_PI" && !v.contains('/')
                 || k == "PIMATE_EXTENSION"
                     && (v == "none"
                         || v.split_once(':').is_some_and(|(p, _)| {
@@ -249,12 +249,18 @@ pub async fn run(action: &str) -> Result<Value> {
     if action == "health" {
         return Ok(health().await?.unwrap_or_default());
     }
-    let path = unit_path()?;
+    let mac = cfg!(target_os = "macos");
+    let path = if mac { launchd::path()? } else { unit_path()? };
     let systemd = cfg!(target_os = "linux") && ctl(&["show-environment"]).await.is_ok();
     if action == "has-systemd" {
         return Ok(json!(systemd));
     }
     if action == "status" {
+        if mac {
+            return Ok(
+                json!({"installed":launchd::owned(&path)?,"active": launchd::loaded(&path).await?.unwrap_or(false),"linger":"not applicable"}),
+            );
+        }
         let mut linger = "unknown (no change made)".to_owned();
         if systemd
             && let Ok(mut cmd) = command("loginctl")
@@ -280,7 +286,16 @@ pub async fn run(action: &str) -> Result<Value> {
             json!({"installed":path.exists(),"active":systemd&&ctl(&["is-active",SERVICE]).await.is_ok_and(|s|s=="active"),"linger":linger}),
         );
     }
-    let installed = owned(&path)?;
+    let _launch_agent_lock = if mac {
+        Some(launchd::lock(&path)?)
+    } else {
+        None
+    };
+    let installed = if mac {
+        launchd::owned(&path)?
+    } else {
+        owned(&path)?
+    };
     let dir = config::config_dir()?;
     if systemd && (installed || action == "install") {
         check_loaded(&path).await?;
@@ -291,9 +306,11 @@ pub async fn run(action: &str) -> Result<Value> {
     match action {
         "install" | "uninstall" | "stop" => {
             if action == "install" {
-                ensure!(systemd, "no systemd user manager")
+                ensure!(mac || systemd, "no user service manager")
             }
-            if installed {
+            if mac {
+                launchd::stop(&path).await?;
+            } else if installed {
                 ctl(&["stop", SERVICE]).await?;
             }
             if state.try_exists()? {
@@ -331,20 +348,33 @@ pub async fn run(action: &str) -> Result<Value> {
             ready(&c, false).await?;
             if action == "install" {
                 fs::create_dir_all(path.parent().unwrap())?;
-                write(&path, unit()?.as_bytes())?;
-                ctl(&["daemon-reload"]).await?;
-                ctl(&["enable", "--now", SERVICE]).await?;
+                if mac {
+                    launchd::install(&path, installed)?;
+                    launchd::start(&path).await?;
+                } else {
+                    write(&path, unit()?.as_bytes())?;
+                    ctl(&["daemon-reload"]).await?;
+                    ctl(&["enable", "--now", SERVICE]).await?;
+                }
                 ready(&c, true).await?
             } else if action == "uninstall" && installed {
-                ctl(&["disable", SERVICE]).await?;
+                if !mac {
+                    ctl(&["disable", SERVICE]).await?;
+                }
                 fs::remove_file(path)?;
-                ctl(&["daemon-reload"]).await?;
+                if !mac {
+                    ctl(&["daemon-reload"]).await?;
+                }
             }
         }
         "start" => {
             if h.is_none() {
                 if installed {
-                    ctl(&["start", SERVICE]).await?;
+                    if mac {
+                        launchd::start(&path).await?
+                    } else {
+                        ctl(&["start", SERVICE]).await?;
+                    }
                 } else if systemd {
                     let name = format!(
                         "pimate-host-{}-{}",

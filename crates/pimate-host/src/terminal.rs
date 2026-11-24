@@ -3,24 +3,18 @@ use anyhow::{Context, Result, ensure};
 use futures_util::{StreamExt, stream};
 use nix::unistd::{AccessFlags, access};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{
     env, fs,
-    os::unix::{
-        fs::{FileTypeExt, MetadataExt},
-        process::CommandExt,
-    },
+    os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
 };
+use tokio::io::AsyncReadExt;
 use tokio::{process::Command, time::timeout};
 use uuid::Uuid;
 
 pub(crate) fn executable(name: &Path) -> Option<PathBuf> {
-    search(name, None)
-}
-fn search(name: &Path, rejected: Option<&fs::Metadata>) -> Option<PathBuf> {
     let dirs = if name.components().count() > 1 || name.is_absolute() {
         vec![PathBuf::new()]
     } else {
@@ -28,22 +22,13 @@ fn search(name: &Path, rejected: Option<&fs::Metadata>) -> Option<PathBuf> {
     };
     dirs.into_iter()
         .map(|d| d.join(name))
-        .find(|p| {
-            p.metadata().is_ok_and(|m| {
-                m.is_file()
-                    && rejected.is_none_or(|bad| (m.dev(), m.ino()) != (bad.dev(), bad.ino()))
-            }) && access(p, AccessFlags::X_OK).is_ok()
-        })
+        .find(|p| p.metadata().is_ok_and(|m| m.is_file()) && access(p, AccessFlags::X_OK).is_ok())
         .and_then(|p| std::path::absolute(p).ok())
 }
-pub struct Terminal {
-    pub executable: Option<PathBuf>,
-}
+pub struct Terminal;
 #[derive(Serialize)]
 struct Session {
     name: String,
-    #[serde(skip)]
-    path: PathBuf,
     attached: bool,
     terminated: bool,
 }
@@ -70,29 +55,22 @@ impl Sockets {
             }
             let path = entry.path();
             let meta = path.symlink_metadata().ok()?;
-            meta.file_type().is_socket().then_some(Session {
-                name,
-                path,
-                attached: meta.mode() & 0o100 != 0,
-                terminated: meta.mode() & 0o010 != 0,
-            })
+            meta.file_type().is_socket().then_some((name, path))
         });
-        // shortcut: 異常終了した keeper の socket ファイルは runDir に残る（再起動・ログアウトで消える）、M6 の自前の端末保持で解消
+        // An unresponsive keeper is not proof of death: never unlink its socket here.
         Ok(stream::iter(candidates)
-            .map(|s| async move { probe(&s.path).await.ok().map(|_| s) })
+            .map(|(name, path)| async move {
+                Some(Session {
+                    name,
+                    attached: crate::keeper::probe(&path).await.ok()?,
+                    terminated: false,
+                })
+            })
             .buffer_unordered(16)
             .filter_map(std::future::ready)
             .collect()
             .await)
     }
-}
-async fn probe(path: &Path) -> std::io::Result<()> {
-    timeout(
-        Duration::from_millis(100),
-        tokio::net::UnixStream::connect(path),
-    )
-    .await??;
-    Ok(())
 }
 fn validate_rc_path(run: &Path, id: &str) -> Result<()> {
     let p = std::path::absolute(run)?.join(format!("{id}.sock"));
@@ -148,47 +126,12 @@ fn extension_arg(ext: PathBuf) -> Result<PathBuf> {
     Ok(std::path::absolute(ext)?)
 }
 impl Terminal {
-    pub fn resolve() -> Self {
-        if let Some(p) = env::var_os("PIMATE_ABDUCO").filter(|s| !s.is_empty()) {
-            return Self {
-                executable: executable(Path::new(&p)),
-            };
-        }
-        Self::fallback(cfg!(all(target_os = "linux", target_arch = "x86_64")))
-    }
-    fn fallback(supported: bool) -> Self {
-        let bundled = supported
-            .then(env::current_exe)
-            .and_then(Result::ok)
-            .and_then(|p| Some(p.parent()?.join("abduco")))
-            .and_then(|p| executable(&p));
-        if let Some(ref p) = bundled
-            && let Ok(b) = fs::read(p)
-        {
-            let sums: serde_json::Value =
-                serde_json::from_str(include_str!("../../../bin/SHA256SUMS.json")).unwrap();
-            if sums["bin/linux-x64/abduco"] == format!("{:x}", Sha256::digest(b)) {
-                return Self {
-                    executable: Some(p.clone()),
-                };
-            }
-        }
-        eprintln!("Bundled abduco unavailable or checksum mismatch; trying PATH");
-        let rejected = bundled.and_then(|p| p.metadata().ok());
-        Self {
-            executable: search(Path::new("abduco"), rejected.as_ref()),
-        }
-    }
     pub async fn refresh(&self, run: &Path, instances: &mut [serde_json::Value]) {
-        let Some(ab) = &self.executable else { return };
         let Ok(ns) = Sockets::open(run) else { return };
         let Ok(sessions) = ns.sessions().await else {
             return;
         };
         for s in sessions {
-            if s.terminated && !s.attached {
-                Self::reap(ab, &s.path).await;
-            }
             for i in instances
                 .iter_mut()
                 .filter(|i| i["abducoSession"] == s.name)
@@ -197,23 +140,7 @@ impl Terminal {
             }
         }
     }
-    async fn reap(ab: &Path, path: &Path) {
-        // /dev/null delivers EOF before the bundled client acknowledges MSG_EXIT.
-        if let Ok(mut child) = Command::new(ab)
-            .args(["-a", "--"])
-            .arg(path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-        {
-            let _input = child.stdin.take();
-            let _ = timeout(Duration::from_secs(2), child.wait()).await;
-        }
-    }
-    pub async fn attach(&self, run: &Path, name: Option<String>) -> Result<()> {
-        let ab = self.executable.as_ref().context("abduco not found")?;
+    pub async fn attach(&self, run: &Path, name: Option<String>) -> Result<u8> {
         let ns = Sockets::open(run)?;
         if let Some(n) = name {
             let path = ns.path(&n)?;
@@ -222,16 +149,11 @@ impl Terminal {
                     .is_ok_and(|m| m.file_type().is_socket()),
                 "Unknown session"
             );
-            probe(&path).await.context("Terminal is not listening")?;
             eprintln!("Detach: Ctrl+\\ (Pi keeps running)");
-            return Err(std::process::Command::new(ab)
-                .args(["-a", "--"])
-                .arg(path)
-                .exec()
-                .into());
+            return crate::keeper::attach(&path).await;
         }
         println!("{}", serde_json::to_string_pretty(&ns.sessions().await?)?);
-        Ok(())
+        Ok(0)
     }
     pub async fn launch(
         &self,
@@ -241,7 +163,7 @@ impl Terminal {
         origin: &str,
         args: &[String],
     ) -> Result<(String, String, &'static str)> {
-        let ab = self.executable.as_ref().context("abduco not found")?;
+        let keeper = env::current_exe()?;
         let pi = executable(Path::new(
             &env::var_os("PIMATE_PI").unwrap_or_else(|| "pi".into()),
         ))
@@ -277,12 +199,12 @@ impl Terminal {
                 &format!("--unit={name}"),
                 "--",
             ])
-            .arg(ab);
+            .arg(&keeper);
             c
         } else {
-            Command::new(ab)
+            Command::new(keeper)
         };
-        c.arg("-n").arg(path).arg(pi);
+        c.arg("__hold").arg(path).arg(pi);
         let ext = env::var_os("PIMATE_EXTENSION")
             .map(PathBuf::from)
             .unwrap_or(
@@ -317,7 +239,7 @@ impl Terminal {
         }
         c.current_dir(cwd)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null());
         unsafe {
             c.pre_exec(|| {
@@ -325,7 +247,15 @@ impl Terminal {
                 Ok(())
             });
         }
-        ensure!(c.status().await?.success(), "Pi launcher failed");
+        let mut child = c.spawn()?;
+        let mut ready = child.stdout.take().unwrap();
+        tokio::spawn(async move {
+            let _ = child.wait().await;
+        });
+        ensure!(
+            timeout(Duration::from_secs(8), ready.read_u8()).await?? == b'R',
+            "Pi launcher failed"
+        );
         Ok((id, name, isolation))
     }
 }
@@ -333,37 +263,6 @@ impl Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn unsupported_platform_keeps_sibling_on_path() -> Result<()> {
-        if env::var_os("PIMATE_TEST_UNBUNDLED").is_some() {
-            assert_eq!(
-                Terminal::fallback(false).executable,
-                Some(env::current_exe()?.with_file_name("abduco"))
-            );
-            return Ok(());
-        }
-        let t = tempfile::tempdir()?;
-        let exe = t.path().join("host-test");
-        fs::copy(env::current_exe()?, &exe)?;
-        fs::copy("/bin/true", t.path().join("abduco"))?;
-        let status = std::process::Command::new(exe)
-            .env_clear()
-            .env("HOME", t.path())
-            .env("XDG_CONFIG_HOME", t.path().join("xdg"))
-            .env("PATH", t.path())
-            .env("PIMATE_TEST_UNBUNDLED", "1")
-            .env("ABDUCO_SOCKET_DIR", t.path())
-            .env("PIMATE_RUN_DIR", t.path().join("run"))
-            .env("PIMATE_CONFIG_DIR", t.path().join("config"))
-            .env("PI_CODING_AGENT_DIR", t.path().join("agent"))
-            .args([
-                "--exact",
-                "terminal::tests::unsupported_platform_keeps_sibling_on_path",
-            ])
-            .status()?;
-        assert!(status.success());
-        Ok(())
-    }
     #[test]
     fn extension_package_or_relative_file() -> Result<()> {
         for src in [

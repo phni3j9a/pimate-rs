@@ -123,7 +123,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
         );
         let cwd = Path::new(&args[1]).canonicalize()?;
         ensure!(cwd.is_dir());
-        let (id, name, isolation) = Terminal::resolve()
+        let (id, name, isolation) = Terminal
             .launch(
                 &run,
                 &cwd,
