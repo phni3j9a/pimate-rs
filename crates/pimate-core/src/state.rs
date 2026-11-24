@@ -230,6 +230,8 @@ impl State {
         }
         self.clear("busy");
         self.result_deadline = None;
+        // The confirming snapshot can only come from this subscription; don't keep text past it.
+        self.pending_fork_text.clear();
         self.clear("notice");
         self.reset_view()
     }

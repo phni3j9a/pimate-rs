@@ -1492,6 +1492,7 @@ fn legacy_fork_text_requires_next_matching_snapshot_in_either_delivery_order() {
         "replacement",
         "expired",
         "superseded",
+        "disconnected",
     ] {
         let mut s = view();
         let snapshot = |session: &str, seq, start| json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":seq,"startedAt":start,"session":{"id":session}},"history":{"items":[]}});
@@ -1530,6 +1531,9 @@ fn legacy_fork_text_requires_next_matching_snapshot_in_either_delivery_order() {
         );
         if scenario == "expired" {
             s.expire_result(tokio::time::Instant::now() + state::MISSING_TTL);
+        }
+        if scenario == "disconnected" {
+            s.reset();
         }
         if scenario == "superseded" {
             s.apply(&json!({"type":"instances","instances":[{"instanceId":"i","startedAt":1}]}));
