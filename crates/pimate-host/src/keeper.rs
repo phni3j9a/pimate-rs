@@ -228,14 +228,16 @@ async fn bridge(
     };
     tokio::select! {r=input=>r,r=output=>r}
 }
-struct Raw(termios::Termios);
+struct Raw(libc::termios);
 impl Drop for Raw {
     fn drop(&mut self) {
         let mut out = io::stdout().lock();
         let _ = out
             .write_all(b"\x1b[?1049l\x1b[?25h")
             .and_then(|()| out.flush());
-        let _ = termios::tcsetattr(io::stdin(), termios::SetArg::TCSANOW, &self.0);
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, &self.0);
+        }
     }
 }
 pub async fn attach(path: &Path) -> Result<u8> {
@@ -254,10 +256,12 @@ pub async fn attach(path: &Path) -> Result<u8> {
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let orig = termios::tcgetattr(io::stdin())?;
-    let mut raw = orig.clone();
+    // Preserve platform flags that nix truncates when writing its portable Termios wrapper.
+    let saved = libc::termios::from(orig.clone());
+    let mut raw = orig;
     termios::cfmakeraw(&mut raw);
     termios::tcsetattr(io::stdin(), termios::SetArg::TCSANOW, &raw)?;
-    let _restore = Raw(orig);
+    let _restore = Raw(saved);
     io::stdout().write_all(b"\x1b[?1049h")?;
     io::stdout().flush()?;
     let mut stdin = tokio::io::stdin();

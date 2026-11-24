@@ -86,7 +86,8 @@ try:
             os.write(master, b'stop\n')
         read_until(master, leave)
         assert attach.wait(5) == (42 if why == 'exit' else 0)
-        assert termios.tcgetattr(slave) == saved
+        actual = termios.tcgetattr(slave)
+        assert actual == saved, (why, actual, saved)
         if why == 'detach':
             assert victim.stat().st_mode == original_mode
             path.unlink()
