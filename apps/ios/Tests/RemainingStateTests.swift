@@ -5,10 +5,11 @@ private func item(_ collection: String, _ id: String, _ json: String) -> Item { 
 private final class MachineConnection: Connection, @unchecked Sendable {
     var items = [item("view", "phase", "\"ready\""), item("view", "instanceId", "\"pi\""), item("host", "connection", "\"connected\"")]
     var calls: [PiMate.Operation] = [], holds: [String] = [], releases: [String] = []
+    var beforeReply: (@MainActor () async -> Void)?
     var reply: (PiMate.Operation) throws -> String = { _ in "{}" }
     override func snapshot() -> Snapshot { Snapshot(revision: 1, items: items) }
     override func subscribe(instance: String?) throws {}
-    override func perform(operation: PiMate.Operation) async throws -> String { calls.append(operation); return try reply(operation) }
+    override func perform(operation: PiMate.Operation) async throws -> String { calls.append(operation); await beforeReply?(); return try reply(operation) }
     override func openLogin(holdId: String) async throws -> Target { holds.append(holdId); return Target(instance: "auth", session: nil) }
     override func closeLogin(holdId: String) { releases.append(holdId) }
     override func followLoginOnce(target: Target) async throws -> Bool { false }
@@ -46,6 +47,48 @@ private final class MachineCore: Core, @unchecked Sendable {
         _ = try await model.confirm(model.confirmation(host: "b", .forget)); XCTAssertEqual(core.removed, "b"); XCTAssertEqual(model.editor, key)
         try model.select(host: "a", instance: nil); XCTAssertThrowsError(try model.askAbout(github))
     }
+    func testCancelledSpawnDoesNotSendOrNavigateOnLateReady() async throws {
+        let core = MachineCore(noHandle: .init()); core.b.items.append(item("instance", "spawned", "{}"))
+        let model = SessionModel(core: core); try model.select(host: "a", instance: "pi")
+        var form = SpawnForm(host: "b", askTool: false); form.folder("/test")
+        func start() -> Task<Void, Error> {
+            Task {
+                if case .ready(let pi) = try await model.spawn(form) { try model.select(host: form.host, instance: pi) }
+            }
+        }
+        let before = start(); before.cancel()
+        do { try await before.value; XCTFail() } catch is CancellationError {}; XCTAssertTrue(core.b.calls.isEmpty)
+        let sent = expectation(description: "spawn sent"), gate = AsyncStream<Void>.makeStream()
+        core.b.beforeReply = {
+            sent.fulfill()
+            // Like UniFFI, this independent receiver survives cancellation of the caller.
+            await Task { for await _ in gate.stream { break } }.value
+        }
+        core.b.reply = { _ in #"{"instanceId":"spawned"}"# }
+        let late = start(); await fulfillment(of: [sent], timeout: 2); late.cancel(); gate.continuation.finish()
+        do { try await late.value; XCTFail() } catch is CancellationError {}
+        XCTAssertEqual(model.editor?.host, "a"); XCTAssertEqual(core.b.calls.count, 1)
+    }
+    func testReviewKeepsCanonicallyEquivalentLinuxPathsSeparate() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil)), paths = ["が.txt", "か\u{3099}.txt"]
+        let calls = paths.enumerated().map { ["id": String($0.offset), "name": "edit", "args": ["path": $0.element]] as Object }
+        let history: [Object] = [["kind": "assistant", "toolCalls": calls]] + calls.map { ["kind": "tool_result", "toolCallId": $0.str("id")] }
+        let review = ChangeReview(key: key, entries: try history.map { item("entry", "e", try jsonString($0)) }, cwd: "/tmp", turn: nil)
+        XCTAssertEqual(review.files.map { Data($0.path.utf8) }, paths.map { Data($0.utf8) }); XCTAssertTrue(review.reference.contains("ほか 1 ファイル"))
+    }
+    func testResumedInstructionBelongsToOriginalChildEvenWithNewId() async throws {
+        let core = MachineCore(noHandle: .init())
+        core.a.items += [item("run", "old", #"{"id":"old","children":[{"id":"x","index":7},{"id":"y","index":1}]}"#),
+                         item("run", "next", #"{"id":"next","children":[{"id":"z","index":1},{"id":"y","index":7}]}"#)]
+        let m = SessionModel(core: core); try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
+        let origin = AgentChild(run: "old", child: "x"), sibling = AgentChild(run: "old", child: "y")
+        _ = try await m.control(key, sibling, action: "steer", text: "other child")
+        core.a.reply = { _ in #"{"newRunId":"next"}"# }; _ = try await m.control(key, origin, action: "resume", text: "old child")
+        let destination = try XCTUnwrap(m.resumedChild(key, from: origin, run: "next", index: 7))
+        _ = try await m.control(key, destination, action: "steer", text: "new child")
+        XCTAssertEqual(m.instructions.forChild(key, destination).map(\.text), ["new child", "old child"])
+        XCTAssertTrue(m.instructions.forChild(key, AgentChild(run: "next", child: "z")).isEmpty)
+    }
     func testLoginInvalidatedAcrossUndrawnReconnect() async throws {
         let core = MachineCore(noHandle: .init()), m = SessionModel(core: core)
         try await m.withLogin("b") { login in
@@ -71,7 +114,6 @@ private final class MachineCore: Core, @unchecked Sendable {
         _ = try await login.request(.authCancel, ["flowId": "flow"])
         _ = try await login.request(.authLogout, ["provider": "anthropic"])
         do { _ = try await login.request(.authWait); XCTFail() } catch CoreError.BadRequest {}
-        XCTAssertTrue(model.rows["b"]?.groups.values.flatMap { $0 }.allSatisfy { !$0.json.contains("synthetic") } == true)
         holding.cancel(); try await holding.value; XCTAssertNil(page.login); XCTAssertEqual(core.b.holds, core.b.releases)
         do { _ = try await login.request(.authList); XCTFail() } catch CoreError.StaleTarget {}
         XCTAssertEqual(core.b.calls.count, 4); XCTAssertTrue(core.a.calls.isEmpty)
@@ -92,11 +134,15 @@ private final class MachineCore: Core, @unchecked Sendable {
     }
     func testRunSelectionStopAndRecord() async throws {
         let c = MachineCore(noHandle: .init()); let run: Object = ["id": "old", "toolCallId": "call", "active": true, "stopAction": "interrupt", "children": [["id": "x", "state": "running", "actions": ["stop_child", "steer"]]]]
-        c.a.items += [item("runWatch", "old", "true"), item("run", "old", try jsonString(run)), Item(collection: "run", id: "next", position: 1, json: #"{"id":"next","toolCallId":"call","children":[{"id":"y","index":4,"state":"paused"}]}"#)]
+        c.a.items += [item("view", "startedAt", "41"), item("runWatch", "old", "true"), item("run", "old", try jsonString(run)), Item(collection: "run", id: "next", position: 1, json: #"{"id":"next","toolCallId":"call","children":[{"id":"y","index":4,"state":"paused"}]}"#)]
         let m = SessionModel(core: c); try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor), rows = try XCTUnwrap(m.rows["a"])
         XCTAssertEqual(rows.subagentCounts, ["running": 1, "paused": 1]); XCTAssertEqual(rows.originalRun(toolCallId: "call"), "old"); XCTAssertNil(rows.resumedChild(run: "pending", index: 4)); XCTAssertEqual(rows.resumedChild(run: "next", index: 8), .init(run: "next", child: "y"))
         let stop = try XCTUnwrap(rows.stopTarget(key, run: "old", viewedChild: "x")), child = AgentChild(run: "old", child: "x")
-        _ = try await m.control(stop); _ = try await m.control(key, child, action: "steer", text: "続ける"); XCTAssertEqual(m.instructions.forChild(key, child, resumedFrom: nil).first?.text, "続ける")
+        _ = try await m.control(stop); _ = try await m.control(key, child, action: "steer", text: "続ける"); XCTAssertEqual(m.instructions.forChild(key, child).first?.text, "続ける")
+        let started = try XCTUnwrap(c.a.items.firstIndex { $0.collection == "view" && $0.id == "startedAt" })
+        c.a.items[started] = item("view", "startedAt", "42") // Same Pi, session, run and action; restart delta not delivered.
+        do { _ = try await m.control(stop); XCTFail("undelivered restart") } catch CoreError.StaleTarget {}
+        c.a.items[started] = item("view", "startedAt", "41")
         var changed = run; changed["children"] = [["id": "x", "state": "complete"], ["id": "y", "state": "running"]]
         let finished = item("run", "old", try jsonString(changed))
         c.a.items.removeAll { $0.collection == "run" && $0.id == "old" }; c.a.items.append(finished)

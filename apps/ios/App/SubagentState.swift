@@ -3,7 +3,7 @@ import Observation
 
 struct AgentChild: Equatable { let run: String, child: String }
 struct StopTarget: Equatable {
-    let editor: EditorKey, generation: UUID, run: String, viewedChild: String?, action: String
+    let editor: EditorKey, generation: UUID, startedAt: String, run: String, viewedChild: String?, action: String
     var child: String? { action == "stop_child" ? viewedChild : nil }
 }
 extension Rows {
@@ -34,14 +34,15 @@ extension Rows {
         return counts
     }
     func stopTarget(_ key: EditorKey, run id: String, viewedChild: String?) -> StopTarget? {
-        guard let run = runs.first(where: { $0.str("id") == id }), run["active"] as? Bool == true else { return nil }
+        guard let startedAt = field("startedAt"), UInt64(startedAt) != nil,
+              let run = runs.first(where: { $0.str("id") == id }), run["active"] as? Bool == true else { return nil }
         var action = run.str("stopAction")
         if let viewedChild {
             guard let c = run.list("children").first(where: { $0.str("id") == viewedChild }), ["running", "waiting", "queued"].contains(c.str("state")) else { return nil }
             if (c["actions"] as? [String])?.contains("stop_child") == true { action = "stop_child" }
         }
         guard ["stop", "stop_child", "interrupt", "abort_parent"].contains(action) else { return nil }
-        return .init(editor: key, generation: viewGeneration, run: id, viewedChild: viewedChild, action: action)
+        return .init(editor: key, generation: viewGeneration, startedAt: startedAt, run: id, viewedChild: viewedChild, action: action)
     }
 }
 
@@ -76,21 +77,38 @@ extension Rows {
 
 struct SentInstruction {
     let key: EditorKey, unit: AgentChild, action: String, text: String
-    var units: Int { [key.host, key.target.instance, key.target.session ?? "", unit.run, unit.child, action, text].reduce(0) { $0 + $1.utf16.count } }
+    let newRun: String?
+    var destinationChild: String?
+    var units: Int { [newRun ?? "", destinationChild ?? "", key.host, key.target.instance, key.target.session ?? "", unit.run, unit.child, action, text].reduce(0) { $0 + $1.utf16.count } }
 }
 struct ChildInstructions {
     private var sent: [SentInstruction] = []
     mutating func accept(_ value: SentInstruction) {
-        guard value.units <= 65536 else { return }; var total = sent.reduce(value.units) { $0 + $1.units }
-        while sent.count >= 128 || total > 65536 { total -= sent.removeFirst().units }; sent.append(value)
+        guard value.units <= 65536 else { return }; sent.append(value); trim()
+    }
+    private mutating func trim() {
+        var total = sent.reduce(0) { $0 + $1.units }
+        while sent.count > 128 || total > 65536 { total -= sent.removeFirst().units }
     }
     mutating func forget(_ host: String) { sent.removeAll { $0.key.host == host } }
-    func forChild(_ key: EditorKey, _ unit: AgentChild, resumedFrom: String?) -> [SentInstruction] {
-        let matching = sent.filter { $0.key == key && $0.unit.child == unit.child }
-        return matching.filter { $0.unit.run == unit.run } + matching.filter { $0.unit.run != unit.run && $0.unit.run == resumedFrom }
+    mutating func bindResume(_ key: EditorKey, from source: AgentChild, to destination: AgentChild) {
+        guard let i = sent.lastIndex(where: { $0.key == key && $0.unit == source && $0.newRun == destination.run }),
+              sent[i].destinationChild == nil else { return }
+        sent[i].destinationChild = destination.child
+        if sent[i].units > 65536 { sent.remove(at: i) } else { trim() }
+    }
+    func forChild(_ key: EditorKey, _ unit: AgentChild) -> [SentInstruction] {
+        let matching = sent.filter { $0.key == key }
+        let origin = matching.last { $0.newRun == unit.run && $0.destinationChild == unit.child }?.unit
+        return matching.filter { $0.unit == unit } + matching.filter { $0.unit != unit && $0.unit == origin }
     }
 }
 extension SessionModel {
+    // Call once when the destination children arrive. Later reordering must not retarget the labels.
+    func resumedChild(_ key: EditorKey, from source: AgentChild, run: String, index: Int?) -> AgentChild? {
+        guard key == editor, let selected = rows[key.host]?.resumedChild(run: run, index: index) else { return nil }
+        instructions.bindResume(key, from: source, to: selected); return selected
+    }
     func workRecord(_ key: EditorKey, _ unit: AgentChild) throws -> WorkRecord {
         guard editor == key, let generation = rows[key.host]?.viewGeneration else { throw CoreError.StaleTarget }
         return WorkRecord { cursor in
@@ -104,7 +122,7 @@ extension SessionModel {
         guard key == editor, rows[key.host]?.stopTarget(key, run: target.run, viewedChild: target.viewedChild) == target else { throw CoreError.StaleTarget }
         // The Host can finish the viewed child before its delta drains onto the main actor.
         let snapshot = try currentRows(key.host)
-        guard snapshot.ready(key.target.instance) == key.target,
+        guard snapshot.ready(key.target.instance) == key.target, snapshot.field("startedAt") == target.startedAt,
               snapshot.stopTarget(key, run: target.run, viewedChild: target.viewedChild)?.action == target.action else { throw CoreError.StaleTarget }
         var fields: Object = ["action": target.action, "runId": target.run]; fields["childId"] = target.child
         return try decodeObject(await request(key, .subagentControl, fields))
@@ -113,6 +131,7 @@ extension SessionModel {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["steer", "follow_up", "resume"].contains(action), !body.isEmpty else { throw CoreError.BadRequest }
         let result = try decodeObject(await request(key, .subagentControl, ["runId": unit.run, "childId": unit.child, "action": action, "text": body]))
-        instructions.accept(.init(key: key, unit: unit, action: action, text: body)); return result
+        instructions.accept(.init(key: key, unit: unit, action: action, text: body,
+                                  newRun: action == "resume" ? result["newRunId"] as? String : nil)); return result
     }
 }

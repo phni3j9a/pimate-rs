@@ -49,7 +49,9 @@ extension SessionModel {
         return nil
     }
     func spawn(_ form: SpawnForm) async throws -> SpawnOutcome {
+        try Task.checkCancellation()
         let value = try await machineRequest(form.host, form.operation())
+        try Task.checkCancellation()
         guard let id = value["instanceId"] as? String, !id.isEmpty else { throw CoreError.OutcomeUnknown }
         guard value.str("messageError").isEmpty else { return .messageUnconfirmed(id, attach: Rows.attachCommand(value["abducoSession"] as? String)) }
         let deadline = ContinuousClock.now + .seconds(20)

@@ -51,7 +51,7 @@ struct ChangeReview {
     }
     init(key: EditorKey, entries: [Item], cwd: String, turn: String?) {
         self.key = key; self.turn = turn
-        let history = entries.map(\.object); var results: [String: Object] = [:], indices: [String: Int] = [:], current: String?
+        let history = entries.map(\.object); var results: [String: Object] = [:], indices: [Data: Int] = [:], current: String?
         for r in history where r.str("kind") == "tool_result" { results[r.str("toolCallId")] = r }
         for entry in history {
             if entry.str("kind") == "user" { current = entry.str("entryId") }
@@ -73,8 +73,9 @@ struct ChangeReview {
                     else if p != ".." || !full.hasPrefix("/") { parts.append(p) }
                 }
                 let k = path == "~" || path.hasPrefix("~/") ? path : (full.hasPrefix("/") ? "/" : "./") + parts.joined(separator: "/")
-                let index = indices[k] ?? files.count
-                if index == files.count { indices[k] = index; files.append(.init(path: !cwd.isEmpty && path.hasPrefix(root) ? String(path.dropFirst(root.count)) : path, pieces: [])) }
+                let pathBytes = Data(k.utf8)
+                let index = indices[pathBytes] ?? files.count
+                if index == files.count { indices[pathBytes] = index; files.append(.init(path: !cwd.isEmpty && path.hasPrefix(root) ? String(path.dropFirst(root.count)) : path, pieces: [])) }
                 let reason = r["detailsOmitted"] as? Bool == true ? "too_large" : write.str("omitted")
                 let content = name == "write" && patch == nil && !["too_large", "binary"].contains(reason) ? args["content"] as? String : nil
                 files[index].pieces.append(.init(call: id, created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,

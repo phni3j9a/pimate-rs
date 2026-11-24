@@ -50,6 +50,17 @@ final class FoundationTests: XCTestCase {
             for _ in 0..<200 { if predicate() { return }; try await Task.sleep(for: .milliseconds(100)) }; throw CoreError.Timeout
         }
         try await wait { model.rows[host]?.groups["instance"]?.contains { $0.id == "demo" } == true }
+        try await model.withLogin(host) { login in
+            let begin = try await login.request(.authBegin, ["provider": "openai", "method": "api_key"])
+            let flow = begin.obj("flow"), prompt = try XCTUnwrap(flow.obj("prompt")["id"] as? String)
+            let marker = "test-only-" + UUID().uuidString
+            _ = try await login.request(.authRespond, ["flowId": flow.str("id"), "promptId": prompt, "value": marker])
+            let snapshot = try model.currentRows(host) // From the real Rust Connection, not a Swift listener fake.
+            let auth = try XCTUnwrap(snapshot.groups["auth"]?.first { $0.id == login.target.instance }?.object)
+            XCTAssertEqual(auth.str("id"), flow.str("id")); XCTAssertEqual(auth.str("status"), "succeeded")
+            XCTAssertGreaterThan(auth["revision"] as? Int ?? 0, flow["revision"] as? Int ?? 0)
+            XCTAssertFalse(snapshot.groups.values.joined().contains { $0.json.contains(marker) || $0.id.contains(marker) })
+        }
         try model.select(host: host, instance: "demo"); try await wait { model.editor != nil }
         let key = try XCTUnwrap(model.editor), text = "確認用の送信 \(UUID())"
         model.text(text, for: key)
