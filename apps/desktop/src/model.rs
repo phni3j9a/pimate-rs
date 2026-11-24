@@ -1,5 +1,5 @@
 use async_channel::{Receiver, Sender};
-use pimate_core::{Change, Item, Listener, Snapshot, Target};
+use pimate_core::{Change, Host, Item, Listener, Snapshot, Target};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -34,6 +34,7 @@ impl EditorKey {
 #[derive(Default)]
 pub struct Rows {
     revision: u64,
+    moves: HashMap<String, (String, String, u64)>,
     groups: HashMap<String, Vec<(String, Value)>>,
 }
 impl Rows {
@@ -48,6 +49,7 @@ impl Rows {
                 .or_default()
                 .push((i.id, serde_json::from_str(&i.json).expect("core JSON")));
         }
+        rows.remember_move();
         rows
     }
     pub fn apply(&mut self, (rev, batch): Batch, snapshot: impl FnOnce() -> Snapshot) {
@@ -55,9 +57,19 @@ impl Rows {
             return;
         }
         if batch.len() > 128 || batch.contains(&Change::ResyncRequired) {
-            *self = Self::snapshot(snapshot());
+            let next = Self::snapshot(snapshot());
+            let changed = self.get("notice", "sessionChanged")
+                != next.get("notice", "sessionChanged")
+                || self.get("host", "selection") != next.get("host", "selection");
+            let prior = std::mem::take(&mut self.moves);
+            *self = next;
+            self.moves = prior;
+            if changed {
+                self.remember_move();
+            }
             return;
         }
+        let mut moved = false;
         for change in batch {
             match change {
                 Change::Upsert(Item {
@@ -66,6 +78,7 @@ impl Rows {
                     position,
                     json,
                 }) => {
+                    moved |= collection == "notice" && id == "sessionChanged";
                     let g = self.groups.entry(collection).or_default();
                     g.retain(|(k, _)| k != &id);
                     g.insert(
@@ -82,6 +95,59 @@ impl Rows {
             }
         }
         self.revision = rev;
+        if moved {
+            self.remember_move();
+        }
+    }
+    fn remember_move(&mut self) {
+        let n = self.get("notice", "sessionChanged");
+        if let (Some(pi), Some(from), Some(to)) = (
+            self.get("host", "selection").as_str(),
+            n["from"]["id"].as_str(),
+            n["to"]["id"].as_str(),
+        ) {
+            self.moves
+                .insert(pi.into(), (from.into(), to.into(), self.revision));
+        }
+    }
+    pub fn pending_move(&self, k: &EditorKey, drafts: &HashMap<EditorKey, String>) -> Option<u64> {
+        let (from, to, rev) = self.moves.get(&k.instance)?;
+        if Some(to) != k.session.as_ref() {
+            return None;
+        }
+        drafts
+            .get(&EditorKey {
+                session: Some(from.clone()),
+                ..k.clone()
+            })
+            .is_some_and(|s| !s.is_empty())
+            .then_some(*rev)
+    }
+    pub fn confirm_move(&mut self, k: &EditorKey, shown: u64) {
+        if self
+            .moves
+            .get(&k.instance)
+            .is_some_and(|(_, to, rev)| Some(to) == k.session.as_ref() && *rev == shown)
+        {
+            self.moves.remove(&k.instance);
+        }
+    }
+    pub fn subscription(&self, pi: &str) -> String {
+        if self.get("host", "selection") == pi {
+            match self.get("view", "phase").as_str() {
+                Some("instance_gone") => {
+                    return "Pi は終了しました。左の一覧から別の Pi を選んでください。".into();
+                }
+                Some("subscribe_error") => {
+                    return format!(
+                        "購読に失敗しました（{}）。同じ Pi を選び直して再試行できます。",
+                        self.get("view", "error").as_str().unwrap_or("unknown")
+                    );
+                }
+                _ => (),
+            }
+        }
+        format!("{pi} に接続しています…")
     }
     pub fn group(&self, col: &str) -> &[(String, Value)] {
         self.groups.get(col).map(Vec::as_slice).unwrap_or_default()
@@ -108,6 +174,11 @@ impl Rows {
             },
         })
     }
+}
+
+/// A connection is valid only for the registration that created it.
+pub fn registered(previous: &Host, current: &[Host]) -> bool {
+    current.iter().any(|h| !h.needs_pairing && h == previous)
 }
 
 /// Clear only the originating, still-unchanged draft, never the newly visible editor.
@@ -172,6 +243,98 @@ mod tests {
             || panic!(),
         );
         assert_eq!(r.group("view").len(), 1);
+    }
+    #[test]
+    fn registrations_drop_deleted_revoked_and_replaced_connections() {
+        let h = Host {
+            id: "h".into(),
+            name: "N".into(),
+            address: "localhost:80".into(),
+            device_id: "one".into(),
+            needs_pairing: false,
+        };
+        assert!(registered(&h, std::slice::from_ref(&h)));
+        assert!(!registered(&h, &[]));
+        assert!(!registered(
+            &h,
+            &[Host {
+                needs_pairing: true,
+                ..h.clone()
+            }]
+        ));
+        assert!(!registered(
+            &h,
+            &[Host {
+                device_id: "two".into(),
+                ..h.clone()
+            }]
+        ));
+    }
+    fn group(col: &str, k: &str, v: serde_json::Value) -> Change {
+        Change::Upsert(Item {
+            collection: col.into(),
+            id: k.into(),
+            position: 0,
+            json: v.to_string(),
+        })
+    }
+    #[test]
+    fn external_move_blocks_only_at_destination_and_confirmation_is_for_one_move() {
+        use serde_json::json;
+        let mut r = Rows::default();
+        let dst = EditorKey {
+            host: "h".into(),
+            instance: "p".into(),
+            session: Some("B".into()),
+        };
+        let src = EditorKey {
+            session: Some("A".into()),
+            ..dst.clone()
+        };
+        let drafts = HashMap::from([(src.clone(), "keep".to_owned())]);
+        let notice = group(
+            "notice",
+            "sessionChanged",
+            json!({"from":{"id":"A"},"to":{"id":"B"}}),
+        );
+        r.apply(
+            (
+                1,
+                vec![group("host", "selection", json!("p")), notice.clone()],
+            ),
+            || panic!(),
+        );
+        assert_eq!(r.pending_move(&src, &drafts), None);
+        assert_eq!(r.pending_move(&dst, &HashMap::new()), None);
+        assert_eq!(r.pending_move(&dst, &drafts), Some(1));
+        r.apply((2, vec![notice]), || panic!());
+        r.confirm_move(&dst, 1);
+        assert_eq!(r.pending_move(&dst, &drafts), Some(2));
+        r.confirm_move(&dst, 2);
+        assert_eq!(r.pending_move(&dst, &drafts), None);
+    }
+    #[test]
+    fn subscription_error_is_only_shown_for_its_own_selection() {
+        use serde_json::json;
+        let mut r = Rows::default();
+        r.apply(
+            (
+                1,
+                vec![
+                    group("host", "selection", json!("p")),
+                    group("view", "phase", json!("subscribe_error")),
+                    group("view", "error", json!("unreachable")),
+                ],
+            ),
+            || panic!(),
+        );
+        assert!(r.subscription("p").contains("unreachable"));
+        assert!(!r.subscription("other").contains("unreachable"));
+        r.apply(
+            (2, vec![group("view", "phase", json!("instance_gone"))]),
+            || panic!(),
+        );
+        assert!(r.subscription("p").contains("終了"));
     }
     fn field(k: &str, v: &str, pos: u64) -> Item {
         Item {

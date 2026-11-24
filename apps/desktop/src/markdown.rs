@@ -188,3 +188,24 @@ pub fn view(id: String, text: &str, streaming: bool, w: &mut Window, cx: &mut Ap
         .selectable(true)
         .h_auto()
 }
+
+#[cfg(test)]
+#[gpui::test]
+fn publishes_while_fifty_ms_deltas_are_still_arriving(cx: &mut gpui::TestAppContext) {
+    use gpui::AppContext;
+    use std::time::Duration;
+    let cache = cx.new(|_| Cached::default());
+    for n in 0..6 {
+        cache.update(cx, |c, cx| {
+            c.latest = format!("delta {n}");
+            sample(c, cx, true);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(50));
+    }
+    cx.run_until_parked();
+    cache.read_with(cx, |c, _| {
+        assert!(c.generation >= 2);
+        assert!(c.markup.contains("delta"));
+    });
+}

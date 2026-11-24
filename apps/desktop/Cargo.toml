@@ -18,4 +18,5 @@ async-channel = "2"
 security-framework = "3"
 
 [dev-dependencies]
+gpui = { version = "=0.2.2", features = ["test-support"] }
 uuid.workspace = true

@@ -15,6 +15,7 @@ use std::{
 };
 
 struct Machine {
+    registration: Host,
     conn: Arc<Connection>,
     rows: Rows,
 }
@@ -61,13 +62,26 @@ impl Desktop {
         app
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
+        self.notice.clear();
         let hosts = match self.core.hosts() {
             Ok(h) => h,
             Err(e) => {
                 self.notice = format!("登録を読み出せません: {e}");
+                cx.notify();
                 return;
             }
         };
+        self.machines
+            .retain(|_, m| model::registered(&m.registration, &hosts));
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|(host, _)| !self.machines.contains_key(host))
+        {
+            self.selected = None;
+            self.epoch += 1;
+            self.input = None;
+        }
         for h in &hosts {
             if h.needs_pairing || self.machines.contains_key(&h.id) {
                 continue;
@@ -79,7 +93,14 @@ impl Desktop {
                 Ok(conn) => {
                     let generation = Arc::downgrade(&conn);
                     let rows = Rows::snapshot(conn.snapshot());
-                    self.machines.insert(id.clone(), Machine { conn, rows });
+                    self.machines.insert(
+                        id.clone(),
+                        Machine {
+                            registration: h.clone(),
+                            conn,
+                            rows,
+                        },
+                    );
                     cx.spawn(async move |this, cx| {
                         while let Ok(batch) = rx.recv().await {
                             if this
@@ -205,7 +226,7 @@ impl Desktop {
         });
         // Marked-text edits notify the entity without emitting InputEvent::Change.
         let observer = cx.observe_in(&input, w, |this, state, w, cx| {
-            if !this.input.as_ref().is_some_and(|v| v.1 == state) {
+            if this.input.as_ref().is_none_or(|v| v.1 != state) {
                 return;
             }
             let marked = state.update(cx, |s, cx| s.marked_text_range(w, cx).is_some());
@@ -223,15 +244,18 @@ impl Desktop {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.input.as_ref().is_some_and(|(k, input, _)| {
-            k == key
-                && input.update(cx, |s, cx| {
-                    s.marked_text_range(w, cx).is_none() && s.value().as_str() == text
-                })
-        })
+        self.input
+            .as_ref()
+            .is_some_and(|(k, input, _)| k == key && committed_input_matches(input, text, w, cx))
     }
     fn send(&mut self, key: EditorKey, w: &mut Window, cx: &mut Context<Self>) {
-        if self.sending || self.editor().as_ref() != Some(&key) {
+        if self.sending
+            || self.editor().as_ref() != Some(&key)
+            || self.machines[&key.host]
+                .rows
+                .pending_move(&key, &self.drafts)
+                .is_some()
+        {
             return;
         }
         let Some(text) = self.drafts.get(&key).cloned() else {
@@ -259,10 +283,14 @@ impl Desktop {
             let _ = this.update_in(cx, |this, w, cx| {
                 this.sending = false;
                 let bound = this.input.as_ref().is_some_and(|i| i.0 == key);
-                if (!bound || this.live_matches(&key, &text, w, cx))
-                    && model::clear_accepted(&mut this.drafts, &key, &text, result.is_ok())
-                    && bound
-                {
+                let unchanged = !bound || this.live_matches(&key, &text, w, cx);
+                let cleared = model::clear_accepted(
+                    &mut this.drafts,
+                    &key,
+                    &text,
+                    result.is_ok() && unchanged,
+                );
+                if cleared && bound {
                     this.input = None;
                 }
                 if this
@@ -297,6 +325,42 @@ impl Desktop {
     }
 }
 
+fn committed_input_matches(
+    input: &Entity<InputState>,
+    expected: &str,
+    w: &mut Window,
+    cx: &mut App,
+) -> bool {
+    input.update(cx, |s, cx| {
+        s.marked_text_range(w, cx).is_none() && s.value().as_str() == expected
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::committed_input_matches;
+    use gpui::{AppContext, EntityInputHandler};
+    use gpui_component::input::InputState;
+    #[gpui::test]
+    fn send_and_ack_require_the_live_committed_input(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let cx = cx.add_empty_window();
+        cx.update(|w, cx| {
+            let input = cx.new(|cx| {
+                InputState::new(w, cx)
+                    .multi_line(true)
+                    .default_value("sent")
+            });
+            assert!(committed_input_matches(&input, "sent", w, cx));
+            input.update(cx, |s, cx| {
+                s.replace_and_mark_text_in_range(Some(4..4), "追加", None, w, cx)
+            });
+            assert!(!committed_input_matches(&input, "sent", w, cx));
+            assert!(!committed_input_matches(&input, "sent追加", w, cx));
+            input.update(cx, |s, cx| s.replace_text_in_range(None, "追加", w, cx));
+            assert!(committed_input_matches(&input, "sent追加", w, cx));
+        });
+    }
+}
 fn main() {
     Application::new().run(|cx| {
         gpui_component::init(cx);

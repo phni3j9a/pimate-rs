@@ -111,6 +111,31 @@ impl Render for Desktop {
         let mut main = div().flex().flex_col().gap_2().flex_1().min_w_0().p_3();
         if let Some(key) = self.editor() {
             let rows = &self.machines[&key.host].rows;
+            let session = rows.get("view", "session");
+            let dest = session["name"]
+                .as_str()
+                .or(key.session.as_deref())
+                .unwrap_or("新規セッション");
+            main = main.child(format!("現在の送信先: {dest}"));
+            if let Some(rev) = rows.pending_move(&key, &self.drafts) {
+                let shown = key.clone();
+                main = main
+                    .child("別のセッションに移りました。前の下書きは保持しています。")
+                    .child(
+                        Button::new("confirm-move")
+                            .label("現在の送信先を確認")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.editor().as_ref() == Some(&shown) {
+                                    this.machines
+                                        .get_mut(&shown.host)
+                                        .unwrap()
+                                        .rows
+                                        .confirm_move(&shown, rev);
+                                    cx.notify();
+                                }
+                            })),
+                    );
+            }
             for (id, v) in rows.group("entry") {
                 if let Some(text) = v["text"].as_str() {
                     chat = chat
@@ -177,7 +202,12 @@ impl Render for Desktop {
                 }
             }
         } else {
-            chat = chat.child("接続後、左の一覧から Pi を選択してください。");
+            chat = chat.child(
+                self.selected
+                    .as_ref()
+                    .and_then(|(h, i)| self.machines.get(h).map(|m| m.rows.subscription(i)))
+                    .unwrap_or_else(|| "接続後、左の一覧から Pi を選択してください。".into()),
+            );
         }
         main = main.child(chat).child(self.notice.clone());
         if let Some((key, input, _)) = &self.input {
@@ -187,6 +217,10 @@ impl Render for Desktop {
                     .label("送信")
                     .disabled(
                         self.sending
+                            || self.machines[&key.host]
+                                .rows
+                                .pending_move(&key, &self.drafts)
+                                .is_some()
                             || self.composing
                             || self.drafts.get(&key).is_none_or(|s| s.trim().is_empty()),
                     )

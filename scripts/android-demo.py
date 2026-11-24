@@ -514,7 +514,7 @@ async def pi(
                         task = asyncio.create_task(later(8, pc_resume))
                 elif method == "prompt":
                     if DESKTOP_REVIEW:
-                        await asyncio.sleep(8)  # Allow editing/IME before the original receipt.
+                        await asyncio.sleep(3)  # Allow editing/IME before the original receipt.
                     images = params.get("images") or []
                     more = (
                         dict(images=images, imageCount=len(images)) if images else {}
