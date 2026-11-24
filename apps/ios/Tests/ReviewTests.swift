@@ -125,6 +125,15 @@ final class ReviewTests: XCTestCase {
 }
 
 extension ReviewTests {
+    @MainActor func testEmptyListRequiresFirstListAfterConnectOrReconnect() {
+        var rows = Rows()
+        XCTAssertEqual(Drawer.emptyMessage(connection: "接続中", rows: rows), "Pi 一覧を取得しています…")
+        for (flag, expected) in [("true", "起動中の Pi はありません"), ("false", "Pi 一覧を取得しています…")] {
+            rows.groups["host"] = [Item(collection: "host", id: "listKnown", position: 0, json: flag)]
+            XCTAssertEqual(Drawer.emptyMessage(connection: "接続中", rows: rows), expected)
+        }
+        XCTAssertEqual(Drawer.emptyMessage(connection: "オフライン", rows: rows), "オフライン")
+    }
     @MainActor func testSubscribeRejectionIsNotASpinner() {
         for code in ["unreachable", "not_found"] {
             let rows = Rows(Snapshot(revision: 1, items: [

@@ -24,7 +24,7 @@ struct Drawer: View {
                     rows(host, "normal")
                     if !items(host, "bot").isEmpty { Label("Grok Bot", systemImage: "terminal").font(.caption); rows(host, "bot") }
                     if (model.rows[host.id]?.groups["instance"] ?? []).isEmpty {
-                        Text(connection(host) == "接続中" ? "起動中の Pi はありません" : connection(host)).foregroundStyle(PiTheme.secondary)
+                        Text(Self.emptyMessage(connection: connection(host), rows: model.rows[host.id])).foregroundStyle(PiTheme.secondary)
                     }
                 } header: { HStack { Label(host.name, systemImage: "desktopcomputer"); Spacer(); Text(connection(host)) }.textCase(nil) }
             }
@@ -42,6 +42,10 @@ struct Drawer: View {
                     Picker("文字サイズ", selection: $size) { ForEach(TypeSize.allCases, id: \.self) { Text($0.rawValue) } }
                 }.navigationTitle("表示設定").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { settings = false } } } }.presentationDetents([.medium, .large]).preferredColorScheme(appearance.scheme)
             }
+    }
+    static func emptyMessage(connection: String, rows: Rows?) -> String {
+        guard connection == "接続中" else { return connection }
+        return rows?.groups["host"]?.first(where: { $0.id == "listKnown" })?.json == "true" ? "起動中の Pi はありません" : "Pi 一覧を取得しています…"
     }
     private func connection(_ host: Host) -> String {
         if host.needsPairing { return "再ペアリングが必要" }
@@ -61,6 +65,10 @@ struct Drawer: View {
                     Circle().fill(failed ? PiTheme.failure : waiting ? Color.orange : o.str("status") == "running" ? PiTheme.accent : PiTheme.secondary).frame(width: 7, height: 7).padding(.top, 8)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
+                        if waiting {
+                            let duplicate = model.hosts.contains { $0.id != host.id && $0.name == host.name }
+                            Label(duplicate ? "\(host.name) · \(host.address)" : host.name, systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
+                        }
                         if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
                         Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)
                         Text([failed ? "失敗" : waiting ? "入力待ち" : o.str("status") == "running" ? "作業中" : "待機", o.str("origin") == "mobile" ? "スマホで起動" : o.str("origin") == "grok-bot" ? "Grok Bot" : "PC で起動"].joined(separator: " · ")).modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
