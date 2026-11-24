@@ -42,6 +42,20 @@ struct Composer: View {
     @State private var sendError = ""
     @State private var selection: [PhotosPickerItem] = []
     @StateObject private var input = MessageInput()
+    static func submit(_ model: SessionModel, key: EditorKey, sent: RestoredDraft) async throws -> String {
+        // A slash after whitespace is prompt text. Only whitespace after the name is optional.
+        if sent.text.hasPrefix("/") {
+            let whitespace: (Unicode.Scalar) -> Bool = { $0 == "\u{feff}" || ($0.properties.isWhitespace && $0 != "\u{85}") }
+            let tail = sent.text.unicodeScalars.dropFirst(), token = tail.prefix { !whitespace($0) }
+            let name = String(token)
+            if model.rows[key.host]?.groups["command"]?.contains(where: { $0.id == name && $0.object.str("source") == "builtin" }) == true {
+                guard tail.dropFirst(token.count).allSatisfy(whitespace), sent.images.isEmpty else { return "この操作には引数や画像を付けずに送信してください。" }
+                if ["model", "resume", "fork", "tree"].contains(name) { return "この操作は PC のターミナルで行ってください。" }
+                _ = try await model.builtin(key, sent); return ""
+            }
+        }
+        try await model.send(key, sent); return ""
+    }
     var body: some View {
         let draft = model.body(key)
         VStack(alignment: .leading, spacing: 4) {
@@ -83,11 +97,7 @@ struct Composer: View {
                         Button { guard let sent = input.submission(draft) else { return }; Task {
                             sendError = ""
                             do {
-                                let line = sent.text.trimmingCharacters(in: .whitespacesAndNewlines)
-                                if let command = rows.groups["command"]?.first(where: { "/" + $0.id == line && $0.object.str("source") == "builtin" }) {
-                                    if ["model", "resume", "fork", "tree"].contains(command.id) { sendError = "この操作は PC のターミナルで行ってください。" }
-                                    else { _ = try await model.builtin(key, sent) }
-                                } else { try await model.send(key, sent) }
+                                sendError = try await Self.submit(model, key: key, sent: sent)
                             } catch { if model.editor == key && model.message.isEmpty { sendError = "送信できません。現在の送信先と入力内容を確認してください。" } }
                         } } label: {
                             SwiftUI.Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)

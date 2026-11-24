@@ -7,6 +7,7 @@ import UIKit
 private final class TestConnection: Connection, @unchecked Sendable {
     var items: [Item] = []
     var revision: UInt64 = 1
+    var lastOperation: PiMate.Operation?
     var checkError: CoreError?
     var receipt: @Sendable () async throws -> Void = {}
     var restored = RestoredDraft(text: "restored", images: [Image(mimeType: "image/jpeg", data: "YQ==")])
@@ -17,7 +18,7 @@ private final class TestConnection: Connection, @unchecked Sendable {
     }
     private func field(_ id: String, _ json: String) -> Item { Item(collection: "view", id: id, position: 0, json: json) }
     override func check(operation: PiMate.Operation) throws { if let checkError { throw checkError } }
-    override func perform(operation: PiMate.Operation) async throws -> String { try await receipt(); return "{}" }
+    override func perform(operation: PiMate.Operation) async throws -> String { lastOperation = operation; try await receipt(); return "{}" }
 }
 private final class TestCore: Core, @unchecked Sendable {
     var listeners: [String: Listener] = [:]
@@ -289,6 +290,24 @@ extension ReviewTests {
             await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
             XCTAssertEqual(model.rows["a"]?.groups["model"]?.count, 65)
             XCTAssertEqual(model.sheet?.id, restart ? nil : sheet.id)
+        }
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testLeadingSpaceIsSentAsPromptNotSessionOperation() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        core.c.items = [Item(collection: "command", id: "new", position: 0, json: #"{"source":"builtin"}"#)]
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        for text in [" /new", "\n/new", "/new "] {
+            model.text(text, for: key); _ = try await Composer.submit(model, key: key, sent: model.body(key))
+            if text.first == "/" {
+                guard case .rc(_, .sessionOp, let params)? = core.c.lastOperation else { return XCTFail("not a session operation") }
+                XCTAssertTrue(params.contains("new"))
+            } else {
+                guard case .send(_, let body, _)? = core.c.lastOperation else { return XCTFail("prompt treated as command") }
+                XCTAssertEqual(body, text)
+            }
         }
     }
 }
