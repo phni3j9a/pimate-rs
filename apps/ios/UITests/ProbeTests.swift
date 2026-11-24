@@ -19,7 +19,11 @@ final class ProbeTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)
-        app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "既存の認証 API を拡張")).firstMatch.tap(); XCTAssertTrue(answer.isEnabled); answer.tap()
+        app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "既存の認証 API を拡張")).firstMatch.tap(); XCTAssertTrue(answer.isEnabled)
+        // Under XXXL the footer can cover the center XCTest would tap. Scroll the whole card first.
+        let scroll = app.scrollViews.firstMatch
+        for _ in 0..<3 where !answer.isHittable || answer.frame.maxY > app.frame.maxY - 110 { scroll.swipeUp() }
+        XCTAssertTrue(answer.isHittable); answer.tap()
         XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 8))
         if variant == "light" {
             app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["pi-demo"].tap()

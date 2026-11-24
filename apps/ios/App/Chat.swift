@@ -45,7 +45,7 @@ private struct Conversation: View {
                 }.scrollPosition(id: $position, anchor: .bottom).defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
                     .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { position = "tail"; UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
-            .safeAreaInset(edge: .bottom) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
+            .safeAreaInset(edge: .bottom, spacing: 8) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
             .environment(\.openPiTable, { table = OpenTable(table: $0) })
             .fullScreenCover(item: $table) { shown in
