@@ -34,8 +34,13 @@ struct PiSheetPanel: View {
     func field(_ key: String) -> Item? { rows.groups["view"]?.first { $0.id == key } }
     var live: ChatSheet? { model.sheet?.id == opened.id ? model.sheet : nil }
     var ready: Bool { live?.loading == false && model.editor == opened.key && !model.busy && (rows.groups["busy"] ?? []).isEmpty }
-    func act(_ action: SheetAction, closeOnAck: Bool = false) {
+    var idle: Bool { rows.field("status") == "\"idle\"" && rows.field("agentActive") != "true" }
+    func act(_ action: SheetAction, closeOnAck: Bool = false, accepted: @escaping () -> Void = {}) {
         guard ready else { return }
+        switch action {
+        case .new, .resume, .fork, .move: guard idle else { return }
+        default: break
+        }
         acknowledged = false; receiptAtStart = model.receipt?.id
         switch action {
         case .compact, .new, .resume, .fork, .move: tracksCompletion = true
@@ -44,7 +49,7 @@ struct PiSheetPanel: View {
         Task {
             do {
                 try await model.run(action, in: opened); acknowledged = true
-                if closeOnAck { model.closeSheet(opened) }
+                if closeOnAck { model.closeSheet(opened) } else { accepted() }
             }
             catch { /* run publishes the error to this presentation only. */ }
         }
@@ -56,12 +61,12 @@ struct PiSheetPanel: View {
         }
     }
     @ViewBuilder private var feedback: some View {
+        if let error = live?.error { Text(problem(error)).foregroundStyle(PiTheme.failure).accessibilityIdentifier("sheet-error") }
+        else if live?.loading == true { ProgressView("応答を待っています…") }
         if tracksCompletion, let receipt = model.receipt, receipt.id != receiptAtStart {
             Text("この Pi の直近の操作結果").font(.caption).foregroundStyle(.secondary)
             ReceiptNote(receipt: receipt) { tracksCompletion = false; acknowledged = false; model.dismissReceipt(host: opened.key.host, receipt) }
-        } else if let error = live?.error { Text(problem(error)).foregroundStyle(PiTheme.failure) }
-        else if live?.loading == true { ProgressView("応答を待っています…") }
-        else if acknowledged { Label(tracksCompletion ? "要求を受け付けました。完了は未確認です。" : "要求を受け付けました", systemImage: "tray.and.arrow.down") }
+        } else if acknowledged && live?.error == nil && live?.loading == false { Label(tracksCompletion ? "要求を受け付けました。完了は未確認です。" : "要求を受け付けました", systemImage: "tray.and.arrow.down") }
     }
     var body: some View {
         NavigationStack {
@@ -102,7 +107,7 @@ private struct ModelSettings: View {
         List {
             Section {
                 Picker("表示するモデル", selection: Binding(get: { favoritesOnly }, set: { favoriteFilter = $0 })) { Text("すべて").tag(false); Text("お気に入り").tag(true) }.pickerStyle(.segmented)
-                if (favoritesOnly ? favorites.count : models.count) > 6 { TextField("モデルを検索", text: $search).textInputAutocapitalization(.never) }
+                if (favoritesOnly ? favorites.count : models.count) > 6 || !search.isEmpty { TextField("モデルを検索", text: $search).textInputAutocapitalization(.never) }
                 ForEach(shown, id: \.id) { row in
                     let o = row.object, m = ref(o), name = o.str("name").isEmpty ? m.id : o.str("name"), favorite = favorites.contains(m)
                     HStack {

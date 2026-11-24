@@ -3,6 +3,12 @@ import SwiftUI
 struct SessionSheetView: View {
     let panel: PiSheetPanel
     @State private var confirmExit = false
+    static func shutdownMessage(name: String, session: Object) -> String {
+        let note = session.str("file").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "保存先を確認できません。終了すると会話の履歴が失われる可能性があります。"
+            : "保存済みの履歴はセッション一覧から開き直せます。"
+        return "\(name) の実行中の処理が止まります。" + note
+    }
     var body: some View {
         let session = panel.field("session")?.object ?? [:], cwd = panel.field("cwd")?.string ?? ""
         let name = session.str("name").isEmpty ? (cwd as NSString).lastPathComponent : session.str("name")
@@ -19,7 +25,7 @@ struct SessionSheetView: View {
                 }
             }
             Section("会話") {
-                Button("新しいセッション", systemImage: "square.and.pencil") { panel.act(.new) }
+                Button("新しいセッション", systemImage: "square.and.pencil") { panel.act(.new) }.disabled(!panel.idle)
                 NavigationLink { ResumeSheet(panel: panel) } label: { Label("過去のセッションを開く", systemImage: "clock.arrow.circlepath") }
                 if panel.rows.field("sessionTree") == "true" {
                     NavigationLink { TreeSheet(panel: panel) } label: { Label("セッションツリー", systemImage: "point.3.connected.trianglepath.dotted") }.accessibilityIdentifier("session-tree")
@@ -37,7 +43,7 @@ struct SessionSheetView: View {
                     .confirmationDialog("この Pi を終了しますか？", isPresented: $confirmExit, titleVisibility: .visible) {
                         Button("終了する", role: .destructive) { panel.act(.shutdown) }
                         Button("キャンセル", role: .cancel) {}
-                    } message: { Text("\(name) の実行中の処理が止まります。会話はあとで開き直せます。") }
+                    } message: { Text(Self.shutdownMessage(name: name, session: session)) }
             }
         }.navigationTitle("セッション").navigationBarTitleDisplayMode(.inline)
     }
@@ -58,7 +64,7 @@ struct ResumeSheet: View {
                         if let count = o["messageCount"] as? Int { Text("メッセージ \(count) 件").font(.caption).foregroundStyle(.secondary) }
                         if current { Label("開いています", systemImage: "checkmark").font(.caption) }
                     }
-                }.disabled(current || !panel.ready || path.isEmpty || panel.live?.error != nil)
+                }.accessibilityIdentifier("resume-" + item.id).disabled(current || !panel.ready || !panel.idle || path.isEmpty || panel.live?.error != nil)
             }
             if panel.live?.error != nil { Button("一覧を再取得") { attempt += 1 } }
         }.navigationTitle("過去のセッション").navigationBarTitleDisplayMode(.inline)
@@ -75,7 +81,7 @@ struct ForkSheet: View {
             if entries.isEmpty { Text("分岐できるメッセージはありません") }
             ForEach(entries, id: \.id) { entry in
                 let text = entry.object.str("text")
-                Button { panel.act(.fork(entry: entry.id)) } label: { Text(verbatim: text.isEmpty ? "（画像のみ）" : text).lineLimit(4) }.disabled(!panel.ready)
+                Button { panel.act(.fork(entry: entry.id)) } label: { Text(verbatim: text.isEmpty ? "（画像のみ）" : text).lineLimit(4) }.accessibilityIdentifier("fork-" + entry.id).disabled(!panel.ready || !panel.idle)
             }
         }.navigationTitle("分岐元を選択").navigationBarTitleDisplayMode(.inline)
     }

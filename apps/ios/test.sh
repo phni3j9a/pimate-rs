@@ -49,6 +49,10 @@ start_fixture 1; start_fixture 2
 result="$build/Tests-$(date +%s).xcresult"
 TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultBundlePath "$result" test-without-building
 [[ ! -e $link-1 && ! -e $link-2 ]]
+# One fresh link for the failure/retry and edit journey; do not reuse the screenshot fixture.
+PIMATE_DEMO_REJECT_FIRST_TREE=1 start_fixture "$((${#fixtures[@]} + 1))"
+xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
+TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testSheetOperations test-without-building
 failed=0
 for variant in light dark large; do
   mode=light; size=large
@@ -59,7 +63,7 @@ for variant in light dark large; do
   start_fixture "$((${#fixtures[@]} + 1))"
   xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
   result="$build/$variant-$(date +%s).xcresult"
-  if TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building; then
+  if TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testJourney -resultBundlePath "$result" test-without-building; then
     # The last copy is a table from the demo, not just its visible cells. Never log the clipboard.
     xcrun simctl pbpaste "$id" >"$lab/copied"
     python3 - "$lab/copied" <<'TABLE' || failed=1

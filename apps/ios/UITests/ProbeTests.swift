@@ -37,6 +37,8 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(tree.isHittable); tree.tap()
         let branch = app.buttons["branch-side-user"]
         XCTAssertTrue(branch.waitForExistence(timeout: 12)); shot("Sheet-Tree"); branch.tap()
+        XCTAssertTrue(app.textFields["ラベル"].waitForExistence(timeout: 8)); shot("Sheet-Tree-Node")
+        for _ in 0..<4 where !app.buttons["ここへ移動"].isHittable { app.swipeUp() }
         XCTAssertTrue(app.buttons["ここへ移動"].waitForExistence(timeout: 8)); XCTAssertFalse(app.buttons["ここへ移動"].isEnabled)
         app.navigationBars["移動先を確認"].buttons.element(boundBy: 0).tap()
         app.navigationBars["セッションツリー"].buttons.element(boundBy: 0).tap()
@@ -153,5 +155,50 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(fourth.waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
         app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
         XCTAssertTrue(app.buttons["画像を添付"].isEnabled)
+    }
+}
+
+extension ProbeTests {
+    func testSheetOperations() throws {
+        guard ProcessInfo.processInfo.environment["PIMATE_REQUIRE_DEMO"] == "1" else { throw XCTSkip("Requires the sheet-review fixture") }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["PIMATE_TEST_STORE"] = "1"; app.launchArguments = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]; app.launch()
+        app.buttons["リンクを貼り付ける"].tap(); app.descendants(matching: .any)["paste"].firstMatch.tap()
+        let preview = app.buttons["接続先を確認"]
+        XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 8), .completed)
+        preview.tap(); app.buttons["このマシンに接続"].tap()
+        let main = app.buttons["pi-main"]
+        XCTAssertTrue(main.waitForExistence(timeout: 15)); main.tap()
+        func open(_ title: String) { app.buttons["chat-options"].tap(); app.buttons[title].tap() }
+        open("モデル・Thinking")
+        app.buttons["すべて"].tap()
+        let search = app.textFields["モデルを検索"]
+        search.tap(); search.typeText("absent\n"); app.buttons["お気に入り"].tap()
+        XCTAssertTrue(search.exists); XCTAssertEqual(search.value as? String, "absent")
+        search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入りから外す")).firstMatch.waitForExistence(timeout: 8))
+        app.buttons["sheet-close"].tap(); open("セッション")
+        XCTAssertFalse(app.buttons["新しいセッション"].isEnabled)
+        app.buttons["過去のセッションを開く"].tap()
+        let resume = app.buttons["resume-main-saved-0"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 8)); XCTAssertFalse(resume.isEnabled)
+        app.navigationBars["過去のセッション"].buttons.element(boundBy: 0).tap()
+        app.buttons["ここから分岐"].tap()
+        let fork = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "fork-")).firstMatch
+        XCTAssertTrue(fork.waitForExistence(timeout: 8)); XCTAssertFalse(fork.isEnabled)
+        app.navigationBars["分岐元を選択"].buttons.element(boundBy: 0).tap()
+        app.buttons["コンテキストを圧縮"].tap()
+        XCTAssertTrue(app.staticTexts["操作が完了しました"].waitForExistence(timeout: 12)); app.buttons["session-tree"].tap()
+        XCTAssertTrue(app.staticTexts["sheet-error"].waitForExistence(timeout: 8)); app.buttons["更新"].tap()
+        let node = app.buttons["branch-side-user"]
+        XCTAssertTrue(node.waitForExistence(timeout: 8)); node.tap()
+        let field = app.textFields["ラベル"]
+        field.tap(); field.typeText("review41\n"); app.buttons["ラベルを保存"].tap()
+        func waitForLabel(_ present: Bool) {
+            let predicate = NSPredicate(format: present ? "exists == true AND label CONTAINS %@" : "exists == true AND NOT (label CONTAINS %@)", "review41")
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: node)], timeout: 12), .completed)
+        }
+        waitForLabel(true); node.tap(); XCTAssertEqual(field.value as? String, "review41"); app.buttons["ラベルを外す"].tap(); waitForLabel(false)
     }
 }
