@@ -140,6 +140,7 @@ impl Render for Desktop {
                         d["params"]["text"].as_str().unwrap_or_default()
                     ));
                     if d["status"] == "unconfirmed"
+                        && !self.composing
                         && !self.sending
                         && self.drafts.get(&key).is_none_or(String::is_empty)
                     {
@@ -149,7 +150,8 @@ impl Render for Desktop {
                             Button::new(SharedString::from(format!("restore-{id}")))
                                 .label("入力欄へ戻す")
                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                    if this.sending
+                                    if this.composing
+                                        || this.sending
                                         || this.editor().as_ref() != Some(&shown)
                                         || this.drafts.get(&shown).is_some_and(|s| !s.is_empty())
                                     {
@@ -178,9 +180,11 @@ impl Render for Desktop {
                 Button::new("send")
                     .label("送信")
                     .disabled(
-                        self.sending || self.drafts.get(&key).is_none_or(|s| s.trim().is_empty()),
+                        self.sending
+                            || self.composing
+                            || self.drafts.get(&key).is_none_or(|s| s.trim().is_empty()),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| this.send(key.clone(), cx))),
+                    .on_click(cx.listener(move |this, _, w, cx| this.send(key.clone(), w, cx))),
             );
         }
         div()

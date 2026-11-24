@@ -27,7 +27,8 @@ struct Desktop {
     pairing: bool,
     notice: String,
     drafts: HashMap<EditorKey, String>,
-    input: Option<(EditorKey, Entity<InputState>, Subscription)>,
+    input: Option<(EditorKey, Entity<InputState>, [Subscription; 2])>,
+    composing: bool,
     sending: bool,
     epoch: u64,
     size: f32,
@@ -50,6 +51,7 @@ impl Desktop {
             notice: String::new(),
             drafts: Default::default(),
             input: None,
+            composing: false,
             sending: false,
             epoch: 0,
             size: 16.,
@@ -181,6 +183,7 @@ impl Desktop {
             return;
         }
         self.input = None;
+        self.composing = false;
         let Some(key) = key else { return };
         let value = self.drafts.get(&key).cloned().unwrap_or_default();
         let input = cx.new(|cx| {
@@ -200,15 +203,43 @@ impl Desktop {
                 cx.notify()
             }
         });
-        self.input = Some((key, input, sub));
+        // Marked-text edits notify the entity without emitting InputEvent::Change.
+        let observer = cx.observe_in(&input, w, |this, state, w, cx| {
+            if !this.input.as_ref().is_some_and(|v| v.1 == state) {
+                return;
+            }
+            let marked = state.update(cx, |s, cx| s.marked_text_range(w, cx).is_some());
+            if marked != this.composing {
+                this.composing = marked;
+                cx.notify();
+            }
+        });
+        self.input = Some((key, input, [sub, observer]));
     }
-    fn send(&mut self, key: EditorKey, cx: &mut Context<Self>) {
+    fn live_matches(
+        &self,
+        key: &EditorKey,
+        text: &str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.input.as_ref().is_some_and(|(k, input, _)| {
+            k == key
+                && input.update(cx, |s, cx| {
+                    s.marked_text_range(w, cx).is_none() && s.value().as_str() == text
+                })
+        })
+    }
+    fn send(&mut self, key: EditorKey, w: &mut Window, cx: &mut Context<Self>) {
         if self.sending || self.editor().as_ref() != Some(&key) {
             return;
         }
         let Some(text) = self.drafts.get(&key).cloned() else {
             return;
         };
+        if !self.live_matches(&key, &text, w, cx) {
+            return;
+        }
         let conn = self.machines[&key.host].conn.clone();
         let op = Operation::Send {
             target: key.target(),
@@ -223,38 +254,40 @@ impl Desktop {
         self.notice.clear();
         self.sending = true;
         let epoch = self.epoch;
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(w, async move |this, cx| {
             let result = conn.perform(op).await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, w, cx| {
                 this.sending = false;
+                let bound = this.input.as_ref().is_some_and(|i| i.0 == key);
+                if (!bound || this.live_matches(&key, &text, w, cx))
+                    && model::clear_accepted(&mut this.drafts, &key, &text, result.is_ok())
+                    && bound
+                {
+                    this.input = None;
+                }
                 if this
                     .machines
                     .get(&key.host)
                     .is_some_and(|m| Arc::ptr_eq(&m.conn, &conn))
+                    && this.epoch == epoch
+                    && this.editor().as_ref() == Some(&key)
                 {
-                    if model::clear_accepted(&mut this.drafts, &key, &text, result.is_ok())
-                        && this.input.as_ref().is_some_and(|i| i.0 == key)
-                    {
-                        this.input = None
-                    }
-                    if this.epoch == epoch && this.editor().as_ref() == Some(&key) {
-                        this.notice = match result {
-                            Ok(_) => "Pi が受付（履歴は別途確認）",
-                            Err(
-                                Error::Blocked
-                                | Error::Rejected
-                                | Error::BadRequest
-                                | Error::Unsupported
-                                | Error::BuiltinCommand,
-                            ) => "送信は拒否されました",
-                            Err(Error::StaleTarget) => {
-                                "対象が変わりました。現在の履歴を確認してください"
-                            }
-                            Err(Error::Offline) => "送信していません。接続先を確認してください",
-                            Err(_) => "結果不明です。再送前に履歴を確認してください",
+                    this.notice = match result {
+                        Ok(_) => "Pi が受付（履歴は別途確認）",
+                        Err(
+                            Error::Blocked
+                            | Error::Rejected
+                            | Error::BadRequest
+                            | Error::Unsupported
+                            | Error::BuiltinCommand,
+                        ) => "送信は拒否されました",
+                        Err(Error::StaleTarget) => {
+                            "対象が変わりました。現在の履歴を確認してください"
                         }
-                        .into()
+                        Err(Error::Offline) => "送信していません。接続先を確認してください",
+                        Err(_) => "結果不明です。再送前に履歴を確認してください",
                     }
+                    .into()
                 }
                 cx.notify()
             });
