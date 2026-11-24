@@ -17,13 +17,24 @@ jobs:
         run: |
           rc=0; apps/ios/test.sh || rc=$?; test "$rc" = 64
       - name: Test on a new disposable simulator
+        id: ui
         run: apps/ios/test-disposable.sh
       - name: Compose mock, light, dark and large-text comparisons
+        id: compare
+        if: ${{ !cancelled() && (steps.ui.outcome == 'success' || hashFiles('apps/ios/build/attachments/*/manifest.json') != '') }}
+        env:
+          UI_OUTCOME: ${{ steps.ui.outcome }}
         run: |
           python3 -m venv "$RUNNER_TEMP/pi-images"
           "$RUNNER_TEMP/pi-images/bin/pip" install Pillow==11.3.0
-          "$RUNNER_TEMP/pi-images/bin/python" apps/ios/compare.py
+          "$RUNNER_TEMP/pi-images/bin/python" apps/ios/test_compare.py
+          if [[ $UI_OUTCOME == success ]]; then
+            "$RUNNER_TEMP/pi-images/bin/python" apps/ios/compare.py
+          else
+            "$RUNNER_TEMP/pi-images/bin/python" apps/ios/compare.py --partial
+          fi
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.compare.outcome == 'success' && hashFiles('apps/ios/build/comparison/*.webp') != '' }}
         with:
           name: ios-comparison
           path: apps/ios/build/comparison

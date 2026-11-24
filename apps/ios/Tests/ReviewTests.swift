@@ -7,6 +7,7 @@ import UIKit
 private final class TestConnection: Connection, @unchecked Sendable {
     var items: [Item] = []
     var revision: UInt64 = 1
+    var observe: @Sendable (PiMate.Operation) -> Void = { _ in }
     var checkError: CoreError?
     var receipt: @Sendable () async throws -> Void = {}
     var restored = RestoredDraft(text: "restored", images: [Image(mimeType: "image/jpeg", data: "YQ==")])
@@ -17,7 +18,7 @@ private final class TestConnection: Connection, @unchecked Sendable {
     }
     private func field(_ id: String, _ json: String) -> Item { Item(collection: "view", id: id, position: 0, json: json) }
     override func check(operation: PiMate.Operation) throws { if let checkError { throw checkError } }
-    override func perform(operation: PiMate.Operation) async throws -> String { try await receipt(); return "{}" }
+    override func perform(operation: PiMate.Operation) async throws -> String { observe(operation); try await receipt(); return "{}" }
 }
 private final class TestCore: Core, @unchecked Sendable {
     var listeners: [String: Listener] = [:]
@@ -290,5 +291,49 @@ extension ReviewTests {
             XCTAssertEqual(model.rows["a"]?.groups["model"]?.count, 65)
             XCTAssertEqual(model.sheet?.id, restart ? nil : sheet.id)
         }
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testLeadingSpaceIsSentAsPromptNotSessionOperation() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        core.c.items = [Item(collection: "command", id: "new", position: 0, json: #"{"source":"builtin"}"#)]
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        for text in [" /new", "\n/new", "/new "] {
+            let sent = expectation(description: "sent: \(text)")
+            core.c.observe = { operation in
+                defer { sent.fulfill() }
+                if text.first == "/" {
+                    guard case .rc(_, .sessionOp, let params) = operation else { return XCTFail("not a session operation") }
+                    XCTAssertTrue(params.contains("new"))
+                } else {
+                    guard case .send(_, let body, _) = operation else { return XCTFail("prompt treated as command") }
+                    XCTAssertEqual(body, text)
+                }
+            }
+            model.text(text, for: key); _ = try await Composer.submit(model, key: key, sent: model.body(key))
+            await fulfillment(of: [sent], timeout: 1)
+        }
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testOnlyVisibleImagesInOneLongMarkdownAnswerAreRequested() async throws {
+        let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+        try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)
+        let context = PhotoContext(model: model, key: key, entries: true, files: true, open: { _ in })
+        let source = (0..<100).map { "![図](shot-\($0).png)" }.joined(separator: "\n\n")
+        let first = expectation(description: "visible file requested"), outside = expectation(description: "offscreen file requested")
+        outside.isInverted = true
+        core.c.observe = { op in
+            guard case .rc(_, .fileImage, let params) = op else { return }
+            if params.contains("shot-0.png") { first.fulfill() }
+            else if !params.contains("shot-1.png") { outside.fulfill() }
+        }
+        let host = UIHostingController(rootView: ScrollView { MarkdownBody(source: source, answer: "A") }
+            .frame(width: 320, height: 180).modifier(PhotoViewport()).environment(\.photoContext, context))
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.isHidden = false
+        defer { window.isHidden = true }; await fulfillment(of: [first], timeout: 5); await fulfillment(of: [outside], timeout: 0.5)
     }
 }

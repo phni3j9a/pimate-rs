@@ -20,6 +20,15 @@ cleanup() {
 trap cleanup EXIT
 xcrun simctl boot "$id"; booted=yes
 xcrun simctl bootstatus "$id" -b
+# Only generated swatches enter this disposable photo library.
+python3 - "$lab" <<'PHOTOS'
+import base64, runpy, sys
+from pathlib import Path
+picture = runpy.run_path('scripts/android-demo.py')['picture']
+for n in range(4):
+    (Path(sys.argv[1]) / f'swatch-{n}.png').write_bytes(base64.b64decode(picture(n, True)['data']))
+PHOTOS
+xcrun simctl addmedia "$id" "$lab"/swatch-*.png
 build="$PWD/apps/ios/build"
 xcb=(xcodebuild -project apps/ios/PiMate.xcodeproj -scheme PiMate -destination "id=$id" -derivedDataPath "$build" -parallel-testing-enabled NO)
 "${xcb[@]}" build-for-testing
@@ -40,6 +49,7 @@ start_fixture 1; start_fixture 2
 result="$build/Tests-$(date +%s).xcresult"
 TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultBundlePath "$result" test-without-building
 [[ ! -e $link-1 && ! -e $link-2 ]]
+failed=0
 for variant in light dark large; do
   mode=light; size=large
   [[ $variant != dark ]] || mode=dark
@@ -49,7 +59,21 @@ for variant in light dark large; do
   start_fixture "$((${#fixtures[@]} + 1))"
   xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
   result="$build/$variant-$(date +%s).xcresult"
-  TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building
+  if TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building; then
+    # The last copy is a table from the demo, not just its visible cells. Never log the clipboard.
+    xcrun simctl pbpaste "$id" >"$lab/copied"
+    python3 - "$lab/copied" <<'TABLE' || failed=1
+import runpy, sys
+from pathlib import Path
+body = runpy.run_path('scripts/android-demo.py')['BODY']
+tables = [p for p in body.split('\n\n') if p.startswith('|')]
+if Path(sys.argv[1]).read_text().rstrip('\n') not in tables:
+    sys.exit('Copied text did not match a complete fixture Markdown table')
+TABLE
+  else
+    failed=1
+  fi
   mkdir -p "$build/attachments/$variant"
   xcrun xcresulttool export attachments --path "$result" --output-path "$build/attachments/$variant"
 done
+exit "$failed"

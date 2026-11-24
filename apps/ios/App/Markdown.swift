@@ -2,19 +2,24 @@ import SwiftUI
 
 private actor MarkdownParser {
     static let shared = MarkdownParser()
-    func blocks(_ source: String) throws -> [Block] {
+    func blocks(_ source: String, files: Bool) throws -> ([Block], [MarkdownImage]) {
         try Task.checkCancellation()
-        return parse(source: source, fileImages: false).blocks()
+        let doc = parse(source: source, fileImages: files)
+        return (doc.blocks(), doc.images().filter { image in
+            image.kind != .remote || URL(string: image.src.value()).map { WebImage.valid($0, scheme: "https") } == true
+        })
     }
 }
 struct MarkdownBody: View {
-    let source: String
+    let source: String, answer: String
+    @Environment(\.photoContext) private var photos
     @State private var blocks: [Block] = []
+    @State private var gallery: [MarkdownImage] = []
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            ForEach(blocks, id: \.id) { MarkdownBlock(block: $0) }
-        }.task(id: source) {
-            if let result = try? await MarkdownParser.shared.blocks(source), !Task.isCancelled { blocks = result }
+            ForEach(blocks, id: \.id) { MarkdownBlock(block: $0, answer: answer) }
+        }.environment(\.markdownGallery, gallery).task(id: [source, photos?.files == true ? "file" : ""]) {
+            if let result = try? await MarkdownParser.shared.blocks(source, files: photos?.files == true), !Task.isCancelled { (blocks, gallery) = result }
         }
     }
 }
@@ -59,11 +64,11 @@ struct Selectable: UIViewRepresentable {
     }
 }
 private struct MarkdownBlock: View {
-    let block: Block
+    let block: Block, answer: String
     var body: some View {
         switch block.content {
-        case .paragraph(let spans): Selectable(spans: spans)
-        case .heading(_, let spans): Selectable(spans: spans, heading: true)
+        case .paragraph(let spans): PhotoParagraph(spans: spans, answer: answer, heading: false)
+        case .heading(_, let spans): PhotoParagraph(spans: spans, answer: answer, heading: true)
         case .rule: Divider()
         case .code(let language, let text):
             VStack(alignment: .leading, spacing: 4) {
@@ -75,21 +80,26 @@ private struct MarkdownBlock: View {
             VStack(alignment: .leading, spacing: 6) { ForEach(Array(items.enumerated()), id: \.element.id) { i, item in
                 HStack(alignment: .top, spacing: 8) {
                     if case .item(let checked?, _) = item.content { Text(checked ? "☑" : "☐").accessibilityLabel(checked ? "完了" : "未完了") }
-                    else { Text(start.map { "\(Int($0) + i)." } ?? "•") }; MarkdownBlock(block: item)
+                    else { Text(start.map { "\(Int($0) + i)." } ?? "•") }; MarkdownBlock(block: item, answer: answer)
                 }
             } }
         case .item(_, let children): nested(children)
-        case .table(let table): MarkdownTable(table: table)
+        case .table(let table): MarkdownTable(table: table, answer: answer)
         }
     }
-    private func nested(_ children: [Block]) -> some View { VStack(alignment: .leading, spacing: 6) { ForEach(children, id: \.id) { MarkdownBlock(block: $0) } } }
+    private func nested(_ children: [Block]) -> some View { VStack(alignment: .leading, spacing: 6) { ForEach(children, id: \.id) { MarkdownBlock(block: $0, answer: answer) } } }
 }
-private struct OpenTableKey: EnvironmentKey { static let defaultValue: (Table) -> Void = { _ in } }
+struct OpenTable: Identifiable {
+    let id = UUID()
+    let table: Table, answer: String, gallery: [MarkdownImage]
+}
+private struct OpenTableKey: EnvironmentKey { static let defaultValue: (OpenTable) -> Void = { _ in } }
 extension EnvironmentValues {
-    var openPiTable: (Table) -> Void { get { self[OpenTableKey.self] } set { self[OpenTableKey.self] = newValue } }
+    var openPiTable: (OpenTable) -> Void { get { self[OpenTableKey.self] } set { self[OpenTableKey.self] = newValue } }
 }
 struct MarkdownTable: View {
-    let table: Table
+    let table: Table, answer: String
+    @Environment(\.markdownGallery) private var gallery
     var full = false
     @Environment(\.openPiTable) private var open
     @State private var width: CGFloat = 300
@@ -102,7 +112,10 @@ struct MarkdownTable: View {
         return ScrollView(.horizontal) {
             VStack(alignment: .leading, spacing: 0) { ForEach(rows.indices, id: \.self) { i in
                 HStack(alignment: .top, spacing: 0) { ForEach(rows[i].indices, id: \.self) { j in
-                    Selectable(spans: rows[i][j], heading: i == 0, links: full).allowsHitTesting(full).padding(8).frame(width: widths[j], alignment: .leading)
+                    VStack(alignment: .leading, spacing: 6) {
+                        if full { PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0) }
+                        else { Selectable(spans: rows[i][j], heading: i == 0, links: false).allowsHitTesting(false) }
+                    }.padding(8).frame(width: widths[j], alignment: .leading)
                 } }.background(i == 0 ? PiTheme.surface : PiTheme.background); Divider()
             } }
         }.background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
@@ -110,8 +123,66 @@ struct MarkdownTable: View {
     var body: some View {
         if full { grid(full: true) }
         else { VStack(alignment: .trailing, spacing: 0) {
-            grid(full: false).contentShape(Rectangle()).onTapGesture { open(table) }
-            Button("表を開く", systemImage: "arrow.up.left.and.arrow.down.right") { open(table) }.font(.caption).frame(minHeight: 44)
+            grid(full: false).contentShape(Rectangle()).onTapGesture { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
+            Button { open(OpenTable(table: table, answer: answer, gallery: gallery)) } label: {
+                Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .font(.caption).frame(minHeight: 44).contentShape(Rectangle())
+            }
         } }
+    }
+}
+
+private struct GalleryKey: EnvironmentKey { static let defaultValue: [MarkdownImage] = [] }
+private extension EnvironmentValues {
+    var markdownGallery: [MarkdownImage] { get { self[GalleryKey.self] } set { self[GalleryKey.self] = newValue } }
+}
+// Preserve native range selection across adjacent text; only an image splits a run.
+private struct PhotoParagraph: View {
+    let spans: [Inline], answer: String, heading: Bool
+    @Environment(\.photoContext) private var context
+    @Environment(\.markdownGallery) private var images
+    private enum Part { case text([Inline]), photo(MarkdownImage) }
+    private var parts: [Part] {
+        var parts: [Part] = [], run: [Inline] = []
+        for span in spans {
+            if case .image(let image) = span {
+                if !run.isEmpty { parts.append(.text(run)); run = [] }; parts.append(.photo(image))
+            } else { run.append(span) }
+        }
+        if !run.isEmpty { parts.append(.text(run)) }; return parts
+    }
+    var body: some View {
+        ForEach(Array(parts.enumerated()), id: \.offset) { _, part in
+            switch part {
+            case .text(let text): Selectable(spans: text, heading: heading)
+            case .photo(let image):
+                if image.kind == .remote, let url = URL(string: image.src.value()), WebImage.valid(url, scheme: "http") {
+                    Link(image.alt.isEmpty ? "画像をブラウザで開く" : image.alt, destination: url)
+                } else if let context, let start = images.firstIndex(where: { $0.index == image.index }) {
+                    let gallery = images // Capture the opened answer, not subsequent streamed text.
+                    PhotoTile(context: context, gallery: OpenPhoto(start: start, count: gallery.count, label: { gallery[$0].alt.isEmpty ? "画像" : gallery[$0].alt }, source: { i, _ in try? ChatImageSource(markdown: gallery[i], answer: answer) }), answer: answer)
+                        .frame(maxWidth: 300).frame(height: 144)
+                } else { Text(image.alt.isEmpty ? "画像を表示できません" : image.alt).foregroundStyle(PiTheme.secondary) }
+            }
+        }
+    }
+}
+
+struct TableViewer: View {
+    let shown: OpenTable, context: PhotoContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var photo: OpenPhoto?
+    var body: some View {
+        NavigationStack {
+            ScrollView { MarkdownTable(table: shown.table, answer: shown.answer, full: true).padding() }
+                .modifier(PhotoViewport()).environment(\.markdownGallery, shown.gallery)
+                .environment(\.photoContext, PhotoContext(model: context.model, key: context.key, entries: context.entries, files: context.files, open: { photo = $0 }))
+                .navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() }.accessibilityLabel("表を閉じる") }
+                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = shown.table.markdown; UIAccessibility.post(notification: .announcement, argument: "表を Markdown でコピーしました")
+                    } }
+                }
+        }.accessibilityHidden(photo != nil).fullScreenCover(item: $photo) { PhotoViewer(gallery: $0, context: context) }
     }
 }

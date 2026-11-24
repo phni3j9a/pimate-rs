@@ -19,6 +19,17 @@ private final class ImageProtocol: URLProtocol {
 }
 
 final class WebImageTests: XCTestCase {
+    @MainActor func testTileIdentitySurvivesReparseButChangesWithAnswerOrInlineBytes() throws {
+        func key(_ src: String, _ kind: ImageKind, _ answer: String) throws -> [String] {
+            let image = MarkdownImage(src: SharedText(value: src), alt: "図", kind: kind, index: 0)
+            return PhotoTile.imageID(try ChatImageSource(markdown: image, answer: answer), answer: answer)
+        }
+        XCTAssertEqual(try key("shot.png", .file, "A"), try key("shot.png", .file, "A"))
+        XCTAssertNotEqual(try key("shot.png", .file, "A"), try key("shot.png", .file, "B"))
+        let prefix = "data:image/png;base64,"
+        XCTAssertEqual(try key(prefix + "YQ==", .data, "A"), try key(prefix + "YQ==", .data, "A"))
+        XCTAssertNotEqual(try key(prefix + "YQ==", .data, "A"), try key(prefix + "Yg==", .data, "A"))
+    }
     @MainActor func testHTTPMarkdownIsALinkNotAFetch() async throws {
         let url = URL(string: "http://example.invalid/pic")!
         let image = MarkdownImage(src: SharedText(value: url.absoluteString), alt: "図", kind: .remote, index: 0)

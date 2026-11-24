@@ -6,10 +6,12 @@ struct ChatScreen: View {
     var body: some View {
         let r = rows, info = r.groups["instance"]?.first { $0.id == instance }?.object ?? [:]
         Group {
-            if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(key) }
+            if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(r.viewGeneration).id(key) }
             else {
                 VStack {
-                    if let problem = Self.connectionProblem(r) { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text(problem)) }
+                    if model.edge?.connection == "offline" || model.edge?.connection == "connecting" {
+                        ContentUnavailableView("再接続中", systemImage: "wifi.slash", description: Text("マシンとの接続を待っています。未確認のメッセージは自動で再送しません。"))
+                    } else if let problem = Self.connectionProblem(r) { ContentUnavailableView("Pi に接続できません", systemImage: "wifi.slash", description: Text(problem)) }
                     else { ProgressView("同期しています…").frame(maxHeight: .infinity) }
                     DraftList(rows: r, instance: instance, model: model, key: nil)
                 }
@@ -28,42 +30,51 @@ struct ChatScreen: View {
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     @State private var turns: [ChatTurn] = []
-    private struct OpenTable: Identifiable { let id = UUID(), table: Table }
     @State private var table: OpenTable?
+    @State private var photo: OpenPhoto?
+    private var photos: PhotoContext {
+        PhotoContext(model: model, key: key, entries: rows.field("entryImages") == "true", files: rows.field("fileImages") == "true", open: { photo = $0 })
+    }
     @State private var loaded = false
     @State private var position: String? = "tail"
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
         let groups = rows.groups, questions = groups["question"] ?? [], stream = groups["stream"] ?? []
-        let entries = groups["entry"] ?? [], tools = groups["tool"] ?? [], pc = rows.field("pcPrompt").map { $0 != "null" } ?? false
+        let entries = groups["entry"] ?? [], tools = groups["tool"] ?? [], edge = model.edge
+        let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Circle().fill(questions.isEmpty && !pc ? PiTheme.accent : PiTheme.waiting).frame(width: 6, height: 6)
-                Text(!questions.isEmpty || pc ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
+                Text(pc && questions.isEmpty ? "PC で操作待ち" : !questions.isEmpty ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
             }.foregroundStyle(PiTheme.secondary).padding(.bottom, 6).accessibilityElement(children: .combine)
             ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id) }
                         if !thinking.isEmpty { DisclosureGroup("考えています…") { Text(verbatim: thinking) } }
-                        if !text.isEmpty { MarkdownBody(source: text) }
-                        if pc { Label("PC 側で操作を完了してください", systemImage: "desktopcomputer") }
+                        if !text.isEmpty {
+                            // A new streamed answer must not render with the previous answer's parsed blocks.
+                            let answer = "stream:" + (entries.last?.id ?? "begin")
+                            MarkdownBody(source: text, answer: answer).id(answer)
+                        }
+                        if let move = model.move { MoveNote(move: move) }
+                        if let result = model.receipt { ReceiptNote(receipt: result) { model.dismissReceipt(host: key.host, result) } }
+                        if let prompt = edge?.pcPrompt, questions.isEmpty { TerminalCard(title: prompt.str("title"), command: edge?.attachCommand) }
                         ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
                         Color.clear.frame(height: 1).id("tail")
                     }.scrollTargetLayout().padding(.horizontal, 20).padding(.vertical, 12)
-                }.scrollPosition(id: $position, anchor: .bottom).defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
+                }.modifier(PhotoViewport()).scrollPosition(id: $position, anchor: .bottom).defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
                     .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { position = "tail"; UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
             .safeAreaInset(edge: .bottom, spacing: 8) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
-            .environment(\.openPiTable, { table = OpenTable(table: $0) })
-            .fullScreenCover(item: $table) { shown in
-                NavigationStack { ScrollView { MarkdownTable(table: shown.table, full: true).padding() }.navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { table = nil } }
-                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = shown.table.markdown } }
-                } }
+            .environment(\.photoContext, photos)
+            .fullScreenCover(item: $photo) { shown in
+                PhotoViewer(gallery: shown, context: photos)
             }
+            .environment(\.openPiTable, { table = $0 })
+            .fullScreenCover(item: $table) { TableViewer(shown: $0, context: photos) }
             .task(id: [entries, tools]) {
                 let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools) }
                 let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
@@ -80,13 +91,13 @@ private struct TurnView: View {
             if !turn.prompt.isEmpty || turn.imageCount > 0 {
                 VStack(alignment: .leading, spacing: 4) {
                     if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled) }
-                    if turn.imageCount > 0 { Label("画像 \(turn.imageCount) 枚", systemImage: "photo") }
+                    if let images = turn.images { HistoryPhotos(images: images) }
                 }.padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing)
             }
             ForEach(turn.lines) { line in
                 switch line {
                 case .reply(let reply):
-                    MarkdownBody(source: reply.text); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
+                    MarkdownBody(source: reply.text, answer: reply.id); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
                 case .work(let w):
                     if !active && w.id == firstWork {
                         Button { expanded.toggle() } label: {
@@ -94,6 +105,7 @@ private struct TurnView: View {
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                     }
                     if active || expanded { work(w) }
+                    if let images = w.images { HistoryPhotos(images: images) }
                 }
             }
         }
