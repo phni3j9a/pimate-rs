@@ -12,7 +12,7 @@ final class ProbeTests: XCTestCase {
         guard ProcessInfo.processInfo.environment["PIMATE_REQUIRE_DEMO"] == "1" else { throw XCTSkip("Run apps/ios/test-disposable.sh to include the loopback Host") }
         let insert = app.descendants(matching: .any)["paste"].firstMatch
         XCTAssertTrue(insert.waitForExistence(timeout: 5)); insert.tap()
-        let preview = app.buttons["接続先を確認"]; XCTAssertTrue(preview.isEnabled); preview.tap()
+        let preview = app.buttons["接続先を確認"]; XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 8), .completed); preview.tap()
         XCTAssertEqual(app.staticTexts["pair-name"].label, "デモ PC")
         XCTAssertTrue(app.staticTexts["pair-address"].label.hasPrefix("127.0.0.1:"))
         app.buttons["キャンセル"].tap(); XCTAssertTrue(insert.exists); XCTAssertFalse(app.buttons["pi-waiting"].exists)
@@ -24,9 +24,17 @@ final class ProbeTests: XCTestCase {
         let photos = app.images.matching(identifier: "PXGGridLayout-Info")
         XCTAssertTrue(photos.element(boundBy: 3).waitForExistence(timeout: 10))
         for i in 0..<4 { photos.element(boundBy: i).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
-        let addPhotos = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ OR label BEGINSWITH %@", "追加", "Add")).firstMatch
-        XCTAssertTrue(addPhotos.waitForExistence(timeout: 5)); addPhotos.tap()
         let fourth = app.buttons["画像 4 を取り消す"]
+        // Ordered pickers can finish automatically at the selection limit.
+        if !fourth.waitForExistence(timeout: 3) {
+            let add = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label CONTAINS[c] %@ OR label CONTAINS %@ OR label == %@ OR label == %@", "Add", "Add", "追加", "完了", "Done")).firstMatch
+            if add.waitForExistence(timeout: 4) { add.tap() }
+            else if photos.firstMatch.exists {
+                // Native picker's confirmation is in the trailing edge of its top bar.
+                let bar = app.navigationBars.allElementsBoundByIndex.last { $0.isHittable }
+                bar?.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+            }
+        }
         XCTAssertTrue(fourth.waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
         app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
         XCTAssertTrue(app.buttons["画像を添付"].isEnabled)
