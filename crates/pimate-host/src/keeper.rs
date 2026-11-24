@@ -12,7 +12,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     os::{
-        fd::AsRawFd,
+        fd::{AsFd, AsRawFd},
         unix::{
             fs::MetadataExt,
             process::{CommandExt, ExitStatusExt},
@@ -231,10 +231,6 @@ async fn bridge(
 struct Raw(libc::termios);
 impl Drop for Raw {
     fn drop(&mut self) {
-        let mut out = io::stdout().lock();
-        let _ = out
-            .write_all(b"\x1b[?1049l\x1b[?25h")
-            .and_then(|()| out.flush());
         unsafe {
             libc::tcsetattr(0, libc::TCSANOW, &self.0);
         }
@@ -255,15 +251,15 @@ pub async fn attach(path: &Path) -> Result<u8> {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    // One in-flight blocking write on a duplicate fd; never hold Rust's global stdout lock.
+    let mut out = tokio::fs::File::from_std(File::from(io::stdout().as_fd().try_clone_to_owned()?));
     let orig = termios::tcgetattr(io::stdin())?;
     // Preserve platform flags that nix truncates when writing its portable Termios wrapper.
     let saved = libc::termios::from(orig.clone());
     let mut raw = orig;
     termios::cfmakeraw(&mut raw);
     termios::tcsetattr(io::stdin(), termios::SetArg::TCSANOW, &raw)?;
-    let _restore = Raw(saved);
-    io::stdout().write_all(b"\x1b[?1049h")?;
-    io::stdout().flush()?;
+    let restore = Raw(saved);
     let mut stdin = tokio::io::stdin();
 
     let mut buf = [0; 4096];
@@ -293,6 +289,8 @@ pub async fn attach(path: &Path) -> Result<u8> {
         }
     };
     let output = async {
+        out.write_all(b"\x1b[?1049h").await?;
+        out.flush().await?;
         let mut buf = [0; 8192];
         loop {
             let n = r.read_u16().await? as usize;
@@ -301,18 +299,24 @@ pub async fn attach(path: &Path) -> Result<u8> {
             }
             ensure!(n <= buf.len(), "invalid output frame");
             r.read_exact(&mut buf[..n]).await?;
-            let mut out = io::stdout().lock();
-            out.write_all(&buf[..n])?;
-            out.flush()?;
+            out.write_all(&buf[..n]).await?;
+            out.flush().await?;
         }
     };
-    tokio::select! {
+    let result = tokio::select! {
         r = input => r,
         r = output => r,
         _ = interrupt.recv() => Ok(0),
         _ = terminate.recv() => Ok(0),
         _ = hangup.recv() => Ok(0),
-    }
+    };
+    drop(restore);
+    let _ = timeout(Duration::from_millis(200), async {
+        out.write_all(b"\x1b[?1049l\x1b[?25h").await?;
+        out.flush().await
+    })
+    .await;
+    result
 }
 
 #[cfg(test)]

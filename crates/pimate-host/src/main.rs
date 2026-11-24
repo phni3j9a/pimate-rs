@@ -88,7 +88,7 @@ fn main() -> std::process::ExitCode {
                 ensure!(args.next().is_none());
                 terminal::Terminal.attach(&config::run_dir(), name).await
             });
-            // Tokio stdin can still have a blocking read when the Pi exits.
+            // An attach worker may still be blocked on terminal input or output.
             rt.shutdown_background();
             result
         } else {

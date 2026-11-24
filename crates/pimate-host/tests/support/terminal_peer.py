@@ -114,6 +114,41 @@ try:
             read_until(master, enter)
         read_until(master, leave)
         assert attach.wait(5) != 0 and settings(slave) == saved
+    for why in ('detach', 'signal'):
+        path.unlink()
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path))
+            listener.listen(1)
+            listener.settimeout(5)
+            attach = subprocess.Popen([host, 'attach', name], stdin=slave, stdout=slave, stderr=slave)
+            with listener.accept()[0] as conn:
+                conn.settimeout(5)
+                assert conn.recv(4, socket.MSG_WAITALL) == b'PMT2'
+                conn.sendall(b'PMT2')
+                read_until(master, enter)
+                assert conn.recv(5, socket.MSG_WAITALL)[:1] == b'S'
+                termios.tcflow(slave, termios.TCOOFF)
+                try:
+                    # Fill any remaining driver buffer without changing attach's fd flags.
+                    filler = os.open(os.ttyname(slave), os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+                    try:
+                        while True:
+                            os.write(filler, b'X' * 4096)
+                    except BlockingIOError:
+                        pass
+                    finally:
+                        os.close(filler)
+                    conn.sendall(b'\x20\x00' + b'A' * 8192)
+                    time.sleep(.15)  # Allow attach to reach the blocked frame write.
+                    if why == 'detach':
+                        os.write(master, b'\x1c')
+                    else:
+                        attach.send_signal(signal.SIGTERM)
+                    assert attach.wait(3) == 0
+                    assert settings(slave) == saved
+                finally:
+                    termios.tcflush(slave, termios.TCOFLUSH)
+                    termios.tcflow(slave, termios.TCOON)
 finally:
     for child in (attach, keeper):
         if child is not None and child.poll() is None:
