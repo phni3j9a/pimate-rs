@@ -83,7 +83,8 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.buttons["画像を添付"].waitForExistence(timeout: 12))
         app.buttons["画像を添付"].tap()
         let photos = app.images.matching(identifier: "PXGGridLayout-Info")
-        XCTAssertTrue(photos.element(boundBy: 3).waitForExistence(timeout: 10))
+        // The out-of-process system grid may still be indexing the seeded library on CI.
+        guard photos.element(boundBy: 3).waitForExistence(timeout: 45) else { XCTFail("Four seeded photos did not appear in the system picker"); return }
         for i in 0..<4 { photos.element(boundBy: i).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
         let fourth = app.buttons["画像 4 を取り消す"]
         // Ordered pickers can finish automatically at the selection limit.
