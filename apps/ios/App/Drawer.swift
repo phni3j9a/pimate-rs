@@ -61,7 +61,7 @@ struct Drawer: View {
                     Circle().fill(failed ? PiTheme.failure : waiting ? Color.orange : o.str("status") == "running" ? PiTheme.accent : PiTheme.secondary).frame(width: 7, height: 7).padding(.top, 8)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
-                        if waiting { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
+                        if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
                         Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)
                         Text([failed ? "失敗" : waiting ? "入力待ち" : o.str("status") == "running" ? "作業中" : "待機", o.str("origin") == "mobile" ? "スマホで起動" : o.str("origin") == "grok-bot" ? "Grok Bot" : "PC で起動"].joined(separator: " · ")).modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                     }; Spacer(); SwiftUI.Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)

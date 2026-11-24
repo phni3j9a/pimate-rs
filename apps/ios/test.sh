@@ -29,7 +29,8 @@ mkdir -p "$(dirname "$link")"
 cargo build --locked -p pimate-host
 start_fixture() {
   local n=$1
-  file="$link-$n"; links+=("$file")
+  if (( n <= 2 )); then file="$link-$n"; else file="$lab/link-$n"; fi
+  links+=("$file")
   PIMATE_DEMO_NAME="デモ PC" scripts/android-demo.py >"$lab/fixture-$n" 2>&1 & fixtures+=("$!")
   for _ in {1..60}; do grep -q '^pimate://pair?' "$lab/fixture-$n" && break; kill -0 "${fixtures[$((n-1))]}"; sleep 1; done
   grep -m1 '^pimate://pair?' "$lab/fixture-$n" | tr -d '\r\n' >"$file"
@@ -49,5 +50,6 @@ for variant in light dark large; do
   xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
   result="$build/$variant-$(date +%s).xcresult"
   TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests -resultBundlePath "$result" test-without-building
+  mkdir -p "$build/attachments/$variant"
   xcrun xcresulttool export attachments --path "$result" --output-path "$build/attachments/$variant"
 done

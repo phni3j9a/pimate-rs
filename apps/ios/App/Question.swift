@@ -6,6 +6,8 @@ struct QuestionCard: View {
     private var q: Object { item.object }
     private var kind: String { q.str("kind") }
     private var text: String { model.answerText(key) }
+    // An intentionally cleared editor differs from an untouched prefilled editor.
+    private var value: String { kind == "editor" ? (text.isEmpty ? q.str("message") : String(text.dropFirst())) : text }
     private var questions: [Object] { q.list("questions") }
     private var choices: [Choice] { (try? JSONDecoder().decode([Choice].self, from: Data(text.utf8))).flatMap { $0.count == questions.count ? $0 : nil } ?? Array(repeating: Choice(), count: questions.count) }
     private func write(_ s: String) { model.editAnswer(key, shown: item.json, text: s) }
@@ -24,7 +26,7 @@ struct QuestionCard: View {
             if !q.str("message").isEmpty && kind != "editor" { Text(q.str("message")) }
             switch kind {
             case "select": ForEach(q["options"] as? [String] ?? [], id: \.self) { s in option(s, "", checked: text == s, multi: false) { write(s) } }
-            case "editor", "input": TextField("回答を入力", text: Binding(get: { text }, set: write), axis: .vertical).textFieldStyle(.roundedBorder)
+            case "editor", "input": TextField("回答を入力", text: Binding(get: { value }, set: { write(kind == "editor" ? ":" + $0 : $0) }), axis: .vertical).textFieldStyle(.roundedBorder)
             case "questionnaire":
                 ForEach(questions.indices, id: \.self) { i in
                     let part = questions[i], multi = part["multiSelect"] as? Bool == true
@@ -47,7 +49,7 @@ struct QuestionCard: View {
                         switch kind {
                         case "confirm": submit(["confirmed": true])
                         case "questionnaire": submit(["answers": choices.map { c -> Object in var o: Object = ["selected": c.selected]; if !c.custom.isEmpty { o["custom"] = c.custom }; return o }])
-                        default: submit(["value": text])
+                        default: submit(["value": value])
                         }
                     }.buttonStyle(PiPrimary()).disabled(kind == "select" && text.isEmpty || kind == "questionnaire" && questions.indices.contains { i in questions[i]["multiSelect"] as? Bool != true && choices[i].selected.isEmpty && choices[i].custom.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
                 }

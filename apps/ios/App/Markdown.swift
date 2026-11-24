@@ -79,9 +79,14 @@ private struct MarkdownBlock: View {
     }
     private func nested(_ children: [Block]) -> some View { VStack(alignment: .leading, spacing: 6) { ForEach(children, id: \.id) { MarkdownBlock(block: $0) } } }
 }
-private struct MarkdownTable: View {
+private struct OpenTableKey: EnvironmentKey { static let defaultValue: (Table) -> Void = { _ in } }
+extension EnvironmentValues {
+    var openPiTable: (Table) -> Void { get { self[OpenTableKey.self] } set { self[OpenTableKey.self] = newValue } }
+}
+struct MarkdownTable: View {
     let table: Table
-    @State private var expanded = false
+    var full = false
+    @Environment(\.openPiTable) private var open
     @State private var width: CGFloat = 300
     @ScaledMetric(relativeTo: .body) private var ratio: CGFloat = 1
     @AppStorage("typeSize") private var size = TypeSize.standard
@@ -98,10 +103,10 @@ private struct MarkdownTable: View {
         }.background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
     }
     var body: some View {
-        grid(full: false).contentShape(Rectangle()).onTapGesture { expanded = true }.accessibilityAction(named: "表を開く") { expanded = true }
-            .sheet(isPresented: $expanded) { NavigationStack { ScrollView { grid(full: true).padding() }.navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("閉じる") { expanded = false } }
-                ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = table.markdown } }
-            } } }
+        if full { grid(full: true) }
+        else { VStack(alignment: .trailing, spacing: 0) {
+            grid(full: false).contentShape(Rectangle()).onTapGesture { open(table) }
+            Button("表を開く", systemImage: "arrow.up.left.and.arrow.down.right") { open(table) }.font(.caption).frame(minHeight: 44)
+        } }
     }
 }

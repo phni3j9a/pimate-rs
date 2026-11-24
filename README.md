@@ -351,10 +351,12 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。
 
-### iOS 開発版（#37 前半）
+### iOS 開発版
 
 Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を使います。macOS で `brew install xcodegen` と前述の Rust 3 ターゲットを用意し、`apps/ios/prepare.sh` → `open apps/ios/PiMate.xcodeproj`。Rust や binding の変更後も prepare を実行します。XcodeGen は差分が読める `apps/ios/project.yml` だけを管理し、同じ checkout でビルドした XCFramework（arm64 実機／arm64 + x86_64 simulator）と Swift を組み込みます。生成プロジェクト、バイナリ、テスト結果はコミットしません。
 
-`apps/ios/test-disposable.sh` が CI と同じビルド・XCTest・画面撮影を実行します。`simctl create` で新規の iPhone 15 を作成し、成功・失敗によらず今回の UDID だけを削除します。既存の UDID を `test.sh` に直接渡す方法は、開発版アプリを上書きするため非推奨です。試験起動は毎回空の試験専用 Keychain サービスを使います。一時ディレクトリの loopback 模擬 Host で登録→一覧→日本語送信→履歴到着を通し、終了時に模擬 Host とシミュレーターを止めます。添付は `apps/ios/build/attachments` または Actions の `ios-probe`。Devin は [既存 VM の使い方](docs/devin-macos.md)に従い、`use` → 必要な分だけ `keepalive` → `sync` → 同期先で同じ `apps/ios/test-disposable.sh` を実行。個人の認証情報は転送せず、終了時は待機を終了し `devin-mac down`。
+`apps/ios/test-disposable.sh` が CI と同じビルド・XCTest・画面撮影を実行します。`simctl create` で新規の iPhone 15 を作成し、成功・失敗によらず今回の UDID だけを削除します。既存の UDID を `test.sh` に直接渡す方法は、開発版アプリを上書きするため非推奨です。試験起動は毎回空の試験専用 Keychain サービスを使います。一時ディレクトリの loopback 模擬 Host で登録→一覧→日本語送信→履歴到着を通し、終了時に模擬 Host とシミュレーターを止めます。UI 試験は専用 Host のリンクをシミュレーターのペーストボードに渡して、Pair → 一覧 → 会話 → 質問への回答を操作します。CI の `ios-comparison` はモック｜ライト｜ダーク｜OS の文字が大きい場合の WebP 4 枚です。Devin は [既存 VM の使い方](docs/devin-macos.md)に従い、`use` → 必要な分だけ `keepalive` → `sync` → 同期先で同じ `apps/ios/test-disposable.sh` を実行。個人の認証情報は転送せず、終了時は待機を終了し `devin-mac down`。
 
-画面担当は `apps/ios/App/Probe.swift` と `Theme.swift` を置換できます。`SessionModel` は App 所有で scene の再生成後も維持。マシン別の `hosts` / `rows[id].groups` と `select(host:instance:)`、表示時に捕捉した `editor` と `body/text/send/attach/abort/restore`、`QuestionKey(editor:requestId:)` と表示時の質問 JSON を渡す `answer` を使ってください。`attach` に渡すのは選択時のキーとローカルの一時ファイル URL（完了まで保持）。1枚ずつ縮小します。`draft` は履歴と区別し `restore` は明示操作だけ。確認の途中で別の対象に変わったら閉じ、送信失敗時にも自動再送しません。`SessionModel`・`Rows`・`Photo`・`KeychainStore`、FFI と生成物を画面から変更しないでください。QR、Markdown、完成画面、実機確認は後半です。
+初回は QR（タップしたときだけカメラを許可）またはリンクで接続。iPhone は Pi 一覧から会話に入り、戻る操作で切り替えます。iPad は標準のサイドバー。設定は一覧のスライダーです。質問には会話内で回答。本文は長押しで部分コピー、表はタップで拡大して選択、コードは全体コピーもできます。Return は改行・変換確定だけで、送信（作業中は割り込み）は矢印。
+
+`SessionModel` は App 所有で scene の再生成後も維持。マシン別の `hosts` / `rows[id].groups` と `select(host:instance:)`、表示時に捕捉した `editor` と `body/text/send/attach/abort/restore`、`QuestionKey(editor:requestId:)` と表示時の質問 JSON を渡す `answer` を使ってください。`attach` に渡すのは選択時のキーとローカルの一時ファイル URL（完了まで保持）。1枚ずつ縮小します。`draft` は履歴と区別し `restore` は明示操作だけ。確認の途中で別の対象に変わったら閉じ、送信失敗時にも自動再送しません。`SessionModel`・`Rows`・`Photo`・`KeychainStore`、FFI と生成物を画面から変更しないでください。実カメラでの読み取りは実機確認が必要です。

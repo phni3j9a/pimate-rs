@@ -18,7 +18,10 @@ struct ChatScreen: View {
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     @State private var turns: [ChatTurn] = []
+    private struct OpenTable: Identifiable { let id = UUID(), table: Table }
+    @State private var table: OpenTable?
     @State private var loaded = false
+    @State private var position: String? = "tail"
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
         let groups = rows.groups, questions = groups["question"] ?? [], stream = groups["stream"] ?? []
@@ -29,8 +32,7 @@ private struct Conversation: View {
                 Circle().fill(questions.isEmpty && !pc ? PiTheme.accent : PiTheme.waiting).frame(width: 6, height: 6)
                 Text(!questions.isEmpty || pc ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
             }.foregroundStyle(PiTheme.secondary).padding(.bottom, 6).accessibilityElement(children: .combine)
-            ScrollViewReader { proxy in
-                ScrollView {
+            ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id) }
@@ -39,12 +41,19 @@ private struct Conversation: View {
                         if pc { Label("PC 側で操作を完了してください", systemImage: "desktopcomputer") }
                         ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
                         Color.clear.frame(height: 1).id("tail")
-                    }.padding(.horizontal, 20).padding(.vertical, 12)
-                }.defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
-                    .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { proxy.scrollTo("tail", anchor: .bottom); UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
-            }
+                    }.scrollTargetLayout().padding(.horizontal, 20).padding(.vertical, 12)
+                }.scrollPosition(id: $position, anchor: .bottom).defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
+                    .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { position = "tail"; UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
             .safeAreaInset(edge: .bottom) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
+            // A streaming block can disappear at message_end; the presented table must outlive it.
+            .environment(\.openPiTable, { table = OpenTable(table: $0) })
+            .fullScreenCover(item: $table) { shown in
+                NavigationStack { ScrollView { MarkdownTable(table: shown.table, full: true).padding() }.navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { table = nil } }
+                    ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = shown.table.markdown } }
+                } }
+            }
             .task(id: [entries, tools]) {
                 let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools) }
                 let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
