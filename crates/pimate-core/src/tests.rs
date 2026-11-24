@@ -1352,3 +1352,84 @@ fn auth_wait_is_exclusive_per_login_pi_until_the_receipt_or_timeout() {
     s.release("2");
     s.prepare("4", wait("a"), true).unwrap();
 }
+
+#[test]
+fn exact_completion_skips_other_devices_and_stale_requests() {
+    use pimate_protocol::RcMethod::*;
+    for (method, params, e) in [
+        (Compact, json!({}), json!({"type":"compact_done"})),
+        (
+            Compact,
+            json!({}),
+            json!({"type":"compact_error","error":"bad"}),
+        ),
+        (
+            SessionOp,
+            json!({"op":"tree","arg":"node"}),
+            json!({"type":"session_op_done","op":"tree","cancelled":false}),
+        ),
+    ] {
+        let mut s = view();
+        s.prepare("A", rc(method, params.clone()), true).unwrap();
+        s.accept_op("A");
+        sync(&mut s, json!([]));
+        s.expire_result(s.result_deadline.unwrap());
+        s.prepare("B", rc(method, params), true).unwrap();
+        let mut e = e;
+        for (seq, id) in [(3, "foreign"), (4, "A"), (5, "B")] {
+            e["requestId"] = json!(id);
+            event(&mut s, seq, e.clone());
+            if id != "B" {
+                assert_eq!(s.get("busy", "operation")["id"], "B");
+            }
+        }
+        assert_eq!(s.get("operationResult", "latest")["event"], e);
+        assert_eq!(s.get("operationResult", "latest")["id"], "B");
+    }
+}
+
+#[test]
+fn unopened_instance_uses_discovery_failure_until_opened_or_cleared() {
+    let mut s = State::default();
+    let mut list = json!({"type":"instances","instances":[{"instanceId":"i","status":"idle","session":{"id":"s"},"failureSummary":"認証失敗"}]});
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["section"], "waiting");
+    assert_eq!(s.get("instance", "i")["failureText"], "認証失敗");
+    s.selected = Some("i".into());
+    sync(&mut s, json!([]));
+    assert!(s.get("instance", "i")["failureText"].is_null());
+    event(
+        &mut s,
+        3,
+        json!({"type":"message_end","item":{"kind":"assistant","entryId":"e","stopReason":"error","errorMessage":"observed"}}),
+    );
+    s.apply(&list);
+    assert_eq!(s.get("instance", "i")["failureText"], "observed");
+    s.selected = None;
+    list["instances"][0] = json!({"instanceId":"i","status":"idle","session":{"id":"next"}});
+    s.apply(&list);
+    assert!(s.get("instance", "i")["failureText"].is_null());
+}
+
+#[test]
+fn tagged_extension_does_not_credit_a_session_move_without_its_event() {
+    let mut s = view();
+    s.prepare(
+        "ours",
+        rc(pimate_protocol::RcMethod::SessionOp, json!({"op":"new"})),
+        true,
+    )
+    .unwrap();
+    s.accept_op("ours");
+    event(
+        &mut s,
+        3,
+        json!({"type":"session_changed","reason":"new","session":{"id":"next"}}),
+    );
+    s.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":4,"session":{"id":"next"},"completionRequestIds":true},"history":{"items":[]}}));
+    s.expire_result(s.result_deadline.unwrap());
+    assert_eq!(
+        s.get("operationResult", "latest"),
+        &json!({"id":"ours","outcome":"unknown"})
+    );
+}

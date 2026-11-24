@@ -81,6 +81,8 @@ pub(crate) struct State {
     failures: std::collections::HashMap<String, Failure>,
     seq: Option<u64>,
     effect_seq: Option<u64>,
+    tagged_completions: bool,
+    summaries: std::collections::HashMap<String, String>,
     missing: MissingCompletions,
     generations: std::collections::HashMap<String, u64>,
     pub(crate) result_deadline: Option<Instant>,
@@ -234,7 +236,9 @@ impl State {
                     text: text.chars().take(240).collect(),
                 },
             );
-        } else if self.failures.remove(id).is_none() {
+        } else if self.failures.remove(id).is_none()
+            && self.get("instance", id)["failureText"].is_null()
+        {
             return;
         }
         if let Some(rows) = self.rows.get("instance") {
@@ -443,9 +447,17 @@ impl State {
             if let Some(obj) = row.as_object_mut() {
                 obj.remove("failureText");
             }
-            let Some(id) = row["instanceId"].as_str() else {
+            let Some(key) = row["instanceId"].as_str().map(str::to_owned) else {
                 continue;
             };
+            let id = key.as_str();
+            if row["status"] == "idle"
+                && row["subagents"]["waiting"].as_u64().unwrap_or(0) == 0
+                && !(self.ready() && self.selected.as_deref() == Some(id))
+                && let Some(summary) = self.summaries.get(id)
+            {
+                row["failureText"] = json!(summary);
+            }
             if previous.get(id).is_some_and(|f| {
                 row["startedAt"] == f.started
                     && row["session"]["id"] == f.session
@@ -547,7 +559,17 @@ impl State {
         let t = m["type"].as_str().unwrap_or("");
         if t == "instances" {
             self.put("host", "listKnown", json!(true));
-            let list = m["instances"].as_array().cloned().unwrap_or_default();
+            let mut list = m["instances"].as_array().cloned().unwrap_or_default();
+            self.summaries.clear();
+            for row in &mut list {
+                if let Some(summary) = row.as_object_mut().and_then(|o| o.remove("failureSummary"))
+                    && let Some(text) = summary.as_str().filter(|t| !t.is_empty())
+                    && let Some(id) = row["instanceId"].as_str()
+                {
+                    self.summaries
+                        .insert(id.into(), text.chars().take(240).collect());
+                }
+            }
             return self.instances(list);
         }
         if self.selected.is_none() || self.selected.as_deref() != m["instanceId"].as_str() {
@@ -560,6 +582,7 @@ impl State {
                     m["instanceId"].as_str().unwrap(),
                     m["snapshot"]["startedAt"].as_u64(),
                 );
+                self.tagged_completions = m["snapshot"]["completionRequestIds"] == true;
                 self.snapshot_op(&m["snapshot"]["session"]["id"]);
                 self.reset_view();
                 let s = &m["snapshot"];
@@ -567,6 +590,7 @@ impl State {
                 self.effect_seq = self.seq;
                 for (k, v) in s.as_object().into_iter().flatten() {
                     match k.as_str() {
+                        "completionRequestIds" | "failureSummary" => (),
                         "pendingUI" => {
                             for q in v.as_array().into_iter().flatten() {
                                 self.keyed("question", "requestId", q)
@@ -632,7 +656,16 @@ impl State {
                                 && f.session == s["session"]["id"]
                         }) =>
                     {
-                        self.set_failure(id, Some((&e["entryId"], UNKNOWN_FAILURE)))
+                        self.set_failure(
+                            id,
+                            Some((
+                                &e["entryId"],
+                                s["failureSummary"]
+                                    .as_str()
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(UNKNOWN_FAILURE),
+                            )),
+                        )
                     }
                     None => self.set_failure(id, None),
                     _ => (),
@@ -739,7 +772,14 @@ impl State {
                         started_at: self.generation(instance),
                         kind: kind.into(),
                     };
-                    let stale = self.missing.consume(&scope);
+                    let tagged = e["requestId"].is_string();
+                    if self.tagged_completions && !tagged {
+                        return false; // Local/manual activity is not proof of a remote completion.
+                    }
+                    if tagged && self.get("busy", "operation")["id"] != e["requestId"] {
+                        return false;
+                    }
+                    let stale = !tagged && self.missing.consume(&scope);
                     let op = self.get("busy", "operation");
                     let matches = k == "session_op_done"
                         && op["method"] == "session_op"
@@ -1114,7 +1154,8 @@ impl State {
             self.put("busy", "operation", op);
             return;
         }
-        let proven = !self.missing.contains(&self.busy_scope())
+        let proven = !self.tagged_completions
+            && !self.missing.contains(&self.busy_scope())
             && !session.is_null()
             && op["arrival"] == *session
             && match op["op"].as_str() {

@@ -576,6 +576,16 @@ pub struct InstanceSnapshotStreaming {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct InstanceSnapshot {
+    #[serde(
+        default,
+        deserialize_with = "present",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[ts(optional)]
+    pub completion_request_ids: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub failure_summary: Option<String>,
     /// PiMate package version; absent on pre-M5 RCs.
     #[serde(
         default,
@@ -956,6 +966,9 @@ instance_events! {
     },
     #[serde(rename = "session_op_done")]
     SessionOpDone {
+        #[serde(rename = "requestId", default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        request_id: Option<String>,
         op: Received<SessionOp>,
         cancelled: bool,
         #[serde(
@@ -975,9 +988,18 @@ instance_events! {
         editor_text: Option<String>,
     },
     #[serde(rename = "compact_done")]
-    CompactDone,
+    CompactDone {
+        #[serde(rename = "requestId", default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        request_id: Option<String>,
+    },
     #[serde(rename = "compact_error")]
-    CompactError { error: String },
+    CompactError {
+        error: String,
+        #[serde(rename = "requestId", default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        request_id: Option<String>,
+    },
     #[serde(rename = "quota")]
     Quota { quota: SubscriptionQuota },
     #[serde(rename = "subagent_run")]

@@ -57,6 +57,24 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 - `- h\n  |:--|\n  a` は marked ではリスト内の1列表、Rust ではリスト項目の本文です。
 - `a|b\n--:--|--\n1|2` は marked では段落ですが、`pulldown-cmark` 0.13.6 は途中にコロンのある区切りセルも受理し、2列表にします。双方で右揃えにするには `---:` と書いてください。
 
+### RC Extension（Node.js 22.18 以降）
+
+[`packages/pimate`](packages/pimate) は Pi 内で動く `@phni3j9a/pimate` です。wire 型は `src/protocol.ts` から Rust の生成物を参照します。リポジトリのルートから:
+
+```sh
+(cd packages/pimate && npm ci && npm run typecheck && npm run build)
+(
+  lab=$(mktemp -d /tmp/pimate.XXXXXX); trap 'rm -rf "$lab"' EXIT
+  export TMPDIR="$lab" PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config"
+  export PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg" PIMATE_SERVICE_PORT=47801
+  cd packages/pimate && npm test
+)
+```
+
+出力は `packages/pimate/dist/extension.js`。開発時の `PIMATE_EXTENSION` はこの絶対パス、`/pimate` の管理コマンドには `PIMATE_HOST_BINARY` を **この checkout の Rust バイナリの絶対パス**に設定します。未指定時は npm パッケージの `bin/<platform>-<arch>/pimate` のみを実行し、別のインストールを PATH から探しません。M7b でここにバイナリを配置すると、Host の既存の相対パス解決と対になります。現時点では publish 不可です。
+
+Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`packages/pimate/LICENSE`）。`diff`・`qrcode` 等の第三者コードは dist にバンドルせず npm 依存としてライセンスを保持します。元の `THIRD_PARTY_NOTICES` は abduco と Bot のスキル／Webhook 用なので Extension には転記しません。M7b の同梱物は別途確認してください。
+
 ## Host を試す（Linux / macOS）
 
 [`crates/pimate-host`](crates/pimate-host) は `pimate` 単一バイナリです。既存 Host と並べて試す場合、**両方の端末で同じ一時ディレクトリと別ポート**を指定してください。`list` / `serve` は runDir の古い登録を掃除します。
@@ -68,7 +86,7 @@ lab=$(mktemp -d /tmp/pimate.XXXXXX); export PIMATE_RUN_DIR="$lab/run" PIMATE_CON
 export PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg"
 # Linux x64 の開発用（他の OS / CPU では対応する abduco の絶対パス）
 export PIMATE_ABDUCO="$PWD/bin/linux-x64/abduco"
-export PIMATE_EXTENSION=/path/to/PiMate/packages/pimate/src/extension/index.ts
+export PIMATE_EXTENSION="$PWD/packages/pimate/dist/extension.js" PIMATE_HOST_BINARY="$PWD/target/debug/pimate"
 pimate serve --port 47801 & host_pid=$!
 pimate pair --port 47801          # URL と QR（10分・1回限り）
 pimate devices                   # token / hash は表示しない
@@ -81,11 +99,17 @@ kill "$host_pid"                  # この例で起動した Host のみ停止
 
 待ち受けは `127.0.0.1` と、`tailscale ip` が報告しローカル NIC に存在する Tailscale IP のみです。`--listen` はこの集合を絞り込みます。TLS は内蔵せず、端末からの接続には Tailscale とその ACL を使います。`PIMATE_CONFIG_DIR` と `PIMATE_RUN_DIR` の既定値・0700 の制約・0600 のファイル形式は TS 版と共通です。`devices.lock` 競合時は操作をやり直してください。強制終了で残ったロックを削除するのは、Host / CLI の書き手がすべて停止したと確認した後だけです。
 
-通常の `cargo test` は一時ディレクトリ・ループバックの自動割当ポートで模擬 RC を使います。実物の Pi 1.6.0 と依存導入済みの TS 版 PiMate があれば、下記で PTY 上の Pi を起動し、発見・購読・prompt・faux モデルの返答まで検査できます。ネットワークの LLM・既存 Host・既存 Pi の設定は使いません。
+通常の `cargo test` は一時ディレクトリ・ループバックの自動割当ポートで模擬 RC を使います。実物の Pi 1.6.0 と上記で依存を導入した Extension があれば、下記で PTY 上の Pi を起動し、発見・購読・prompt・faux モデルの返答まで検査できます。ネットワークの LLM・既存 Host・既存 Pi の設定は使いません。
 
 ```sh
-TMPDIR=/tmp PIMATE_TEST_PI="$HOME/.pi/agent/bin/pi" PIMATE_TEST_TS=/path/to/PiMate \
-  cargo test -p pimate-host --test host real_pi -- --ignored
+(
+  lab=$(mktemp -d /tmp/pi.XXXXXX); trap 'rm -rf "$lab"' EXIT
+  export TMPDIR="$lab" PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config"
+  export PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg" PIMATE_SERVICE_PORT=47801
+  mkdir "$lab/bin"; for cmd in systemctl systemd-run loginctl; do ln -s /usr/bin/false "$lab/bin/$cmd"; done
+  PATH="$lab/bin:$PATH" PIMATE_TEST_PI="$HOME/.pi/agent/bin/pi" PIMATE_TEST_TS="$PWD" \
+    PIMATE_TEST_ABDUCO="$PWD/bin/linux-x64/abduco" cargo test -p pimate-host --test host real_pi -- --ignored
+)
 ```
 
 ### スマホからの起動とログイン
@@ -120,7 +144,7 @@ Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘ�
 
 Linux の user systemd の登録・確認・削除は `pimate service install|status|uninstall`。`start|stop|health|has-systemd` と `command-status|command-install|command-remove` も `service` のサブコマンドです。登録・削除は実際にサービス状態を変えます。**稼働中の TS Host と同じポート・サービス名で試さないでください。** `XDG_CONFIG_HOME` を変えても systemd の user manager は分離されません。Rust の管理印・設定ディレクトリと異なる unit は上書きしません。linger の設定は行いません。
 
-Extension のために `setup-info`、`pair --json [--address host:port]`（秘密のリンクと失効時刻）、`pair-pending CODE`、`devices`、`revoke ID --json` と各 `service` 操作が JSON を返します。TS Extension の変更は M7 です。テストは管理コマンドを偽物、Webhook を loopback に切り替えます。`PIMATE_SERVICE_PORT` はサービス管理・health 確認用のポート（通常 47800）です。
+Extension のために `setup-info`、`pair --json [--address host:port]`（秘密のリンクと失効時刻）、`pair-pending CODE`、`devices`、`revoke ID --json` と各 `service` 操作が JSON を返します。Extension はこれらの JSON を使い、Host の資格情報・管理処理を再実装しません。テストは管理コマンドを偽物、Webhook を loopback に切り替えます。`PIMATE_SERVICE_PORT` はサービス管理・health 確認用のポート（通常 47800）です。
 
 TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMate/packages/pimate/dist/package/dist/cli.js cargo test -p pimate-host agent_cli_contract` で、同じ模擬 RC に対する両 CLI の JSON・終了コードを検査できます。上記の `real_pi` 試験には、実物の Pi + faux を使った `prompt --wait` → `wait` → `history --last` も含みます。
 
@@ -156,7 +180,7 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
 
 - WS の生フレームには端末トークン・プロバイダーの回答が入ります。自由記述の Close reason は受信・自動返信とも [tungstenite 0.29.0 の局所修正](vendor/tungstenite/PATCH.md) で DEBUG に出しません。別 workspace に組み込む場合もルートの `[patch.crates-io]` が必要です（適用漏れはビルドエラー）。通常のデータフレームについては、中核が依存する `log` と `tracing` の静的上限を **debug ビルドで DEBUG、release ビルドで INFO** にして TRACE をコンパイル時に取り除き、ビルド時と試験でも検査します。アプリや将来の FFI が TRACE のロガーを登録しても、生フレームのログは生成されません。Cargo の feature 統合により、同じ Rust バイナリの他の crate の TRACE も出ません。DEBUG / INFO は診断のために残します。UI 自身が秘密入力・ストレージ値を出力しないことは、別途 UI 実装の責任です。
 - `Listener::changed` は接続ごとの専用スレッドで実行されます。配送待ちは最大8バッチです。UI が追いつかず `Change::ResyncRequired` が届いたら、部分適用せず `snapshot()` で全体を置換し、その snapshot の revision 以下の配送済み／配送待ち通知は無視してください。通常の Upsert は同じ ID があれば一度外し、指定位置に挿入します。
-- `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。受付後の snapshot に完了が含まれない場合、Host が直後に配送するイベントを最大5秒待ちます。この間は操作ロックを保持し、次の snapshot で期限を延ばしません。完了・失敗イベントが来なければ結果不明を一度だけ公開してロックを解放し、古い要求を照合候補に残しません。送信後の切断（ACK 前を含む）や、猶予中の別のセッション移動も結果不明です。`new` / `switch` / `reload` は送信後の移動理由と到着先を snapshot で確認できれば成功とします。`fork` は到着確認後もイベントを待ち、期限を過ぎた場合は成功だけを確定します（選んだ元の本文は `forkText`、RC から受信した `editorText` はイベントにのみ含まれます）。`tree` は同じセッションの snapshot だけでは移動を証明できません。**既知の制限:** 今の RC の完了イベントには要求 ID がないため、再同期をまたいだ操作や同じ種類の連続した操作は結果不明になることがあります。RC が返す `sessionId` は完了時の値なので、セッションをまたいだ同種操作も結果不明になり得ます。送信後に実行の有無が不明なら、開始時の `instanceId`・`startedAt`・操作の種類ごとに未照合件数を記録し、遅着した成功・失敗を次の要求には割り当てません。確定した拒否は数えません。購読中は一覧と snapshot の到着順が前後し得るため、一覧の世代差・欠落では操作や件数を破棄しません。購読の `instance_gone` または新世代の snapshot で件数を破棄し、未照合の最終操作から10分で失効させます。イベントが失われた後に同種の操作を10分以内ごとに続けると結果不明が続くことがありますが、10分空ければ解消します。その期限を過ぎて届いた古い完了は新しい操作と誤って照合する可能性があります。M7 で Extension の完了イベントに `requestId` を付けて解消します。現状は操作中・5秒の猶予中とも、他端末が同じ対象に行った同種操作の結果とは区別できません。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
+- `operationResult/latest` はリクエスト ID 付きの直近のセッション／圧縮操作結果です。受付後の snapshot に完了が含まれない場合、Host が直後に配送するイベントを最大5秒待ちます。この間は操作ロックを保持し、次の snapshot で期限を延ばしません。完了・失敗イベントが来なければ結果不明を一度だけ公開してロックを解放し、古い要求を照合候補に残しません。送信後の切断（ACK 前を含む）や、猶予中の別のセッション移動も結果不明です。このリポジトリの Extension は `completionRequestIds: true` を通知し、完了・失敗イベントに元の RC 要求の `requestId` を付けます。他端末・遅着した別 ID の完了は無視し、セッション移動だけでは成功としません。`forkText` は選んだ元の本文、`editorText` は対応が取れた完了イベントの値です。旧 Extension だけは従来通り、操作種別・同世代の未照合件数・移動先で判定します。曖昧な結果は不明ですが、他端末からの同種操作や10分の失効後に遅着した完了は区別できません。停止と送信 ACK の順序が逆でも未消費の下書きを保持し、未確認のまま別の指示を手動送信できます。`subscribe` は不正な ID に `BadRequest` を返し、元の選択は変更しません。
 
 ### Swift / Kotlin から使う（`pimate-ffi`）
 
@@ -246,14 +270,14 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 | 画面で使う情報 | 読み書きの契約 |
 | --- | --- |
-| 一覧の補足 | `instance` の任意の `questionTitle`・`failureText`。TS Host の一覧には件数・状態しかない場合があります。Rust Host は一覧のために履歴を取得せず、`hello` の `pendingUI` から質問の題だけを取得。中核は購読中に観測した親の失敗だけを一覧に反映し、詳細がなければ定型文を使います。子の累積失敗数は現在の要対応ではありません。 |
+| 一覧の補足 | `instance` の任意の `questionTitle`・`failureText`。TS Host の一覧には件数・状態しかない場合があります。Rust Host は一覧のために履歴を取得せず、`hello` の `pendingUI` と `failureSummary` を使用。失敗要約は親のエラーを認証・利用制限・タイムアウト・その他の固定文に分類し、本文・キー・プロンプトを入れません。Host と中核でも240文字までに制限。購読中の観測結果を優先し、未購読なら同世代・同セッションの有効な観測値、なければ一覧の要約を使います。子の累積失敗数は現在の要対応ではありません。 |
 | 時間・途中出力 | `view/runningSince`・`tool.startedAt` は epoch ms。`thinkingMs/<assistant entryId>` は最初の thinking delta から最初の本文（なければ回答確定）まで。RC イベントの任意の `timestamp` を優先し、時刻がない v1 は TS 版と同じく受信時刻、途中参加の作業は観測開始から。途中参加の思考時間や見ていないツール出力は推定しません。`tool.partial.content` は最新の途中出力。再購読時は同世代・同セッションで履歴上も同じ未完了の呼び出しのときだけ復元（Host ごとに最近の16 Instance。途中出力はテキストと照合情報のみを全 Host 合計512 KiBまで保持し、上限を超える呼び出しは破棄。ディスク保存なし）。 |
 | 添付 | 画面がシステムの `PickMultipleVisualMedia(4)` を起動し、起動時の `EditorKey` と結果 URI リストを `attach(key, uris)` に渡します。キャンセルは空リスト。能力と枚数を確認し、IO スレッドで縮小・向き補正・JPEG 化し、1枚512 KiB・全体600 KiB以内に収まった場合だけ `edits.body.images` に反映。読み取り・サイズエラーは画面で案内し、リンクや画像をログに出しません。 |
 | 結果が必要な RC 操作 | キーは画面を開いたときに捕捉し、coroutine で `request(key, RcMethod, JSONObject)`。`ENTRY_IMAGE`・`FILE_IMAGE` は返された result JSON の画像を利用。`MODELS`／`SET_SCOPED_MODELS`／`SET_DEFAULT_MODEL` の結果は `model` の `favorite` と `view/defaultModel`、モデル・Thinking の変更は `SET_MODEL`／`SET_THINKING`。`SESSIONS`／`SESSION_TREE` は `session`／`node`、変更は `SESSION_OP`・`SET_LABEL`・`COMPACT`・`SHUTDOWN`。対象が変われば結果を別画面に渡さず、自動再送しません。 |
 | 候補・使用状況 | `COMMANDS` 後に `suggestions(text)`。`stats()` と `allowances(nowMs)` は中核の集計。`view/context`、`quota`、圧縮・セッション操作の `operationResult/latest` も参照できます。 |
 | 再接続・PC 操作 | `host/connection`、`view/phase`、`draft`、`notice/sessionChanged`（`reason`, `from`, `to`。どの端末から操作したかは不明）、`view/pcPrompt`。`attachCommand()` が null ならコピーを出しません。未確認は入力欄・履歴と区別し、`restore` で明示的にだけ戻します。 |
 
-制限: 未購読中の失敗は RC v1 の snapshot から識別できません。最新の失敗を Extension の snapshot に載せる対応は M7 で行います。
+旧 Extension には要約がないため、未購読で観測値もない Pi の失敗は表示しません。
 
 2マシンの計装試験は `PIMATE_DEMO_NAME='マシン A' scripts/android-demo.py` と B を別々に起動し、各ポートだけ reverse。初回状態の RS debug アプリの `cache/two-links` にリンクを1行ずつ渡し、`DemoJourney#twoMachines` を実行します。`global-attention.png` と `two-machines.png` をアプリの cache から取得し、終了後に各プロセスと reverse を片付けます。
 

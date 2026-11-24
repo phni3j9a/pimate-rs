@@ -70,6 +70,13 @@ pub struct Discovery {
 }
 // Discovery already probes hello, including instances with no phone subscription.
 fn attention_details(row: &mut Value, snapshot: &Value) {
+    row.as_object_mut().unwrap().remove("failureSummary");
+    if let Some(text) = snapshot["failureSummary"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+    {
+        row["failureSummary"] = json!(text.chars().take(240).collect::<String>());
+    }
     if let Some(title) = snapshot["pendingUI"]
         .as_array()
         .into_iter()
@@ -147,10 +154,14 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
             continue;
         }
         let probe = async { Rc::open(dir, id).await?.hello(|_| Ok(())).await };
-        let s = timeout(Duration::from_secs(1), probe).await;
-        v["reachable"] = json!(matches!(s, Ok(Ok(_))));
-        if let Ok(Ok(s)) = s {
-            attention_details(&mut v, &s);
+        let snapshot = timeout(Duration::from_secs(1), probe)
+            .await
+            .ok()
+            .and_then(Result::ok);
+        v["reachable"] = json!(snapshot.is_some());
+        // Never mix a failure from stale metadata with the live session.
+        attention_details(&mut v, snapshot.as_ref().unwrap_or(&Value::Null));
+        if let Some(s) = snapshot {
             for k in ["status", "session"] {
                 if let Some(x) = s.get(k) {
                     v[k] = x.clone()
@@ -177,6 +188,28 @@ pub async fn list(dir: &Path) -> Result<Discovery> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovery_failure_comes_only_from_current_hello() {
+        let mut row = json!({"session":{"id":"old"},"failureSummary":"old error"});
+        for summary in [
+            Value::Null,
+            json!({"wrong":"type"}),
+            json!(""),
+            json!("界".repeat(300)),
+        ] {
+            attention_details(
+                &mut row,
+                &json!({"session":{"id":"new"},"failureSummary":summary}),
+            );
+            if summary.as_str().is_some_and(|s| !s.is_empty()) {
+                assert_eq!(row["failureSummary"], "界".repeat(240));
+            } else {
+                assert!(row.get("failureSummary").is_none());
+            }
+        }
+        attention_details(&mut row, &json!({"session":{"id":"next"}}));
+        assert!(row.get("failureSummary").is_none());
+    }
     #[tokio::test]
     async fn cleanup_only_valid_stale_entries() -> Result<()> {
         let t = tempfile::tempdir()?;
