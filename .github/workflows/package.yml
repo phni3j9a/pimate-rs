@@ -5,6 +5,14 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: 'Existing host-vX.Y.Z to verify and build (dispatch from main)'
+        type: string
+      auth:
+        description: 'npm authentication (token only if Trusted Publishing is unavailable)'
+        type: choice
+        options: [oidc, token]
+        default: oidc
       publish:
         description: 'Publish to npm latest and attach to the existing host-vX.Y.Z tag'
         type: boolean
@@ -12,7 +20,27 @@ on:
 permissions:
   contents: read
 jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.select.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: select
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          commit=$GITHUB_SHA
+          if [[ -n "$RELEASE_TAG" || "$PUBLISH" == true ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            commit=$(bash packages/pimate/scripts/check-release.sh "$RELEASE_TAG")
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
   binary:
+    needs: source
     strategy:
       matrix:
         include:
@@ -23,6 +51,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y musl-tools
       - run: |
@@ -47,13 +77,15 @@ jobs:
             pimate
             build.json
   pack:
-    needs: binary
+    needs: [source, binary]
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: packages/pimate
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.commit }}
       - uses: actions/setup-node@v6
         with:
           node-version: '22'
@@ -75,30 +107,47 @@ jobs:
           name: npm-package
           path: packages/pimate/dist/*.tgz
   publish:
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && startsWith(github.ref, 'refs/tags/host-v')
-    needs: pack
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: [source, pack]
     runs-on: ubuntu-latest
+    environment: npm-release
     permissions:
       contents: write
+      id-token: write
     steps:
+      # Use the dispatch's main workflow and guard, never scripts from the release tag.
       - uses: actions/checkout@v6
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: npm-package
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
+          node-version: '24'
           registry-url: https://registry.npmjs.org
-      - name: Publish verified tarball (explicit opt-in only)
+          package-manager-cache: false
+      - name: Recheck tag and artifact before publishing
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILT_COMMIT: ${{ needs.source.outputs.commit }}
+        run: bash packages/pimate/scripts/check-release.sh "$RELEASE_TAG" "$BUILT_COMMIT" ./*.tgz
+      - name: Publish with npm Trusted Publishing
+        id: oidc
+        if: inputs.auth == 'oidc'
+        run: npm publish --ignore-scripts ./*.tgz --access public
+      - name: Publish with Environment token (explicit fallback)
+        id: token
+        if: inputs.auth == 'token'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$NODE_AUTH_TOKEN" || { echo 'Missing NPM_TOKEN; nothing published'; exit 1; }
-          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git fetch --no-tags origin "$GITHUB_REF"
-          bash packages/pimate/scripts/check-release.sh ./*.tgz
-          npm publish ./*.tgz --access public
-          gh release create "$GITHUB_REF_NAME" ./*.tgz --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
+          test -n "$NODE_AUTH_TOKEN" || { echo 'Missing Environment token'; exit 1; }
+          npm publish --ignore-scripts ./*.tgz --access public
+      - name: Attach the published tarball
+        if: steps.oidc.outcome == 'success' || steps.token.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release create "$RELEASE_TAG" ./*.tgz --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes

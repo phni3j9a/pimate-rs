@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -21,6 +22,24 @@ test('pack rejects stale or mixed artifacts, even for the same version', t => {
     writeFileSync(json, JSON.stringify({ ...record, [key]: 'stale' }));
     assert.throws(verify, /Host artifact mismatch/);
   }
+});
+
+test('pack rejects staged, unstaged and untracked Host inputs from a package subdirectory', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'dirty-host-')), cwd = process.cwd();
+  t.after(() => { process.chdir(cwd); rmSync(dir, { recursive: true, force: true }); });
+  process.chdir(dir);
+  const git = (...args) => execFileSync('git', args);
+  git('init', '-q');
+  mkdirSync('packages/pimate', { recursive: true });
+  mkdirSync('crates'); writeFileSync('Cargo.lock', 'v1'); git('add', 'Cargo.lock');
+  git('-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture');
+  process.chdir('packages/pimate');
+  const record = () => binaryRecord('../../Cargo.lock', 'linux-x64', '1.0.0');
+  record();
+  writeFileSync('../../Cargo.lock', 'v2'); assert.throws(record, /Commit or revert/);
+  git('add', '../../Cargo.lock'); assert.throws(record, /Commit or revert/);
+  git('restore', '--source=HEAD', '--staged', '--worktree', '../../Cargo.lock');
+  writeFileSync('../../crates/build.rs', 'new'); assert.throws(record, /Commit or revert/);
 });
 
 for (const scenario of ['upgrade failure', 'silent Host']) {

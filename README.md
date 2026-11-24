@@ -90,7 +90,7 @@ Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`pack
 [Host npm package](.github/workflows/package.yml) は同じコミット・Cargo.lock から4対象を release build します。Linux は同じ CPU の runner で musl を静的リンクし、動的ローダーがないことを検査するため配布先の glibc に依存しません。macOS は Apple Silicon 上で両 arch をビルドし、arm64 の ad-hoc 署名を検証します（Developer ID 署名・公証ではありません）。
 
 1. `crates/pimate-host/Cargo.toml` と `packages/pimate/package.json` および両 lockfile の版をそろえます。CI は不一致を拒否。Host の `--version` と `/health` はバイナリ自身の版、更新比較は起動時の同梱 manifest の版です。`bin/SHA256SUMS.json` は最終バイナリ4個の SHA256 で、独立した署名ではありません。
-2. ローカルでは CI の 同じソースツリーの binary artifact（各 `pimate` とビルド時の `build.json`）を `packages/pimate/bin/<platform>-<arch>/` に置き、次を実行。組み立て時に対象・版・Git ツリー・SHA256 を再照合し、違う成果物の混入を拒否します。開発用 manifest は private のまま、配布用 manifest だけを生成します。組み立て環境には Rust・`cargo-about` 0.9.3 が必要です。`notices/` に Host の依存 crate・Rust 標準ライブラリ・[musl](https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT)・Webhook の派生元 T3 Tots のライセンスを収録します。
+2. ローカルでは CI から同じソースツリーの binary artifact（各 `pimate` とビルド時の `build.json`）を `packages/pimate/bin/<platform>-<arch>/` に置き、次を実行。組み立て時に対象・版・Git ツリー・SHA256 を再照合し、違う成果物の混入を拒否します。`crates/`・`vendor/`・Cargo manifest/lock・`.cargo/`・Rust toolchain ファイルに未コミットの変更（未追跡・ステージ済みを含む）があれば、先にコミットするかクリーンな worktree を使ってください。開発用 manifest は private のまま、配布用 manifest だけを生成します。組み立て環境には Rust・`cargo-about` 0.9.3 が必要です。`notices/` に Host の依存 crate・Rust 標準ライブラリ・[musl](https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT)・Webhook の派生元 T3 Tots のライセンスを収録します。
 
    ```sh
    cd packages/pimate && npm ci && npm run package
@@ -99,7 +99,12 @@ Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`pack
    ```
 
 3. PR・main・手動実行（`publish=false`）は pack → 隔離 Pi でスモーク → Actions artifact `npm-package` まで。公開権限・トークンを使用しません。
-4. **M8 で所有者に npm latest の置換・版・移行日時・ロールバック先と Release を確認してから**、承認済みコミットに `host-v<version>` タグを用意し、そのタグを指定して workflow_dispatch の `publish=true` を実行します。公開直前にリモートのタグが実行コミットを指し `origin/main` の履歴に含まれること、タグ・tgz・npm ソース manifest・Host crate の版の一致を検証します。不一致・`NPM_TOKEN` 未設定時は npm・GitHub とも公開しません。タグや workflow を変更できる人は公開経路も変更できるため、M8 では保護ルール・トークンの範囲も確認してください。検証済みの同じ tgz を npm と GitHub Release に使います。npm の公開後に Release のみ失敗した場合は npm を再公開せず、その実行の artifact を使って Release だけを復旧します。
+4. M8 の公開前チェックリスト（この PR では公開しません）:
+   - 所有者と `npm latest` の置換・版・移行日時・ロールバック先・Release 添付を確認し、対象コミットが `main` に統合された後で `host-v<version>` タグを用意します。タグ push は公開トリガーではありません。
+   - GitHub Environment **`npm-release`** の deployment branch policy が「branch `main` のみ、tag なし」であることを確認。repository secret や、この repo から使える organization secret に `NPM_TOKEN` は置きません。**古いタグ側の workflow は `npm-release` を指定しておらず、指定しても tag は許可されないため、Environment の秘密を取得できません。**
+   - 推奨: 所有者が npm の `@phni3j9a/pimate` の設定で [Trusted Publisher](https://docs.npmjs.com/trusted-publishers/) に GitHub Actions（owner `phni3j9a`、repository `pimate-rs`、workflow `package.yml`、environment `npm-release`）を登録。`auth=oidc` は公開ジョブのみの `id-token: write` を使い、長期トークンは不要です。**OIDC が使えない場合のみ**必要最小限・短命の `NPM_TOKEN` を `npm-release` の Environment secret に設定し、明示的に `auth=token` を選びます。OIDC 失敗時の token 自動再試行はありません。
+   - Actions の **Use workflow from: `main`** を選び、入力 `release_tag=host-v<version>`、まず `publish=false` で検証。その後、公開承認が取れたら同じ入力と `publish=true` で実行。main 側のガードがタグ名・`origin/main` の履歴・タグ内 npm/Cargo manifest を照合し、検証済み SHA を checkout してビルドします。公開直前にもタグ・ビルド SHA・tgz の版を照合し、不一致や認証失敗なら Release も作りません。
+   - npm の公開後に Release のみ失敗した場合は npm を再公開せず、その実行の `npm-package` artifact を使って Release だけを復旧します。
 
 ## Host を試す（Linux / macOS）
 

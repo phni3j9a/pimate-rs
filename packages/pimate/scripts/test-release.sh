@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# Exercise the same pre-publish guard with a local history, no tags or publishing.
+# A disposable origin with local refs only: no pushes, releases or credentials.
 set -euo pipefail
 check=$(realpath "$(dirname "$0")/check-release.sh")
 lab=$(mktemp -d); trap 'rm -rf "$lab"' EXIT
-cd "$lab"; git init -q
-mkdir -p packages/pimate package src
-printf '[package]\nname="pimate-host"\nversion="1.0.0"\nedition="2024"\n' > Cargo.toml
-touch src/lib.rs; cargo generate-lockfile
+cd "$lab"; git init -qb main; git remote add origin .
+git config user.name test; git config user.email test@example.invalid
+mkdir -p packages/pimate package crates/pimate-host
+printf '[package]\nname="pimate-host"\nversion="1.0.0"\n' > crates/pimate-host/Cargo.toml
 printf '{"name":"@phni3j9a/pimate","version":"1.0.0"}' > packages/pimate/package.json
 cp packages/pimate/package.json package/; tar czf pack.tgz package/package.json
-git add Cargo.* src packages; git -c user.name=test -c user.email=test@example.invalid commit -qm approved
-export GITHUB_REF_NAME=host-v1.0.0 GITHUB_SHA=$(git rev-parse HEAD)
-git update-ref refs/remotes/origin/main HEAD; git fetch -q --no-tags . HEAD
-bash "$check" pack.tgz
-reject() { if bash "$check" pack.tgz; then echo 'release guard accepted invalid input' >&2; exit 1; fi; }
-GITHUB_REF_NAME=host-v2.0.0 reject
-sed -i 's/1.0.0/2.0.0/' packages/pimate/package.json; reject; git restore packages
-sed -i 's/1.0.0/2.0.0/' Cargo.toml; cargo generate-lockfile; reject; git restore Cargo.toml Cargo.lock
-git -c user.name=test -c user.email=test@example.invalid commit --allow-empty -qm unmerged
-export GITHUB_SHA=$(git rev-parse HEAD); git fetch -q --no-tags . HEAD
-reject
+git add crates packages; git commit -qm approved
+pinned=$(git rev-parse HEAD); tag=host-v1.0.0
+point_tag() { git update-ref "refs/tags/$tag" HEAD; }
+point_tag; git commit --allow-empty -qm newer-main
+test "$(bash "$check" "$tag")" = "$pinned"
+bash "$check" "$tag" "$pinned" pack.tgz
+reject() { if bash "$check" "$@"; then echo 'release guard accepted invalid input' >&2; exit 1; fi; }
+reject refs/heads/main; reject host-v2.0.0
+sed -i 's/1.0.0/2.0.0/' package/package.json; tar czf pack.tgz package/package.json
+reject "$tag" "$pinned" pack.tgz
+cp packages/pimate/package.json package/; tar czf pack.tgz package/package.json
+point_tag; reject "$tag" "$pinned" pack.tgz  # tag moved after build
+sed -i 's/1.0.0/2.0.0/' packages/pimate/package.json; git commit -qam bad-npm; point_tag; reject "$tag"
+git restore --source="$pinned" packages; sed -i 's/1.0.0/2.0.0/' crates/pimate-host/Cargo.toml
+git commit -qam bad-cargo; point_tag; reject "$tag"
+git checkout -qb unmerged "$pinned"; git commit --allow-empty -qm unmerged; point_tag; reject "$tag"

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
-# The publish job fetched the live tag into FETCH_HEAD and refreshed origin/main.
+# Read manifests as data; no release-tag code runs in the privileged job.
 set -euo pipefail
-tag_commit=$(git rev-parse 'FETCH_HEAD^{commit}')
-test "$tag_commit" = "$(git rev-parse HEAD)"
-test "$tag_commit" = "$(git rev-parse "$GITHUB_SHA^{commit}")"
-git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main
-version=$(tar -xOf "$1" package/package.json | jq -er 'select(.name == "@phni3j9a/pimate").version')
-test "$GITHUB_REF_NAME" = "host-v$version"
-test "$version" = "$(jq -er '.version' packages/pimate/package.json)"
-cargo metadata --locked --no-deps --format-version 1 | jq -e --arg v "$version" 'any(.packages[]; .name == "pimate-host" and .version == $v)' >/dev/null
+tag=${1:?expected host-vX.Y.Z}
+[[ "$tag" =~ ^host-v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main "+refs/tags/$tag:refs/verification/release-tag"
+commit=$(git rev-parse 'refs/verification/release-tag^{commit}')
+git merge-base --is-ancestor "$commit" refs/remotes/origin/main
+version=${tag#host-v}
+npm_version() { jq -er 'select(.name == "@phni3j9a/pimate").version'; }
+test "$(git show "$commit:packages/pimate/package.json" | npm_version)" = "$version"
+test "$(git show "$commit:crates/pimate-host/Cargo.toml" | python3 -c 'import sys,tomllib; print(tomllib.load(sys.stdin.buffer)["package"]["version"])')" = "$version"
+if (( $# != 1 )); then
+  test "$#" = 3
+  test "$commit" = "$2"
+  test "$(tar -xOf "$3" package/package.json | npm_version)" = "$version"
+fi
+printf '%s\n' "$commit"

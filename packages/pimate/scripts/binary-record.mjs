@@ -5,6 +5,9 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 export function binaryRecord(path, target, version) {
+  const changes = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--',
+    ...['Cargo.toml', 'Cargo.lock', 'crates', 'vendor', '.cargo', 'rust-toolchain*'].map(path => `:(top)${path}`)], { encoding: 'utf8' });
+  assert.equal(changes, '', `Commit or revert Host build inputs before packaging:\n${changes}`);
   return { target, version, tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim(),
     sha256: createHash('sha256').update(readFileSync(path)).digest('hex') };
 }
