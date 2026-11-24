@@ -44,4 +44,32 @@ class ChatRotationTest {
         assertTrue(result.dismissed)
         assertNull(ui.resultFor("host", "pi")!!.takeText(editor))
     }
+
+    @Test
+    fun lateTextUpdatesOnlyTheOriginalReceiptWithoutReopeningOrOverwriting() {
+        for (empty in listOf(true, false)) {
+            val ui = ChatUi()
+            val editor = EditorKey("host", Target("pi", "dst"))
+            val receipt = Receipt("op", "pi")
+            val initial = JSONObject("""{"id":"op","sessionId":"dst"}""")
+            val update = JSONObject(initial.toString()).put("forkText", "confirmed")
+            ui.receive("host", "pi", initial, receipt)
+            val first = ui.resultFor("host", "pi")!!
+            first.dismissed = true
+            assertNull(first.takeText(editor))
+            ui.receive("other", "pi", update, receipt)
+            ui.receive("host", "other", update, receipt)
+            ui.receive("host", "pi", JSONObject(update.toString()).put("sessionId", "other"), receipt)
+            assertNull(first.takeText(editor))
+            ui.receive("host", "pi", update, receipt)
+            assertSame(first, ui.resultFor("host", "pi"))
+            assertTrue(first.dismissed)
+            assertNull(first.takeText(EditorKey("host", Target("pi", "old"))))
+            assertEquals(if (empty) "confirmed" else null, first.takeText(editor, empty))
+            ui.receive("host", "pi", update, receipt)
+            assertNull(first.takeText(editor))
+            ui.receive("host", "pi", JSONObject(update.toString()).put("id", "other"), receipt)
+            assertNull(ui.resultFor("host", "pi"))
+        }
+    }
 }

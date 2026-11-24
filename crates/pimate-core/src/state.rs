@@ -83,6 +83,7 @@ pub(crate) struct State {
     effect_seq: Option<u64>,
     tagged_completions: bool,
     summaries: std::collections::HashMap<String, String>,
+    pending_fork_text: std::collections::HashMap<String, PendingForkText>,
     missing: MissingCompletions,
     generations: std::collections::HashMap<String, u64>,
     pub(crate) result_deadline: Option<Instant>,
@@ -90,6 +91,14 @@ pub(crate) struct State {
     pub drafts: Vec<Draft>,
 }
 const UNKNOWN_FAILURE: &str = "Pi の実行に失敗しました";
+struct PendingForkText {
+    request: Value,
+    started_at: Value,
+    session: Value,
+    fork: Value,
+    editor: Value,
+    until: Instant,
+}
 struct Failure {
     entry: Value,
     session: Value,
@@ -583,6 +592,7 @@ impl State {
                     m["snapshot"]["startedAt"].as_u64(),
                 );
                 self.tagged_completions = m["snapshot"]["completionRequestIds"] == true;
+                self.confirm_fork_text(m["instanceId"].as_str().unwrap(), &m["snapshot"]);
                 self.snapshot_op(&m["snapshot"]["session"]["id"]);
                 self.reset_view();
                 let s = &m["snapshot"];
@@ -1071,6 +1081,7 @@ impl State {
         self.generations.get(id).copied()
     }
     fn retire_generation(&mut self, id: &str) {
+        self.pending_fork_text.remove(id);
         self.missing.0.retain(|k, _| k.instance != id);
         if self.selected.as_deref() == Some(id) {
             let op = self.get("busy", "operation");
@@ -1105,6 +1116,31 @@ impl State {
         }
         self.finish_op(result)
     }
+    pub(crate) fn discard_fork_text(&mut self, instance: &str) {
+        self.pending_fork_text.remove(instance);
+    }
+    fn confirm_fork_text(&mut self, instance: &str, snapshot: &Value) {
+        let Some(text) = self.pending_fork_text.remove(instance) else {
+            return;
+        };
+        let latest = self.get("operationResult", "latest");
+        if text.until <= Instant::now()
+            || text.started_at != snapshot["startedAt"]
+            || text.session != snapshot["session"]["id"]
+            || text.request != latest["id"]
+            || self.tagged_completions
+        {
+            return;
+        }
+        let mut latest = latest.clone();
+        if !text.fork.is_null() {
+            latest["forkText"] = text.fork;
+        }
+        if !text.editor.is_null() {
+            latest["event"]["editorText"] = text.editor;
+        }
+        self.put("operationResult", "latest", latest);
+    }
     fn finish_op(&mut self, mut result: Value) {
         let op = self.get("busy", "operation");
         debug_assert!(!op.is_null());
@@ -1114,31 +1150,53 @@ impl State {
         let dest = &result["sessionId"];
         let success =
             result["outcome"] == "done" || (e["cancelled"] == false && e["error"].is_null());
+        let fork_destination = success && dest.is_string() && dest != &op["sessionId"];
+        let legacy_arrival =
+            fork_destination && !e["requestId"].is_string() && dest == &op["arrival"];
         let text_ok = match op["op"].as_str() {
             Some("tree") => success && dest.is_string() && dest == &op["sessionId"],
+            Some("fork") if e["requestId"].is_string() => {
+                fork_destination && dest == &e["forkSessionId"]
+            }
             Some("fork") => {
-                success
-                    && dest.is_string()
-                    && dest != &op["sessionId"]
-                    && if e["requestId"].is_string() {
-                        dest == &e["forkSessionId"]
-                    } else {
-                        op["provenFork"] == true && dest == &op["arrival"]
-                    }
+                legacy_arrival
+                    && (op["provenFork"] == true
+                        || (self.ready()
+                            && op["snapshotSession"] == *dest
+                            && self.get("view", "session")["id"] == *dest))
             }
             _ => !e["requestId"].is_string(),
         };
+        if text_ok && !op["forkText"].is_null() {
+            result["forkText"] = op["forkText"].clone();
+        } else if legacy_arrival
+            && e["op"] == "fork"
+            && !self.ready()
+            && !text_ok
+            && (!op["forkText"].is_null() || !e["editorText"].is_null())
+        {
+            // v1 Host forwards this completion before the resync snapshot proves the destination.
+            let text = PendingForkText {
+                request: op["id"].clone(),
+                started_at: op["startedAt"].clone(),
+                session: dest.clone(),
+                fork: op["forkText"].clone(),
+                editor: e["editorText"].clone(),
+                until: Instant::now() + MISSING_TTL,
+            };
+            self.pending_fork_text
+                .insert(self.selected.clone().unwrap(), text);
+        }
         if !text_ok && let Some(event) = result.get_mut("event").and_then(Value::as_object_mut) {
             event.remove("editorText");
         }
-        if text_ok && !op["forkText"].is_null() {
-            result["forkText"] = op["forkText"].clone();
-        }
+
         self.put("operationResult", "latest", result);
         self.remove("busy", "operation");
         self.result_deadline = None;
     }
     pub(crate) fn expire_result(&mut self, now: Instant) {
+        self.pending_fork_text.retain(|_, text| text.until > now);
         self.missing.expire(now);
         if self.result_deadline.is_some_and(|t| t <= now) {
             let op = self.get("busy", "operation");

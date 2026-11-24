@@ -1481,3 +1481,88 @@ fn legacy_fork_event_without_arrival_does_not_release_text() {
     assert_eq!(result["event"]["cancelled"], false);
     assert!(result["forkText"].is_null() && result["event"]["editorText"].is_null());
 }
+
+#[test]
+fn legacy_fork_text_requires_next_matching_snapshot_in_either_delivery_order() {
+    for scenario in [
+        "snapshot first",
+        "snapshot before ack",
+        "event first",
+        "different session",
+        "replacement",
+        "expired",
+        "superseded",
+    ] {
+        let mut s = view();
+        let snapshot = |session: &str, seq, start| json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":seq,"startedAt":start,"session":{"id":session}},"history":{"items":[]}});
+        let mut source = snapshot("s", 2, 1);
+        source["history"]["items"] = json!([{"kind":"user","entryId":"node","text":"from source"}]);
+        s.apply(&source);
+        s.prepare(
+            "request",
+            rc(
+                pimate_protocol::RcMethod::SessionOp,
+                json!({"op":"fork","arg":"node"}),
+            ),
+            true,
+        )
+        .unwrap();
+        if scenario != "snapshot before ack" {
+            s.accept_op("request");
+        }
+        event(
+            &mut s,
+            3,
+            json!({"type":"session_changed","reason":"fork","session":{"id":"dst"}}),
+        );
+        let first = scenario.starts_with("snapshot");
+        if first {
+            s.apply(&snapshot("dst", 4, 1));
+        }
+        s.apply(&json!({"type":"event","instanceId":"i","sessionId":"dst","seq":5,"event":{"type":"session_op_done","op":"fork","cancelled":false,"editorText":"from wire"}}));
+        assert!(s.get("busy", "operation").is_null());
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["event"]["cancelled"], false);
+        assert_eq!(result["forkText"].as_str(), first.then_some("from source"));
+        assert_eq!(
+            result["event"]["editorText"].as_str(),
+            first.then_some("from wire")
+        );
+        if scenario == "expired" {
+            s.expire_result(tokio::time::Instant::now() + state::MISSING_TTL);
+        }
+        if scenario == "superseded" {
+            s.apply(&json!({"type":"instances","instances":[{"instanceId":"i","startedAt":1}]}));
+            s.prepare(
+                "other",
+                Operation::HostModels {
+                    instance: "i".into(),
+                },
+                true,
+            )
+            .unwrap();
+        }
+        s.apply(&snapshot(
+            if scenario == "different session" {
+                "other"
+            } else {
+                "dst"
+            },
+            6,
+            if scenario == "replacement" { 2 } else { 1 },
+        ));
+        s.apply(&snapshot("dst", 7, 1)); // the first snapshot consumed the pending text, even on mismatch
+        let result = s.get("operationResult", "latest");
+        assert_eq!(result["id"], "request");
+        let proven = first || scenario == "event first";
+        assert_eq!(
+            result["forkText"].as_str(),
+            proven.then_some("from source"),
+            "{scenario}"
+        );
+        assert_eq!(
+            result["event"]["editorText"].as_str(),
+            proven.then_some("from wire")
+        );
+    }
+}
