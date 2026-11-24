@@ -1,22 +1,35 @@
 import SwiftUI
 
-// UIKit owns the marked range. Return is always a newline/IME confirmation, never a send shortcut.
+// UIKit owns the marked range. Return only confirms a candidate or inserts a newline.
+@MainActor final class MessageInput: NSObject, ObservableObject, UITextViewDelegate {
+    @Published private(set) var marked = false
+    private weak var field: UITextView?
+    private var changed: (String) -> Void = { _ in }
+    func bind(_ view: UITextView, changed: @escaping (String) -> Void) {
+        field = view; self.changed = changed; view.delegate = self
+    }
+    func textViewDidChange(_ view: UITextView) {
+        let composing = view.markedTextRange != nil
+        if marked != composing { marked = composing }
+        changed(view.text)
+    }
+    func textViewDidChangeSelection(_ view: UITextView) { if view.isFirstResponder { textViewDidChange(view) } }
+    func submission(_ shown: RestoredDraft) -> RestoredDraft? {
+        // Recheck UIKit synchronously at the tap, not just the last SwiftUI button state.
+        guard let field, !marked, field.markedTextRange == nil, field.text == shown.text,
+              !shown.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !shown.images.isEmpty else { return nil }
+        return shown
+    }
+}
 private struct MessageField: UIViewRepresentable {
-    let text: String, changed: (String, Bool) -> Void
+    let text: String, input: MessageInput, changed: (String) -> Void
     @ScaledMetric(relativeTo: .body) var points: CGFloat = 16
     @AppStorage("typeSize") var size = TypeSize.standard
-    final class Coordinator: NSObject, UITextViewDelegate {
-        var changed: (String, Bool) -> Void
-        init(_ changed: @escaping (String, Bool) -> Void) { self.changed = changed }
-        func textViewDidChange(_ v: UITextView) { changed(v.text, v.markedTextRange != nil) }
-        func textViewDidChangeSelection(_ v: UITextView) { if v.isFirstResponder { changed(v.text, v.markedTextRange != nil) } }
-    }
-    func makeCoordinator() -> Coordinator { Coordinator(changed) }
     func makeUIView(context: Context) -> UITextView {
-        let v = UITextView(); v.delegate = context.coordinator; v.backgroundColor = .clear; v.accessibilityLabel = "メッセージ"; v.accessibilityIdentifier = "message"; v.textContainer.lineFragmentPadding = 0; return v
+        let v = UITextView(); v.backgroundColor = .clear; v.accessibilityLabel = "メッセージ"; v.accessibilityIdentifier = "message"; v.textContainer.lineFragmentPadding = 0; return v
     }
     func updateUIView(_ v: UITextView, context: Context) {
-        context.coordinator.changed = changed; v.font = .systemFont(ofSize: points * size.factor); v.textColor = UIColor(PiTheme.text)
+        input.bind(v, changed: changed); v.font = .systemFont(ofSize: points * size.factor); v.textColor = UIColor(PiTheme.text)
         if v.markedTextRange == nil && v.text != text { v.text = text }
     }
     func sizeThatFits(_ p: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
@@ -25,7 +38,7 @@ private struct MessageField: UIViewRepresentable {
 }
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
-    @State private var marked = false
+    @StateObject private var input = MessageInput()
     var body: some View {
         let draft = model.body(key)
         VStack(alignment: .leading, spacing: 4) {
@@ -36,15 +49,15 @@ struct Composer: View {
                 VStack(alignment: .leading, spacing: 0) {
                     ZStack(alignment: .topLeading) {
                         if draft.text.isEmpty { Text("メッセージ").foregroundStyle(PiTheme.secondary).padding(.top, 9).accessibilityHidden(true) }
-                        MessageField(text: draft.text) { value, composing in model.text(value, for: key); marked = composing }
+                        MessageField(text: draft.text, input: input) { model.text($0, for: key) }
                     }
                     HStack(spacing: 8) {
                         if !draft.images.isEmpty { Text("画像 \(draft.images.count)枚").font(.caption) }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
-                        Button { guard !marked else { return }; Task { try? await model.send(key, draft) } } label: {
+                        Button { guard let sent = input.submission(draft) else { return }; Task { try? await model.send(key, sent) } } label: {
                             SwiftUI.Image(systemName: "arrow.up.circle.fill").font(.system(size: 36)).frame(minWidth: 44, minHeight: 44)
-                        }.accessibilityLabel("送信").disabled(marked || model.busy || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
+                        }.accessibilityLabel("送信").disabled(input.marked || model.busy || (draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && draft.images.isEmpty))
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
