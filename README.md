@@ -381,4 +381,4 @@ Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.
 - macOS の `store.rs` は登録をメタデータ・token 一体の Keychain 項目に格納します。アプリの複数起動時もファイルロックで置換と条件付き失効を直列化します。ロックファイルに資格情報は書きません。`cargo test --locked -p pimate-desktop` は毎回固有の `.test.*` サービスで試験。模擬 Host（前述の `scripts/android-demo.py`）を試すときは `apps/desktop/run-macos.sh --demo`（先に起動中のアプリを終了）で別サービスを使い、使い終えたらアプリ終了後 `security delete-generic-password -s dev.pimate.rs.desktop.demo -a registrations` で模擬登録だけ削除できます。
 - 画面担当は `screen.rs` と `markdown.rs` を変更できます。`model.rs` の revision と `main.rs` の接続・編集状態は維持してください。Host ごとの配送スレッド → 有界チャネル → GPUI Entity（UI スレッド）。過負荷・大きな差分は snapshot、再登録前の配送は接続の同一性で破棄。編集本文は Host・Pi・session（null 可）別でメモリだけに保持し、送信時のキーを渡します。RC の受付と履歴は別で、結果不明を成功扱いせず自動再送しません。未確認の復元は対象が一致し、入力が空の明示操作だけです。
 
-[VM 2 での登録・一覧・逐次表示・日本語送信の記録](docs/research/desktop-base-vm.webp)。macOS の日本語ローマ字入力では `nihongo` → Space → Return は候補選択で、もう一度 Return で確定・送信ボタン有効化、ボタンを押して初めて送信しました。文字列の貼り付けによる代替ではありません。
+VM 2 での登録・一覧・逐次表示・日本語送信の記録は PR #50 に載せている。macOS の日本語ローマ字入力では `nihongo` → Space → Return は候補選択で、もう一度 Return で確定・送信ボタン有効化、ボタンを押して初めて送信しました。文字列の貼り付けによる代替ではありません。
