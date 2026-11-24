@@ -63,24 +63,36 @@ private struct Conversation: View {
 }
 private struct TurnView: View {
     let turn: ChatTurn, active: Bool
+    @State private var expanded = false
     var body: some View {
+        let firstWork = turn.work.first?.id
         VStack(alignment: .leading, spacing: 12) {
-            if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled).padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing) }
-            if !turn.work.isEmpty {
-                if active { work } else { DisclosureGroup(turn.summary) { work }.font(.subheadline).foregroundStyle(PiTheme.secondary) }
+            if !turn.prompt.isEmpty || turn.imageCount > 0 {
+                VStack(alignment: .leading, spacing: 4) {
+                    if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled) }
+                    if turn.imageCount > 0 { Label("画像 \(turn.imageCount) 枚", systemImage: "photo") }
+                }.padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing)
             }
-            ForEach(turn.replies) { reply in
-                MarkdownBody(source: reply.text); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
+            ForEach(turn.lines) { line in
+                switch line {
+                case .reply(let reply):
+                    MarkdownBody(source: reply.text); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
+                case .work(let w):
+                    if !active && w.id == firstWork {
+                        Button { expanded.toggle() } label: {
+                            HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
+                        }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
+                    }
+                    if active || expanded { work(w) }
+                }
             }
         }
     }
-    private var work: some View {
-        VStack(spacing: 0) { ForEach(turn.work) { line in
+    private func work(_ line: WorkLine) -> some View {
             DisclosureGroup {
                 Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
             } label: {
                 HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.name == "考えた内容" ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)
             }.foregroundStyle(line.state == "失敗" ? PiTheme.failure : PiTheme.secondary)
-        } }
     }
 }
