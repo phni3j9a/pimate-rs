@@ -57,7 +57,7 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 - `- h\n  |:--|\n  a` は marked ではリスト内の1列表、Rust ではリスト項目の本文です。
 - `a|b\n--:--|--\n1|2` は marked では段落ですが、`pulldown-cmark` 0.13.6 は途中にコロンのある区切りセルも受理し、2列表にします。双方で右揃えにするには `---:` と書いてください。
 
-### RC Extension（Node.js 22.19 以降）
+### RC Extension
 
 [`packages/pimate`](packages/pimate) は Pi 内で動く `@phni3j9a/pimate` です。wire 型は `src/protocol.ts` から Rust の生成物を参照します。リポジトリのルートから:
 
@@ -77,18 +77,20 @@ Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`pack
 
 ### npm 配布と TS 版からの切り替え（M8 で公開を承認した後）
 
-パッケージ名は旧公開版と同じ `@phni3j9a/pimate`。Node.js 22.19 以降が必要です。npm の `bin.pimate` は `dist/cli.js` から OS・CPU に合った `bin/{linux,darwin}-{x64,arm64}/pimate` に exec します。Pi がインストールした npm の bin が PATH にない場合、従来どおり `/pimate setup` の確認に同意すると同梱 Host へ `~/.local/bin/pimate`（XDG 上書き可）をリンクします。既存の別ファイルは上書きしません。
+パッケージ名は旧公開版と同じ `@phni3j9a/pimate`。Node.js 22 系は 22.19 以降、23 系は 23.11 以降、または 24 以降が必要です（CLI は `process.execve` を使用）。npm の `bin.pimate` は `dist/cli.js` から OS・CPU に合った `bin/{linux,darwin}-{x64,arm64}/pimate` に exec します。Pi がインストールした npm の bin が PATH にない場合、従来どおり `/pimate setup` の確認に同意すると同梱 Host へ `~/.local/bin/pimate`（XDG 上書き可）をリンクします。既存の別ファイルは上書きしません。
 
 1. **更新前**に旧 abduco 端末で進行中の仕事を確認。Rust Host は旧端末を attach・移行しません。完了を待つか旧 CLI で切り離した仕事を保存して Pi を終了し、必要なら更新後に起動し直してください。互換 RC が生きている Pi は同じ runDir ならチャットできますが、端末自体への接続には旧 CLI が必要です。
-2. TS 版をロードした PC の Pi で `/pimate uninstall` を実行し、旧 Host・user unit・旧リンクを解除します。**パッケージは remove しないでください**。設定・ペアリング・runDir・`~/.abduco` は削除しません。旧 Host を手動起動していた場合はその端末から停止し、ポートが空いてから進みます。管理外の unit やリンクに当たったら上書きせず、所有者を確認してください。
+2. 旧 Host を **手動で起動した場合は先に元の端末から停止**します。旧 TS 版の `/pimate status` で使用中の CLI リンクのパスと Host の版を控え、TS 版をロードしたまま `/pimate uninstall` を実行します。Host 停止・unit・リンク削除の成功通知を確認してください。Linux では `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/pimate-host.service` が消え、どの OS でも控えたリンク（通常 `~/.local/bin/pimate`）が消えたことを確認します（各パス `p` に対し `test ! -e "$p" && test ! -L "$p"` で壊れたリンクも検出）。エラーや管理外ファイルがあれば更新せず、所有者を確かめてから旧版で再試行します。**Pi パッケージは remove せず、設定・ペアリング・runDir・`~/.abduco` も削除しません。**
 3. `pi update npm:@phni3j9a/pimate`（新規は `pi install npm:@phni3j9a/pimate`）。Pi を再起動し `/pimate setup` で Host と CLI リンクを設定。Linux は systemd の常駐登録に同意、macOS の常駐は `pimate service install`。`/pimate status` で Host / Extension の版・稼働状態を確認します。新しいペアリングは `/pimate pair`。**パッケージの置換自体に再インストールは不要ですが、TS の unit は Node の旧 CLI を指すので初回だけサービスの移行が必要です。**
+
+**TS 版へ戻す場合:** Rust が起動した Pi の仕事を保存して終了し、手動の Rust Host があれば元の端末で停止します。**まだ Rust 版がインストールされている間に** `/pimate uninstall` を実行し、成功通知、Host の停止、上記の unit（macOS は `~/Library/LaunchAgents/dev.pimate.rs.host.plist`）と CLI リンクの消失を確認します。失敗したまま旧版を入れないでください。`pi remove npm:@phni3j9a/pimate` → `pi install npm:@phni3j9a/pimate@0.1.20`（例。実際は控えた TS 版を指定）→ `pi list` で版固定を確認し、Pi を再起動して TS 版の `/pimate setup` でサービス・リンクを再作成します。`/pimate status` と既存スマホからの接続を確認してください。ペアリング設定は削除不要です。
 
 ### ビルド・リリース手順（公開しない検証が既定）
 
 [Host npm package](.github/workflows/package.yml) は同じコミット・Cargo.lock から4対象を release build します。Linux は同じ CPU の runner で musl を静的リンクし、動的ローダーがないことを検査するため配布先の glibc に依存しません。macOS は Apple Silicon 上で両 arch をビルドし、arm64 の ad-hoc 署名を検証します（Developer ID 署名・公証ではありません）。
 
-1. `crates/pimate-host/Cargo.toml` と `packages/pimate/package.json` および両 lockfile の版をそろえます。CI は不一致を拒否。Host の起動時の表示・更新比較は同梱 manifest の版です。`bin/SHA256SUMS.json` は最終バイナリ4個の SHA256 で、独立した署名ではありません。
-2. ローカルでは CI の binary artifact（各 `pimate`）を `packages/pimate/bin/<platform>-<arch>/` に置き、次を実行。開発用 manifest は private のまま、配布用 manifest だけを生成します。組み立て環境には Rust・`cargo-about` 0.9.3 が必要です。`notices/` に Host の依存 crate・Rust 標準ライブラリ・[musl](https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT)・Webhook の派生元 T3 Tots のライセンスを収録します。
+1. `crates/pimate-host/Cargo.toml` と `packages/pimate/package.json` および両 lockfile の版をそろえます。CI は不一致を拒否。Host の `--version` と `/health` はバイナリ自身の版、更新比較は起動時の同梱 manifest の版です。`bin/SHA256SUMS.json` は最終バイナリ4個の SHA256 で、独立した署名ではありません。
+2. ローカルでは CI の 同じソースツリーの binary artifact（各 `pimate` とビルド時の `build.json`）を `packages/pimate/bin/<platform>-<arch>/` に置き、次を実行。組み立て時に対象・版・Git ツリー・SHA256 を再照合し、違う成果物の混入を拒否します。開発用 manifest は private のまま、配布用 manifest だけを生成します。組み立て環境には Rust・`cargo-about` 0.9.3 が必要です。`notices/` に Host の依存 crate・Rust 標準ライブラリ・[musl](https://git.musl-libc.org/cgit/musl/tree/COPYRIGHT)・Webhook の派生元 T3 Tots のライセンスを収録します。
 
    ```sh
    cd packages/pimate && npm ci && npm run package
@@ -97,7 +99,7 @@ Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`pack
    ```
 
 3. PR・main・手動実行（`publish=false`）は pack → 隔離 Pi でスモーク → Actions artifact `npm-package` まで。公開権限・トークンを使用しません。
-4. **M8 で所有者に npm latest の置換・版・移行日時・ロールバック先と Release を確認してから**、承認済みコミットに `host-v<version>` タグを用意し、そのタグを指定して workflow_dispatch の `publish=true` を実行します。`NPM_TOKEN` がない場合は npm・GitHub とも公開しません。検証済みの同じ tgz を npm と GitHub Release に使います。npm の公開後に Release のみ失敗した場合は npm を再公開せず、その実行の artifact を使って Release だけを復旧します。
+4. **M8 で所有者に npm latest の置換・版・移行日時・ロールバック先と Release を確認してから**、承認済みコミットに `host-v<version>` タグを用意し、そのタグを指定して workflow_dispatch の `publish=true` を実行します。公開直前にリモートのタグが実行コミットを指し `origin/main` の履歴に含まれること、タグ・tgz・npm ソース manifest・Host crate の版の一致を検証します。不一致・`NPM_TOKEN` 未設定時は npm・GitHub とも公開しません。タグや workflow を変更できる人は公開経路も変更できるため、M8 では保護ルール・トークンの範囲も確認してください。検証済みの同じ tgz を npm と GitHub Release に使います。npm の公開後に Release のみ失敗した場合は npm を再公開せず、その実行の artifact を使って Release だけを復旧します。
 
 ## Host を試す（Linux / macOS）
 

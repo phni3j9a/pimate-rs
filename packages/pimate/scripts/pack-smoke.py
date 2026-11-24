@@ -17,7 +17,6 @@ from urllib.parse import urlsplit, parse_qs
 
 pkg = Path(__file__).resolve().parents[1]
 tarball = Path(sys.argv[1]).resolve(strict=True)
-settings = Path.home() / '.pi/agent/settings.json'
 
 
 def digest(path):
@@ -80,7 +79,7 @@ def smoke(lab, stack):
     port = addr[1].decode()
     env['PIMATE_SERVICE_PORT'] = port
     health = json.loads(run(linked, 'service', 'health'))
-    assert health['pid'] == host.pid and health['version'] == manifest['version']
+    assert health['pid'] == host.pid and health['version'] == run(cli, '--version').strip() == manifest['version']
     pair = json.loads(run(cli, 'pair', '--json', '--port', port))
     link = urlsplit(pair['link'])
     query = parse_qs(link.query)
@@ -111,9 +110,14 @@ def smoke(lab, stack):
     print('PASS: tarball hashes, isolated Pi install, both CLI paths, Host version, pairing, discovery and faux reply')
 
 
-before = digest(settings)
-try:
-    with tempfile.TemporaryDirectory(prefix='pm-', dir='/tmp') as lab, ExitStack() as stack:
-        smoke(Path(lab), stack)
-finally:
-    assert digest(settings) == before, 'real Pi settings changed'
+with tempfile.TemporaryDirectory(prefix='pm-', dir='/tmp') as lab:
+    # A separate Pi is allowed to edit real settings while this test runs.
+    settings = Path(lab) / '.pi/agent/settings.json'
+    settings.parent.mkdir(parents=True)
+    settings.write_text('{"packages":[]}\n')
+    before = digest(settings)
+    try:
+        with ExitStack() as stack:
+            smoke(Path(lab), stack)
+    finally:
+        assert digest(settings) == before, 'Pi wrote outside its isolated agent dir'

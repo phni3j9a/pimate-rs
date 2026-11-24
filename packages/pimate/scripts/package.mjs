@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { verifyBinary } from './binary-record.mjs';
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 // Always stage from scratch: a missing target must never reuse an old binary.
@@ -28,11 +28,11 @@ for (const target of ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64'])
   mkdirSync(`${out}/${dir}`, { recursive: true });
   copyFileSync(path, `${out}/${path}`);
   chmodSync(`${out}/${path}`, 0o755);
-  sums[path] = createHash('sha256').update(readFileSync(`${out}/${path}`)).digest('hex');
+  sums[path] = verifyBinary(`${out}/${path}`, `${dir}/build.json`, target, src.version);
 }
 writeFileSync(`${out}/bin/SHA256SUMS.json`, JSON.stringify(sums, null, 2) + '\n');
 const { name, version, type, license, pi, dependencies, peerDependencies } = src;
 writeFileSync(`${out}/package.json`, JSON.stringify({ name, version, type, license, pi, dependencies, peerDependencies,
-  bin: { pimate: './dist/cli.js' }, keywords: ['pi-package'], engines: { node: '>=22.19.0' },
+  bin: { pimate: './dist/cli.js' }, keywords: ['pi-package'], engines: { node: '^22.19.0 || >=23.11.0' },
   publishConfig: { access: 'public' }, repository: 'github:phni3j9a/pimate-rs',
 }, null, 2) + '\n');

@@ -39,10 +39,13 @@ jobs:
           codesign --verify --strict pimate
           codesign -dv --verbose=4 pimate 2>&1 | grep 'Signature=adhoc'
           ./pimate --help
+      - run: node packages/pimate/scripts/binary-record.mjs pimate ${{ matrix.dir }} > build.json
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.dir }}
-          path: pimate
+          path: |
+            pimate
+            build.json
   pack:
     needs: binary
     runs-on: ubuntu-latest
@@ -62,6 +65,8 @@ jobs:
           path: packages/pimate/bin
       - run: |
           npm ci
+          node --test scripts/package.test.mjs
+          bash scripts/test-release.sh
           npm run package
           cd dist/package && npm pack --pack-destination ..
       - run: python3 scripts/pack-smoke.py dist/*.tgz
@@ -76,6 +81,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
           name: npm-package
@@ -89,7 +97,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           test -n "$NODE_AUTH_TOKEN" || { echo 'Missing NPM_TOKEN; nothing published'; exit 1; }
-          version=$(tar xOf *.tgz package/package.json | jq -r .version)
-          test "$GITHUB_REF_NAME" = "host-v$version"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git fetch --no-tags origin "$GITHUB_REF"
+          bash packages/pimate/scripts/check-release.sh ./*.tgz
           npm publish ./*.tgz --access public
           gh release create "$GITHUB_REF_NAME" ./*.tgz --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes
