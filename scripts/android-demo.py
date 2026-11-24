@@ -21,6 +21,7 @@ import tempfile
 import time
 import zlib
 
+DESKTOP_REVIEW = os.environ.get("PIMATE_DEMO_DESKTOP_REVIEW") == "1"
 ROOT = Path(__file__).resolve().parents[1]
 BODY = (
     "## 開発用の会話\n\n| 項目 | 状態 |\n| --- | --- |\n| Android | 接続済み |\n\n"
@@ -288,9 +289,10 @@ async def pi(
                 await work(
                     f"t{next(ids)}", 4
                 )  # Time to steer or stop the reply from a phone.
-            for i in range(0, len(BODY), 40):
-                await asyncio.sleep(0.2)
-                chunk = BODY[i : i + 40]
+            step, delay = (4, 0.05) if DESKTOP_REVIEW else (40, 0.2)
+            for i in range(0, len(BODY), step):
+                await asyncio.sleep(delay)
+                chunk = BODY[i : i + step]
                 partial += chunk
                 event("text_delta", delta=chunk)
             for text in queued:
@@ -511,6 +513,8 @@ async def pi(
                     elif task is None and iid == "edge":
                         task = asyncio.create_task(later(8, pc_resume))
                 elif method == "prompt":
+                    if DESKTOP_REVIEW:
+                        await asyncio.sleep(8)  # Allow editing/IME before the original receipt.
                     images = params.get("images") or []
                     more = (
                         dict(images=images, imageCount=len(images)) if images else {}

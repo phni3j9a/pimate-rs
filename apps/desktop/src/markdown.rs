@@ -17,10 +17,11 @@ fn spans(out: &mut String, spans: &[Inline]) {
         match span {
             Inline::Image(i) => escape(out, &i.alt),
             Inline::Text { text, style } => {
-                let url = style
-                    .href
-                    .as_deref()
-                    .filter(|u| u.starts_with("https://") || u.starts_with("http://"));
+                let url = style.href.as_deref().filter(|u| {
+                    u.split_once("://").is_some_and(|(scheme, _)| {
+                        scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")
+                    })
+                });
                 if let Some(u) = url {
                     out.push_str("<a href=\"");
                     escape(out, u);
@@ -115,9 +116,9 @@ pub fn html(text: &str) -> String {
 #[test]
 fn only_web_links_and_no_image_loads() {
     let out = html(
-        "[web](https://example.com) [bad](file:///secret) ![ALT](https://example.com/img) `<>`",
+        "[web](HTTPS://example.com) [bad](file:///secret) ![ALT](https://example.com/img) `<>`",
     );
-    assert!(out.contains("href=\"https://example.com\""));
+    assert!(out.contains("href=\"HTTPS://example.com\""));
     assert!(out.contains("ALT"));
     assert!(!out.contains("file:"));
     assert!(!out.contains("<img"));
@@ -126,36 +127,64 @@ fn only_web_links_and_no_image_loads() {
 
 use gpui::{App, SharedString, Styled, Task, Window};
 use gpui_component::text::TextView;
+#[derive(Default)]
 struct Cached {
-    source: String,
+    latest: String,
+    published: String,
     markup: SharedString,
+    generation: u64,
     pending: Option<Task<()>>,
 }
-/// Parse away from the UI thread. Replacing the task prevents a late parse replacing newer text.
-pub fn view(id: String, text: &str, w: &mut Window, cx: &mut App) -> TextView {
-    let id: SharedString = id.into();
-    let cache = w.use_keyed_state(SharedString::from(format!("parsed-{id}")), cx, |_, _| {
-        Cached {
-            source: String::new(),
-            markup: "".into(),
-            pending: None,
-        }
-    });
-    if cache.read(cx).source != text {
-        cache.update(cx, |c, cx| {
-            c.source = text.into();
-            let input = c.source.clone();
-            let parse = cx.background_executor().spawn(async move { html(&input) });
-            c.pending = Some(cx.spawn(async move |this, cx| {
-                let markup = parse.await;
-                let _ = this.update(cx, |c, cx| {
-                    c.markup = markup.into();
-                    cx.notify()
-                });
-            }));
-        });
+fn sample(cache: &mut Cached, cx: &mut gpui::Context<Cached>, streaming: bool) {
+    if cache.pending.is_some() || cache.latest == cache.published {
+        return;
     }
-    TextView::html(id, cache.read(cx).markup.clone(), w, cx)
+    cache.pending = Some(cx.spawn(async move |this, cx| {
+        // Keep the first deadline even when more deltas arrive. Only one parse in flight.
+        if streaming {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(125))
+                .await;
+        }
+        let Ok(source) = this.read_with(cx, |c, _| c.latest.clone()) else {
+            return;
+        };
+        let parsed = cx
+            .background_executor()
+            .spawn(async move {
+                let markup = html(&source);
+                (source, markup)
+            })
+            .await;
+        let _ = this.update(cx, |c, cx| {
+            c.published = parsed.0;
+            c.markup = parsed.1.into();
+            c.generation += 1;
+            c.pending = None;
+            cx.notify();
+        });
+    }));
+}
+pub fn view(id: String, text: &str, streaming: bool, w: &mut Window, cx: &mut App) -> TextView {
+    let cache = w.use_keyed_state(SharedString::from(format!("parsed-{id}")), cx, |_, _| {
+        Cached::default()
+    });
+    cache.update(cx, |c, cx| {
+        if c.latest != text {
+            c.latest = text.into();
+        }
+        sample(c, cx, streaming)
+    });
+    let c = cache.read(cx);
+    // TextView debounces same-ID updates until 200 ms of silence. Mount the immutable
+    // stream sample with its own ID; settled entries retain a stable selection identity.
+    let id: SharedString = if streaming {
+        format!("{id}-{}", c.generation)
+    } else {
+        id
+    }
+    .into();
+    TextView::html(id, c.markup.clone(), w, cx)
         .selectable(true)
         .h_auto()
 }

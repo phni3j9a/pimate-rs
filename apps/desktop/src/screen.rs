@@ -120,11 +120,17 @@ impl Render for Desktop {
                                 .font_weight(FontWeight::BOLD)
                                 .child(v["kind"].as_str().unwrap_or("メッセージ").to_string()),
                         )
-                        .child(markdown::view(format!("{key:?}-entry-{id}"), text, w, cx));
+                        .child(markdown::view(
+                            format!("{key:?}-entry-{id}"),
+                            text,
+                            false,
+                            w,
+                            cx,
+                        ));
                 }
             }
             if let Some(s) = rows.get("stream", "text").as_str() {
-                chat = chat.child(markdown::view(format!("{key:?}-stream"), s, w, cx));
+                chat = chat.child(markdown::view(format!("{key:?}-stream"), s, true, w, cx));
             }
             for (id, d) in rows.group("draft") {
                 if d["instanceId"] == key.instance
