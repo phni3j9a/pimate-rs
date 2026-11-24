@@ -5,7 +5,7 @@ extension ChatSheet: Identifiable {}
 struct PiSheetMenu: ViewModifier {
     let model: SessionModel, key: EditorKey
     @State private var openFailed = false
-    func body(content: Content) -> some View {
+    func body(content: PiSheetMenu.Content) -> some View {
         let shown = model.sheet.flatMap { $0.key == key && $0.page != .commands ? $0 : nil }
         content.toolbar {
             ToolbarItem(placement: .topBarTrailing) {
