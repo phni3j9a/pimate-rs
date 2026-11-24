@@ -161,7 +161,7 @@ TS の配布用 CLI がビルド済みなら、`PIMATE_TEST_TS_CLI=/path/to/PiMa
   3. 端末の保持を自前の実装に置き換える
 - Host のバイナリは OS と CPU ごとに用意し、Pi のパッケージ（npm）に同梱する。利用者が Rust を入れる必要はない
 - 通知は当面作らない
-- iOS / macOS のビルドと確認は Devin Cloud の macOS VM で行う（手順は TS 版の [docs/devin-macos.md](https://github.com/phni3j9a/PiMate/blob/main/docs/devin-macos.md)）
+- iOS / macOS のビルドと確認は Devin Cloud の macOS VM で行う（手順は [docs/devin-macos.md](docs/devin-macos.md)、道具は `scripts/devin-mac/`。TS 版から移した）
 
 ## ライセンス
 
