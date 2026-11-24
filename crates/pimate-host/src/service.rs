@@ -286,6 +286,11 @@ pub async fn run(action: &str) -> Result<Value> {
             json!({"installed":path.exists(),"active":systemd&&ctl(&["is-active",SERVICE]).await.is_ok_and(|s|s=="active"),"linger":linger}),
         );
     }
+    let _launch_agent_lock = if mac {
+        Some(launchd::lock(&path)?)
+    } else {
+        None
+    };
     let installed = if mac {
         launchd::owned(&path)?
     } else {
@@ -344,7 +349,7 @@ pub async fn run(action: &str) -> Result<Value> {
             if action == "install" {
                 fs::create_dir_all(path.parent().unwrap())?;
                 if mac {
-                    write(&path, launchd::plist()?.as_bytes())?;
+                    launchd::install(&path, installed)?;
                     launchd::start(&path).await?;
                 } else {
                     write(&path, unit()?.as_bytes())?;

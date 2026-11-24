@@ -5,7 +5,7 @@ use nix::unistd::{AccessFlags, access};
 use serde::Serialize;
 use std::{
     env, fs,
-    os::unix::fs::{FileTypeExt, MetadataExt},
+    os::unix::fs::FileTypeExt,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -29,8 +29,6 @@ pub struct Terminal;
 #[derive(Serialize)]
 struct Session {
     name: String,
-    #[serde(skip)]
-    path: PathBuf,
     attached: bool,
     terminated: bool,
 }
@@ -57,29 +55,22 @@ impl Sockets {
             }
             let path = entry.path();
             let meta = path.symlink_metadata().ok()?;
-            meta.file_type().is_socket().then_some(Session {
-                name,
-                path,
-                attached: meta.mode() & 0o100 != 0,
-                terminated: meta.mode() & 0o010 != 0,
-            })
+            meta.file_type().is_socket().then_some((name, path))
         });
-        // shortcut: 異常終了した keeper の socket ファイルは runDir に残る（再起動・ログアウトで消える）
+        // An unresponsive keeper is not proof of death: never unlink its socket here.
         Ok(stream::iter(candidates)
-            .map(|s| async move { probe(&s.path).await.ok().map(|_| s) })
+            .map(|(name, path)| async move {
+                Some(Session {
+                    name,
+                    attached: crate::keeper::probe(&path).await.ok()?,
+                    terminated: false,
+                })
+            })
             .buffer_unordered(16)
             .filter_map(std::future::ready)
             .collect()
             .await)
     }
-}
-async fn probe(path: &Path) -> std::io::Result<()> {
-    timeout(
-        Duration::from_millis(100),
-        tokio::net::UnixStream::connect(path),
-    )
-    .await??;
-    Ok(())
 }
 fn validate_rc_path(run: &Path, id: &str) -> Result<()> {
     let p = std::path::absolute(run)?.join(format!("{id}.sock"));
@@ -149,7 +140,7 @@ impl Terminal {
             }
         }
     }
-    pub async fn attach(&self, run: &Path, name: Option<String>) -> Result<()> {
+    pub async fn attach(&self, run: &Path, name: Option<String>) -> Result<u8> {
         let ns = Sockets::open(run)?;
         if let Some(n) = name {
             let path = ns.path(&n)?;
@@ -162,7 +153,7 @@ impl Terminal {
             return crate::keeper::attach(&path).await;
         }
         println!("{}", serde_json::to_string_pretty(&ns.sessions().await?)?);
-        Ok(())
+        Ok(0)
     }
     pub async fn launch(
         &self,

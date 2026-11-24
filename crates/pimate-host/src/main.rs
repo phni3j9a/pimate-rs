@@ -73,7 +73,7 @@ async fn addresses() -> Result<Vec<IpAddr>> {
     }
     Ok(ips)
 }
-fn main() {
+fn main() -> std::process::ExitCode {
     let result = if env::args_os().nth(1).is_some_and(|a| a == "__hold") {
         keeper::run()
     } else {
@@ -81,14 +81,26 @@ fn main() {
             .enable_all()
             .build()
             .unwrap();
-        let result = rt.block_on(run());
-        rt.shutdown_background();
-        result
+        if env::args_os().nth(1).is_some_and(|a| a == "attach") {
+            let result = rt.block_on(async {
+                let mut args = env::args().skip(2);
+                let name = args.next();
+                ensure!(args.next().is_none());
+                terminal::Terminal.attach(&config::run_dir(), name).await
+            });
+            // Tokio stdin can still have a blocking read when the Pi exits.
+            rt.shutdown_background();
+            result
+        } else {
+            rt.block_on(run()).map(|()| 0)
+        }
     };
-    if let Err(e) = result {
-        eprintln!("{e}");
-        std::process::exit(1)
-    }
+    result
+        .unwrap_or_else(|e| {
+            eprintln!("{e}");
+            1
+        })
+        .into()
 }
 async fn run() -> Result<()> {
     let mut args = env::args().skip(1);
@@ -117,11 +129,6 @@ async fn run() -> Result<()> {
         "spawn" | "prompt" | "wait" | "history" | "watch" | "abort" | "shutdown" | "ui"
     ) {
         return agent_cli::run(&cmd, args.collect()).await;
-    }
-    if cmd == "attach" {
-        let name = args.next();
-        ensure!(args.next().is_none());
-        return terminal::Terminal.attach(&config::run_dir(), name).await;
     }
     if cmd == "list" {
         ensure!(args.next().is_none());

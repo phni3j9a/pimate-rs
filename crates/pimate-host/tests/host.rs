@@ -574,7 +574,12 @@ async fn normal_stop_finishes_locked_pair_update() -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     for sig in [Signal::SIGINT, Signal::SIGTERM] {
-        let mut s = Server::start().await?;
+        // Let another runtime worker deliver the stop while the FIFO blocks the updater.
+        let mut s = Server::with(
+            tempfile::tempdir()?.into(),
+            &[("TOKIO_WORKER_THREADS", Path::new("4"))],
+        )
+        .await?;
         let dir = s.dir.path();
         let cfg = dir.join("config");
         let db = cfg.join("devices.json");
@@ -611,6 +616,7 @@ async fn normal_stop_finishes_locked_pair_update() -> Result<()> {
         })
         .await?;
         assert!(cfg.join("devices.lock").exists());
+        drop(tcp); // A disconnected pairing client must not keep serve alive for us.
         kill(Pid::from_raw(s._child.id().unwrap() as i32), sig)?;
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(s._child.try_wait()?.is_none());
@@ -1029,8 +1035,8 @@ async fn reachable_listing_and_direct_attach() -> Result<()> {
         let (mut c, _) = _target.accept()?;
         let mut magic = [0; 4];
         c.read_exact(&mut magic)?;
-        ensure!(&magic == b"PMT1");
-        c.write_all(b"PMT1")?;
+        ensure!(&magic == b"PMT2");
+        c.write_all(b"PMT2")?;
         Ok(())
     });
     let _ = cmd().args(["attach", name]).output().await?;
@@ -1039,6 +1045,12 @@ async fn reachable_listing_and_direct_attach() -> Result<()> {
         hanging.accept().unwrap_err().kind(),
         std::io::ErrorKind::WouldBlock
     );
+    let timed_out = timeout(
+        Duration::from_secs(4),
+        cmd().args(["attach", "pimate-bbbbbbbb"]).output(),
+    )
+    .await??;
+    assert!(!timed_out.status.success());
     let _target = {
         std::fs::remove_file(&own)?;
         UnixListener::bind(own)?
@@ -1046,7 +1058,7 @@ async fn reachable_listing_and_direct_attach() -> Result<()> {
     let list = cmd().arg("attach").output().await?;
     assert!(list.status.success());
     let rows: Vec<Value> = serde_json::from_slice(&list.stdout)?;
-    assert_eq!(rows.len(), 2);
+    assert!(rows.is_empty(), "unresponsive peers are not terminals");
     let alias = root.join("long".repeat(30));
     std::os::unix::fs::symlink(root, &alias)?;
     let out = cmd()
@@ -1232,8 +1244,7 @@ async fn unreachable_sockets_are_hidden_but_never_unlinked() -> Result<()> {
     assert!(path.exists() && other.exists());
     let listener = sock.listen(5)?;
     let rows: Vec<Value> = serde_json::from_slice(&attach().output().await?.stdout)?;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["name"], "pimate-01234567");
+    assert!(rows.is_empty(), "connect alone is not a keeper response");
     drop(listener);
     assert_eq!(
         serde_json::from_slice::<Value>(&attach().output().await?.stdout)?,
@@ -1891,35 +1902,42 @@ async fn keeper_drains_detached_and_resizes_shell() -> Result<()> {
     .await?;
     for rows in [32u8, 42] {
         let mut c = tokio::net::UnixStream::connect(&socket).await?;
-        c.write_all(b"PMT1").await?;
+        c.write_all(b"PMT2").await?;
         let mut magic = [0; 4];
         c.read_exact(&mut magic).await?;
-        assert_eq!(&magic, b"PMT1");
+        assert_eq!(&magic, b"PMT2");
         c.write_all(&[b'S', 0, rows, 0, 80]).await?;
         c.write_all(b"I\0\x05size\n").await?;
-        let mut c = BufReader::new(c);
         timeout(Duration::from_secs(3), async {
-            let mut line = String::new();
+            let mut out = Vec::new();
             loop {
-                line.clear();
-                ensure!(c.read_line(&mut line).await? > 0);
-                if line.trim() == format!("{rows} 80") {
+                let len = c.read_u16().await? as usize;
+                ensure!(len > 0);
+                let mut frame = vec![0; len];
+                c.read_exact(&mut frame).await?;
+                out.extend(frame);
+                if String::from_utf8_lossy(&out).contains(&format!("{rows} 80")) {
                     return Ok::<_, anyhow::Error>(());
                 }
             }
         })
         .await??;
         if rows == 42 {
-            c.get_mut().write_all(b"I\0\x05stop\n").await?;
+            c.write_all(b"I\0\x05stop\n").await?;
         }
         drop(c);
         timeout(Duration::from_secs(3), async {
-            use std::os::unix::fs::MetadataExt;
-            while socket.metadata().is_ok_and(|m| m.mode() & 0o100 != 0) {
+            while socket.exists() {
+                let listing = cli(root).arg("attach").output().await?;
+                let rows: Vec<Value> = serde_json::from_slice(&listing.stdout)?;
+                if rows.first().is_none_or(|v| v["attached"] == false) {
+                    break;
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
+            Ok::<_, anyhow::Error>(())
         })
-        .await?;
+        .await??;
     }
     ensure!(
         timeout(Duration::from_secs(3), keeper.wait())
@@ -1927,5 +1945,23 @@ async fn keeper_drains_detached_and_resizes_shell() -> Result<()> {
             .success()
     );
     ensure!(!socket.exists());
+    Ok(())
+}
+
+#[tokio::test]
+async fn keeper_attach_lifecycle() -> Result<()> {
+    let d = tempfile::tempdir_in("/tmp")?;
+    let status = cli_exe(d.path(), Path::new("/usr/bin/env"))
+        .args([
+            "python3",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/support/terminal_peer.py"
+            ),
+            env!("CARGO_BIN_EXE_pimate"),
+        ])
+        .status()
+        .await?;
+    ensure!(status.success());
     Ok(())
 }
