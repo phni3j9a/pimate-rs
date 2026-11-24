@@ -4,6 +4,7 @@ struct Rows {
     var revision: UInt64 = 0
     var groups: [String: [Item]] = [:]
     var notices = ChatNotices()
+    private(set) var viewGeneration = UUID()
     init() {}
     init(_ snapshot: Snapshot) {
         revision = snapshot.revision
@@ -13,6 +14,15 @@ struct Rows {
         guard rev > revision else { return }
         if changes.count > 64 || changes.contains(.resyncRequired) { replace(snapshot()); return }
         for change in changes {
+            let group: String, id: String
+            switch change {
+            case .upsert(let item): (group, id) = (item.collection, item.id)
+            case .remove(let g, let i): (group, id) = (g, i)
+            case .resyncRequired: continue
+            }
+            let tracksTarget = group == "view" && ["phase", "instanceId", "session", "startedAt"].contains(id)
+            let before = tracksTarget ? ready(pi) : nil
+            let start = tracksTarget ? field("startedAt") : nil
             switch change {
             case .upsert(let item):
                 notices.update(item.collection, item.id, item, instance: pi)
@@ -23,8 +33,16 @@ struct Rows {
             case .remove(let collection, let id): notices.update(collection, id, nil, instance: pi); groups[collection]?.removeAll { $0.id == id }
             case .resyncRequired: break
             }
+            if tracksTarget && (before != ready(pi) || start != field("startedAt")) { viewGeneration = UUID() }
         }
         revision = rev
+        reconcileMove()
+    }
+    private mutating func reconcileMove() {
+        guard notices.move == nil, let target = ready(pi), let dest = target.session,
+              let item = groups["notice"]?.first(where: { $0.id == "sessionChanged" }),
+              item.object.obj("to")["id"] as? String == dest else { return }
+        notices.update("notice", "sessionChanged", item, instance: target.instance, snapshot: true)
     }
     private var pi: String? { groups["view"]?.first { $0.id == "instanceId" }?.string }
     mutating func replace(_ snapshot: Snapshot) {
@@ -35,6 +53,7 @@ struct Rows {
             if group != "notice" || previous != revision { tracked.update(group, id, groups[group]?.first { $0.id == id }, instance: pi, snapshot: true) }
         }
         notices = tracked
+        reconcileMove()
     }
     func field(_ id: String) -> String? { groups["view"]?.first { $0.id == id }?.json }
     func ready(_ selected: String?) -> Target? {

@@ -81,9 +81,9 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         generations[id] = generation; connections[id] = c; publish(Rows(c.snapshot()), id: id)
     }
     private func publish(_ r: Rows, id: String) {
-        let old = editor
+        let old = editor, changedView = host == id && rows[id]?.viewGeneration != r.viewGeneration
         rows[id] = r
-        if editor != old { images.clear(); sheet = nil; selection = UUID(); message = "" }
+        if editor != old || changedView { images.clear(); sheet = nil; selection = UUID(); message = "" }
         if let key = editor, key.host == id {
             if let result = r.notices.receipt, !result.textHandled, result.instance == key.target.instance,
                result.outcome == .done, let dest = result.value["sessionId"] as? String, dest == key.target.session,

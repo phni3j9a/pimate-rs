@@ -39,3 +39,15 @@ final class ChatStateTests: XCTestCase {
         }
     }
 }
+
+extension ChatStateTests {
+    func testMoveFromResyncSnapshotWaitsForReadyDestination() {
+        var rows = Rows()
+        let notice = row("notice", "sessionChanged", #"{"reason":"resume","from":{"id":"A"},"to":{"id":"B"}}"#)
+        rows.replace(Snapshot(revision: 5, items: [notice])); XCTAssertNil(rows.notices.move)
+        rows.apply(6, [.upsert(row("view", "instanceId", #""pi""#)), .upsert(row("view", "phase", #""ready""#)), .upsert(row("view", "session", #"{"id":"C"}"#))], snapshot: { fatalError() })
+        XCTAssertNil(rows.notices.move)
+        rows.apply(7, [.upsert(row("view", "session", #"{"id":"B"}"#))], snapshot: { fatalError() })
+        XCTAssertEqual(rows.notices.move?.instance, "pi"); XCTAssertEqual(rows.notices.move?.local, false)
+    }
+}

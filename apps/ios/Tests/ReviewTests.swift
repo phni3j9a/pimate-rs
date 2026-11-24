@@ -20,6 +20,7 @@ private final class TestConnection: Connection, @unchecked Sendable {
     override func perform(operation: PiMate.Operation) async throws -> String { try await receipt(); return "{}" }
 }
 private final class TestCore: Core, @unchecked Sendable {
+    var listeners: [String: Listener] = [:]
     var locked = false, blockedHost: String?, attempts: [String] = []
     var pairCalls = 0, lockAfterPair = false
     private var registrations = ["a", "b"].map { Host(id: $0, name: $0, address: "unused", deviceId: "d", needsPairing: false) }
@@ -35,7 +36,7 @@ private final class TestCore: Core, @unchecked Sendable {
         return registrations
     }
     override func connect(id: String, listener: Listener) throws -> Connection {
-        attempts.append(id); if id == blockedHost { throw CoreError.Storage }; return c
+        listeners[id] = listener; attempts.append(id); if id == blockedHost { throw CoreError.Storage }; return c
     }
 }
 
@@ -220,5 +221,22 @@ extension ReviewTests {
         do { _ = try await model.builtin(key, model.body(key)); XCTFail() } catch CoreError.Blocked {}
         model.confirmMove(key, id: try XCTUnwrap(model.move?.id)); core.c.receipt = {}
         _ = try await model.builtin(key, model.body(key)); XCTAssertEqual(model.body(key).text, "")
+    }
+}
+
+extension ReviewTests {
+    @MainActor func testRestartWithinDeliveryBatchInvalidatesDestructiveSheet() async throws {
+        for restart in [true, false] {
+            let core = TestCore(noHandle: .init()), model = SessionModel(core: core)
+            try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor), sheet = try model.openSheet(key, page: .session)
+            let listener = try XCTUnwrap(core.listeners["a"])
+            if restart { listener.changed(revision: 2, changes: [.upsert(Item(collection: "view", id: "startedAt", position: 0, json: "2"))]) }
+            else {
+                listener.changed(revision: 2, changes: [.remove(collection: "view", id: "phase")]); listener.changed(revision: 3, changes: [.upsert(Item(collection: "view", id: "phase", position: 0, json: #""ready""#))])
+            }
+            await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
+            XCTAssertEqual(model.editor, key); XCTAssertNil(model.sheet); core.c.receipt = { XCTFail("old confirmation reached a new Pi") }
+            do { try await model.run(.shutdown, in: sheet); XCTFail() } catch CoreError.StaleTarget {}
+        }
     }
 }
