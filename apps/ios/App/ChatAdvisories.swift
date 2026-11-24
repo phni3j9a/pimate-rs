@@ -2,22 +2,29 @@ import SwiftUI
 
 struct TerminalCard: View {
     let title: String, command: String?
-    @State private var copied = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Label("PC のターミナルで操作が必要です", systemImage: "terminal").font(.headline).accessibilityAddTraits(.isHeader)
             Text(title.isEmpty ? "この画面はスマホでは操作できません。Pi を起動した PC で操作してください。" : "「\(title)」はスマホでは操作できません。Pi を起動した PC で操作してください。")
                 .foregroundStyle(PiTheme.secondary)
             if let command {
-                Button {
-                    UIPasteboard.general.string = command; copied = true
-                    UIAccessibility.post(notification: .announcement, argument: "コマンドをコピーしました")
-                } label: {
-                    HStack { Text(verbatim: command).font(.callout.monospaced()); Spacer(); SwiftUI.Image(systemName: copied ? "checkmark" : "doc.on.doc") }
-                        .padding(.horizontal, 12).frame(minHeight: 44).background(PiTheme.background, in: RoundedRectangle(cornerRadius: 12))
-                }.accessibilityLabel("コマンドをコピー").accessibilityValue(command)
+                CopyAttachCommand(command: command)
             }
         }.padding(16).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+struct CopyAttachCommand: View {
+    let command: String
+    @State private var copied = false
+    var body: some View {
+        Button {
+            UIPasteboard.general.string = command; copied = true
+            UIAccessibility.post(notification: .announcement, argument: "コマンドをコピーしました")
+        } label: {
+            HStack { Text(verbatim: command).font(.callout.monospaced()); Spacer(); SwiftUI.Image(systemName: copied ? "checkmark" : "doc.on.doc") }
+                .padding(.horizontal, 12).frame(minHeight: 44).background(PiTheme.background, in: RoundedRectangle(cornerRadius: 12))
+        }.accessibilityLabel("コマンドをコピー").accessibilityValue(command)
     }
 }
 

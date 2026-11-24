@@ -12,6 +12,7 @@ struct PiSheetMenu: ViewModifier {
                 Menu {
                     Button("モデル・Thinking", systemImage: "slider.horizontal.3") { open(.model) }
                     Button("使用状況", systemImage: "gauge.with.dots.needle.33percent") { open(.usage) }
+                    Button("セッション", systemImage: "bubble.left.and.bubble.right") { open(.session) }
                 } label: { Label("会話の操作", systemImage: "ellipsis.circle") }
             }
         }.sheet(item: Binding(get: { shown }, set: { if $0 == nil, let shown { model.closeSheet(shown) } })) { opened in
@@ -61,6 +62,9 @@ struct PiSheetPanel: View {
                 switch opened.page {
                 case .model: ModelSettings(panel: self)
                 case .usage: UsageSheet(panel: self)
+                case .session: SessionSheetView(panel: self)
+                case .resume: ResumeSheet(panel: self)
+                case .fork: ForkSheet(panel: self)
                 default: EmptyView()
                 }
             }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { model.closeSheet(opened) }.accessibilityIdentifier("sheet-close") } }
