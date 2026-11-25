@@ -20,6 +20,7 @@ pub(super) struct Nav {
     pub page: Option<Page>,
     pub note: String,
     pub pref_error: bool,
+    pub spawn: Option<super::new_pi::Fields>,
     pub tasks: Vec<Task<()>>,
 }
 pub(super) type Navigation = Entity<Nav>;
@@ -104,6 +105,32 @@ impl Desktop {
                 ..Default::default()
             }
         });
+        cx.notify();
+    }
+    pub(super) fn page_task<T: 'static, F: Future<Output = T> + 'static>(
+        &self,
+        n: &Navigation,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+        run: impl FnOnce(Page) -> F + 'static,
+        done: impl FnOnce(&mut Desktop, &Navigation, T, &mut Window, &mut Context<Desktop>) + 'static,
+    ) {
+        let Some(page) = n.read(cx).page.clone().filter(|p| p.visible(self)) else {
+            return;
+        };
+        let nav = n.downgrade();
+        let task = cx.spawn_in(w, async move |app, cx| {
+            let result = run(page.clone()).await;
+            let _ = app.update_in(cx, |app, w, cx| {
+                if page.visible(app)
+                    && let Some(n) = nav.upgrade()
+                {
+                    done(app, &n, result, w, cx);
+                    cx.notify();
+                }
+            });
+        });
+        n.update(cx, |s, _| s.tasks.push(task));
         cx.notify();
     }
     pub(super) fn nav_button(
@@ -288,12 +315,13 @@ impl Desktop {
         &mut self,
         n: &Navigation,
         p: &Colors,
-        _w: &mut Window,
+        w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
         let r = n.read(cx).route.clone();
         let (title, body) = match &r {
             Route::Home => return None,
+            Route::New(id) => ("新しい Pi", self.new_pi(n, p, id, w, cx)),
             Route::Settings => ("設定", self.settings_view(n, p, cx)),
             Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
             Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
