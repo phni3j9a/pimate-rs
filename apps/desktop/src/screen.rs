@@ -86,6 +86,9 @@ fn pi_title<'a>(v: &'a Value, id: &'a str) -> &'a str {
         .or_else(|| v["cwd"].as_str()?.rsplit('/').find(|s| !s.is_empty()))
         .unwrap_or(id)
 }
+fn github_available(rows: &Rows, host: &str, pi: &str) -> bool {
+    rows.get("host", "info")["github"] == true && rows.editor(host, pi).is_some()
+}
 impl Desktop {
     fn pi_row(
         &self,
@@ -337,21 +340,28 @@ impl Desktop {
             );
         }
         side.child(rows)
-            .when(self.editor().is_some(), |v| {
-                v.child(
-                    div().px_2().child(
-                        self.nav_button(
-                            n,
-                            "github",
-                            "GitHub　·　Issue / PR",
-                            Route::Github(pimate_protocol::GitHubQuery::List),
-                            cx,
-                        )
-                        .w_full()
-                        .ghost(),
-                    ),
-                )
-            })
+            .when(
+                self.selected.as_ref().is_some_and(|(h, i)| {
+                    self.machines
+                        .get(h)
+                        .is_some_and(|m| github_available(&m.rows, h, i))
+                }),
+                |v| {
+                    v.child(
+                        div().px_2().child(
+                            self.nav_button(
+                                n,
+                                "github",
+                                "GitHub　·　Issue / PR",
+                                Route::Github(pimate_protocol::GitHubQuery::List),
+                                cx,
+                            )
+                            .w_full()
+                            .ghost(),
+                        ),
+                    )
+                },
+            )
             .child(
                 div().px_2().py_1().child(
                     self.nav_button(n, "new-pi", "＋ 新しい Pi", self.new_route(), cx)
@@ -639,6 +649,39 @@ impl Render for Desktop {
 mod tests {
     use super::pending_panel;
     use gpui::{Context, ScrollHandle, Window, div, point, prelude::*, px, rems, size};
+    #[test]
+    fn github_requires_both_a_ready_editor_and_host_query_support() {
+        use pimate_core::{Item, Snapshot};
+        use serde_json::json;
+        for ready in [false, true] {
+            for github in [false, true] {
+                let rows = super::Rows::snapshot(Snapshot {
+                    revision: 1,
+                    items: [
+                        ("host", "info", json!({"github":github,"githubStatus":true})),
+                        (
+                            "view",
+                            "phase",
+                            json!(if ready { "ready" } else { "loading" }),
+                        ),
+                        ("view", "instanceId", json!("pi")),
+                    ]
+                    .map(|(c, id, v)| Item {
+                        collection: c.into(),
+                        id: id.into(),
+                        json: v.to_string(),
+                        position: 0,
+                    })
+                    .into(),
+                });
+                assert_eq!(
+                    super::github_available(&rows, "host", "pi"),
+                    ready && github
+                );
+                assert!(!super::github_available(&rows, "host", "other"));
+            }
+        }
+    }
     #[gpui::test]
     fn long_pending_draft_scrolls_without_displacing_editor(cx: &mut gpui::TestAppContext) {
         struct Probe(ScrollHandle);
