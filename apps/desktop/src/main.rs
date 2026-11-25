@@ -9,7 +9,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
 };
 use model::{Delivery, EditorKey, Rows};
-use pimate_core::{Connection, Core, Error, Host, Operation};
+use pimate_core::{Connection, Core, Error, Host};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -315,66 +315,6 @@ impl Desktop {
         self.input
             .as_ref()
             .is_some_and(|(k, input, _)| k == key && committed_input_matches(input, text, w, cx))
-    }
-    fn send(&mut self, key: EditorKey, w: &mut Window, cx: &mut Context<Self>) {
-        if self.sending
-            || self.editor().as_ref() != Some(&key)
-            || self.machines[&key.host]
-                .rows
-                .pending_move(&key, &self.drafts)
-                .is_some()
-        {
-            return;
-        }
-        let Some(text) = self.drafts.get(&key).cloned() else {
-            return;
-        };
-        if !self.live_matches(&key, &text, w, cx) {
-            return;
-        }
-        let conn = self.machines[&key.host].conn.clone();
-        let op = Operation::Send {
-            target: key.target(),
-            text: text.clone(),
-            images: vec![],
-        };
-        if let Err(e) = conn.check(op.clone()) {
-            self.notice = format!("送信していません: {e}");
-            cx.notify();
-            return;
-        }
-        self.notice.clear();
-        self.sending = true;
-        let epoch = self.epoch;
-        cx.spawn_in(w, async move |this, cx| {
-            let result = conn.perform(op).await;
-            let _ = this.update_in(cx, |this, w, cx| {
-                this.sending = false;
-                let bound = this.input.as_ref().is_some_and(|i| i.0 == key);
-                let unchanged = !bound || this.live_matches(&key, &text, w, cx);
-                let cleared = model::clear_accepted(
-                    &mut this.drafts,
-                    &key,
-                    &text,
-                    result.is_ok() && unchanged,
-                );
-                if cleared && bound {
-                    this.input = None;
-                }
-                if this
-                    .machines
-                    .get(&key.host)
-                    .is_some_and(|m| Arc::ptr_eq(&m.conn, &conn))
-                    && this.epoch == epoch
-                    && this.editor().as_ref() == Some(&key)
-                {
-                    this.finish_send_notice(result);
-                }
-                cx.notify()
-            });
-        })
-        .detach();
-        cx.notify();
     }
     fn finish_send_notice(&mut self, result: Result<String, Error>) {
         self.notice = match result {

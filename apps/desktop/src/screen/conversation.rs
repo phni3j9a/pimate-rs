@@ -6,6 +6,8 @@ struct Conversation {
     documents: markdown::Messages,
     expanded: HashSet<String>,
     // The append boundary from the last time we saw a live answer, even if its row was offscreen.
+    // Increment at completion/replacement, not on deltas or an intervening user row.
+    stream_generation: u64,
     stream_tail: Option<(usize, Option<String>)>,
 }
 impl Conversation {
@@ -33,11 +35,13 @@ impl Conversation {
                     }
                 }
                 if done.is_some() || !streaming {
+                    self.stream_generation += 1;
                     self.documents
                         .finish_stream(done.map(|i| added[i].0.as_str()));
                 }
             } else {
                 // A replaced history is not an acknowledgement of the old stream.
+                self.stream_generation += 1;
                 self.documents.finish_stream(None);
             }
         }
@@ -99,11 +103,9 @@ fn tool_result(
                 }),
         )
         .when(expanded, |panel| {
-            panel.child(
-                div().rounded_md().p_2().bg(p.surface).child(
-                    conversation.update(cx, |c, cx| c.documents.view(id, text, false, w, cx)),
-                ),
-            )
+            panel.child(div().rounded_md().p_2().bg(p.surface).child(
+                conversation.update(cx, |c, cx| c.documents.view(id, text, false, None, w, cx)),
+            ))
         })
         .into_any_element()
 }
@@ -113,7 +115,8 @@ impl Desktop {
         &self,
         key: &EditorKey,
         p: &Colors,
-        dark: bool,
+        media: super::chat_media::Media,
+        inspector: Entity<super::chat_review::Inspector>,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -137,6 +140,11 @@ impl Desktop {
         conversation.update(cx, |c, _| {
             c.prepare(entries, streaming, &self.scroll, focused)
         });
+        let stream_answer = format!(
+            "stream:{}:{}",
+            conversation.entity_id().as_u64(),
+            conversation.read(cx).stream_generation
+        );
         let n = self.scroll.item_count();
         if at_end && !reader.contains_focused(w, cx) {
             self.scroll.scroll_to(ListOffset {
@@ -151,13 +159,13 @@ impl Desktop {
                 .child(p.caption("まだメッセージはありません"))
                 .into_any_element();
         }
+        let p = *p;
         let desktop = cx.entity();
         let k = key.clone();
         let list = list(self.scroll.clone(), move |i, w, cx| {
             desktop.update(cx, |this, cx| {
                 let data = &this.machines[&k.host].rows;
                 let entries = data.group("entry");
-                let p = Colors::new(dark);
                 let row = entries.get(i);
                 let v = row.map(|(_, v)| v).unwrap_or(&Value::Null);
                 let stream = row.is_none();
@@ -175,21 +183,51 @@ impl Desktop {
                     v["text"].as_str()
                 }
                 .unwrap_or("");
+                let images = state::images::history_count(v);
+
+                let open_run = |call: &str| -> Option<Button> {
+                    let run = data.original_run(call)?.to_owned();
+                    let ins = inspector.clone();
+                    Some(
+                        Button::new(SharedString::from(format!("original:{id}:{call}")))
+                            .small()
+                            .label("サブエージェントの実行を開く")
+                            .on_click(move |_, _, cx| {
+                                ins.update(cx, |s, cx| {
+                                    s.agents = true;
+                                    s.child = None;
+                                    s.run = Some(run.clone());
+                                    cx.notify()
+                                })
+                            }),
+                    )
+                };
                 if v["kind"] == "tool_result" {
-                    return tool_result(&conversation, &p, id, v, w, cx);
+                    let run = v["toolCallId"].as_str().and_then(open_run);
+                    return div()
+                        .child(tool_result(&conversation, &p, id, v, w, cx))
+                        .children(run)
+                        .when(images > 0, |b| {
+                            b.child(media.history(
+                                &row.unwrap().0,
+                                v,
+                                data.get("view", "entryImages") == true,
+                                w,
+                                cx,
+                            ))
+                        })
+                        .into_any_element();
                 }
                 if text.is_empty()
-                    && let Some(calls) = v["toolCalls"].as_array().filter(|cs| !cs.is_empty())
+                    && let Some(calls) = v["toolCalls"].as_array().filter(|a| !a.is_empty())
                 {
                     return div()
                         .px_4()
                         .pt_2()
                         .child(p.caption(format!("Pi · {} 件のツールを使用", calls.len())))
+                        .children(calls.iter().filter_map(|c| open_run(c["id"].as_str()?)))
                         .into_any_element();
                 }
-                let images = v["imageCount"]
-                    .as_u64()
-                    .unwrap_or_else(|| v["images"].as_array().map_or(0, |a| a.len() as u64));
                 let user = role == "あなた";
                 div()
                     .w_full()
@@ -209,13 +247,26 @@ impl Desktop {
                                     .px_3()
                                     .py_2()
                             })
-                            .child(
-                                conversation
-                                    .update(cx, |c, cx| c.documents.view(id, text, stream, w, cx)),
-                            ),
+                            .child(conversation.update(cx, |c, cx| {
+                                let answer = if stream { &stream_answer } else { &id };
+                                c.documents.view(
+                                    id.clone(),
+                                    text,
+                                    stream,
+                                    Some((&media, answer)),
+                                    w,
+                                    cx,
+                                )
+                            })),
                     )
                     .when(images > 0, |v| {
-                        v.child(p.caption(format!("画像 {images} 枚（プレビュー未対応）")))
+                        v.child(media.history(
+                            &row.unwrap().0,
+                            &row.unwrap().1,
+                            data.get("view", "entryImages") == true,
+                            w,
+                            cx,
+                        ))
                     })
                     .into_any_element()
             })
@@ -236,6 +287,28 @@ impl Desktop {
 mod tests {
     use super::transcript;
     use gpui::{Context, ListOffset, ListState, Window, div, list, point, prelude::*, px, size};
+    #[gpui::test]
+    fn stream_image_identity_survives_interruptions_but_not_the_next_answer(
+        _cx: &mut gpui::TestAppContext,
+    ) {
+        let list = transcript();
+        let mut c = super::Conversation::default();
+        let mut entries = vec![];
+        c.prepare(&entries, true, &list, false);
+        let first = c.stream_generation;
+        entries.push(("interrupt".into(), serde_json::json!({"kind":"user"})));
+        c.prepare(&entries, true, &list, false);
+        assert_eq!(c.stream_generation, first);
+        entries.push(("done".into(), serde_json::json!({"kind":"assistant"})));
+        c.prepare(&entries, true, &list, false);
+        let second = c.stream_generation;
+        assert_ne!(first, second);
+        c.prepare(&entries, true, &list, false);
+        assert_eq!(second, c.stream_generation);
+        c.prepare(&entries, false, &list, false);
+        c.prepare(&entries, true, &list, false);
+        assert_ne!(second, c.stream_generation);
+    }
     #[gpui::test]
     fn ten_thousand_history_rows_only_mount_near_the_viewport(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};

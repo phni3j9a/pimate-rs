@@ -1,10 +1,12 @@
-//! Render the shared AST, never HTML. Images remain alt text; no automatic network or file reads.
+//! Render the shared AST; never interpret message content as HTML.
+use crate::screen::chat_media::{Gallery, Media};
 use gpui::{
     AnyElement, App, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle,
     MouseButton, SharedString, StrikethroughStyle, StyledText, Task, UnderlineStyle, Window, div,
     prelude::*, px, rems,
 };
 use gpui_component::ActiveTheme;
+use gpui_component::{Sizable, button::Button};
 use pimate_markdown::{Block, Content, Inline, Style as SpanStyle};
 use std::{
     collections::{HashMap, VecDeque},
@@ -203,15 +205,62 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
         .into_any_element()
 }
 
-fn block(parent: &str, b: &Block, w: &mut Window, cx: &mut App) -> AnyElement {
+fn rich_line(
+    id: &str,
+    spans: &[Inline],
+    media: Option<(&Media, &Gallery)>,
+    w: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let Some((m, g)) = media else {
+        return line(id, spans, w, cx);
+    };
+    if !spans.iter().any(|s| matches!(s, Inline::Image(_))) {
+        return line(&format!("{id}:0"), spans, w, cx);
+    }
+    let mut col = div().flex().flex_col();
+    let mut start = 0;
+    for (j, s) in spans.iter().enumerate() {
+        if let Inline::Image(i) = s {
+            if j > start {
+                col = col.child(line(&format!("{id}:{start}"), &spans[start..j], w, cx));
+            }
+            start = j + 1;
+            col = col.child(
+                if let Some(link) = g.http_link(i.index, format!("link:{id}:{j}")) {
+                    link.into_any_element()
+                } else {
+                    m.tile(
+                        &format!("md:{id}:{j}:{:p}", i.src.as_ptr()),
+                        g.clone(),
+                        i.index,
+                        w,
+                        cx,
+                    )
+                },
+            );
+        }
+    }
+    if start < spans.len() {
+        col = col.child(line(&format!("{id}:{start}"), &spans[start..], w, cx))
+    }
+    col.into_any_element()
+}
+fn block(
+    parent: &str,
+    b: &Block,
+    media: Option<(&Media, &Gallery)>,
+    w: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
     let id = format!("{parent}/{}", b.id);
     let col = div().flex().flex_col().gap_1().min_w_0();
     match &b.content {
-        Content::Paragraph(s) => line(&id, s, w, cx),
+        Content::Paragraph(s) => rich_line(&id, s, media, w, cx),
         Content::Heading { level, spans } => col
             .font_weight(FontWeight::SEMIBOLD)
             .text_size(rems(if *level <= 2 { 1.18 } else { 1. }))
-            .child(line(&id, spans, w, cx))
+            .child(rich_line(&id, spans, media, w, cx))
             .into_any_element(),
         Content::Rule => div().h(px(1.)).bg(cx.theme().border).into_any_element(),
         Content::Code { text, language } => col
@@ -242,7 +291,7 @@ fn block(parent: &str, b: &Block, w: &mut Window, cx: &mut App) -> AnyElement {
             .when(matches!(b.content, Content::Quote(_)), |c| {
                 c.border_l_2().border_color(cx.theme().border)
             })
-            .children(children.iter().map(|c| block(&id, c, w, cx)))
+            .children(children.iter().map(|c| block(&id, c, media, w, cx)))
             .into_any_element(),
         Content::List { start, items } => col
             .children(items.iter().enumerate().map(|(i, c)| {
@@ -259,40 +308,71 @@ fn block(parent: &str, b: &Block, w: &mut Window, cx: &mut App) -> AnyElement {
                     _ => start
                         .map_or_else(|| "•".into(), |n| format!("{}.", u64::from(n) + i as u64)),
                 };
-                div().flex().child(mark).child(block(&id, c, w, cx))
+                div().flex().child(mark).child(block(&id, c, media, w, cx))
             }))
             .into_any_element(),
         Content::Table(t) => col
-            .id(SharedString::from(format!("table:{id}")))
-            .overflow_x_scroll()
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded_md()
-            .gap_0()
-            .children(
-                std::iter::once(&t.header)
-                    .chain(&t.rows)
-                    .enumerate()
-                    .map(|(r, row)| {
-                        div()
-                            .flex()
-                            .when(r == 0, |v| {
-                                v.bg(cx.theme().muted).font_weight(FontWeight::SEMIBOLD)
+            .child(table(&id, t, media, w, cx))
+            .when_some(media, |c, (m, g)| {
+                let viewer = m.viewer.clone();
+                let t = t.clone();
+                let g = g.clone();
+                c.child(
+                    Button::new(SharedString::from(format!("expand:{id}")))
+                        .small()
+                        .label("表を開く")
+                        .on_click(move |_, _, cx| {
+                            viewer.update(cx, |v, cx| {
+                                v.table = Some((t.clone(), g.clone()));
+                                cx.notify()
                             })
-                            .children(row.iter().enumerate().map(|(k, s)| {
-                                div()
-                                    .flex_1()
-                                    .min_w(rems(6.))
-                                    .px_2()
-                                    .py_1()
-                                    .border_b_1()
-                                    .border_color(cx.theme().border)
-                                    .child(line(&format!("{id}/{r}/{k}"), s, w, cx))
-                            }))
-                    }),
-            )
+                        }),
+                )
+            })
             .into_any_element(),
     }
+}
+
+pub(crate) fn table(
+    id: &str,
+    t: &pimate_markdown::Table,
+    media: Option<(&Media, &Gallery)>,
+    w: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .id(SharedString::from(format!("table:{id}")))
+        .overflow_x_scroll()
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded_md()
+        .gap_0()
+        .children(
+            std::iter::once(&t.header)
+                .chain(&t.rows)
+                .enumerate()
+                .map(|(r, row)| {
+                    div()
+                        .flex()
+                        .when(r == 0, |v| {
+                            v.bg(cx.theme().muted).font_weight(FontWeight::SEMIBOLD)
+                        })
+                        .children(row.iter().enumerate().map(|(k, s)| {
+                            div()
+                                .flex_1()
+                                .min_w(rems(6.))
+                                .px_2()
+                                .py_1()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(rich_line(&format!("{id}/{r}/{k}"), s, media, w, cx))
+                        }))
+                }),
+        )
+        .into_any_element()
 }
 
 #[derive(Default)]
@@ -300,12 +380,15 @@ struct Cached {
     latest: Arc<str>,
     published: Arc<str>,
     blocks: Vec<Block>,
+    images: Arc<[pimate_markdown::Image]>,
+    files: bool,
     pending: Option<Task<()>>,
 }
 fn sample(cache: &mut Cached, cx: &mut Context<Cached>, streaming: bool) {
     if cache.pending.is_some() || cache.latest == cache.published {
         return;
     }
+    let files = cache.files;
     cache.pending = Some(cx.spawn(async move |this, cx| {
         if streaming {
             cx.background_executor()
@@ -315,16 +398,17 @@ fn sample(cache: &mut Cached, cx: &mut Context<Cached>, streaming: bool) {
         let Ok(source) = this.read_with(cx, |c, _| c.latest.clone()) else {
             return;
         };
-        let (source, blocks) = cx
+        let (source, doc) = cx
             .background_executor()
             .spawn(async move {
-                let doc = pimate_markdown::parse(&source, false);
-                (source, doc.blocks)
+                let doc = pimate_markdown::parse(&source, files);
+                (source, doc)
             })
             .await;
         let _ = this.update(cx, |c, cx| {
             c.published = source;
-            c.blocks = blocks;
+            c.blocks = doc.blocks;
+            c.images = doc.images.into();
             c.pending = None;
             cx.notify();
         });
@@ -368,6 +452,7 @@ impl Messages {
         id: String,
         text: &str,
         streaming: bool,
+        media: Option<(&Media, &str)>,
         w: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
@@ -387,12 +472,24 @@ impl Messages {
         let col = div().flex().flex_col().gap_2().min_w_0();
         let namespace = cache.entity_id().as_u64().to_string();
         cache.update(cx, |c, cx| {
+            let files = media.is_some_and(|(m, _)| m.files);
+            if files != c.files {
+                c.files = files;
+                c.published = Arc::default();
+                c.pending = None;
+            }
             if c.latest.as_ref() != text {
                 c.latest = text.into();
             }
             sample(c, cx, streaming);
-            col.children(c.blocks.iter().map(|b| block(&namespace, b, w, cx)))
-                .into_any_element()
+            let gallery =
+                media.map(|(m, id)| (m, Gallery::markdown(&m.page, id, c.images.clone())));
+            col.children(
+                c.blocks
+                    .iter()
+                    .map(|b| block(&namespace, b, gallery.as_ref().map(|(m, g)| (*m, g)), w, cx)),
+            )
+            .into_any_element()
         })
     }
 }
@@ -460,6 +557,54 @@ fn reparsed_markup_never_retargets_the_selection(cx: &mut gpui::TestAppContext) 
 
 #[cfg(test)]
 #[gpui::test]
+fn selected_prefix_copies_after_image_appends(cx: &mut gpui::TestAppContext) {
+    use gpui::point;
+    struct Text(String);
+    impl Render for Text {
+        fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let doc = pimate_markdown::parse(&self.0, true);
+            let Content::Paragraph(spans) = &doc.blocks[0].content else {
+                panic!()
+            };
+            let media = Media {
+                page: crate::state::dummy_page(),
+                files: true,
+                viewer: w.use_state(cx, |_, _| Default::default()),
+            };
+            let gallery = Gallery::markdown(&media.page, "a", doc.images.into());
+            rich_line("answer", spans, Some((&media, &gallery)), w, cx)
+        }
+    }
+    cx.update(gpui_component::init);
+    let (v, w) = cx.add_window_view(|_, _| Text("stable paragraph".into()));
+    let a = point(px(1.), px(8.));
+    let b = point(px(39.), px(8.));
+    w.simulate_mouse_down(a, MouseButton::Left, Default::default());
+    w.simulate_mouse_move(b, MouseButton::Left, Default::default());
+    w.simulate_mouse_up(b, MouseButton::Left, Default::default());
+    let copy = if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-c"
+    };
+    w.simulate_keystrokes(copy);
+    let first = w
+        .update(|_, cx| cx.read_from_clipboard())
+        .and_then(|c| c.text())
+        .unwrap();
+    assert!(!first.is_empty() && "stable paragraph".starts_with(&first));
+    w.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("not copied".into())));
+    v.update(w, |v, cx| {
+        v.0.push_str(" ![plot](http://example.org/image.png)");
+        cx.notify()
+    });
+    w.run_until_parked();
+    w.simulate_keystrokes(copy);
+    assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()), Some(first));
+}
+
+#[cfg(test)]
+#[gpui::test]
 fn tall_viewport_keeps_every_mounted_document(cx: &mut gpui::TestAppContext) {
     use gpui::{Entity, ListAlignment, ListOffset, ListState, list, size};
     struct History {
@@ -474,7 +619,7 @@ fn tall_viewport_keeps_every_mounted_document(cx: &mut gpui::TestAppContext) {
                 div()
                     .h(px(24.))
                     .child(docs.update(cx, |docs, cx| {
-                        docs.view(i.to_string(), "short", false, w, cx)
+                        docs.view(i.to_string(), "short", false, None, w, cx)
                     }))
                     .into_any_element()
             })
