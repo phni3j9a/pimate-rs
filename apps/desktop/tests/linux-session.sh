@@ -19,6 +19,8 @@ cd "$HOME"; umask 077; ulimit -c 0
 export XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=wayland-0 DISPLAY=:19731
 gnome-keyring-daemon --foreground --unlock --components=secrets < <(printf disposable) >keyring.log 2>&1 &
 export PRIVATE_KEYRING_PID=$!
+# Only the private bus. The portal must see this Wayland session, not the login session.
+dbus-update-activation-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE WAYLAND_DISPLAY
 gdbus wait --session --timeout 10 org.freedesktop.secrets
 gsettings set org.gnome.shell disable-user-extensions true
 gsettings set org.gnome.desktop.session idle-delay 0
