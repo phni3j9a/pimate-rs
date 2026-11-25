@@ -294,22 +294,36 @@ impl Desktop {
         }
         let registration = self.state.registration.message();
         if !registration.is_empty() {
+            let error = self.state.registration.error;
+            let warning = error.is_some() || self.state.registration.save_unknown;
+            // Keep the store diagnostic legible and separate from the Japanese recovery text.
+            let message = if let Some(e) = error {
+                registration.replace(&format!(": {e}"), "")
+            } else {
+                registration
+            };
+            let card = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(rems(0.88)).text_color(p.ink).child(message));
+            let card = if let Some(e) = error {
+                card.child(
+                    div()
+                        .text_color(p.waiting)
+                        .font_family("monospace")
+                        .child(e.to_string()),
+                )
+            } else {
+                card
+            };
             side = side.child(
-                p.caption(registration)
-                    .mx_2()
+                card.mx_2()
                     .mb_2()
                     .p_2()
                     .rounded_md()
                     .border_l_2()
-                    .border_color(
-                        if self.state.registration.error.is_some()
-                            || self.state.registration.save_unknown
-                        {
-                            p.waiting
-                        } else {
-                            p.accent
-                        },
-                    )
+                    .border_color(if warning { p.waiting } else { p.accent })
                     .bg(p.bg)
                     .debug_selector(|| "registration-notice".into()),
             );
