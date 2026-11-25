@@ -2,6 +2,10 @@ name: CI
 on: [push, pull_request]
 permissions:
   contents: read
+# A newer push to the same PR makes older runs moot; main keeps every run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   protocol:
     runs-on: ubuntu-latest
