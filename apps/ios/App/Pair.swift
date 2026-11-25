@@ -8,6 +8,8 @@ struct PairScreen: View {
     @State private var error = ""
     @State private var entering = false
     @State private var scanning = false
+    @State private var guide: SetupGuide.Step?
+    @State private var scanAfterGuide = false
     @FocusState private var focused: Bool
     private struct Candidate { let link: String, preview: PairPreview }
     @State private var candidate: Candidate?
@@ -35,8 +37,12 @@ struct PairScreen: View {
                     Text("PC の Pi でこう打つと、QR コードが表示されます").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                 }.padding(18).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 18))
                 VStack(alignment: .leading, spacing: 20) {
-                    step("1", "スマホと PC を Tailscale でつなぐ", "両方で同じアカウントにログイン")
-                    step("2", "PC に PiMate を入れる", "Pi で /pimate setup を実行")
+                    Button { guide = .tailscale } label: {
+                        step("1", "スマホと PC を Tailscale でつなぐ", "両方で同じアカウントにログイン")
+                    }.foregroundStyle(PiTheme.text)
+                    Button { guide = .pc } label: {
+                        step("2", "PC に PiMate を入れる", "Pi で /pimate setup を実行")
+                    }.foregroundStyle(PiTheme.text)
                     step("3", "QR コードを読み取る", "コードは 10 分間、1 回だけ使えます")
                 }
                 if !error.isEmpty || !model.message.isEmpty { Text(error.isEmpty ? model.message : error).foregroundStyle(PiTheme.failure) }
@@ -62,7 +68,14 @@ struct PairScreen: View {
                 if model.busy { ProgressView("接続しています…") }
             }.padding(.horizontal, 20).padding(.vertical, 6).frame(maxWidth: 540).background(PiTheme.background)
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
-            .sheet(isPresented: $scanning) { ScannerSheet { value in scanning = false; preview(value) } }
+            .sheet(item: $guide, onDismiss: {
+                if scanAfterGuide { scanAfterGuide = false; scanning = true }
+            }) { step in
+                NavigationStack {
+                    SetupGuide(step: step) { scanAfterGuide = true; guide = nil }
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { guide = nil } } }
+                }
+            }.sheet(isPresented: $scanning) { ScannerSheet { value in scanning = false; preview(value) } }
     }
     private func step(_ n: String, _ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
