@@ -125,10 +125,7 @@ impl App {
                 };
                 result.unwrap_or_else(|e| {
                     let msg = e.to_string();
-                    let code = match msg.as_str() {
-                        "not_found" | "not_directory" | "bad_request" => msg.as_str(),
-                        _ => "spawn_failed",
-                    };
+                    let code = spawn_error_code(&msg);
                     json!({"ok":false,"code":code,"message":format!("{msg}; not retried")})
                 })
             }
@@ -779,5 +776,31 @@ mod tests {
         let _sending = rx.try_recv().unwrap();
         out.send(&"12345");
         assert!(out.slow.is_cancelled());
+    }
+}
+
+/// `outcome_unknown`: a Pi may already run (clients must check the list before retrying);
+/// `busy`: nothing was started; other failures happened before anything was spawned.
+fn spawn_error_code(msg: &str) -> &str {
+    match msg {
+        "not_found" | "not_directory" | "bad_request" | "busy" | "outcome_unknown" => msg,
+        _ => "spawn_failed",
+    }
+}
+
+#[cfg(test)]
+mod spawn_error_tests {
+    #[test]
+    fn spawn_errors_keep_their_meaning() {
+        for code in [
+            "not_found",
+            "not_directory",
+            "bad_request",
+            "busy",
+            "outcome_unknown",
+        ] {
+            assert_eq!(super::spawn_error_code(code), code);
+        }
+        assert_eq!(super::spawn_error_code("pi not found"), "spawn_failed");
     }
 }
