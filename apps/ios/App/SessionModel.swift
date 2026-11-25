@@ -21,6 +21,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         guard let host, let target = rows[host]?.ready(instance) else { return nil }
         return EditorKey(host: host, target: target)
     }
+    var instructions = ChildInstructions()
     private let images = ChatImages()
     func image(_ key: EditorKey, source: ChatImageSource, thumbnail: Bool) async throws -> Data {
         guard key == editor else { throw CoreError.StaleTarget }; let origin = selection, generation = rows[key.host]?.viewGeneration
@@ -49,14 +50,16 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     }
     func request(_ key: EditorKey, _ method: RcMethod, _ fields: Object) async throws -> String {
         guard key == editor, let c = connections[key.host] else { throw CoreError.StaleTarget }
-        let origin = selection, data = try JSONSerialization.data(withJSONObject: fields)
+        let origin = selection, generation = rows[key.host]?.viewGeneration, data = try JSONSerialization.data(withJSONObject: fields)
         let result = try await c.perform(operation: .rc(target: key.target, method: method, params: String(decoding: data, as: UTF8.self)))
-        guard editor == key, selection == origin, connections[key.host] === c else { throw CoreError.StaleTarget }; return result
+        guard editor == key, selection == origin, generation == rows[key.host]?.viewGeneration, connections[key.host] === c else { throw CoreError.StaleTarget }; return result
     }
     func stats(_ key: EditorKey) -> SessionStats? { editor == key ? connections[key.host]?.sessionStats() : nil }
     func allowances(_ key: EditorKey, nowMs: UInt64) -> [Allowance] {
         guard editor == key else { return [] }; return connections[key.host]?.allowances(nowMs: nowMs) ?? []
     }
+    private(set) var pairedHostId: String?
+    func consumePairedHost() { pairedHostId = nil }
     private var needsReload = true
     init(core: Core) { self.core = core; retryRegistrations() }
 
@@ -99,7 +102,9 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     }
     func pair(_ link: String) async throws {
         guard !busy else { throw CoreError.Blocked }; busy = true; defer { busy = false }
+        let first = hosts.isEmpty && !needsReload
         let h = try await core.pair(link: link, name: "PiMate iOS")
+        pairedHostId = first ? h.id : nil
         // Registration is committed. Retry only local reads, never the one-time pairing request.
         generations[h.id] = nil; connections[h.id] = nil; rows[h.id] = nil
         needsReload = true
@@ -231,5 +236,56 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
         guard key == editor, let c = connections[key.host], !busy,
               body(key).text.isEmpty, body(key).images.isEmpty else { throw CoreError.Blocked }
         drafts[key] = try c.takeUnconfirmed(target: key.target, id: id)
+    }
+}
+
+extension SessionModel {
+    func currentRows(_ id: String) throws -> Rows {
+        guard let c = connections[id] else { throw CoreError.Offline }; return Rows(c.snapshot())
+    }
+
+    func machineRequest(_ id: String, _ operation: Operation) async throws -> Object {
+        switch operation {
+        case .folders, .dirs, .hostModels, .spawn, .githubStatus, .devices, .revoke, .updateCheck, .update, .restart: break
+        default: throw CoreError.BadRequest
+        }
+        guard let c = connections[id] else { throw CoreError.Offline }
+        let raw = try await c.perform(operation: operation)
+        guard connections[id] === c else { throw CoreError.StaleTarget }
+        return try decodeObject(raw)
+    }
+
+    func forget(_ id: String) throws {
+        try core.forget(id: id)
+        instructions.forget(id)
+        generations[id] = nil; connections[id] = nil; rows[id] = nil
+        drafts = drafts.filter { $0.key.host != id }; answers = answers.filter { $0.key.editor.host != id }
+        hosts.removeAll { $0.id == id }; if pairedHostId == id { pairedHostId = nil }
+        if host == id { selection = UUID(); images.clear(); sheet = nil; host = nil; instance = nil; message = "" }
+    }
+
+    func github(_ key: EditorKey, query: Object) async throws -> Object {
+        guard editor == key, let c = connections[key.host] else { throw CoreError.StaleTarget }
+        let origin = selection, generation = rows[key.host]?.viewGeneration
+        let raw = try await c.perform(operation: .github(instance: key.target.instance, query: try jsonString(query)))
+        guard editor == key, origin == selection, generation == rows[key.host]?.viewGeneration else { throw CoreError.StaleTarget }
+        return try decodeObject(raw)
+    }
+
+    func appendReference(_ reference: String, to key: EditorKey) throws {
+        guard editor == key else { throw CoreError.StaleTarget }
+        let old = body(key).text; text(old.isEmpty ? reference : old + "\n" + reference, for: key)
+    }
+
+    func withLogin<T>(_ id: String, _ body: (LoginSession) async throws -> T) async throws -> T {
+        guard let c = connections[id], let generation = rows[id]?.connectionGeneration else { throw CoreError.Offline }
+        var active = true
+        defer { active = false }
+        return try await c.withLogin(holdId: UUID().uuidString) { target in
+            let login = LoginSession(connection: c, target: target) {
+                active && self.connections[id] === c && self.rows[id]?.connectionGeneration == generation
+            }
+            try login.check(); return try await body(login)
+        }
     }
 }

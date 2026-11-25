@@ -42,8 +42,10 @@ struct ChatSheet {
 
 extension Rows {
     var attachCommand: String? {
-        guard let name = groups["view"]?.first(where: { $0.id == "abducoSession" })?.string,
-              name.range(of: #"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\z"#, options: .regularExpression) != nil else { return nil }
+        Self.attachCommand(groups["view"]?.first(where: { $0.id == "abducoSession" })?.string)
+    }
+    static func attachCommand(_ name: String?) -> String? {
+        guard let name, name.range(of: #"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\z"#, options: .regularExpression) != nil else { return nil }
         return "pimate attach \(name)"
     }
 }
