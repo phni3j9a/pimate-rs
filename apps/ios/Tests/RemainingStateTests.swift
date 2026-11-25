@@ -165,6 +165,25 @@ private final class MachineCore: Core, @unchecked Sendable {
         var pages = 0; c.a.reply = { op in guard case .rc(_, .subagentTranscript, let raw) = op else { throw CoreError.BadRequest }; XCTAssertEqual(try decodeObject(raw)["cursor"] as? String, pages == 0 ? nil : "p\(pages)"); pages += 1; return try jsonString(["cursor": pages < 9 ? "p\(pages)" : "", "items": [["entryId": "e", "text": "\(pages)"]]]) }
         let record = try m.workRecord(key, child); _ = try await record.load(); XCTAssertEqual(pages, 8); XCTAssertTrue(record.more); _ = try await record.load(); XCTAssertEqual(record.items.count, 1); XCTAssertEqual(record.items.first?.str("text"), "9")
     }
+    func testRecordRefreshFinishesSlowReadAndCoalescesActivity() async throws {
+        let refresh = WorkRecordRefresh(), gate = AsyncStream<Void>.makeStream()
+        let started = expectation(description: "slow page started"), second = expectation(description: "follow-up page")
+        var calls = 0, visible: [String] = []
+        let record = WorkRecord { _ in
+            calls += 1
+            if calls == 1 { started.fulfill(); for await _ in gate.stream { break } }
+            return ["items": [["entryId": "note", "text": "page \(calls)"]]]
+        }
+        let detail = Task { await refresh.listen {
+            do { _ = try await record.load(); visible.append(record.items[0].str("text")) } catch { XCTFail("slow read was cancelled") }
+            if calls == 2 { second.fulfill() }
+        } }
+        await fulfillment(of: [started], timeout: 2)
+        for _ in 0..<10 { refresh.request(); await Task.yield() }
+        XCTAssertEqual(calls, 1); gate.continuation.finish()
+        await fulfillment(of: [second], timeout: 2); detail.cancel(); await detail.value
+        XCTAssertEqual(visible, ["page 1", "page 2"])
+    }
     func testFirstStepAndAppUpdate() {
         var r = Rows(); XCTAssertEqual(r.firstStep, .loading); r.groups["host"] = [item("host", "connection", "\"connected\"")]; XCTAssertEqual(r.firstStep, .loading)
         r.groups["host"]?.append(item("host", "listKnown", "true")); XCTAssertEqual(r.firstStep, .empty); r.groups["instance"] = [item("instance", "pi", "{}")]; XCTAssertEqual(r.firstStep, .list)

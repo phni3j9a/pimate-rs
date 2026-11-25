@@ -6,7 +6,7 @@ struct AgentDetailView: View {
     @Environment(\.verticalSizeClass) private var heightClass
     @State private var record: WorkRecord?
     @State private var turns: [ChatTurn] = []
-    @State private var reload = 0
+    @State private var refresh = WorkRecordRefresh()
     @State private var readError = ""
     @State private var sendError = ""
     @State private var text = ""
@@ -43,7 +43,7 @@ struct AgentDetailView: View {
                     if !child.str("error").isEmpty { Text(verbatim: child.str("error")).foregroundStyle(PiTheme.failure) }
                     if record?.truncated == true { Text("記録の一部を省略しています").font(.caption) }
                     if !readError.isEmpty { Text(readError).foregroundStyle(PiTheme.failure) }
-                    if has && (record?.more == true || !readError.isEmpty) { Button("記録を読み込む") { reload += 1 }.disabled(record?.loading == true) }
+                    if has && (record?.more == true || !readError.isEmpty) { Button("記録を読み込む") { refresh.request() }.disabled(record?.loading == true) }
                     if inlineControls { Divider(); controls(child, rows: rows) }
                 } else { ContentUnavailableView("この実行は一覧にありません", systemImage: "tray") }
             }.padding(20)
@@ -70,19 +70,22 @@ struct AgentDetailView: View {
                     navigate(.init(run: selected.run, child: selected.child))
                 }
             }
-            .task(id: Load(row: row, retry: reload)) {
-                guard child?["hasTranscript"] as? Bool == true else { return }
-                do {
-                    if record == nil { record = try model.workRecord(key, unit) }; guard let record else { return }
-                    while record.loading { try await Task.sleep(for: .milliseconds(100)) }; readError = ""
-                    while try await record.load() { try await Task.sleep(for: .milliseconds(100)) }
-                    try Task.checkCancellation()
-                    let items = try record.items.map { Item(collection: "entry", id: $0.str("entryId"), position: 0, json: try jsonString($0)) }
-                    turns = ChatTurn.read(items, live: [])
-                } catch { if !Task.isCancelled { readError = "作業記録を取得できません。接続を確認してください。" } }
+            .onChange(of: row) { refresh.request() }
+            .task {
+                await refresh.listen {
+                    let run = model.rows[key.host]?.groups["run"]?.first { $0.id == route.run }?.object
+                    guard run?.list("children").first(where: { $0.str("id") == route.child })?["hasTranscript"] as? Bool == true else { return }
+                    do {
+                        if record == nil { record = try model.workRecord(key, unit) }; guard let record else { return }
+                        readError = ""
+                        _ = try await record.load()
+                        try Task.checkCancellation()
+                        let items = try record.items.map { Item(collection: "entry", id: $0.str("entryId"), position: 0, json: try jsonString($0)) }
+                        turns = ChatTurn.read(items, live: [])
+                    } catch { if !Task.isCancelled { readError = "作業記録を取得できません。接続を確認してください。" } }
+                }
             }
     }
-    private struct Load: Equatable { let row: Item?, retry: Int }
     private func heading(_ title: String) -> some View { Text(title).font(.headline).accessibilityAddTraits(.isHeader) }
     private func captions(_ sent: [SentInstruction]) -> [String: String] {
         var remaining = sent, result: [String: String] = [:]
@@ -100,11 +103,27 @@ struct AgentDetailView: View {
                 guard !busy else { return }; busy = true; sendError = ""
                 Task { defer { busy = false }; do {
                     let reply = try await model.control(key, unit, action: action, text: text)
-                    text = ""; reload += 1; if action == "resume" { sourceIndex = child["index"] as? Int; nextRun = reply["newRunId"] as? String }
+                    text = ""; refresh.request(); if action == "resume" { sourceIndex = child["index"] as? Int; nextRun = reply["newRunId"] as? String }
                 } catch { sendError = "指示の受付を確認できません。再送する前に記録を確認してください。" } }
             }.buttonStyle(PiPrimary()).disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } else { Label(actions.contains("follow_up") ? "割り込み未対応のため、作業記録の閲覧のみです。" : "この子の作業記録は閲覧のみです。", systemImage: "eye").font(.callout).foregroundStyle(.secondary) }
         if !sendError.isEmpty { Text(sendError).foregroundStyle(PiTheme.failure) }
         AgentStop(model: model, target: rows.stopTarget(key, run: route.run, viewedChild: route.child))
+    }
+}
+
+// Activity is a refresh hint, not a new detail. Keep at most one hint while a request runs.
+@MainActor final class WorkRecordRefresh {
+    private var continuation: AsyncStream<Void>.Continuation?
+    func request() { continuation?.yield(()) }
+    func listen(_ load: () async -> Void) async {
+        let (stream, updates) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        continuation?.finish(); continuation = updates
+        defer { updates.finish() }
+        updates.yield(())
+        for await _ in stream {
+            guard !Task.isCancelled else { break }
+            await load()
+        }
     }
 }
