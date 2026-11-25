@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import PiMate
 
@@ -8,5 +9,18 @@ final class MachineScreenTests: XCTestCase {
         XCTAssertEqual(a.displayName(in: [a]), "Mac")
         XCTAssertEqual(a.displayName(in: [a, b]), "Mac · 127.0.0.1:1234")
         XCTAssertEqual(b.displayName(in: [a, b]), "Mac · 127.0.0.1:2345")
+    }
+
+    @MainActor func testSetupGuideHonorsBothTextSizeSettings() throws {
+        let suite = "PiMate.TypeTest." + UUID().uuidString
+        let store = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { store.removePersistentDomain(forName: suite) }
+        func height(_ size: TypeSize, _ dynamic: DynamicTypeSize) -> CGFloat {
+            store.set(size.rawValue, forKey: "typeSize")
+            let guide = DeviceBridge().defaultAppStorage(store).dynamicTypeSize(dynamic)
+            return UIHostingController(rootView: guide).sizeThatFits(in: CGSize(width: 400, height: 600)).height
+        }
+        let standard = height(.standard, .large)
+        XCTAssertGreaterThan(height(.large, .large), standard)
+        XCTAssertGreaterThan(height(.standard, .accessibility2), standard)
     }
 }
