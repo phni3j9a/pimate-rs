@@ -206,6 +206,11 @@ impl Desktop {
                         this.notice = "登録しました".into();
                         this.reload(cx)
                     }
+                    Err(Error::OutcomeUnknown) => {
+                        this.reload(cx);
+                        this.notice =
+                            "保存の結果が不明です。再登録する前に登録一覧を確認してください".into();
+                    }
                     Err(e) => this.notice = format!("登録できません: {e}"),
                 };
                 cx.notify()

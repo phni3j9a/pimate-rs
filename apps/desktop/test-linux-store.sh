@@ -13,6 +13,7 @@ timeout -k 5 60 env -i PIMATE_PRIVATE_STORE_TEST=1 PATH=/usr/bin:/bin HOME="$hom
     gdbus wait --session --timeout 10 org.freedesktop.secrets
     "$bin" --ignored --exact store::desktop::replacement_survives_old_invalidation
     "$bin" --ignored --exact store::desktop::alias_change_during_edit_does_not_redirect_write
+    PRIVATE_KEYRING_PID=$daemon "$bin" --ignored --exact store::desktop::delayed_create_keeps_the_edit_lock_until_reply
     kill -STOP "$daemon"
     timeout 14 "$bin" --ignored --exact "$failure"
     kill -CONT "$daemon"

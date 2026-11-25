@@ -131,22 +131,23 @@ mod desktop {
     #[cfg(target_os = "linux")]
     impl Store {
         fn edit_locked(&self, change: impl FnOnce(&mut Records) -> bool) -> Result<(), Error> {
-            self.with_collection(|collection| async move {
-                let mut records = self.read_from(&collection).await?;
-                if change(&mut records) {
-                    collection
-                        .create_item(
-                            "PiMate RS registrations",
-                            &self.attributes(),
-                            serde_json::to_vec(&records).map_err(|_| Error::Storage)?,
-                            true,
-                            None,
-                        )
-                        .await
-                        .map_err(|_| Error::Storage)?;
-                }
-                Ok(())
-            })
+            let (collection, mut records) = self.read_collection()?;
+            if change(&mut records) {
+                // CreateItem cannot be recalled. Keep the edit lock until its reply, even after 5s.
+                futures_lite::future::block_on(collection.create_item(
+                    "PiMate RS registrations",
+                    &self.attributes(),
+                    serde_json::to_vec(&records).map_err(|_| Error::Storage)?,
+                    true,
+                    None,
+                ))
+                .map_err(|err| match err {
+                    oo7::dbus::Error::Service(oo7::dbus::ServiceError::IsLocked(_))
+                    | oo7::dbus::Error::Dismissed => Error::Storage,
+                    _ => Error::OutcomeUnknown,
+                })?;
+            }
+            Ok(())
         }
         fn attributes(&self) -> std::collections::HashMap<&str, &str> {
             [("application", self.service.as_str()), ("account", ACCOUNT)].into()
@@ -164,12 +165,13 @@ mod desktop {
             }
             Ok(collection)
         }
-        fn with_collection<T, F: Future<Output = Result<T, Error>>>(
-            &self,
-            action: impl FnOnce(oo7::dbus::Collection<'static>) -> F,
-        ) -> Result<T, Error> {
+        fn read_collection(&self) -> Result<(oo7::dbus::Collection<'static>, Records), Error> {
             futures_lite::future::block_on(futures_lite::future::or(
-                async { action(Self::collection().await?).await },
+                async {
+                    let collection = Self::collection().await?;
+                    let records = self.read_from(&collection).await?;
+                    Ok((collection, records))
+                },
                 async {
                     async_io::Timer::after(std::time::Duration::from_secs(5)).await;
                     Err(Error::Storage)
@@ -177,7 +179,7 @@ mod desktop {
             ))
         }
         fn read(&self) -> Result<Records, Error> {
-            self.with_collection(|collection| async move { self.read_from(&collection).await })
+            Ok(self.read_collection()?.1)
         }
         async fn read_from(
             &self,
@@ -307,6 +309,63 @@ mod desktop {
         assert!(store.hosts().unwrap().is_empty());
         alias("/org/freedesktop/secrets/collection/login");
         assert_eq!(store.hosts().unwrap().len(), 1);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires disposable Secret Service"]
+    fn delayed_create_keeps_the_edit_lock_until_reply() {
+        assert_eq!(
+            std::env::var("PIMATE_PRIVATE_STORE_TEST").as_deref(),
+            Ok("1")
+        );
+        let store = Store {
+            service: format!("{SERVICE}.test.{}", uuid::Uuid::new_v4()),
+        };
+        let daemon = std::env::var("PRIVATE_KEYRING_PID").unwrap();
+        let signal = |sig: &str| {
+            assert!(
+                std::process::Command::new("kill")
+                    .args([sig, &daemon])
+                    .status()
+                    .unwrap()
+                    .success()
+            )
+        };
+        let (started, ready) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let write = scope.spawn(|| {
+                store.edit(|records| {
+                    signal("-STOP");
+                    started.send(()).unwrap();
+                    records.insert(
+                        "test".into(),
+                        Record {
+                            name: "test".into(),
+                            address: "localhost:80".into(),
+                            device: "new".into(),
+                            revoked: false,
+                            token: "mock".into(),
+                        },
+                    );
+                    true
+                })
+            });
+            ready
+                .recv_timeout(std::time::Duration::from_secs(4))
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(6));
+            let lock = fs::File::open(
+                PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap())
+                    .join("pimate-rs")
+                    .join(format!("{}.lock", store.service)),
+            )
+            .unwrap();
+            let held = matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+            signal("-CONT");
+            assert!(held);
+            write.join().unwrap().unwrap();
+        });
+        assert!(store.load("test".into()).unwrap().token == "mock");
     }
     #[test]
     #[cfg_attr(
