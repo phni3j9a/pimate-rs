@@ -5,6 +5,12 @@ pub(crate) mod chat_media;
 mod chat_question;
 mod chat_review;
 mod conversation;
+mod first_step;
+mod github;
+mod machine;
+mod new_pi;
+mod providers;
+mod settings;
 mod sheet_chat;
 mod sheet_tree;
 use super::*;
@@ -15,6 +21,7 @@ use gpui_component::{
     scroll::ScrollableElement,
 };
 use serde_json::Value;
+use settings::{Navigation, Route};
 
 pub fn transcript() -> ListState {
     ListState::new(0, ListAlignment::Top, px(100.))
@@ -88,17 +95,22 @@ fn pi_title<'a>(v: &'a Value, id: &'a str) -> &'a str {
         .or_else(|| v["cwd"].as_str()?.rsplit('/').find(|s| !s.is_empty()))
         .unwrap_or(id)
 }
+fn github_available(rows: &Rows, host: &str, pi: &str) -> bool {
+    rows.get("host", "info")["github"] == true && rows.editor(host, pi).is_some()
+}
 impl Desktop {
     fn pi_row(
         &self,
         h: &Host,
         id: &str,
         v: &Value,
-        waiting: bool,
+        nav: &Navigation,
         p: &Colors,
         cx: &Context<Self>,
     ) -> Button {
         let (host, pi) = (h.id.clone(), id.to_owned());
+        let waiting = v["section"] == "waiting";
+        let nav = nav.clone();
         let failed = v["failureText"].as_str().is_some_and(|s| !s.is_empty());
         let state = if failed {
             "失敗"
@@ -115,7 +127,7 @@ impl Desktop {
             _ => "PC",
         };
         let detail = if waiting {
-            format!("{state} · {} · {origin}", h.name)
+            format!("{state} · {} · {origin}", self.host_label(h))
         } else {
             format!("{state} · {origin} で起動")
         };
@@ -159,9 +171,14 @@ impl Desktop {
                             .child(p.caption(detail).truncate()),
                     ),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.select(host.clone(), pi.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if nav.read(cx).route != Route::Home {
+                    this.navigate(&nav, Route::Home, cx);
+                }
+                this.select(host.clone(), pi.clone(), cx)
+            }))
     }
-    fn sidebar(&self, p: &Colors, cx: &Context<Self>) -> Div {
+    fn sidebar(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
         let mut rows = div()
             .id("machine-list")
             .flex_1()
@@ -186,7 +203,7 @@ impl Desktop {
                         );
                         any_waiting = true;
                     }
-                    rows = rows.child(self.pi_row(h, id, v, true, p, cx));
+                    rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
         }
@@ -198,7 +215,11 @@ impl Desktop {
                     .px_2()
                     .flex()
                     .flex_col()
-                    .child(div().font_weight(FontWeight::BOLD).child(h.name.clone()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(self.host_label(h)),
+                    )
                     .child(p.caption(connection(h, data))),
             );
             if let Some(error) = self.state.registration.connection_errors.get(&h.id) {
@@ -217,7 +238,7 @@ impl Desktop {
                     );
                 }
                 for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
-                    rows = rows.child(self.pi_row(h, id, v, false, p, cx));
+                    rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
         }
@@ -285,55 +306,131 @@ impl Desktop {
         }
         let registration = self.state.registration.message();
         if !registration.is_empty() {
+            let error = self.state.registration.error;
+            let warning = error.is_some() || self.state.registration.save_unknown;
+            // Keep the store diagnostic legible and separate from the Japanese recovery text.
+            let message = if let Some(e) = error {
+                registration.replace(&format!(": {e}"), "")
+            } else {
+                registration
+            };
+            let card = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(div().text_size(rems(0.88)).text_color(p.ink).child(message));
+            let card = if let Some(e) = error {
+                card.child(
+                    div()
+                        .text_color(p.ink)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_family("monospace")
+                        .child(format!("Error: {e}")),
+                )
+            } else {
+                card
+            };
             side = side.child(
-                p.caption(registration)
-                    .px_3()
-                    .pb_2()
+                card.mx_2()
+                    .mb_2()
+                    .p_2()
+                    .rounded_md()
+                    .border_l_2()
+                    .border_color(if warning { p.waiting } else { p.accent })
+                    .bg(p.bg)
                     .debug_selector(|| "registration-notice".into()),
             );
         }
-        side.child(rows).child(
-            div()
-                .flex()
-                .gap_1()
-                .p_2()
-                .border_t_1()
-                .border_color(p.border)
-                .child(
-                    Button::new("reload")
-                        .small()
-                        .ghost()
-                        .label("登録を読み直す")
-                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                )
-                .child(
-                    Button::new("size")
-                        .small()
-                        .ghost()
-                        .label(format!("文字 {}", self.size))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.size = match this.size as u8 {
-                                16 => 19.,
-                                19 => 14.,
-                                _ => 16.,
-                            };
-                            this.scroll.reset(this.scroll.item_count());
-                            cx.notify()
-                        })),
+        if self.hosts.is_empty() {
+            rows = rows.child(
+                self.nav_button(n, "setup", "はじめての接続ガイド　›", Route::Tailscale, cx)
+                    .ghost()
+                    .w_full(),
+            );
+        }
+        side.child(rows)
+            .when(
+                self.selected.as_ref().is_some_and(|(h, i)| {
+                    self.machines
+                        .get(h)
+                        .is_some_and(|m| github_available(&m.rows, h, i))
+                }),
+                |v| {
+                    v.child(
+                        div().px_2().child(
+                            self.nav_button(
+                                n,
+                                "github",
+                                "GitHub　·　Issue / PR",
+                                Route::Github(pimate_protocol::GitHubQuery::List),
+                                cx,
+                            )
+                            .w_full()
+                            .ghost(),
+                        ),
+                    )
+                },
+            )
+            .child(
+                div().px_2().py_1().child(
+                    self.nav_button(n, "new-pi", "＋ 新しい Pi", self.new_route(), cx)
+                        .w_full(),
                 ),
-        )
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .p_2()
+                    .border_t_1()
+                    .border_color(p.border)
+                    .child(
+                        Button::new("reload")
+                            .small()
+                            .ghost()
+                            .label("登録を読み直す")
+                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                    )
+                    .child(
+                        self.nav_button(n, "settings", "設定", Route::Settings, cx)
+                            .small()
+                            .ghost(),
+                    ),
+            )
     }
 }
 impl Render for Desktop {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.bind_editor(w, cx);
+        let nav = self.init_navigation(w, cx);
+        if let Some(host) = self.state.registration.paired_host.take() {
+            self.navigate(&nav, Route::First(host), cx);
+        }
+        let dark = self.palette(w, cx);
         w.set_rem_size(px(self.size));
-        let dark = matches!(
-            w.appearance(),
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
         let p = Colors::new(dark);
-        let side = self.sidebar(&p, cx);
+        let side = self.sidebar(&nav, &p, cx);
+        let root = div()
+            .flex()
+            .size_full()
+            .bg(p.bg)
+            .text_color(p.ink)
+            .text_size(rems(0.94))
+            .child(side);
+        // The answer belongs to the pending question, not to the visible workspace panel.
+        let editor = self.editor();
+        let question = editor.as_ref().and_then(|key| {
+            let rows = &self.machines[&key.host].rows;
+            rows.group("question").first().map(|(id, q)| {
+                (
+                    id.clone(),
+                    chat_question::pending_form(key, &rows.view_life, id, q, w, cx),
+                )
+            })
+        });
+        if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
+            return root.child(panel);
+        }
         let mut main = div().flex().flex_col().flex_1().min_w_0();
         if !self.notice.is_empty() {
             main = main.child(
@@ -343,8 +440,8 @@ impl Render for Desktop {
                     .debug_selector(|| "chat-notice".into()),
             );
         }
-        if let Some(key) = self.editor() {
-            main = self.chat_area(main, key, &p, w, cx);
+        if let Some(key) = editor {
+            main = self.chat_area(main, key, question, &p, w, cx);
         } else if let Some(hint) = self.reconnect_hint() {
             main = main.child(hint);
         } else {
@@ -383,14 +480,7 @@ impl Render for Desktop {
                     ),
             );
         }
-        div()
-            .flex()
-            .size_full()
-            .bg(p.bg)
-            .text_color(p.ink)
-            .text_size(rems(0.94))
-            .child(side)
-            .child(main)
+        root.child(main)
     }
 }
 
@@ -398,6 +488,174 @@ impl Render for Desktop {
 mod tests {
     use super::pending_panel;
     use gpui::{Context, ScrollHandle, Window, div, point, prelude::*, px, rems, size};
+    pub(super) fn test_host() -> (
+        std::net::TcpListener,
+        pimate_core::Host,
+        std::sync::Arc<pimate_core::Core>,
+    ) {
+        use pimate_core::{Core, Credential, Error, Host, SecretStore};
+        use std::sync::Arc;
+        struct Store(Host);
+        impl SecretStore for Store {
+            fn hosts(&self) -> Result<Vec<Host>, Error> {
+                Ok(vec![])
+            }
+            fn save(&self, _: Host, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+            fn load(&self, _: String) -> Result<Credential, Error> {
+                Ok(Credential {
+                    host: self.0.clone(),
+                    token: "fixture".into(),
+                })
+            }
+            fn invalidate(&self, _: String, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+            fn forget(&self, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+        }
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let h = Host {
+            id: "fixture".into(),
+            name: "fixture".into(),
+            address: socket.local_addr().unwrap().to_string(),
+            device_id: "test".into(),
+            needs_pairing: false,
+        };
+        let core = Arc::new(Core::new(Arc::new(Store(h.clone()))));
+        (socket, h, core)
+    }
+    #[gpui::test]
+    fn unanswered_input_survives_sidebar_routes(cx: &mut gpui::TestAppContext) {
+        use super::{Desktop, Machine, Rows};
+        use gpui::{ClipboardItem, VisualTestContext};
+        use gpui_component::Root;
+        use pimate_core::{Item, Snapshot};
+        use serde_json::json;
+        use std::sync::Arc;
+        let (_socket, h, core) = test_host();
+        let (tx, _rx) = crate::Delivery::channel();
+        let conn = core.connect(h.id.clone(), Arc::new(tx)).unwrap();
+        cx.update(gpui_component::init);
+        let mut desktop = None;
+        let (_, w) = cx.add_window_view(|w, cx| {
+            let app = cx.new(|cx| Desktop::new(core, w, cx));
+            desktop = Some(app.clone());
+            Root::new(app, w, cx)
+        });
+        let desktop = desktop.unwrap();
+        desktop.update(w, |d, cx| {
+            let rows = Rows::snapshot(Snapshot {
+                revision: 1,
+                items: [
+                    ("host", "connection", json!("connected")),
+                    ("host", "info", json!({"github":true})),
+                    ("view", "phase", json!("ready")),
+                    ("view", "instanceId", json!("pi")),
+                    ("question", "q", json!({"kind":"input","title":"Question"})),
+                ]
+                .map(|(c, id, v)| Item {
+                    collection: c.into(),
+                    id: id.into(),
+                    json: v.to_string(),
+                    position: 0,
+                })
+                .into(),
+            });
+            d.selected = Some((h.id.clone(), "pi".into()));
+            d.hosts = vec![h.clone()];
+            d.machines.insert(
+                h.id.clone(),
+                Machine {
+                    conn,
+                    registration: h,
+                    rows,
+                },
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        let click = |w: &mut VisualTestContext, id| {
+            let pos = w.debug_bounds(id).unwrap().center();
+            w.simulate_click(pos, Default::default());
+        };
+        click(w, "question-card");
+        w.simulate_keystrokes("s t a y");
+        for (dest, replaced) in [
+            ("nav-settings", false),
+            ("nav-github", false),
+            ("nav-settings", true),
+        ] {
+            click(w, dest);
+            if replaced {
+                desktop.update(w, |d, cx| {
+                    let rows = &mut d.machines.values_mut().next().unwrap().rows;
+                    rows.apply(
+                        (
+                            2,
+                            vec![pimate_core::Change::Upsert(Item {
+                                collection: "question".into(),
+                                id: "q".into(),
+                                json: json!({"kind":"input","title":"Replacement"}).to_string(),
+                                position: 0,
+                            })],
+                        ),
+                        || unreachable!(),
+                    );
+                    cx.notify();
+                });
+                w.run_until_parked();
+            }
+            click(w, "nav-back");
+            click(w, "question-card");
+            w.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+            w.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a cmd-c"
+            } else {
+                "ctrl-a ctrl-c"
+            });
+            assert_eq!(
+                w.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+                Some(if replaced { "sentinel" } else { "stay" }),
+                "{dest}"
+            );
+        }
+    }
+    #[test]
+    fn github_requires_both_a_ready_editor_and_host_query_support() {
+        use pimate_core::{Item, Snapshot};
+        use serde_json::json;
+        for ready in [false, true] {
+            for github in [false, true] {
+                let rows = super::Rows::snapshot(Snapshot {
+                    revision: 1,
+                    items: [
+                        ("host", "info", json!({"github":github,"githubStatus":true})),
+                        (
+                            "view",
+                            "phase",
+                            json!(if ready { "ready" } else { "loading" }),
+                        ),
+                        ("view", "instanceId", json!("pi")),
+                    ]
+                    .map(|(c, id, v)| Item {
+                        collection: c.into(),
+                        id: id.into(),
+                        json: v.to_string(),
+                        position: 0,
+                    })
+                    .into(),
+                });
+                assert_eq!(
+                    super::github_available(&rows, "host", "pi"),
+                    ready && github
+                );
+                assert!(!super::github_available(&rows, "host", "other"));
+            }
+        }
+    }
     #[gpui::test]
     fn long_pending_draft_scrolls_without_displacing_editor(cx: &mut gpui::TestAppContext) {
         struct Probe(ScrollHandle);

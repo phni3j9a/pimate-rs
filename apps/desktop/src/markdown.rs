@@ -1,9 +1,9 @@
 //! Render the shared AST; never interpret message content as HTML.
-use crate::screen::chat_media::{Gallery, Media};
+use crate::screen::chat_media::{Gallery, Media, Viewer};
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, FocusHandle, FontStyle, FontWeight, HighlightStyle,
-    MouseButton, SharedString, StrikethroughStyle, StyledText, Task, UnderlineStyle, Window, div,
-    prelude::*, px, rems,
+    AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, FontStyle, FontWeight,
+    HighlightStyle, MouseButton, SharedString, StrikethroughStyle, StyledText, Task,
+    UnderlineStyle, Window, div, prelude::*, px, rems,
 };
 use gpui_component::ActiveTheme;
 use gpui_component::{Sizable, button::Button};
@@ -249,6 +249,7 @@ fn rich_line(
 fn block(
     parent: &str,
     b: &Block,
+    viewer: Option<&Entity<Viewer>>,
     media: Option<(&Media, &Gallery)>,
     w: &mut Window,
     cx: &mut App,
@@ -291,7 +292,7 @@ fn block(
             .when(matches!(b.content, Content::Quote(_)), |c| {
                 c.border_l_2().border_color(cx.theme().border)
             })
-            .children(children.iter().map(|c| block(&id, c, media, w, cx)))
+            .children(children.iter().map(|c| block(&id, c, viewer, media, w, cx)))
             .into_any_element(),
         Content::List { start, items } => col
             .children(items.iter().enumerate().map(|(i, c)| {
@@ -308,18 +309,22 @@ fn block(
                     _ => start
                         .map_or_else(|| "•".into(), |n| format!("{}.", u64::from(n) + i as u64)),
                 };
-                div().flex().child(mark).child(block(&id, c, media, w, cx))
+                div()
+                    .flex()
+                    .child(mark)
+                    .child(block(&id, c, viewer, media, w, cx))
             }))
             .into_any_element(),
         Content::Table(t) => col
             .child(table(&id, t, media, w, cx))
-            .when_some(media, |c, (m, g)| {
-                let viewer = m.viewer.clone();
+            .when_some(viewer, |c, viewer| {
+                let viewer = viewer.clone();
                 let t = t.clone();
-                let g = g.clone();
+                let g = media.map(|(_, g)| g.clone());
                 c.child(
                     Button::new(SharedString::from(format!("expand:{id}")))
                         .small()
+                        .debug_selector(|| "open-markdown-table".into())
                         .label("表を開く")
                         .on_click(move |_, _, cx| {
                             viewer.update(cx, |v, cx| {
@@ -421,6 +426,10 @@ pub struct Messages {
     mounted: HashMap<String, (bool, gpui::Entity<Cached>)>,
     offscreen: VecDeque<(String, gpui::Entity<Cached>)>,
 }
+pub(crate) enum DocumentControls<'a> {
+    Chat(Option<(&'a Media, &'a str)>),
+    TablesOnly(&'a Entity<Viewer>),
+}
 impl Messages {
     /// Layout decides which rows are visible. Only the unmounted pool is bounded.
     pub fn begin_frame(&mut self) {
@@ -456,6 +465,21 @@ impl Messages {
         w: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
+        self.render(id, text, streaming, DocumentControls::Chat(media), w, cx)
+    }
+    pub(crate) fn render(
+        &mut self,
+        id: String,
+        text: &str,
+        streaming: bool,
+        controls: DocumentControls<'_>,
+        w: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let (viewer, media) = match controls {
+            DocumentControls::Chat(media) => (media.map(|(m, _)| &m.viewer), media),
+            DocumentControls::TablesOnly(viewer) => (Some(viewer), None),
+        };
         let cache = if let Some((seen, doc)) = self.mounted.get_mut(&id) {
             *seen = true;
             doc.clone()
@@ -484,11 +508,16 @@ impl Messages {
             sample(c, cx, streaming);
             let gallery =
                 media.map(|(m, id)| (m, Gallery::markdown(&m.page, id, c.images.clone())));
-            col.children(
-                c.blocks
-                    .iter()
-                    .map(|b| block(&namespace, b, gallery.as_ref().map(|(m, g)| (*m, g)), w, cx)),
-            )
+            col.children(c.blocks.iter().map(|b| {
+                block(
+                    &namespace,
+                    b,
+                    viewer,
+                    gallery.as_ref().map(|(m, g)| (*m, g)),
+                    w,
+                    cx,
+                )
+            }))
             .into_any_element()
         })
     }

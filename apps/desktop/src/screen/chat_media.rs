@@ -95,7 +95,7 @@ impl Gallery {
 }
 #[derive(Default)]
 pub(crate) struct Viewer {
-    pub table: Option<(Table, Gallery)>,
+    pub table: Option<(Table, Option<Gallery>)>,
     photo: Option<(Gallery, u64)>,
 }
 #[derive(Default)]
@@ -268,17 +268,29 @@ impl Media {
             .when(count > 4, |b| b.child(format!("ほか {} 枚", count - 4)))
     }
     pub(super) fn panel(&self, p: &Colors, w: &mut Window, cx: &mut App) -> Option<AnyElement> {
-        let v = self.viewer.read(cx);
+        Viewer::panel(&self.viewer, Some(self), p, w, cx)
+    }
+}
+impl Viewer {
+    pub(super) fn panel(
+        viewer: &Entity<Self>,
+        media: Option<&Media>,
+        p: &Colors,
+        w: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
+        let v = viewer.read(cx);
         let photo_open = v.photo.is_some();
-        let viewer = self.viewer.clone();
+        let dismiss = viewer.clone();
         let close = Button::new("close-media")
+            .debug_selector(|| "close-media".into())
             .label(if photo_open {
                 "画像を閉じる"
             } else {
                 "表を閉じる"
             })
             .on_click(move |_, _, cx| {
-                viewer.update(cx, |s, cx| {
+                dismiss.update(cx, |s, cx| {
                     if s.photo.take().is_none() {
                         s.table = None
                     }
@@ -293,7 +305,7 @@ impl Media {
             .py_2()
             .border_b_1()
             .border_color(p.border);
-        let body = if let Some((g, i)) = v.photo.clone() {
+        let body = if let Some((g, i)) = v.photo.clone().filter(|_| media.is_some()) {
             head = head
                 .child(g.label(i))
                 .child(
@@ -301,7 +313,7 @@ impl Media {
                         .flex()
                         .gap_2()
                         .children([(-1, "前へ"), (1, "次へ")].map(|(dir, label)| {
-                            let v = self.viewer.clone();
+                            let v = viewer.clone();
                             let next = i.checked_add_signed(dir).filter(|&n| n < g.count());
                             Button::new(label)
                                 .debug_selector(|| label.to_owned())
@@ -337,6 +349,7 @@ impl Media {
                 .child("表")
                 .child(
                     Button::new("copy-table")
+                        .debug_selector(|| "copy-table".into())
                         .label("Markdown をコピー")
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(text.clone()))
@@ -348,7 +361,7 @@ impl Media {
                 .size_full()
                 .overflow_y_scroll()
                 .p_4()
-                .child(markdown::table("full", &t, Some((self, &g)), w, cx))
+                .child(markdown::table("full", &t, media.zip(g.as_ref()), w, cx))
                 .into_any_element()
         } else {
             return None;
