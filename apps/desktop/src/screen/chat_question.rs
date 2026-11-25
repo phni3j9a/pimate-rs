@@ -2,15 +2,15 @@ use super::*;
 use pimate_protocol::UIQuestionAnswer;
 use state::Page;
 
-struct Form {
+pub(super) struct Form {
     values: Vec<Entity<InputState>>,
     selected: Vec<Vec<String>>,
     busy: bool,
     shown: Value,
-    page: Page,
+    life: std::sync::Weak<()>,
 }
 impl Form {
-    fn new(page: &Page, q: &Value, w: &mut Window, cx: &mut App) -> Self {
+    fn new(life: &Arc<()>, q: &Value, w: &mut Window, cx: &mut App) -> Self {
         let count = q["questions"].as_array().map_or(1, Vec::len);
         Self {
             values: (0..count)
@@ -33,10 +33,33 @@ impl Form {
                 .collect(),
             selected: vec![vec![]; count],
             busy: false,
-            page: page.clone(),
+            life: Arc::downgrade(life),
             shown: q.clone(),
         }
     }
+}
+// Keep the editor mounted for the pending question, not for the card's visibility.
+pub(super) fn pending_form(
+    key: &EditorKey,
+    life: &Arc<()>,
+    id: &str,
+    q: &Value,
+    w: &mut Window,
+    cx: &mut App,
+) -> Entity<Form> {
+    let form = w.use_keyed_state(
+        SharedString::from(format!("question:{key:?}:{id}")),
+        cx,
+        |w, cx| Form::new(life, q, w, cx),
+    );
+    if form.read(cx).shown != *q || !form.read(cx).life.ptr_eq(&Arc::downgrade(life)) {
+        form.update(cx, |f, cx| *f = Form::new(life, q, w, cx));
+    }
+    form
+}
+fn questionnaire_fields(kind: &str, count: usize, part: &Value, title: &Value) -> (bool, bool) {
+    let custom = kind == "questionnaire";
+    (custom && (count > 1 || part["question"] != *title), custom)
 }
 fn choose(values: &mut Vec<String>, multiple: bool, value: String) {
     if multiple && values.contains(&value) {
@@ -53,17 +76,12 @@ impl Desktop {
         &self,
         page: &Page,
         id: &str,
-        q: &Value,
+        form: Entity<Form>,
         p: &Colors,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let form = w.use_keyed_state(SharedString::from(format!("question:{id}")), cx, |w, cx| {
-            Form::new(page, q, w, cx)
-        });
-        if form.read(cx).shown != *q || !form.read(cx).page.visible(self) {
-            form.update(cx, |f, cx| *f = Form::new(page, q, w, cx));
-        }
+        let q = self.machines[page.host()].rows.get("question", id);
         let mut card = div()
             .id("question-card")
             .max_h(rems(18.))
@@ -94,14 +112,15 @@ impl Desktop {
                     .unwrap_or(std::slice::from_ref(q));
                 for (i, part) in parts.iter().enumerate() {
                     let multiple = part["multiSelect"] == true;
-                    let custom = kind == "questionnaire";
+                    let (prompt, custom) =
+                        questionnaire_fields(kind, parts.len(), part, &q["title"]);
                     let field = form.read(cx).values[i].clone();
                     let selected = &form.read(cx).selected[i];
                     let text = field.read(cx).value();
                     if !multiple && selected.is_empty() && text.trim().is_empty() {
                         valid = false
                     }
-                    if custom {
+                    if prompt {
                         card = card
                             .child(p.caption(part["question"].as_str().unwrap_or("").to_owned()));
                     }
@@ -136,7 +155,7 @@ impl Desktop {
                                 .when(!desc.is_empty(), |b| b.child(p.caption(desc.to_owned()))),
                         );
                     }
-                    if custom && (parts.len() > 1 || part["question"] != q["title"]) {
+                    if custom {
                         card = card.child(Input::new(&field).disabled(form.read(cx).busy));
                     }
                 }
@@ -260,7 +279,89 @@ impl Desktop {
 }
 #[cfg(test)]
 mod tests {
-    use super::choose;
+    use super::{choose, questionnaire_fields};
+    #[test]
+    fn duplicate_prompt_only_hides_its_label() {
+        let q = serde_json::json!({"question":"Topic"});
+        assert_eq!(
+            questionnaire_fields("questionnaire", 1, &q, &q["question"]),
+            (false, true)
+        );
+        assert_eq!(
+            questionnaire_fields("questionnaire", 2, &q, &q["question"]),
+            (true, true)
+        );
+        assert_eq!(
+            questionnaire_fields("select", 1, &q, &q["question"]),
+            (false, false)
+        );
+    }
+    #[gpui::test]
+    fn panel_roundtrip_retains_only_the_same_pending_answer(cx: &mut gpui::TestAppContext) {
+        use super::{EditorKey, Form, pending_form};
+        use gpui::{Context, Entity, Window, div, prelude::*};
+        use gpui_component::input::Input;
+        use std::sync::Arc;
+        struct Chat {
+            key: EditorKey,
+            q: serde_json::Value,
+            life: Arc<()>,
+            panel: bool,
+            form: Option<Entity<Form>>,
+        }
+        impl Render for Chat {
+            fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let f = pending_form(&self.key, &self.life, "q", &self.q, w, cx);
+                self.form = Some(f.clone());
+                div().when(!self.panel, |d| d.child(Input::new(&f.read(cx).values[0])))
+            }
+        }
+        cx.update(gpui_component::init);
+        let (chat, w) = cx.add_window_view(|_, _| Chat {
+            key: EditorKey {
+                host: "a".into(),
+                instance: "pi".into(),
+                session: Some("s".into()),
+            },
+            q: serde_json::json!({"kind":"questionnaire","questions":[{}]}),
+            life: Arc::new(()),
+            panel: false,
+            form: None,
+        });
+        for changed in ["panel", "question", "lifetime", "destination"] {
+            let form = chat.read_with(w, |c, _| c.form.clone().unwrap());
+            w.update(|w, cx| {
+                form.update(cx, |f, cx| {
+                    f.values[0].update(cx, |v, cx| v.set_value("draft", w, cx));
+                    f.selected[0] = vec!["A".into()]
+                })
+            });
+            chat.update(w, |c, cx| {
+                c.panel = true;
+                cx.notify()
+            });
+            w.run_until_parked();
+            chat.update(w, |c, cx| {
+                match changed {
+                    "question" => c.q["title"] = "new".into(),
+                    "lifetime" => c.life = Arc::new(()),
+                    "destination" => c.key.host = "b".into(),
+                    _ => {}
+                }
+                c.panel = false;
+                cx.notify()
+            });
+            w.run_until_parked();
+            chat.read_with(w, |c, cx| {
+                let f = c.form.as_ref().unwrap().read(cx);
+                assert_eq!(
+                    f.values[0].read(cx).value().as_str(),
+                    if changed == "panel" { "draft" } else { "" }
+                );
+                assert_eq!(f.selected[0].contains(&"A".into()), changed == "panel");
+            });
+        }
+    }
     #[test]
     fn choices_start_empty_and_toggle_without_duplicates() {
         let mut a = vec![];

@@ -30,6 +30,13 @@ impl Desktop {
         if self.receive_editor_text(w, cx) {
             self.bind_editor(w, cx);
         }
+        let rows = &self.machines[&key.host].rows;
+        let question = rows.group("question").first().map(|(id, q)| {
+            (
+                id.clone(),
+                super::chat_question::pending_form(&key, &rows.view_life, id, q, w, cx),
+            )
+        });
         if self.active_sheet().is_some() {
             return main.child(self.sheet_panel(&key, p, w, cx));
         }
@@ -203,8 +210,8 @@ impl Desktop {
                 .child(chat)
                 .vertical_scrollbar(&pending_scroll),
         );
-        if let Some((id, q)) = rows.group("question").first() {
-            main = main.child(self.question_card(&page, id, q, p, w, cx));
+        if let Some((id, form)) = question {
+            main = main.child(self.question_card(&page, &id, form, p, w, cx));
         }
         main = main.children(self.agent_summary(rows, &inspector));
         let pc = rows.get("view", "pcPrompt");
