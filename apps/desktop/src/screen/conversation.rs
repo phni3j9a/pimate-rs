@@ -6,6 +6,8 @@ struct Conversation {
     documents: markdown::Messages,
     expanded: HashSet<String>,
     // The append boundary from the last time we saw a live answer, even if its row was offscreen.
+    // Increment at completion/replacement, not on deltas or an intervening user row.
+    stream_generation: u64,
     stream_tail: Option<(usize, Option<String>)>,
 }
 impl Conversation {
@@ -33,11 +35,13 @@ impl Conversation {
                     }
                 }
                 if done.is_some() || !streaming {
+                    self.stream_generation += 1;
                     self.documents
                         .finish_stream(done.map(|i| added[i].0.as_str()));
                 }
             } else {
                 // A replaced history is not an acknowledgement of the old stream.
+                self.stream_generation += 1;
                 self.documents.finish_stream(None);
             }
         }
@@ -136,6 +140,11 @@ impl Desktop {
         conversation.update(cx, |c, _| {
             c.prepare(entries, streaming, &self.scroll, focused)
         });
+        let stream_answer = format!(
+            "stream:{}:{}",
+            conversation.entity_id().as_u64(),
+            conversation.read(cx).stream_generation
+        );
         let n = self.scroll.item_count();
         if at_end && !reader.contains_focused(w, cx) {
             self.scroll.scroll_to(ListOffset {
@@ -175,7 +184,7 @@ impl Desktop {
                 }
                 .unwrap_or("");
                 let images = state::images::history_count(v);
-                let entry = row.map_or("stream", |(id, _)| id.as_str());
+
                 let open_run = |call: &str| -> Option<Button> {
                     let run = data.original_run(call)?.to_owned();
                     let ins = inspector.clone();
@@ -200,7 +209,7 @@ impl Desktop {
                         .children(run)
                         .when(images > 0, |b| {
                             b.child(media.history(
-                                entry,
+                                &row.unwrap().0,
                                 v,
                                 data.get("view", "entryImages") == true,
                                 w,
@@ -239,13 +248,20 @@ impl Desktop {
                                     .py_2()
                             })
                             .child(conversation.update(cx, |c, cx| {
-                                c.documents
-                                    .view(id, text, stream, Some((&media, entry)), w, cx)
+                                let answer = if stream { &stream_answer } else { &id };
+                                c.documents.view(
+                                    id.clone(),
+                                    text,
+                                    stream,
+                                    Some((&media, answer)),
+                                    w,
+                                    cx,
+                                )
                             })),
                     )
                     .when(images > 0, |v| {
                         v.child(media.history(
-                            entry,
+                            &row.unwrap().0,
                             &row.unwrap().1,
                             data.get("view", "entryImages") == true,
                             w,
@@ -271,6 +287,28 @@ impl Desktop {
 mod tests {
     use super::transcript;
     use gpui::{Context, ListOffset, ListState, Window, div, list, point, prelude::*, px, size};
+    #[gpui::test]
+    fn stream_image_identity_survives_interruptions_but_not_the_next_answer(
+        _cx: &mut gpui::TestAppContext,
+    ) {
+        let list = transcript();
+        let mut c = super::Conversation::default();
+        let mut entries = vec![];
+        c.prepare(&entries, true, &list, false);
+        let first = c.stream_generation;
+        entries.push(("interrupt".into(), serde_json::json!({"kind":"user"})));
+        c.prepare(&entries, true, &list, false);
+        assert_eq!(c.stream_generation, first);
+        entries.push(("done".into(), serde_json::json!({"kind":"assistant"})));
+        c.prepare(&entries, true, &list, false);
+        let second = c.stream_generation;
+        assert_ne!(first, second);
+        c.prepare(&entries, true, &list, false);
+        assert_eq!(second, c.stream_generation);
+        c.prepare(&entries, false, &list, false);
+        c.prepare(&entries, true, &list, false);
+        assert_ne!(second, c.stream_generation);
+    }
     #[gpui::test]
     fn ten_thousand_history_rows_only_mount_near_the_viewport(cx: &mut gpui::TestAppContext) {
         use std::{cell::RefCell, rc::Rc};
