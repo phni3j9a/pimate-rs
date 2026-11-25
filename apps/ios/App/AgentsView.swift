@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct AgentSheet: Identifiable { let id = UUID(), run: String? }
+struct AgentSheet: Identifiable { let id = UUID(); let run: String? }
 struct AgentRoute: Hashable { let run: String, child: String }
 private let agentStates = ["running": "実行中", "queued": "待機中", "stopping": "停止中", "paused": "一時停止", "waiting": "入力待ち", "complete": "完了", "failed": "失敗", "stopped": "停止済み"]
 func agentState(_ state: String) -> String { agentStates[state] ?? "状態不明" }
@@ -69,18 +69,19 @@ struct AgentsView: View {
 private extension Dictionary where Key == String, Value == Any { var selfID: String { str("id") } }
 struct AgentStop: View {
     let model: SessionModel, target: StopTarget?
-    @State private var approved: StopTarget?, busy = false, error = ""
+    @State private var approved: StopTarget?
+    @State private var busy = false
+    @State private var error = ""
     var body: some View {
-        if let target {
-            Button(role: .destructive) { approved = target } label: { Label(agentAction(target.action) + "…", systemImage: "stop.circle") }.disabled(busy)
+        Group { if let target {
+            Button(role: .destructive) { approved = target } label: { Label(agentAction(target.action) + "…", systemImage: "stop.circle") }.foregroundStyle(PiTheme.failure).frame(minHeight: 44).disabled(busy)
                 .confirmationDialog(agentAction(target.action), isPresented: Binding(get: { approved != nil }, set: { if !$0 { approved = nil } }), titleVisibility: .visible, presenting: approved) { fixed in
                     Button(agentAction(fixed.action), role: .destructive) {
                         guard fixed == target, !busy else { return }; busy = true
                         Task { defer { busy = false }; do { _ = try await model.control(fixed) } catch { self.error = "停止の結果を確認できません。現在の状態を確認してください。" } }
                     }; Button("キャンセル", role: .cancel) {}
                 } message: { fixed in Text(fixed.action == "stop_child" ? "選択した子だけが対象です。" : fixed.action == "abort_parent" ? "親の Pi のターンも停止します。" : "この実行に含まれるすべての子が対象です。") }
-                .onChange(of: target) { approved = nil }
-        }
+        } }.onChange(of: target) { approved = nil }
         if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure) }
     }
 }

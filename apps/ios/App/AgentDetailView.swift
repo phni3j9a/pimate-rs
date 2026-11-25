@@ -2,14 +2,26 @@ import SwiftUI
 
 struct AgentDetailView: View {
     let model: SessionModel, key: EditorKey, route: AgentRoute, navigate: (AgentRoute) -> Void
-    @State private var record: WorkRecord?, turns: [ChatTurn] = [], reload = 0
-    @State private var readError = "", sendError = "", text = "", busy = false
-    @State private var nextRun: String?, table: OpenTable?
+    @Environment(\.dynamicTypeSize) private var typeSize
+    @Environment(\.verticalSizeClass) private var heightClass
+    @State private var record: WorkRecord?
+    @State private var turns: [ChatTurn] = []
+    @State private var reload = 0
+    @State private var readError = ""
+    @State private var sendError = ""
+    @State private var text = ""
+    @State private var busy = false
+    @State private var nextRun: String?
+    @State private var sourceIndex: Int?
+    @State private var table: OpenTable?
+    private var inlineControls: Bool { typeSize.isAccessibilitySize || heightClass == .compact }
     private var unit: AgentChild { .init(run: route.run, child: route.child) }
     var body: some View {
         let rows = model.rows[key.host] ?? Rows(), row = rows.groups["run"]?.first { $0.id == route.run }
         let run = row?.object ?? [:], child = run.list("children").first { $0.str("id") == route.child }
-        let destination = nextRun.flatMap { model.instructions.resume(key, from: unit, run: $0)?.destinationChild }
+        let destination = nextRun.flatMap { run in
+            model.instructions.resume(key, from: unit, run: run)?.destinationChild ?? rows.resumedChild(run: run, index: sourceIndex)?.child
+        }
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
                 if nextRun != nil { ProgressView("再開先の作業記録を待っています…") }
@@ -18,7 +30,8 @@ struct AgentDetailView: View {
                     Text(verbatim: [agentState(child.str("state")), child.str("agent"), child.str("model")].filter { !$0.isEmpty }.joined(separator: " · ")).font(.subheadline).foregroundStyle(.secondary)
                     if let i = run.obj("stage")["index"] as? Int, let count = run.obj("stage")["count"] as? Int { Text("チェーン \(i + 1) / \(count)").font(.caption) }
                     heading("親の Pi からの依頼")
-                    Text(verbatim: record?.task.isEmpty == false ? record!.task : has && (record == nil || record?.loading == true) ? "読み込み中…" : "依頼文は取得されていません").textSelection(.enabled)
+                    if let task = record?.task, !task.isEmpty { Text(verbatim: task).textSelection(.enabled) }
+                    else { Text(has && (record == nil || record?.loading == true) ? "読み込み中…" : "依頼文は取得されていません").foregroundStyle(.secondary) }
                     Divider(); heading("子の作業記録")
                     let captions = captions(model.instructions.forChild(key, unit))
                     ForEach(turns) { t in TurnView(turn: t, active: true, runForCall: { _ in nil }, openRun: { _ in }, caption: captions[t.id]) }
@@ -31,16 +44,32 @@ struct AgentDetailView: View {
                     if record?.truncated == true { Text("記録の一部を省略しています").font(.caption) }
                     if !readError.isEmpty { Text(readError).foregroundStyle(PiTheme.failure) }
                     if has && (record?.more == true || !readError.isEmpty) { Button("記録を読み込む") { reload += 1 }.disabled(record?.loading == true) }
-                    Divider()
-                    controls(child, rows: rows)
+                    if inlineControls { Divider(); controls(child, rows: rows) }
                 } else { ContentUnavailableView("この実行は一覧にありません", systemImage: "tray") }
             }.padding(20)
-        }.navigationTitle(child?.str("title") ?? "サブエージェント").navigationBarTitleDisplayMode(.inline)
+        }.navigationTitle([child?.str("title"), child?.str("agent")].compactMap { $0 }.first { !$0.isEmpty } ?? "サブエージェント").navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if !inlineControls, let child, nextRun == nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Divider(); controls(child, rows: rows)
+                    }.padding(.horizontal, 20).padding(.bottom, 8).background(.bar)
+                }
+            }
             .scrollDismissesKeyboard(.interactively)
             .environment(\.photoContext, nil) // Child entry/file IDs never belong to the parent.
             .environment(\.openPiTable, { table = $0 })
-            .sheet(item: $table) { shown in ScrollView { MarkdownTable(table: shown.table, answer: shown.answer, full: true).padding() }.environment(\.photoContext, nil).presentationDragIndicator(.visible) }
-            .onChange(of: destination, initial: true) { _, child in if let child, let nextRun { navigate(.init(run: nextRun, child: child)) } }
+            .sheet(item: $table) { shown in
+                NavigationStack {
+                    ScrollView { MarkdownTable(table: shown.table, answer: shown.answer, full: true).padding() }
+                        .navigationTitle("表").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { table = nil } } }
+                }.environment(\.photoContext, nil).presentationDragIndicator(.visible)
+            }
+            .onChange(of: destination, initial: true) { _, child in
+                if child != nil, let nextRun, let selected = model.resumedChild(key, from: unit, run: nextRun, index: sourceIndex) {
+                    navigate(.init(run: selected.run, child: selected.child))
+                }
+            }
             .task(id: Load(row: row, retry: reload)) {
                 guard child?["hasTranscript"] as? Bool == true else { return }
                 do {
@@ -71,7 +100,7 @@ struct AgentDetailView: View {
                 guard !busy else { return }; busy = true; sendError = ""
                 Task { defer { busy = false }; do {
                     let reply = try await model.control(key, unit, action: action, text: text)
-                    text = ""; reload += 1; if action == "resume" { nextRun = reply["newRunId"] as? String }
+                    text = ""; reload += 1; if action == "resume" { sourceIndex = child["index"] as? Int; nextRun = reply["newRunId"] as? String }
                 } catch { sendError = "指示の受付を確認できません。再送する前に記録を確認してください。" } }
             }.buttonStyle(PiPrimary()).disabled(busy || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         } else { Label(actions.contains("follow_up") ? "割り込み未対応のため、作業記録の閲覧のみです。" : "この子の作業記録は閲覧のみです。", systemImage: "eye").font(.callout).foregroundStyle(.secondary) }

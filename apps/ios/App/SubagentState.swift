@@ -116,18 +116,15 @@ extension SessionModel {
     }
     // Resume acknowledgement can precede the run delta, even after the detail is dismissed.
     private func bindWhenReady(_ key: EditorKey, generation: UUID, source: AgentChild, run: String, index: Int?) {
-        let destination: AgentChild? = withObservationTracking {
-            guard rows[key.host]?.viewGeneration == generation, editor == key,
-                  let sent = instructions.resume(key, from: source, run: run), sent.destinationChild == nil else { return nil }
-            return rows[key.host]?.resumedChild(run: run, index: index)
-        } onChange: { [weak self] in
-            Task { @MainActor in
-                guard let self, self.editor == key, self.rows[key.host]?.viewGeneration == generation,
-                      let sent = self.instructions.resume(key, from: source, run: run), sent.destinationChild == nil else { return }
-                self.bindWhenReady(key, generation: generation, source: source, run: run, index: index)
+        guard editor == key, rows[key.host]?.viewGeneration == generation,
+              let sent = instructions.resume(key, from: source, run: run), sent.destinationChild == nil else { return }
+        if let destination = rows[key.host]?.resumedChild(run: run, index: index) {
+            instructions.bindResume(key, from: source, to: destination)
+        } else {
+            withObservationTracking { _ = rows[key.host] } onChange: { [weak self] in
+                Task { @MainActor in self?.bindWhenReady(key, generation: generation, source: source, run: run, index: index) }
             }
         }
-        if let destination { instructions.bindResume(key, from: source, to: destination) }
     }
     func workRecord(_ key: EditorKey, _ unit: AgentChild) throws -> WorkRecord {
         guard editor == key, let generation = rows[key.host]?.viewGeneration else { throw CoreError.StaleTarget }

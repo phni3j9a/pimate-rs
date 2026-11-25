@@ -3,7 +3,10 @@ import SwiftUI
 struct ReviewView: View {
     let model: SessionModel, key: EditorKey, turns: [ChatTurn]
     @Environment(\.dismiss) private var dismiss
-    @State private var session = false, turn: String?, review: ChangeReview?, error = ""
+    @State private var session = false
+    @State private var turn: String?
+    @State private var review: ChangeReview?
+    @State private var error = ""
     var body: some View {
         let entries = model.rows[key.host]?.groups["entry"] ?? []
         NavigationStack {
