@@ -9,9 +9,13 @@ timeout -k 5 60 env -i PIMATE_PRIVATE_STORE_TEST=1 PATH=/usr/bin:/bin HOME="$hom
     bin=$1; failure=store::desktop::secret_service_failure_is_not_empty_registration
     DBUS_SESSION_BUS_ADDRESS="unix:path=$HOME/missing" "$bin" --ignored --exact "$failure"
     gnome-keyring-daemon --foreground --unlock --components=secrets < <(printf disposable) >"$HOME/daemon.log" 2>&1 & daemon=$!
-    trap '\''kill "$daemon" 2>/dev/null || :; wait "$daemon" || :'\'' EXIT
+    trap '\''kill -CONT "$daemon" 2>/dev/null || :; kill "$daemon" 2>/dev/null || :; wait "$daemon" || :'\'' EXIT
     gdbus wait --session --timeout 10 org.freedesktop.secrets
     "$bin" --ignored --exact store::desktop::replacement_survives_old_invalidation
+    "$bin" --ignored --exact store::desktop::alias_change_during_edit_does_not_redirect_write
+    kill -STOP "$daemon"
+    timeout 14 "$bin" --ignored --exact "$failure"
+    kill -CONT "$daemon"
     gdbus call --session -d org.freedesktop.secrets -o /org/freedesktop/secrets -m org.freedesktop.Secret.Service.Lock "[\"/org/freedesktop/secrets/collection/login\"]"
     "$bin" --ignored --exact "$failure"
   ' bash "$(realpath "$1")"

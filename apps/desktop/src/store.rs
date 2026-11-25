@@ -104,6 +104,10 @@ mod desktop {
                 .open(dir.join(format!("{}.lock", self.service)))
                 .map_err(|_| Error::Storage)?;
             lock.lock().map_err(|_| Error::Storage)?;
+            self.edit_locked(change)
+        }
+        #[cfg(target_os = "macos")]
+        fn edit_locked(&self, change: impl FnOnce(&mut Records) -> bool) -> Result<(), Error> {
             let mut records = self.read()?;
             if !change(&mut records) {
                 return Ok(());
@@ -126,6 +130,24 @@ mod desktop {
     }
     #[cfg(target_os = "linux")]
     impl Store {
+        fn edit_locked(&self, change: impl FnOnce(&mut Records) -> bool) -> Result<(), Error> {
+            self.with_collection(|collection| async move {
+                let mut records = self.read_from(&collection).await?;
+                if change(&mut records) {
+                    collection
+                        .create_item(
+                            "PiMate RS registrations",
+                            &self.attributes(),
+                            serde_json::to_vec(&records).map_err(|_| Error::Storage)?,
+                            true,
+                            None,
+                        )
+                        .await
+                        .map_err(|_| Error::Storage)?;
+                }
+                Ok(())
+            })
+        }
         fn attributes(&self) -> std::collections::HashMap<&str, &str> {
             [("application", self.service.as_str()), ("account", ACCOUNT)].into()
         }
@@ -142,41 +164,40 @@ mod desktop {
             }
             Ok(collection)
         }
-        fn read(&self) -> Result<Records, Error> {
-            futures_lite::future::block_on(async {
-                let collection = Self::collection().await?;
-                let items = collection
-                    .search_items(&self.attributes())
-                    .await
-                    .map_err(|_| Error::Storage)?;
-                match items.as_slice() {
-                    // Some services hide items if the collection locks during search.
-                    [] if !collection.is_locked().await.map_err(|_| Error::Storage)? => {
-                        Ok(Records::new())
-                    }
-                    [item] => serde_json::from_slice(
-                        item.secret().await.map_err(|_| Error::Storage)?.as_bytes(),
-                    )
-                    .map_err(|_| Error::Storage),
-                    _ => Err(Error::Storage),
-                }
-            })
+        fn with_collection<T, F: Future<Output = Result<T, Error>>>(
+            &self,
+            action: impl FnOnce(oo7::dbus::Collection<'static>) -> F,
+        ) -> Result<T, Error> {
+            futures_lite::future::block_on(futures_lite::future::or(
+                async { action(Self::collection().await?).await },
+                async {
+                    async_io::Timer::after(std::time::Duration::from_secs(5)).await;
+                    Err(Error::Storage)
+                },
+            ))
         }
-        fn write(&self, records: &Records) -> Result<(), Error> {
-            futures_lite::future::block_on(async {
-                Self::collection()
-                    .await?
-                    .create_item(
-                        "PiMate RS registrations",
-                        &self.attributes(),
-                        serde_json::to_vec(records).map_err(|_| Error::Storage)?,
-                        true,
-                        None,
-                    )
-                    .await
-                    .map_err(|_| Error::Storage)?;
-                Ok(())
-            })
+        fn read(&self) -> Result<Records, Error> {
+            self.with_collection(|collection| async move { self.read_from(&collection).await })
+        }
+        async fn read_from(
+            &self,
+            collection: &oo7::dbus::Collection<'_>,
+        ) -> Result<Records, Error> {
+            let items = collection
+                .search_items(&self.attributes())
+                .await
+                .map_err(|_| Error::Storage)?;
+            match items.as_slice() {
+                // Some services hide items if the collection locks during search.
+                [] if !collection.is_locked().await.map_err(|_| Error::Storage)? => {
+                    Ok(Records::new())
+                }
+                [item] => serde_json::from_slice(
+                    item.secret().await.map_err(|_| Error::Storage)?.as_bytes(),
+                )
+                .map_err(|_| Error::Storage),
+                _ => Err(Error::Storage),
+            }
         }
     }
     impl SecretStore for Store {
@@ -235,6 +256,57 @@ mod desktop {
             store.forget("missing".into()),
             Err(Error::Storage)
         ));
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires disposable Secret Service"]
+    fn alias_change_during_edit_does_not_redirect_write() {
+        assert_eq!(
+            std::env::var("PIMATE_PRIVATE_STORE_TEST").as_deref(),
+            Ok("1")
+        );
+        fn alias(collection: &str) {
+            assert!(
+                std::process::Command::new("gdbus")
+                    .args([
+                        "call",
+                        "--session",
+                        "-d",
+                        "org.freedesktop.secrets",
+                        "-o",
+                        "/org/freedesktop/secrets",
+                        "-m",
+                        "org.freedesktop.Secret.Service.SetAlias",
+                        "default",
+                        collection
+                    ])
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let store = Store {
+            service: format!("{SERVICE}.test.{}", uuid::Uuid::new_v4()),
+        };
+        store
+            .edit(|records| {
+                alias("/org/freedesktop/secrets/collection/session");
+                records.insert(
+                    "test".into(),
+                    Record {
+                        name: "one".into(),
+                        address: "localhost:80".into(),
+                        device: "test".into(),
+                        revoked: false,
+                        token: "first".into(),
+                    },
+                );
+                true
+            })
+            .unwrap();
+        assert!(store.hosts().unwrap().is_empty());
+        alias("/org/freedesktop/secrets/collection/login");
+        assert_eq!(store.hosts().unwrap().len(), 1);
     }
     #[test]
     #[cfg_attr(
