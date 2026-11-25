@@ -31,9 +31,40 @@ fn stop_key(scope: StopScope<'_>) -> SharedString {
 fn matches_scope(shown: StopScope<'_>, current: StopScope<'_>) -> bool {
     shown == current
 }
+struct Transcript {
+    task: SharedString,
+    lines: Vec<SharedString>,
+    truncated: bool,
+    more: bool,
+}
+impl From<&WorkRecord> for Transcript {
+    fn from(r: &WorkRecord) -> Self {
+        Self {
+            task: r
+                .task
+                .clone()
+                .unwrap_or_else(|| "依頼文は未取得です".into())
+                .into(),
+            lines: r
+                .items
+                .iter()
+                .filter_map(|v| {
+                    v["text"]
+                        .as_str()
+                        .or(v["toolName"].as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_owned().into())
+                })
+                .collect(),
+            truncated: r.truncated,
+            more: r.more,
+        }
+    }
+}
 #[derive(Default)]
 struct Record {
-    record: Option<WorkRecord>,
+    reader: Option<WorkRecord>,
+    shown: Option<Transcript>,
     task: Option<Task<()>>,
     error: Option<Error>,
     busy: bool,
@@ -47,7 +78,7 @@ impl Record {
             self.again = true;
             return;
         }
-        let old = self.record.take();
+        let old = self.reader.take();
         self.error = None;
         self.task = Some(cx.spawn(async move |this, cx| {
             let r = async {
@@ -63,7 +94,10 @@ impl Record {
                 s.task = None;
                 match r {
                     Ok((record, r)) => {
-                        s.record = Some(record);
+                        if r.is_ok() {
+                            s.shown = Some(Transcript::from(&record));
+                        }
+                        s.reader = Some(record);
                         s.error = r.err()
                     }
                     Err(e) => s.error = Some(e),
@@ -282,25 +316,12 @@ impl Desktop {
                     .bg(p.surface)
                     .rounded_md()
                     .p_3();
-                if let Some(record) = &r.record {
+                if let Some(record) = &r.shown {
                     log = log
                         .child(p.caption("親の Pi からの依頼"))
-                        .child(
-                            record
-                                .task
-                                .clone()
-                                .unwrap_or_else(|| "依頼文は未取得です".into()),
-                        )
-                        .child(p.caption("子の作業記録"));
-                    for item in &record.items {
-                        let s = item["text"]
-                            .as_str()
-                            .or(item["toolName"].as_str())
-                            .unwrap_or("");
-                        if !s.is_empty() {
-                            log = log.child(div().py_1().child(s.to_owned()))
-                        }
-                    }
+                        .child(record.task.clone())
+                        .child(p.caption("子の作業記録"))
+                        .children(record.lines.iter().map(|s| div().py_1().child(s.clone())));
                     if record.truncated {
                         log = log.child(p.caption("記録の一部を省略しています"))
                     }
@@ -319,7 +340,7 @@ impl Desktop {
                     log = log.child(
                         Button::new("refresh-log")
                             .small()
-                            .label(if r.record.as_ref().is_some_and(|r| r.more) {
+                            .label(if r.shown.as_ref().is_some_and(|r| r.more) {
                                 "続きの記録"
                             } else {
                                 "記録を更新"
@@ -559,6 +580,37 @@ mod tests {
             assert!(!matches_scope(shown, changed));
             assert_ne!(stop_key(shown), stop_key(changed));
         }
+    }
+    #[gpui::test]
+    fn work_log_survives_in_flight_coalesced_and_failed_refreshes(cx: &mut gpui::TestAppContext) {
+        use super::{Child, Record, Transcript};
+        use gpui::prelude::*;
+        let view = cx.new(|_| Record {
+            shown: Some(Transcript {
+                task: "parent task".into(),
+                lines: vec!["page one".into()],
+                truncated: false,
+                more: true,
+            }),
+            ..Default::default()
+        });
+        view.update(cx, |r, cx| {
+            let page = crate::state::dummy_page();
+            let child = Child {
+                run: "r".into(),
+                child: "c".into(),
+            };
+            for _ in 0..2 {
+                r.load(page.clone(), child.clone(), cx);
+                assert_eq!(r.shown.as_ref().unwrap().lines[0].as_str(), "page one");
+            }
+            assert!(r.task.is_some() && r.again);
+        });
+        cx.run_until_parked();
+        view.read_with(cx, |r, _| {
+            assert!(r.error.is_some() && r.task.is_none());
+            assert_eq!(r.shown.as_ref().unwrap().lines[0].as_str(), "page one");
+        });
     }
     use serde_json::json;
     #[test]
