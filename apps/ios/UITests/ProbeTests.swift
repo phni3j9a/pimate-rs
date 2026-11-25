@@ -8,6 +8,20 @@ func confirmFixtureAddress(_ app: XCUIApplication) throws {
     }
 }
 
+// A sheet can expose navigation bars from both the sheet and the chat underneath it.
+// Tap the native back button in the named route, then verify that it actually popped.
+func popSheetRoute(_ app: XCUIApplication, from title: String, to parent: String, file: StaticString = #filePath, line: UInt = #line) throws {
+    let bar = app.navigationBars[title], back = bar.buttons.element(boundBy: 0)
+    let hittable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND hittable == true"), object: back)
+    guard XCTWaiter.wait(for: [hittable], timeout: 12) == .completed else {
+        XCTFail("No hittable back button in \(title)", file: file, line: line)
+        throw NSError(domain: "PiMateUITests.Navigation", code: 1)
+    }
+    back.tap()
+    XCTAssertTrue(app.navigationBars[parent].waitForExistence(timeout: 12), "Expected \(parent) after leaving \(title)", file: file, line: line)
+    XCTAssertFalse(bar.exists, "Still on \(title)", file: file, line: line)
+}
+
 final class ProbeTests: XCTestCase {
     func testJourney() throws {
         let app = XCUIApplication(), variant = ProcessInfo.processInfo.environment["PIMATE_VARIANT"] ?? "light"
@@ -234,7 +248,7 @@ extension ProbeTests {
         if mode == "list" {
             tap(button("スマホと PC を Tailscale")); XCTAssertTrue(app.buttons["次へ：PC に PiMate を入れる"].waitForExistence(timeout: 6)); shot("Setup-Tailscale")
             app.buttons["次へ：PC に PiMate を入れる"].tap(); XCTAssertTrue(app.buttons["この手順を PC に送る"].waitForExistence(timeout: 8)); shot("Setup-PC")
-            app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["閉じる"].tap()
+            try popSheetRoute(app, from: "PC に PiMate を入れる", to: "Tailscale でつなぐ"); app.buttons["閉じる"].tap()
         }
         tap(app.buttons["リンクを貼り付ける"]); app.descendants(matching: .any)["paste"].firstMatch.tap(); app.buttons["接続先を確認"].tap()
         XCTAssertEqual(app.staticTexts["pair-name"].label, mode == "faux" ? "検証用 PC" : "デモ PC")
@@ -266,19 +280,19 @@ extension ProbeTests {
             app.alerts.buttons["キャンセル"].tap(); tap(app.buttons["ログアウト…"]); app.alerts.buttons["ログアウト"].tap()
             XCTAssertTrue(app.staticTexts["未設定"].waitForExistence(timeout: 12))
         }
-        app.navigationBars.buttons.element(boundBy: 0).tap(); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["完了"].tap()
+        try popSheetRoute(app, from: "プロバイダーのログイン", to: "デモ PC"); try popSheetRoute(app, from: "デモ PC", to: "設定"); app.buttons["完了"].tap()
         app.buttons["新しい Pi"].tap(); let recent = app.buttons["/home/demo/code/demo"]; XCTAssertTrue(recent.waitForExistence(timeout: 12)); shot("New-Pi"); tap(recent)
         XCTAssertEqual(app.textFields["フォルダのパス"].value as? String, "/home/demo/code/demo"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
         XCTAssertTrue(app.buttons["GitHub"].waitForExistence(timeout: 12)); app.buttons["GitHub"].tap()
         let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
-        XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["PR"].tap()
+        XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); try popSheetRoute(app, from: "Issue #20", to: "GitHub"); app.buttons["PR"].tap()
         if env["PIMATE_DEMO_GITHUB_TABLES"] == "1" {
-            for (title, note) in [("チェック未提供", "CI チェックの内訳は未提供です"), ("空のチェック一覧", "チェックはありません")] {
+            for (title, note, route) in [("チェック未提供", "CI チェックの内訳は未提供です", "PR #56"), ("空のチェック一覧", "チェックはありません", "PR #57")] {
                 tap(button(title)); XCTAssertTrue(app.staticTexts[note].waitForExistence(timeout: 10))
                 tap(app.buttons["表を開く"]); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8))
                 // Untrusted GitHub images stay text, not tiles that fetch from the web or the PC.
                 XCTAssertTrue(app.staticTexts["外部の画像"].exists); XCTAssertFalse(app.buttons["外部の画像"].exists); XCTAssertFalse(app.buttons["PC の画像"].exists)
-                app.buttons["表を閉じる"].tap(); app.navigationBars.buttons.element(boundBy: 0).tap()
+                app.buttons["表を閉じる"].tap(); try popSheetRoute(app, from: route, to: "GitHub")
             }
         }
         tap(button("画面の実装"))

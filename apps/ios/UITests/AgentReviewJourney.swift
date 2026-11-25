@@ -60,7 +60,8 @@ final class AgentReviewJourney: XCTestCase {
         XCTAssertTrue(app.staticTexts["あなた · 割り込む"].waitForExistence(timeout: 15))
         try tap(app.buttons["この子を停止…"]); try tap(app.buttons["この子を停止"])
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "閲覧のみ")).firstMatch.waitForExistence(timeout: 12))
-        app.navigationBars.buttons.element(boundBy: 0).tap(); try tap(app.buttons["agent-scout-0"])
+        try popSheetRoute(app, from: "認証", to: "サブエージェント"); try tap(app.buttons["agent-scout-0"])
+        XCTAssertTrue(app.navigationBars["ログイン処理の調査"].waitForExistence(timeout: 12))
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "閲覧のみ")).firstMatch.waitForExistence(timeout: 12)); XCTAssertFalse(instruction.exists); shot("Subagent-Detail-Readonly")
     }
 }
