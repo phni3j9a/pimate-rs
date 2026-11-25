@@ -17,7 +17,9 @@ mode=$2; bin=$3; out=$4
 [[ $XDG_RUNTIME_DIR == "$HOME/run" && $(cat /proc/1/comm) == dbus-run-sessio ]] || exit 2
 cd "$HOME"; umask 077; ulimit -c 0
 export XDG_CURRENT_DESKTOP=GNOME XDG_SESSION_TYPE=wayland WAYLAND_DISPLAY=wayland-0 DISPLAY=:19731
-printf disposable | gnome-keyring-daemon --unlock --components=secrets >/dev/null
+gnome-keyring-daemon --foreground --unlock --components=secrets < <(printf disposable) >keyring.log 2>&1 &
+export PRIVATE_KEYRING_PID=$!
+gdbus wait --session --timeout 10 org.freedesktop.secrets
 gsettings set org.gnome.shell disable-user-extensions true
 gsettings set org.gnome.desktop.session idle-delay 0
 gsettings set org.gnome.desktop.input-sources sources "[('ibus', 'mozc-jp'), ('xkb', 'us')]"
@@ -48,6 +50,8 @@ from pathlib import Path
 log = Path('app.log').read_text()
 start = re.search(r'(zwp_text_input_v3@\d+)\.preedit_string\("ニホンゴ"', log)
 assert start, 'missing candidate'
+old = re.search(r'(zwp_text_input_v3@\d+)\.preedit_string\("か"', log[:start.start()])
+assert old and old[1] + '.destroy()' in log[old.end():start.start()], 'keyboard removal not exercised'
 commit = log.index(start[1] + '.commit_string("ニホンゴ")', start.end())
 during = log[start.end():commit]
 assert re.search(r'wl_seat@\d+\.capabilities\(3\)', during), 'pointer not added during preedit'

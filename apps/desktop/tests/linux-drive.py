@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import os
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -80,8 +81,26 @@ pixels = image.load()
 coords = [(x, y) for y in range(800) for x in range(1280) if pixels[x, y] in ((241,243,244),(30,35,38))]
 x = min(x for x, y in coords) + 120
 y = min(y for x, y in coords)
-click(x, y+55)
-snap('confirm')
+if mode == 'check':
+    # Stop only the daemon started by our namespace. Paste must still redraw while reload waits.
+    daemon = int(os.environ['PRIVATE_KEYRING_PID'])
+    os.kill(daemon, signal.SIGSTOP)
+    try:
+        started = time.monotonic()
+        click(x, y+95)  # reload
+        click(x, y+55)  # paste
+        snap('confirm')
+        def ocr(name):
+            return subprocess.check_output(['tesseract', name+'.png', 'stdout', '--psm', '11'], text=True)
+        assert '127.0.0.1' in ocr('confirm') and time.monotonic() - started < 5, 'UI blocked on reload'
+        time.sleep(5)
+        snap('storage-timeout')
+        assert 'storage' in ocr('storage-timeout').lower(), 'missing timeout notice'
+    finally:
+        os.kill(daemon, signal.SIGCONT)
+else:
+    click(x, y+55)
+    snap('confirm')
 click(x, y+126)
 time.sleep(2)
 image = snap('list')
@@ -96,11 +115,29 @@ b = snap('stream-later')
 assert ImageChops.difference(a,b).crop((x+160,y+60,x+760,y+490)).getbbox(), 'no visible stream update'
 time.sleep(12)
 assert prompts() == []
+empty_editor = snap('empty-editor')
 click(x+320, y+615)
 if mode == 'hotplug':
+    # Really losing the keyboard must cancel the marked 'か', not carry it into the next draft.
+    key(0xff26)
+    for char in 'ka':
+        key(ord(char))
+    marked = snap('before-keyboard-loss')
+    seat.Stop()
+    time.sleep(.5)
+    cleared = snap('after-keyboard-loss')
+    # Compare the placeholder glyphs, excluding the caret, pointer and input border.
+    placeholder = (x+258, y+589, x+350, y+616)
+    assert ImageChops.difference(empty_editor, marked).crop(placeholder).getbbox()
+    assert not ImageChops.difference(empty_editor, cleared).crop(placeholder).getbbox(), 'marked text remained after keyboard loss'
+    seat = session()
+    key(0xffe1)
+    key(0xff1b)  # dismiss any candidate restored by the input method itself
+    click(x+320, y+615)
     pointer.Stop()  # keep only the keyboard until conversion is live
     time.sleep(.5)
-key(0xff26)  # Hiragana
+else:
+    key(0xff26)  # Hiragana
 for char in 'nihongo':
     key(ord(char))
 key(32); key(32)

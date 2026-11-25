@@ -277,6 +277,8 @@ impl WaylandClientState {
     fn release_keyboard(&mut self) -> Option<WaylandWindowStatePtr> {
         self.wl_keyboard.take()?.release();
         if let Some(input) = self.text_input.take() {
+            input.disable();
+            input.commit();
             input.destroy();
         }
         self.ime_pre_edit = None;
