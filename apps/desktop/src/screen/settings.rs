@@ -409,9 +409,14 @@ impl Desktop {
             .when(n.read(cx).pref_error, |v| {
                 v.child(p.caption("設定ファイルを読み書きできません。この起動中のみ反映します。"))
             })
-            .when(!n.read(cx).note.is_empty(), |v| {
-                v.child(p.caption(n.read(cx).note.clone()).p_2().bg(p.surface))
-            })
+            .when(
+                !n.read(cx).note.is_empty()
+                    && n.read(cx)
+                        .page
+                        .as_ref()
+                        .is_none_or(|page| page.visible(self)),
+                |v| v.child(p.caption(n.read(cx).note.clone()).p_2().bg(p.surface)),
+            )
             .child(body);
         let content = div()
             .id("other-scroll")

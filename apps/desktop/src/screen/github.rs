@@ -84,20 +84,22 @@ impl Desktop {
                         } else {
                             GitHubQuery::Pr { number }
                         };
-                        g = g.child(
-                            self.nav_button(
-                                n,
-                                SharedString::from(format!("{key}:{number}")),
-                                format!(
-                                    "#{number}　{}　·　{}",
-                                    item.title,
-                                    row["state"].as_str().unwrap_or("未確認")
-                                ),
-                                Route::Github(query),
-                                cx,
-                            )
-                            .justify_start(),
+                        let nav = n.clone();
+                        let shown = page.clone();
+                        let label = format!(
+                            "#{number}　{}　·　{}",
+                            item.title,
+                            row["state"].as_str().unwrap_or("未確認")
                         );
+                        let open = Button::new(SharedString::from(format!("{key}:{number}")))
+                            .label(label)
+                            .justify_start()
+                            .on_click(cx.listener(move |app, _, _, cx| {
+                                if shown.visible(app) {
+                                    app.navigate(&nav, Route::Github(query.clone()), cx);
+                                }
+                            }));
+                        g = g.child(open);
                     }
                 }
                 root = root.child(g);

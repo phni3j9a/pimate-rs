@@ -199,21 +199,26 @@ impl Desktop {
                     )));
             }
             let nav = n.clone();
-            return v.child(form).child(
-                Button::new("auth-cancel")
-                    .label("ログインをキャンセル")
-                    .disabled(busy)
-                    .on_click(cx.listener(move |app, _, w, cx| {
-                        app.auth_request(
-                            &nav,
-                            AuthAction::Cancel(AuthCancelParams {
-                                flow_id: fid.clone(),
-                            }),
-                            w,
-                            cx,
-                        )
-                    })),
-            );
+            return v
+                .child(form)
+                .child(
+                    Button::new("auth-cancel")
+                        .label("ログインをキャンセル")
+                        .disabled(busy)
+                        .on_click(cx.listener(move |app, _, w, cx| {
+                            app.auth_request(
+                                &nav,
+                                AuthAction::Cancel(AuthCancelParams {
+                                    flow_id: fid.clone(),
+                                }),
+                                w,
+                                cx,
+                            )
+                        })),
+                )
+                .when(!n.read(cx).note.is_empty(), |v| {
+                    v.child(reload.disabled(busy))
+                });
         }
         if n.read(cx).providers.prompt.is_some() || n.read(cx).providers.following.is_some() {
             n.update(cx, |s, _| {
