@@ -26,7 +26,7 @@ Darwin)
   plutil -replace CFBundleVersion -string "$version" "$p"
   plutil -insert CFBundleShortVersionString -string "$version" "$p"
   plutil -insert CFBundleIconFile -string PiMate.icns "$p"
-  lipo -verify_arch "$arch" "$contents/MacOS/pimate-desktop"
+  lipo "$contents/MacOS/pimate-desktop" -verify_arch "$arch"
   codesign --force --sign - "$app"
   codesign --verify --strict "$app"
   ditto -c -k --keepParent "$app" "dist/PiMate-Desktop-$version-macos-$arch.zip" ;;
