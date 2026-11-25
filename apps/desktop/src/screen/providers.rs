@@ -19,6 +19,32 @@ fn copy_device_code(code: String) -> Button {
         .tooltip("システムのクリップボードにコピーします")
         .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(code.clone())))
 }
+impl settings::Nav {
+    fn logout_ack(&mut self, result: Result<Value, Error>) -> bool {
+        self.note = match result {
+            Ok(v) if v["refreshRequired"] == true => {
+                "削除済みです。PC の Pi を /reload してください。"
+            }
+            Ok(_) => "ログアウトしました。",
+            Err(_) => {
+                self.providers.pending = false;
+                self.providers.login = None;
+                self.note = "資格情報の削除結果は不明です。状態を再確認してください。".into();
+                return false;
+            }
+        }
+        .into();
+        true
+    }
+    fn logout_list(&mut self, result: Result<Value, Error>) {
+        self.providers.pending = false;
+        if result.is_err() {
+            self.note
+                .push_str(" ログイン一覧の再取得に失敗しました。状態を再確認してください。");
+            self.providers.login = None;
+        }
+    }
+}
 impl Desktop {
     fn auth_request(
         &self,
@@ -274,29 +300,24 @@ impl Desktop {
                         s.providers.pending = true;
                     });
                     let l = login.clone();
+                    let list = login.clone();
                     app.page_task(
                         &nav,
                         w,
                         cx,
-                        async move |_| {
-                            let reply = l.logout_confirmation(provider).confirm().await?;
-                            l.request(AuthAction::List).await?;
-                            Ok::<_, Error>(reply)
-                        },
-                        |_, n, r, _, cx| {
-                            n.update(cx, |s, _| {
-                                s.providers.pending = false;
-                                s.note = match r {
-                                    Ok(v) if v["refreshRequired"] == true => {
-                                        "削除済みです。PC の Pi を /reload してください。"
-                                    }
-                                    Ok(_) => "ログアウトしました。",
-                                    Err(_) => {
-                                        "資格情報の削除結果は不明です。状態を再確認してください。"
-                                    }
-                                }
-                                .into();
-                            });
+                        async move |_| l.logout_confirmation(provider).confirm().await,
+                        |app, n, r, w, cx| {
+                            if n.update(cx, |s, _| s.logout_ack(r)) {
+                                app.page_task(
+                                    n,
+                                    w,
+                                    cx,
+                                    async move |_| list.request(AuthAction::List).await,
+                                    |_, n, result, _, cx| {
+                                        n.update(cx, |s, _| s.logout_list(result))
+                                    },
+                                );
+                            }
                         },
                     );
                 }));
@@ -382,6 +403,24 @@ mod tests {
         App, ClipboardItem, Context, Modifiers, TestAppContext, Window, div, point, prelude::*, px,
     };
 
+    #[test]
+    fn list_failure_preserves_acknowledged_logout_and_reload_instruction() {
+        use crate::screen::settings::Nav;
+        use pimate_core::Error;
+        let mut nav = Nav::default();
+        nav.providers.pending = true;
+        assert!(nav.logout_ack(Ok(serde_json::json!({"refreshRequired":true}))));
+        assert!(nav.note.contains("/reload") && nav.providers.pending);
+        nav.logout_list(Err(Error::Timeout));
+        assert!(
+            !nav.providers.pending
+                && nav.note.contains("削除済み")
+                && nav.note.contains("/reload")
+                && nav.note.contains("再取得に失敗")
+        );
+        assert!(!nav.logout_ack(Err(Error::OutcomeUnknown)));
+        assert!(nav.note.contains("削除結果は不明") && !nav.note.contains("削除済み"));
+    }
     #[gpui::test]
     fn device_code_requires_explicit_copy(cx: &mut TestAppContext) {
         struct Probe;
