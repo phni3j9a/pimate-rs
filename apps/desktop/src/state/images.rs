@@ -112,7 +112,7 @@ pub fn history_source<'a>(
     }
     fetch.then_some(Source::Entry(entry, index))
 }
-#[derive(PartialEq, Eq)]
+#[derive(Clone, Hash, PartialEq, Eq)]
 enum ImageId {
     Entry(String, u64),
     File(String, String),
@@ -141,27 +141,67 @@ impl Cache {
         }
     }
 }
+type Flight = tokio::sync::OnceCell<Result<Arc<[u8]>, Error>>;
+#[derive(Default)]
+struct Loads {
+    cache: Cache,
+    pending: std::collections::HashMap<(ImageId, bool), Weak<Flight>>,
+}
 pub(super) struct Images {
-    cache: tokio::sync::Mutex<Cache>,
+    loads: std::sync::Mutex<Loads>,
     waiting: tokio::sync::Semaphore,
 }
 impl Default for Images {
     fn default() -> Self {
         Self {
-            cache: Default::default(),
+            loads: Default::default(),
             waiting: tokio::sync::Semaphore::new(16),
         }
+    }
+}
+impl Images {
+    async fn load(
+        &self,
+        id: ImageId,
+        t: bool,
+        fetch: impl std::future::Future<Output = Result<Vec<u8>, Error>>,
+    ) -> Result<Arc<[u8]>, Error> {
+        let key = (id, t);
+        let (flight, _slot) = {
+            let mut loads = self.loads.lock().unwrap();
+            if let Some(hit) = loads.cache.hit(&key.0, t) {
+                return Ok(hit);
+            }
+            let slot = self.waiting.try_acquire().map_err(|_| Error::Blocked)?;
+            loads.pending.retain(|_, v| v.strong_count() > 0);
+            let flight = loads
+                .pending
+                .get(&key)
+                .and_then(Weak::upgrade)
+                .unwrap_or_else(|| {
+                    let cell = Arc::new(Flight::new());
+                    loads.pending.insert(key.clone(), Arc::downgrade(&cell));
+                    cell
+                });
+            (flight, slot)
+        };
+        flight
+            .get_or_init(|| async {
+                let bytes: Arc<[u8]> = fetch.await?.into();
+                self.loads
+                    .lock()
+                    .unwrap()
+                    .cache
+                    .put(key.0, t, bytes.clone());
+                Ok(bytes)
+            })
+            .await
+            .clone()
     }
 }
 impl Page {
     pub async fn image(&self, s: Source<'_>, thumbnail: bool) -> Result<Arc<[u8]>, Error> {
         self.editor()?;
-        let _slot = self
-            .images
-            .waiting
-            .try_acquire()
-            .map_err(|_| Error::Blocked)?;
-        let mut cache = self.images.cache.lock().await;
         self.current()?;
         let id = match &s {
             Source::Entry(k, n) => ImageId::Entry((*k).into(), *n),
@@ -174,18 +214,22 @@ impl Page {
             }
             Source::Https(u) => ImageId::Https(u.as_str().into()),
         };
-        if let Some(v) = cache.hit(&id, thumbnail) {
-            return Ok(v);
-        }
-        let data = match s {
-            Source::Entry(k, n) => image_data(self.entry_image(k, n, thumbnail).await?)?,
-            Source::File { path, .. } => image_data(self.file_image(path, thumbnail).await?)?,
-            Source::Inline(b) => decode(b)?,
-            Source::Https(u) => download(u).await?,
-        };
-        self.current()?;
-        let bytes: Arc<[u8]> = data.into();
-        cache.put(id, thumbnail, bytes.clone());
+        let bytes = self
+            .images
+            .load(id, thumbnail, async {
+                let data = match s {
+                    Source::Entry(k, n) => image_data(self.entry_image(k, n, thumbnail).await?)?,
+                    Source::File { path, .. } => {
+                        image_data(self.file_image(path, thumbnail).await?)?
+                    }
+                    Source::Inline(b) => decode(b)?,
+                    Source::Https(u) => download(u).await?,
+                };
+                self.current()?;
+                Ok(data)
+            })
+            .await?;
+        self.live()?;
         Ok(bytes)
     }
 }
@@ -333,6 +377,38 @@ mod tests {
             Some(Source::Entry("e", 99_999_999))
         ));
         assert!(history_source("e", &r, 0, true, false).is_none());
+    }
+    #[tokio::test]
+    async fn cached_hit_does_not_queue_behind_an_unrelated_load_and_same_key_joins() {
+        let images = Images::default();
+        let key = |id| ImageId::Entry("entry".into(), id);
+        images
+            .load(key(1), true, async { Ok(vec![1]) })
+            .await
+            .unwrap();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let mut slow = Box::pin(images.load(key(2), true, async {
+            gate.await.unwrap();
+            Ok(vec![2])
+        }));
+        assert!(futures_util::poll!(&mut slow).is_pending());
+        let mut shared = Box::pin(images.load(key(2), true, async { panic!("duplicate fetch") }));
+        assert!(futures_util::poll!(&mut shared).is_pending());
+        let slots = images.waiting.try_acquire_many(14).unwrap();
+        let hit = images.load(key(1), true, async { panic!("cache miss") });
+        assert!(
+            matches!(futures_util::poll!(Box::pin(hit)),std::task::Poll::Ready(Ok(v)) if *v==[1])
+        );
+        drop(slots);
+        assert_eq!(
+            &*images
+                .load(key(3), true, async { Ok(vec![3]) })
+                .await
+                .unwrap(),
+            &[3]
+        );
+        release.send(()).unwrap();
+        assert!(Arc::ptr_eq(&slow.await.unwrap(), &shared.await.unwrap()));
     }
     #[test]
     fn cache_hit_refreshes_age_and_files_are_answer_scoped() {
