@@ -78,7 +78,7 @@ private final class MachineCore: Core, @unchecked Sendable {
     }
     func testResumedInstructionBelongsToOriginalChildEvenWithNewId() async throws {
         let core = MachineCore(noHandle: .init())
-        core.a.items += [item("run", "old", #"{"id":"old","children":[{"id":"x","index":7},{"id":"y","index":1}]}"#),
+        core.a.items += [item("view", "startedAt", "41"), item("run", "old", #"{"id":"old","children":[{"id":"x","index":7},{"id":"y","index":1}]}"#),
                          item("run", "next", #"{"id":"next","children":[{"id":"z","index":1},{"id":"y","index":7}]}"#)]
         let m = SessionModel(core: core); try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
         let origin = AgentChild(run: "old", child: "x"), sibling = AgentChild(run: "old", child: "y")
@@ -88,6 +88,54 @@ private final class MachineCore: Core, @unchecked Sendable {
         _ = try await m.control(key, destination, action: "steer", text: "new child")
         XCTAssertEqual(m.instructions.forChild(key, destination).map(\.text), ["new child", "old child"])
         XCTAssertTrue(m.instructions.forChild(key, AgentChild(run: "next", child: "z")).isEmpty)
+    }
+    func testResumeLabelsLateChildWithoutOpenDetail() async throws {
+        let core = MachineCore(noHandle: .init())
+        core.a.items.append(item("view", "startedAt", "41"))
+        core.a.items.append(item("run", "old", #"{"id":"old","children":[{"id":"x","index":7}]}"#))
+        let m = SessionModel(core: core); try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
+        core.a.reply = { _ in #"{"newRunId":"new"}"# }
+        _ = try await m.control(key, .init(run: "old", child: "x"), action: "resume", text: "もう一度")
+        let destination = AgentChild(run: "new", child: "b")
+        try core.listeners["a"]?.changed(revision: 2, changes: [.upsert(item("run", "new", #"{"id":"new","children":[{"id":"a","index":1},{"id":"b","index":7}]}"#))])
+        for _ in 0..<50 where m.instructions.forChild(key, destination).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(m.instructions.forChild(key, destination).map(\.text), ["もう一度"])
+        XCTAssertTrue(m.instructions.forChild(key, .init(run: "new", child: "a")).isEmpty)
+    }
+    func testPendingResumeAfterSelectingAnotherPiRequiresSameSessionAndBoot() async throws {
+        for restart in [false, true] {
+            let core = MachineCore(noHandle: .init()), origin = AgentChild(run: "old", child: "x")
+            let initial = core.a.items + [item("view", "startedAt", "41"), item("view", "session", #"{"id":"s"}"#),
+                                         item("run", "old", #"{"id":"old","children":[{"id":"x","index":7}]}"#)]
+            core.a.items = initial
+            let m = SessionModel(core: core); try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
+            core.a.reply = { _ in #"{"newRunId":"new"}"# }
+            _ = try await m.control(key, origin, action: "resume", text: "続けて")
+            func returned(_ child: String) -> Item { item("run", "new", #"{"id":"new","children":[{"id":"first","index":1},{"id":"\#(child)","index":7}]}"#) }
+            func visit(_ instance: String, session: String, start: Int, child: String) throws {
+                core.a.items = initial.filter { !($0.collection == "view" && ["instanceId", "startedAt", "session"].contains($0.id)) } +
+                    [item("view", "instanceId", "\"\(instance)\""), item("view", "session", #"{"id":"\#(session)"}"#), item("view", "startedAt", String(start)), returned(child)]
+                try m.select(host: "a", instance: instance)
+            }
+            try visit("other", session: "s", start: 41, child: "wrongPi")
+            try visit("pi", session: "other", start: 41, child: "wrongSession")
+            XCTAssertNil(m.instructions.resume(key, from: origin, run: "new")?.destinationChild)
+            try visit("pi", session: "s", start: restart ? 42 : 41, child: "right")
+            XCTAssertEqual(m.editor, key)
+            XCTAssertEqual(m.instructions.forChild(key, .init(run: "new", child: "right")).map(\.text), restart ? [] : ["続けて"])
+            try visit("pi", session: "s", start: restart ? 42 : 41, child: "later")
+            XCTAssertTrue(m.instructions.forChild(key, .init(run: "new", child: "later")).isEmpty)
+        }
+    }
+    func testPendingResumesShareTheInstructionHistoryLimit() {
+        var history = ChildInstructions()
+        let key = EditorKey(host: "a", target: Target(instance: "pi", session: "s")), unit = AgentChild(run: "old", child: "child")
+        for i in 0...128 {
+            history.accept(.init(key: key, unit: unit, action: "resume", text: "指示", newRun: "run-\(i)", startedAt: 41, sourceGeneration: nil, sourceIndex: 7))
+        }
+        XCTAssertNil(history.resume(key, from: unit, run: "run-0"))
+        XCTAssertNotNil(history.resume(key, from: unit, run: "run-1"))
+        XCTAssertEqual(history.forChild(key, unit).count, 128)
     }
     func testLoginInvalidatedAcrossUndrawnReconnect() async throws {
         let core = MachineCore(noHandle: .init()), m = SessionModel(core: core)
@@ -152,6 +200,25 @@ private final class MachineCore: Core, @unchecked Sendable {
         do { _ = try await m.control(stop); XCTFail() } catch CoreError.StaleTarget {}; XCTAssertEqual(c.a.calls.count, 2)
         var pages = 0; c.a.reply = { op in guard case .rc(_, .subagentTranscript, let raw) = op else { throw CoreError.BadRequest }; XCTAssertEqual(try decodeObject(raw)["cursor"] as? String, pages == 0 ? nil : "p\(pages)"); pages += 1; return try jsonString(["cursor": pages < 9 ? "p\(pages)" : "", "items": [["entryId": "e", "text": "\(pages)"]]]) }
         let record = try m.workRecord(key, child); _ = try await record.load(); XCTAssertEqual(pages, 8); XCTAssertTrue(record.more); _ = try await record.load(); XCTAssertEqual(record.items.count, 1); XCTAssertEqual(record.items.first?.str("text"), "9")
+    }
+    func testRecordRefreshFinishesSlowReadAndCoalescesActivity() async throws {
+        let refresh = WorkRecordRefresh(), gate = AsyncStream<Void>.makeStream()
+        let started = expectation(description: "slow page started"), second = expectation(description: "follow-up page")
+        var calls = 0, visible: [String] = []
+        let record = WorkRecord { _ in
+            calls += 1
+            if calls == 1 { started.fulfill(); for await _ in gate.stream { break } }
+            return ["items": [["entryId": "note", "text": "page \(calls)"]]]
+        }
+        let detail = Task { await refresh.listen {
+            do { _ = try await record.load(); visible.append(record.items[0].str("text")) } catch { XCTFail("slow read was cancelled") }
+            if calls == 2 { second.fulfill() }
+        } }
+        await fulfillment(of: [started], timeout: 2)
+        for _ in 0..<10 { refresh.request(); await Task.yield() }
+        XCTAssertEqual(calls, 1); gate.continuation.finish()
+        await fulfillment(of: [second], timeout: 2); detail.cancel(); await detail.value
+        XCTAssertEqual(visible, ["page 1", "page 2"])
     }
     func testFirstStepAndAppUpdate() {
         var r = Rows(); XCTAssertEqual(r.firstStep, .loading); r.groups["host"] = [item("host", "connection", "\"connected\"")]; XCTAssertEqual(r.firstStep, .loading)

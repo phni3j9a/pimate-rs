@@ -722,6 +722,8 @@ async def demo(lab, binary):
             ],
         ),
     ]
+    chat_failure = os.getenv("PIMATE_DEMO_CHAT_FAILURE") == "1"
+    failed_call = dict(id="failed-agent-call", name="subagent", args={})
     servers = [
         await pi(
             run,
@@ -850,11 +852,15 @@ async def demo(lab, binary):
             "api",
             "/home/me/work/api",
             name="認証まわりのレビュー",
-            seed=[("user", "認証を並列にレビューしてください。", {}), ("assistant", "レビュアーをバックグラウンドで起動しました。", dict(stopReason="stop"))],
+            seed=[("user", "認証を並列にレビューしてください。", {}), ("assistant", "レビュアーをバックグラウンドで起動しました。", dict(stopReason="stop"))] + ([
+                ("assistant", "", dict(toolCalls=[failed_call], stopReason="toolUse")),
+                ("tool_result", "子の結果を集約できませんでした", dict(toolName="subagent", toolCallId=failed_call["id"], isError=True)),
+            ] if chat_failure else []),
             age=5 * 60_000,
             runs=[
                 dict(
                     id="run",
+                    **({"toolCallId": failed_call["id"]} if chat_failure else {}),
                     backend="pi-subagents",
                     background=True,
                     mode="parallel",

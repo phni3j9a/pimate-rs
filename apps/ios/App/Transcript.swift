@@ -4,6 +4,7 @@ struct WorkLine: Identifiable {
     let id: String, name: String, subject: String
     var output: String, state: String
     var images: HistoryImages?
+    var callID: String?
 }
 struct ChatTurn: Identifiable {
     let id: String
@@ -30,8 +31,8 @@ struct ChatTurn: Identifiable {
     }
     static func read(_ entries: [Item], live: [Item]) -> [Self] {
         var turns = [Self(id: "begin")], pending: [String: (Int, Int)] = [:]
-        func line(_ id: String, _ o: Object, _ name: String) -> WorkLine {
-            let args = o.obj("args"); return WorkLine(id: id, name: name, subject: args.str("path").isEmpty ? args.str("command") : args.str("path"), output: "", state: "未完了")
+        func line(_ id: String, _ o: Object, _ name: String, callID: String) -> WorkLine {
+            let args = o.obj("args"); return WorkLine(id: id, name: name, subject: args.str("path").isEmpty ? args.str("command") : args.str("path"), output: "", state: "未完了", callID: callID)
         }
         for item in entries {
             if Task.isCancelled { return [] }
@@ -43,7 +44,7 @@ struct ChatTurn: Identifiable {
             let i = turns.count - 1; turns[i].end = ts
             if kind == "tool_result" {
                 let id = o.str("toolCallId"), pos = pending.removeValue(forKey: id)
-                if pos == nil { turns[i].lines.append(.work(line(item.id, o, o.str("toolName")))) }
+                if pos == nil { turns[i].lines.append(.work(line(item.id, o, o.str("toolName"), callID: id))) }
                 let (t, w) = pos ?? (i, turns[i].lines.count - 1)
                 turns[t].updateWork(w, output: text, state: o["isError"] as? Bool == true ? "失敗" : "完了", images: HistoryImages(item))
             } else {
@@ -53,14 +54,14 @@ struct ChatTurn: Identifiable {
                 if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n"), meta: meta))) }
                 for (n, c) in o.list("toolCalls").enumerated() {
                     pending[c.str("id")] = (i, turns[i].lines.count)
-                    turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"))))
+                    turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"), callID: c.str("id"))))
                 }
             }
         }
         for tool in live {
             let o = tool.object; guard o.str("status") == "running", o["parentToolCallId"] as? String == nil else { continue }
             let i = turns.count - 1, pos = pending[tool.id]
-            if pos == nil { turns[i].lines.append(.work(line("live:" + tool.id, o, o.str("toolName")))) }
+            if pos == nil { turns[i].lines.append(.work(line("live:" + tool.id, o, o.str("toolName"), callID: tool.id))) }
             let (t, w) = pos ?? (i, turns[i].lines.count - 1)
             turns[t].updateWork(w, output: o.obj("partial").list("content").map { $0.str("text") }.joined(), state: "実行中")
         }

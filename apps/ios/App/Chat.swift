@@ -30,6 +30,8 @@ struct ChatScreen: View {
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     @State private var turns: [ChatTurn] = []
+    @State private var review = false
+    @State private var agents: AgentSheet?
     @State private var table: OpenTable?
     @State private var photo: OpenPhoto?
     private var photos: PhotoContext {
@@ -51,7 +53,7 @@ private struct Conversation: View {
             ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
-                        ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id) }
+                        ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }) }
                         if !thinking.isEmpty { DisclosureGroup("考えています…") { Text(verbatim: thinking) } }
                         if !text.isEmpty {
                             // A new streamed answer must not render with the previous answer's parsed blocks.
@@ -67,8 +69,16 @@ private struct Conversation: View {
                 }.modifier(PhotoViewport()).scrollPosition(id: $position, anchor: .bottom).defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
                     .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { position = "tail"; UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
-            .safeAreaInset(edge: .bottom, spacing: 8) { Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc) }
+            .safeAreaInset(edge: .bottom, spacing: 8) {
+                VStack(spacing: 0) {
+                    AgentSummary(counts: rows.subagentCounts) { agents = AgentSheet(run: nil) }
+                    Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc)
+                }.background(PiTheme.background)
+            }
+            .sheet(item: $agents) { AgentsView(model: model, key: key, sheet: $0) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("変更をレビュー", systemImage: "doc.text.magnifyingglass") { review = true } } }
+            .sheet(isPresented: $review) { ReviewView(model: model, key: key, turns: turns.filter { $0.id != "begin" }) }
             .modifier(PiSheetMenu(model: model, key: key))
             .environment(\.photoContext, photos)
             .fullScreenCover(item: $photo) { shown in
@@ -83,8 +93,10 @@ private struct Conversation: View {
             }
     }
 }
-private struct TurnView: View {
+struct TurnView: View {
     let turn: ChatTurn, active: Bool
+    let runForCall: (String) -> String?, openRun: (String) -> Void
+    var caption: String? = nil
     @State private var expanded = false
     var body: some View {
         let firstWork = turn.work.first?.id
@@ -93,6 +105,7 @@ private struct TurnView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled) }
                     if let images = turn.images { HistoryPhotos(images: images) }
+                    if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing)
             }
             ForEach(turn.lines) { line in
@@ -105,7 +118,11 @@ private struct TurnView: View {
                             HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                     }
-                    if active || expanded { work(w) }
+                    let run = w.callID.flatMap(runForCall)
+                    if active || expanded || (run != nil && w.state == "失敗") { work(w) }
+                    if let run {
+                        Button { openRun(run) } label: { Label("サブエージェントの実行", systemImage: "person.2").frame(minHeight: 44) }
+                    }
                     if let images = w.images { HistoryPhotos(images: images) }
                 }
             }
