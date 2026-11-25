@@ -44,6 +44,10 @@ start_fixture() {
   for _ in {1..60}; do grep -q '^pimate://pair?' "$lab/fixture-$n" && break; kill -0 "${fixtures[$((n-1))]}"; sleep 1; done
   grep -m1 '^pimate://pair?' "$lab/fixture-$n" | tr -d '\r\n' >"$file"
   [[ -s $file ]]
+  # Trust only the port announced by this process; never derive the expected address from a link.
+  fixture_port=$(sed -nE 's/^adb -s SERIAL reverse tcp:([0-9]+) tcp:\1$/\1/p' "$lab/fixture-$n")
+  [[ $fixture_port =~ ^[0-9]+$ ]] && (( fixture_port > 0 && fixture_port <= 65535 && fixture_port != 47800 )) || return 1
+  export TEST_RUNNER_PIMATE_FIXTURE_PORT=$fixture_port
 }
 # Reuse the loopback management fixture for Host 1 only. Never contact an actual provider.
 ws_version=$(node -p 'require("./packages/pimate/package-lock.json").packages["node_modules/ws"].version')
@@ -57,6 +61,13 @@ TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultB
 PIMATE_DEMO_REJECT_FIRST_TREE=1 start_fixture "$((${#fixtures[@]} + 1))"
 xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
 TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testSheetOperations test-without-building
+# Exercise the two first-pairing routes separately; each uses a fresh link and test-store namespace.
+PIMATE_DEMO_CHAT_FAILURE=1 start_fixture "$((${#fixtures[@]} + 1))"
+xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
+TEST_RUNNER_PIMATE_CHAT_FIXTURE=1 TEST_RUNNER_PIMATE_DEMO_CHAT_FAILURE=1 "${xcb[@]}" -only-testing:PiMateUITests/AgentReviewJourney/testChatPages test-without-building
+NODE_PATH="$lab/ws/node_modules" PIMATE_DEMO_SCREENS=list start_fixture "$((${#fixtures[@]} + 1))"
+xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
+TEST_RUNNER_PIMATE_SCREEN_FIXTURE=list "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testMachineScreens test-without-building
 failed=0
 for variant in light dark large; do
   mode=light; size=large

@@ -1,5 +1,13 @@
 import XCTest
 
+// The expected port comes from the fixture launcher, not the clipboard or pairing link.
+func confirmFixtureAddress(_ app: XCUIApplication) throws {
+    let port = try XCTUnwrap(ProcessInfo.processInfo.environment["PIMATE_FIXTURE_PORT"].flatMap(UInt16.init), "Missing disposable fixture port")
+    guard port > 0, port != 47800, app.staticTexts["pair-address"].label == "127.0.0.1:\(port)" else {
+        throw NSError(domain: "PiMateUITests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Refusing to pair: preview does not match the disposable loopback Host."])
+    }
+}
+
 final class ProbeTests: XCTestCase {
     func testJourney() throws {
         let app = XCUIApplication(), variant = ProcessInfo.processInfo.environment["PIMATE_VARIANT"] ?? "light"
@@ -14,9 +22,9 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(insert.waitForExistence(timeout: 5)); insert.tap()
         let preview = app.buttons["接続先を確認"]; XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 8), .completed); preview.tap()
         XCTAssertEqual(app.staticTexts["pair-name"].label, "デモ PC")
-        XCTAssertTrue(app.staticTexts["pair-address"].label.hasPrefix("127.0.0.1:"))
+        try confirmFixtureAddress(app)
         app.buttons["キャンセル"].tap(); XCTAssertTrue(insert.exists); XCTAssertFalse(app.buttons["pi-waiting"].exists)
-        insert.tap(); preview.tap(); app.buttons["このマシンに接続"].tap()
+        insert.tap(); preview.tap(); try confirmFixtureAddress(app); app.buttons["このマシンに接続"].tap()
         XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
@@ -169,7 +177,7 @@ extension ProbeTests {
         app.buttons["リンクを貼り付ける"].tap(); app.descendants(matching: .any)["paste"].firstMatch.tap()
         let preview = app.buttons["接続先を確認"]
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 8), .completed)
-        preview.tap(); app.buttons["このマシンに接続"].tap()
+        preview.tap(); try confirmFixtureAddress(app); app.buttons["このマシンに接続"].tap()
         XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let main = app.buttons["pi-main"]
         XCTAssertTrue(main.waitForExistence(timeout: 15)); main.tap()
@@ -230,7 +238,7 @@ extension ProbeTests {
         }
         tap(app.buttons["リンクを貼り付ける"]); app.descendants(matching: .any)["paste"].firstMatch.tap(); app.buttons["接続先を確認"].tap()
         XCTAssertEqual(app.staticTexts["pair-name"].label, mode == "faux" ? "検証用 PC" : "デモ PC")
-        app.buttons["このマシンに接続"].tap()
+        try confirmFixtureAddress(app); app.buttons["このマシンに接続"].tap()
         if mode == "empty" {
             XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "まだ起動中")).firstMatch.waitForExistence(timeout: 20)); shot("First-Step-Empty")
             app.buttons["新しい Pi を起動"].tap(); XCTAssertTrue(app.textFields["フォルダのパス"].waitForExistence(timeout: 8)); return

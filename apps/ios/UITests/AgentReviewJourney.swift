@@ -26,7 +26,8 @@ final class AgentReviewJourney: XCTestCase {
         }
         try tap(app.buttons["リンクを貼り付ける"]); try tap(app.descendants(matching: .any)["paste"].firstMatch)
         let preview = app.buttons["接続先を確認"]; XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 10), .completed)
-        try tap(preview); try tap(app.buttons["このマシンに接続"]); try selectPi(real ? "real-chat" : "main")
+        try tap(preview); try confirmFixtureAddress(app); try tap(app.buttons["このマシンに接続"])
+        try tap(app.buttons["一覧を開く"]); try selectPi(real ? "real-chat" : "main")
         try tap(app.buttons["変更をレビュー"]); XCTAssertTrue(app.buttons["この変更について依頼"].waitForExistence(timeout: 15)); if !real { shot("Review") }
         try tap(app.buttons["セッション全体"])
         if real {
