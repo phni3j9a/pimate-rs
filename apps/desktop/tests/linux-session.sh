@@ -26,7 +26,7 @@ sleep 8
 ibus engine mozc-jp || :
 ibus engine
 mkdir lab
-PIMATE_DEMO_NAME=Demo54 PIMATE_DEMO_DESKTOP_REVIEW=1 python3 -B - "$root/scripts/android-demo.py" "$bin/pimate" >demo.log 2>&1 <<'PY' &
+PIMATE_DEMO_COUNT_PROMPTS=1 PIMATE_DEMO_NAME=Demo54 PIMATE_DEMO_DESKTOP_REVIEW=1 python3 -B - "$root/scripts/android-demo.py" "$bin/pimate" >demo.log 2>&1 <<'PY' &
 import asyncio, pathlib, runpy, sys
 asyncio.run(runpy.run_path(sys.argv[1])['demo'](pathlib.Path.cwd()/'lab', sys.argv[2]))
 PY
@@ -41,7 +41,18 @@ sleep 4; kill -0 "$app"
 python3 "$here/linux-drive.py" "$mode" "$out"
 test "$(grep -Fc '.commit_string("ニホンゴ")' app.log)" = 1
 if [[ $mode == hotplug ]]; then
-  # The old object must be destroyed before the Japanese commit.
-  sed '/\.commit_string("ニホンゴ")/q' app.log | grep 'zwp_text_input_v3@[0-9]*\.destroy()' >/dev/null
+  # Assert pointer capability was added during live composition, on the same input object.
+  python3 - <<'PY_TRACE'
+import re
+from pathlib import Path
+log = Path('app.log').read_text()
+start = re.search(r'(zwp_text_input_v3@\d+)\.preedit_string\("ニホンゴ"', log)
+assert start, 'missing candidate'
+commit = log.index(start[1] + '.commit_string("ニホンゴ")', start.end())
+during = log[start.end():commit]
+assert re.search(r'wl_seat@\d+\.capabilities\(3\)', during), 'pointer not added during preedit'
+assert '.destroy()' not in '\n'.join(l for l in during.splitlines() if start[1]+'.' in l)
+assert '.get_text_input(' not in during
+PY_TRACE
 fi
 printf '%s: Wayland commit_string exactly once\n' "$mode"

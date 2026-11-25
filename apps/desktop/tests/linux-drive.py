@@ -4,7 +4,6 @@ import io
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import time
@@ -17,8 +16,14 @@ mode = sys.argv[1]
 bus = dbus.SessionBus()
 remote = 'org.gnome.Mutter.RemoteDesktop'
 root = dbus.Interface(bus.get_object(remote, '/org/gnome/Mutter/RemoteDesktop'), remote)
-seat = dbus.Interface(bus.get_object(remote, root.CreateSession()), remote + '.Session')
-seat.Start()
+def session():
+    device = dbus.Interface(bus.get_object(remote, root.CreateSession()), remote + '.Session')
+    device.Start()
+    return device
+
+
+seat = session()
+pointer = session() if mode == 'hotplug' else seat
 
 
 def key(sym):
@@ -29,12 +34,12 @@ def key(sym):
 
 
 def click(x, y):
-    seat.NotifyPointerMotionRelative(3000., 3000.)
+    pointer.NotifyPointerMotionRelative(3000., 3000.)
     time.sleep(.15)
-    seat.NotifyPointerMotionRelative(float(x-1279), float(y-799))
+    pointer.NotifyPointerMotionRelative(float(x-1279), float(y-799))
     time.sleep(.15)
-    seat.NotifyPointerButton(272, True)
-    seat.NotifyPointerButton(272, False)
+    pointer.NotifyPointerButton(272, True)
+    pointer.NotifyPointerButton(272, False)
     time.sleep(.35)
 
 
@@ -61,16 +66,9 @@ def snap(name):
     return Image.open(path).convert('RGB')
 
 
-def users():
-    with socket.socket(socket.AF_UNIX) as sock:
-        sock.settimeout(4)
-        sock.connect('lab/run/demo.sock')
-        sock.sendall(b'{"id":"verify","method":"history"}\n')
-        for line in sock.makefile('rb'):
-            r = json.loads(line)
-            if r.get('id') == 'verify':
-                return [i['text'] for i in r['result']['items'] if i['kind'] == 'user']
-    raise AssertionError('no history reply')
+def prompts():
+    path = Path('lab/run/received-prompts.jsonl')
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
 key(0xff1b)  # dismiss shell overview
@@ -97,21 +95,29 @@ time.sleep(2)
 b = snap('stream-later')
 assert ImageChops.difference(a,b).crop((x+160,y+60,x+760,y+490)).getbbox(), 'no visible stream update'
 time.sleep(12)
-assert users() == []
+assert prompts() == []
 click(x+320, y+615)
+if mode == 'hotplug':
+    pointer.Stop()  # keep only the keyboard until conversion is live
+    time.sleep(.5)
 key(0xff26)  # Hiragana
 for char in 'nihongo':
     key(ord(char))
 key(32); key(32)
 snap('candidate')
+if mode == 'hotplug':
+    pointer = session()
+    pointer.NotifyPointerMotionRelative(1., 0.)
+    time.sleep(.5)
+    snap('candidate-after-hotplug')
 key(0xff0d)
 snap('commit')
 key(0xff0d)  # ordinary Enter adds newline, not a prompt
 time.sleep(3.5)
-assert users() == []
+assert prompts() == []
 click(x+335,y+694)
 time.sleep(4)
-assert users() == ['ニホンゴ\n'], 'explicit send did not deliver exactly one committed line'
+assert prompts() == [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
 snap('sent')
 print(f'{mode}: paired, demo listed, stream changed, Enter: 0 prompts; button: 1 prompt = ニホンゴ + newline')
 seat.Stop()

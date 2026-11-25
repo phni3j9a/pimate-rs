@@ -513,6 +513,9 @@ async def pi(
                     elif task is None and iid == "edge":
                         task = asyncio.create_task(later(8, pc_resume))
                 elif method == "prompt":
+                    if os.environ.get("PIMATE_DEMO_COUNT_PROMPTS") == "1":
+                        with (run / "received-prompts.jsonl").open("a") as receipt:
+                            print(json.dumps([iid, params["text"]]), file=receipt)
                     if DESKTOP_REVIEW:
                         await asyncio.sleep(3)  # Allow editing/IME before the original receipt.
                     images = params.get("images") or []

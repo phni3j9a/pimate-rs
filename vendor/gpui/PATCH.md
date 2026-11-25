@@ -1,1 +1,5 @@
-crates.io `gpui 0.2.2` + `gpui-text-input.patch`（[zed#46560](https://github.com/zed-industries/zed/pull/46560)、d92f477）。Wayland の seat の keyboard 能力が再通知されたとき古い text_input を destroy し、IME の状態を消してから作り直す。macOS のソースには変更なし。修正済みの公式 gpui と型互換な gpui-component が公開され、Wayland の後付け入力・macOS の IME/ACK 試験が通ったら vendor を外す。
+crates.io `gpui 0.2.2` の Wayland 修正。`gpui-text-input.patch` は [zed#46560](https://github.com/zed-industries/zed/pull/46560)（d92f477）の試作バックポートで、二重確定の原因だった古い text_input を破棄して作り直す。
+
+本 vendor はその対策を拡張し、同じ seat の keyboard 能力が継続する通知では keyboard と text_input の双方を再利用する。マウスを追加しただけで進行中の変換を取り消さない。keyboard 能力を失うか seat を交換する際には解放し、入力欄の marked range も取り消す。古いオブジェクトからの遅着イベントは無視する。macOS のコードは変更しない。
+
+修正済みの公式 gpui と型互換な gpui-component が公開され、Wayland の変換中の機器追加と macOS の IME/ACK 試験が通ったら vendor を外す。

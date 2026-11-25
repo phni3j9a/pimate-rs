@@ -273,6 +273,26 @@ pub(crate) enum PendingActivation {
 #[derive(Clone)]
 pub struct WaylandClientStatePtr(Weak<RefCell<WaylandClientState>>);
 
+impl WaylandClientState {
+    fn release_keyboard(&mut self) -> Option<WaylandWindowStatePtr> {
+        self.wl_keyboard.take()?.release();
+        if let Some(input) = self.text_input.take() {
+            input.destroy();
+        }
+        self.ime_pre_edit = None;
+        self.composing = false;
+        self.pre_edit_text = None;
+        self.repeat.current_id += 1;
+        self.enter_token = None;
+        self.keyboard_focused_window.take()
+    }
+}
+
+fn cancel_keyboard_focus(window: WaylandWindowStatePtr) {
+    window.handle_ime(ImeInput::DeleteText);
+    window.set_focused(false);
+}
+
 impl WaylandClientStatePtr {
     pub fn get_client(&self) -> Rc<RefCell<WaylandClientState>> {
         self.0
@@ -900,9 +920,7 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                     if let Some(wl_pointer) = state.wl_pointer.take() {
                         wl_pointer.release();
                     }
-                    if let Some(wl_keyboard) = state.wl_keyboard.take() {
-                        wl_keyboard.release();
-                    }
+                    let focus = state.release_keyboard();
                     state.wl_seat.release();
                     state.wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(
                         name,
@@ -910,6 +928,10 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                         qh,
                         (),
                     );
+                    drop(state);
+                    if let Some(window) = focus {
+                        cancel_keyboard_focus(window);
+                    }
                 }
                 "wl_output" => {
                     let output = registry.bind::<wl_output::WlOutput, _, _>(
@@ -1151,25 +1173,18 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
         {
             let client = state.get_client();
             let mut state = client.borrow_mut();
+            if seat != &state.wl_seat {
+                return;
+            }
+            let mut lost_focus = None;
             if capabilities.contains(wl_seat::Capability::Keyboard) {
-                let keyboard = seat.get_keyboard(qh, ());
-                if let Some(text_input) = state.text_input.take() {
-                    text_input.destroy();
-                    state.ime_pre_edit = None;
-                    state.composing = false;
+                if state.wl_keyboard.is_none() {
+                    state.wl_keyboard = Some(seat.get_keyboard(qh, ()));
+                    state.text_input = state.globals.text_input_manager.as_ref()
+                        .map(|manager| manager.get_text_input(seat, qh, ()));
                 }
-
-                state.text_input = state
-                    .globals
-                    .text_input_manager
-                    .as_ref()
-                    .map(|text_input_manager| text_input_manager.get_text_input(seat, qh, ()));
-
-                if let Some(wl_keyboard) = &state.wl_keyboard {
-                    wl_keyboard.release();
-                }
-
-                state.wl_keyboard = Some(keyboard);
+            } else {
+                lost_focus = state.release_keyboard();
             }
             if capabilities.contains(wl_seat::Capability::Pointer) {
                 let pointer = seat.get_pointer(qh, ());
@@ -1185,6 +1200,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
 
                 state.wl_pointer = Some(pointer);
             }
+            drop(state);
+            if let Some(window) = lost_focus {
+                cancel_keyboard_focus(window);
+            }
         }
     }
 }
@@ -1192,7 +1211,7 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
 impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
     fn event(
         this: &mut Self,
-        _: &wl_keyboard::WlKeyboard,
+        keyboard: &wl_keyboard::WlKeyboard,
         event: wl_keyboard::Event,
         _: &(),
         _: &Connection,
@@ -1200,6 +1219,9 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for WaylandClientStatePtr {
     ) {
         let mut client = this.get_client();
         let mut state = client.borrow_mut();
+        if state.wl_keyboard.as_ref() != Some(keyboard) {
+            return;
+        }
         match event {
             wl_keyboard::Event::RepeatInfo { rate, delay } => {
                 state.repeat.characters_per_second = rate as u32;
@@ -1425,6 +1447,9 @@ impl Dispatch<zwp_text_input_v3::ZwpTextInputV3, ()> for WaylandClientStatePtr {
     ) {
         let client = this.get_client();
         let mut state = client.borrow_mut();
+        if state.text_input.as_ref() != Some(text_input) {
+            return;
+        }
         match event {
             zwp_text_input_v3::Event::Enter { .. } => {
                 drop(state);
