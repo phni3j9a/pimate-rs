@@ -8,6 +8,10 @@ permissions:
 env:
   CARGO_PROFILE_DEV_DEBUG: '0'
   CARGO_INCREMENTAL: '0'
+# A newer push to the same PR makes older runs moot; main keeps every run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   macos:
     runs-on: macos-latest
