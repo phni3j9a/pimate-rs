@@ -378,7 +378,18 @@ impl Desktop {
             Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
             Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
-            Route::Github(q) => ("GitHub", self.github_view(n, p, q, w, cx)),
+            Route::Github(q) => {
+                if n.read(cx)
+                    .page
+                    .as_ref()
+                    .is_some_and(|page| page.visible(self))
+                    && let Some(viewer) = n.read(cx).github.viewer.clone()
+                    && let Some(panel) = chat_media::Viewer::panel(&viewer, None, p, w, cx)
+                {
+                    return Some(div().min_w_0().flex_1().child(panel));
+                }
+                ("GitHub", self.github_view(n, p, q, w, cx))
+            }
         };
         let back = n.read(cx).back.clone();
         let header = div()

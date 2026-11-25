@@ -6,6 +6,7 @@ pub(super) struct Github {
     loaded: bool,
     data: Option<Value>,
     docs: markdown::Messages,
+    pub(super) viewer: Option<Entity<chat_media::Viewer>>,
 }
 fn check_note(v: &Value) -> Option<&'static str> {
     if v["checksTruncated"] == true {
@@ -195,6 +196,12 @@ impl Desktop {
         }
         let latest = v["commentsTruncated"] == true;
         let empty = v["comments"].as_array().is_some_and(Vec::is_empty);
+        let viewer = n.read(cx).github.viewer.clone().unwrap_or_else(|| {
+            let viewer = cx.new(|_| chat_media::Viewer::default());
+            cx.observe(&viewer, |_, _, cx| cx.notify()).detach();
+            n.update(cx, |s, _| s.github.viewer = Some(viewer.clone()));
+            viewer
+        });
         n.update(cx, |s, cx| {
             s.github.docs.begin_frame();
             for (i, (title, source, truncated)) in body_parts.into_iter().enumerate() {
@@ -202,11 +209,11 @@ impl Desktop {
                 if source.is_empty() {
                     g = g.child(p.caption("本文はありません"));
                 } else {
-                    g = g.child(s.github.docs.view(
+                    g = g.child(s.github.docs.render(
                         format!("github-{i}"),
                         &source,
                         false,
-                        None,
+                        markdown::DocumentControls::TablesOnly(&viewer),
                         w,
                         cx,
                     ));
@@ -228,6 +235,61 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::check_note;
+    #[gpui::test]
+    fn opens_and_copies_table_without_an_image_gallery(cx: &mut gpui::TestAppContext) {
+        use crate::{
+            markdown::{DocumentControls, Messages},
+            screen::{Colors, chat_media::Viewer},
+        };
+        use gpui::{Context, Entity, Window, prelude::*};
+        const TABLE: &str = "| Web | PC |\n| :- | -: |\n| ![remote](https://example.invalid/a.png) | ![local](/tmp/private.png) |";
+        struct Article {
+            docs: Messages,
+            viewer: Entity<Viewer>,
+        }
+        impl Render for Article {
+            fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                Viewer::panel(&self.viewer, None, &Colors::new(false), w, cx).unwrap_or_else(|| {
+                    self.docs.render(
+                        "comment".into(),
+                        TABLE,
+                        false,
+                        DocumentControls::TablesOnly(&self.viewer),
+                        w,
+                        cx,
+                    )
+                })
+            }
+        }
+        cx.update(gpui_component::init);
+        let (article, w) = cx.add_window_view(|_, cx| {
+            let viewer = cx.new(|_| Viewer::default());
+            cx.observe(&viewer, |_, _, cx| cx.notify()).detach();
+            Article {
+                docs: Messages::default(),
+                viewer,
+            }
+        });
+        for button in ["open-markdown-table", "copy-table", "close-media"] {
+            let center = w.debug_bounds(button).unwrap().center();
+            w.simulate_click(center, Default::default());
+            article.read_with(w, |a, cx| {
+                let shown = &a.viewer.read(cx).table;
+                if button == "close-media" {
+                    assert!(shown.is_none())
+                } else {
+                    let (table, gallery) = shown.as_ref().unwrap();
+                    assert!(gallery.is_none());
+                    assert_eq!(table.markdown, TABLE);
+                }
+            });
+        }
+        assert_eq!(
+            cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+            Some(TABLE)
+        );
+        assert!(cx.opened_url().is_none());
+    }
     #[test]
     fn missing_checks_are_not_empty() {
         assert_ne!(
