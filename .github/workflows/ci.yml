@@ -33,7 +33,7 @@ jobs:
       - name: Kotlin から Host の一覧と逐次差分を検証
         run: |
           lib="$(dirname "$(realpath "$(command -v kotlinc)")")/../lib"
-          curl --fail --silent --show-error -o "$RUNNER_TEMP/jna.jar" https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 15 -o "$RUNNER_TEMP/jna.jar" https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
           CARGO_TARGET_DIR=target KOTLIN_CP="$lib/kotlin-stdlib.jar:$lib/kotlinx-coroutines-core-jvm.jar:$RUNNER_TEMP/jna.jar" scripts/test-mobile.sh kotlin
   macos-host:
     runs-on: macos-latest
