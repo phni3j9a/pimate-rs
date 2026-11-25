@@ -92,15 +92,18 @@ if mode == 'check':
     os.kill(daemon, signal.SIGSTOP)
     try:
         started = time.monotonic()
-        click(x, y+695)  # reload
+        click(x-48, y+695)  # reload (left of the text-size control)
         click(x, y+89)  # paste
         snap('confirm')
+        drawn_after = time.monotonic() - started
         def ocr(name):
             return subprocess.check_output(['tesseract', name+'.png', 'stdout', '--psm', '11'], text=True)
-        assert '127.0.0.1' in ocr('confirm') and time.monotonic() - started < 5, 'UI blocked on reload'
+        assert '127.0.0.1' in ocr('confirm') and drawn_after < 5, 'UI blocked on reload'
         time.sleep(5)
-        snap('storage-timeout')
-        assert 'storage' in ocr('storage-timeout').lower(), 'missing timeout notice'
+        timeout_image = snap('storage-timeout')
+        timeout_image.crop((x-118,y+100,x+125,y+425)).resize((729,975)).save('registration.png')
+        notice = subprocess.check_output(['tesseract','registration.png','stdout','-l','jpn+eng','--psm','6'], text=True)
+        assert 'storage' in notice.lower(), 'missing timeout notice'
     finally:
         os.kill(daemon, signal.SIGCONT)
 else:
