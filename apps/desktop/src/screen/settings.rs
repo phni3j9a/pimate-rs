@@ -261,7 +261,7 @@ impl Desktop {
                 n,
                 "register-machine",
                 "＋ マシンを追加（ペアリング）",
-                Route::SetupPc,
+                Route::Tailscale,
                 cx,
             )))
             .child(group("新しい Pi の既定", p).child(self.preference(
@@ -419,6 +419,7 @@ impl Desktop {
             .overflow_y_scroll()
             .track_scroll(&scroll)
             .child(body);
+        let footer = self.spawn_footer(n, p, cx);
         Some(
             div()
                 .flex()
@@ -433,7 +434,8 @@ impl Desktop {
                         .min_h_0()
                         .child(content)
                         .vertical_scrollbar(&scroll),
-                ),
+                )
+                .children(footer),
         )
     }
 }

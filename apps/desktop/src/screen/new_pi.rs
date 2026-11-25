@@ -47,7 +47,7 @@ impl Desktop {
             .flex_col()
             .gap_3()
             .child(group("マシン", p).child(machines));
-        let Some(page) = n.read(cx).page.clone().filter(|p| p.visible(self)) else {
+        if !n.read(cx).page.as_ref().is_some_and(|p| p.visible(self)) {
             return v.child("起動先に接続してからマシンを選んでください。");
         };
         if n.read(cx).spawn.is_none() {
@@ -348,50 +348,68 @@ impl Desktop {
                     cx.notify();
                 })),
         );
-        let disabled = locked
-            || path.trim().is_empty()
-            || self.machines[id].rows.get("host", "connection") != "connected";
         v = v.child(folders).child(model);
         if f.busy {
             v = v.child(p.caption("候補を取得中…"));
         }
-        let nav = n.clone();
-        let id = id.to_string();
         v.child(
             group("最初のメッセージ（任意）", p)
                 .child(Input::new(&msg).h(rems(3.5)).disabled(locked)),
         )
-        .child(
-            p.primary("spawn", cx)
-                .label("起動")
-                .disabled(disabled)
-                .on_click(cx.listener(move |app, _, w, cx| {
-                    let f = nav.read(cx).spawn.as_ref().unwrap();
-                    if f.submitted || !page.visible(app) {
-                        return;
-                    }
-                    let path = f.folder.read(cx).value().to_string();
-                    let mut form = match page.spawn_form(f.ask) {
-                        Ok(f) => f,
-                        Err(_) => return,
-                    };
-                    form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
-                    form.message = f.message.read(cx).value().to_string();
-                    form.model = f.model.clone();
-                    form.thinking = f.thinking;
-                    if [f.folder.clone(), f.message.clone()]
-                        .iter()
-                        .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
-                    {
-                        return;
-                    }
-                    nav.update(cx, |s, _| {
-                        s.spawn.as_mut().unwrap().submitted = true;
-                        s.note = "起動要求の結果を確認しています…".into();
-                    });
-                    let timer = cx.background_executor().clone();
-                    let host = id.clone();
-                    app.page_task(
+    }
+    pub(super) fn spawn_footer(
+        &self,
+        n: &Navigation,
+        p: &Colors,
+        cx: &Context<Self>,
+    ) -> Option<Div> {
+        let f = n.read(cx).spawn.as_ref()?;
+        let page = n.read(cx).page.clone().filter(|p| p.visible(self))?;
+        let id = page.host().to_string();
+        let disabled = f.submitted
+            || f.folder.read(cx).value().trim().is_empty()
+            || self.machines.get(&id)?.rows.get("host", "connection") != "connected";
+        let nav = n.clone();
+        Some(
+            line()
+                .flex_shrink_0()
+                .justify_between()
+                .px_4()
+                .py_2()
+                .border_t_1()
+                .border_color(p.border)
+                .child(p.caption("起動した Pi はマシン一覧に表示されます。"))
+                .child(
+                    p.primary("spawn", cx)
+                        .label("起動")
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |app, _, w, cx| {
+                            let f = nav.read(cx).spawn.as_ref().unwrap();
+                            if f.submitted || !page.visible(app) {
+                                return;
+                            }
+                            let path = f.folder.read(cx).value().to_string();
+                            let mut form = match page.spawn_form(f.ask) {
+                                Ok(f) => f,
+                                Err(_) => return,
+                            };
+                            form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
+                            form.message = f.message.read(cx).value().to_string();
+                            form.model = f.model.clone();
+                            form.thinking = f.thinking;
+                            if [f.folder.clone(), f.message.clone()]
+                                .iter()
+                                .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
+                            {
+                                return;
+                            }
+                            nav.update(cx, |s, _| {
+                                s.spawn.as_mut().unwrap().submitted = true;
+                                s.note = "起動要求の結果を確認しています…".into();
+                            });
+                            let timer = cx.background_executor().clone();
+                            let host = id.clone();
+                            app.page_task(
                         &nav,
                         w,
                         cx,
@@ -423,7 +441,8 @@ impl Desktop {
                             n.update(cx, |s, _| s.note = msg.into());
                         },
                     );
-                })),
+                        })),
+                ),
         )
     }
 }
