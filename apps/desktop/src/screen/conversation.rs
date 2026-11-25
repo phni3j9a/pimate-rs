@@ -170,3 +170,44 @@ impl Desktop {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::transcript;
+    use gpui::{Context, ListOffset, ListState, Window, div, list, point, prelude::*, px, size};
+    #[gpui::test]
+    fn ten_thousand_history_rows_only_mount_near_the_viewport(cx: &mut gpui::TestAppContext) {
+        use std::{cell::RefCell, rc::Rc};
+        struct Probe(ListState, Rc<RefCell<Vec<usize>>>);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let mounted = self.1.clone();
+                list(self.0.clone(), move |i, _, _| {
+                    mounted.borrow_mut().push(i);
+                    div().h(px(40.)).into_any_element()
+                })
+                .size_full()
+            }
+        }
+        let state = transcript();
+        state.splice(0..0, 10_000);
+        let mounted = Rc::new(RefCell::new(Vec::new()));
+        let window = cx.add_empty_window();
+        for ix in [10_000, 615] {
+            state.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+            mounted.borrow_mut().clear();
+            window.draw(point(px(0.), px(0.)), size(px(600.), px(480.)), |_, cx| {
+                cx.new(|_| Probe(state.clone(), mounted.clone()))
+            });
+            let indices = mounted.borrow();
+            assert!(!indices.is_empty());
+            assert!(
+                indices.len() < 40 && indices.iter().all(|i| i.abs_diff(ix) < 20),
+                "unexpected layout: {indices:?}"
+            );
+        }
+    }
+}
