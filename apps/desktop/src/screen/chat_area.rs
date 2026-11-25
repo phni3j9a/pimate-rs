@@ -152,6 +152,9 @@ impl Desktop {
                 .child(chat)
                 .vertical_scrollbar(&pending_scroll),
         );
+        if let Some((id, q)) = rows.group("question").first() {
+            main = main.child(self.question_card(&page, id, q, p, w, cx));
+        }
         let pc = rows.get("view", "pcPrompt");
         if !pc.is_null() {
             main = main.child(
