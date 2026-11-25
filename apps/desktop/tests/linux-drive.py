@@ -150,7 +150,20 @@ for n in range(2):
     subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
     time.sleep(.65)
     assert snap('light').getpixel((x-110,y+12)) == (241,243,244), 'desktop did not return to light appearance'
-time.sleep(12)
+# The mock emits the queued PC entry at message_end. Scroll (without moving
+# keyboard focus) until both that entry and the committed answer are painted.
+move(x+450, y+270)
+deadline = time.monotonic() + 25
+while time.monotonic() < deadline:
+    pointer.NotifyPointerAxisDiscrete(0, -20)
+    time.sleep(.3)
+    image = snap('committed-row').crop((x+125,y+50,x+840,y+500))
+    image.save('transcript.png')
+    painted = subprocess.check_output(['tesseract','transcript.png','stdout','--psm','11'], text=True)
+    if 'PC-side interruption' in painted and 'Android' in painted:
+        break
+else:
+    raise AssertionError('interruption and finalized answer not painted')
 assert prompts() == external
 # Discard the old clipboard contents so losing focus can't give a false positive.
 subprocess.run(['wl-copy', 'sentinel'],check=True)
