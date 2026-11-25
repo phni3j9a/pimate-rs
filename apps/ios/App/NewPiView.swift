@@ -12,7 +12,7 @@ struct NewPiView: View {
         SpawnFields(model: model, form: SpawnForm(host: host, askTool: settings.askTool), busy: $busy, select: select) {
             Section("マシン") {
                 Picker("起動先", selection: $host) {
-                    ForEach(model.hosts, id: \.id) { Text($0.name).tag($0.id) }
+                    ForEach(model.hosts, id: \.id) { Text($0.displayName(in: model.hosts)).tag($0.id) }
                 }.disabled(busy)
             }
         }.id(host).navigationTitle("新しい Pi").navigationBarTitleDisplayMode(.inline).interactiveDismissDisabled(busy)

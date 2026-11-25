@@ -14,7 +14,7 @@ struct GithubView: View {
             if let data {
                 if kind == "list" {
                     Section {
-                        Text(data.obj("repo").str("name")).font(.headline)
+                        Text(data.obj("repo").str("name")).modifier(PiFont(.sheet)).fontWeight(.semibold)
                         Picker("種類", selection: $tab) { Text("Issue").tag("issue"); Text("PR").tag("pr") }.pickerStyle(.segmented)
                     }
                     let items = data.list(tab == "issue" ? "issues" : "prs")
@@ -22,7 +22,7 @@ struct GithubView: View {
                     ForEach(items.indices, id: \.self) { i in
                         if let item = GithubItem(editor, items[i]) {
                             NavigationLink { GithubView(model: model, editor: editor, close: close, kind: tab, number: item.number) } label: {
-                                VStack(alignment: .leading, spacing: 5) { Text(verbatim: item.title).font(.headline); Text("#\(item.number) · \(items[i].str("state"))").font(.caption).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading, spacing: 5) { Text(verbatim: item.title).modifier(PiFont(.sheet)).fontWeight(.semibold); Text("#\(item.number) · \(items[i].str("state"))").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
                             }
                         }
                     }
@@ -53,14 +53,14 @@ struct GithubView: View {
     }
     @ViewBuilder private func detail(_ value: Object) -> some View {
         Section {
-            Text(verbatim: value.str("title")).font(.title2.bold()); Text("\(value.str("author")) · \(value.str("state"))").font(.caption).foregroundStyle(.secondary)
+            Text(verbatim: value.str("title")).modifier(PiFont(.title)).bold(); Text("\(value.str("author")) · \(value.str("state"))").modifier(PiFont(.caption)).foregroundStyle(.secondary)
             if value.str("body").isEmpty { Text("本文はありません") } else { MarkdownBody(source: value.str("body"), answer: "github-body") }
             if value["bodyTruncated"] as? Bool == true { Text("本文の一部を省略しています") }
         }
         if kind == "pr" {
             if value["isDraft"] as? Bool == true { Text("ドラフト PR") }
             if !value.str("reviewDecision").isEmpty { LabeledContent("レビュー", value: value.str("reviewDecision")) }
-            if let head = value["headRefName"] as? String, let base = value["baseRefName"] as? String { Text("\(head) → \(base)").font(.callout.monospaced()).textSelection(.enabled) }
+            if let head = value["headRefName"] as? String, let base = value["baseRefName"] as? String { Text("\(head) → \(base)").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled) }
             if let n = value["changedFiles"] as? Int, let added = value["additions"] as? Int, let removed = value["deletions"] as? Int { Text("変更 \(n) ファイル · +\(added) / −\(removed)") }
             Section("CI チェック") {
                 let checks = value.list("checks")
@@ -74,7 +74,7 @@ struct GithubView: View {
             let comments = value.list("comments")
             if comments.isEmpty { Text("コメントはありません").foregroundStyle(.secondary) }
             ForEach(comments.indices, id: \.self) { i in
-                Text(verbatim: comments[i].str("author")).font(.headline); MarkdownBody(source: comments[i].str("body"), answer: "github-comment-\(i)")
+                Text(verbatim: comments[i].str("author")).modifier(PiFont(.sheet)).fontWeight(.semibold); MarkdownBody(source: comments[i].str("body"), answer: "github-comment-\(i)")
                 if comments[i]["bodyTruncated"] as? Bool == true { Text("一部を省略しています") }
             }
             if value["commentsTruncated"] as? Bool == true { Text("最新のコメントのみ表示しています") }

@@ -1,5 +1,11 @@
 import SwiftUI
 
+extension Host {
+    func displayName(in hosts: [Host]) -> String {
+        hosts.contains { $0.id != id && $0.name == name } ? "\(name) · \(address)" : name
+    }
+}
+
 struct Drawer: View {
     let model: SessionModel
     let select: (String, String) -> Void
@@ -26,7 +32,7 @@ struct Drawer: View {
                     if (model.rows[host.id]?.groups["instance"] ?? []).isEmpty {
                         Text(Self.emptyMessage(connection: connection(host), rows: model.rows[host.id])).foregroundStyle(PiTheme.secondary)
                     }
-                } header: { HStack { Label(host.name, systemImage: "desktopcomputer"); Spacer(); Text(connection(host)) }.textCase(nil) }
+                } header: { HStack { Label(host.displayName(in: model.hosts), systemImage: "desktopcomputer"); Spacer(); Text(connection(host)) }.textCase(nil) }
             }
             if !model.message.isEmpty { Text(model.message).foregroundStyle(PiTheme.failure) }
         }.listStyle(.plain).scrollContentBackground(.hidden).background(PiTheme.background)
@@ -74,8 +80,7 @@ struct Drawer: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
                         if waiting {
-                            let duplicate = model.hosts.contains { $0.id != host.id && $0.name == host.name }
-                            Label(duplicate ? "\(host.name) · \(host.address)" : host.name, systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
+                            Label(host.displayName(in: model.hosts), systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                         }
                         if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
                         Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)

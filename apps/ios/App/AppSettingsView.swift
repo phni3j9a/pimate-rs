@@ -14,7 +14,7 @@ struct AppSettingsView: View {
                     NavigationLink { MachineDetailView(model: model, host: host).id(host.id) } label: {
                         Label {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(host.name).font(.headline); Text(MachineDetailView.summary(host, model.rows[host.id])).font(.caption).foregroundStyle(.secondary)
+                                Text(host.displayName(in: model.hosts)).modifier(PiFont(.sheet)).fontWeight(.semibold); Text(MachineDetailView.summary(host, model.rows[host.id])).modifier(PiFont(.caption)).foregroundStyle(.secondary)
                             }.padding(.vertical, 2)
                         } icon: { SwiftUI.Image(systemName: "desktopcomputer") }
                     }.accessibilityIdentifier("machine-\(host.id)")

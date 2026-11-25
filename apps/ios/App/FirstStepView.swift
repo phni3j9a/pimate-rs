@@ -11,10 +11,10 @@ struct FirstStepView: View {
             case .offline: ContentUnavailableView("PC に接続していません", systemImage: "wifi.slash", description: Text("Tailscale と PC の Host を確認してください。"))
             case .empty, .list:
                 Section {
-                    Label("\(host.name) とつながりました", systemImage: "checkmark.circle").font(.title2.bold()).accessibilityAddTraits(.isHeader)
+                    Label("\(host.name) とつながりました", systemImage: "checkmark.circle").modifier(PiFont(.title)).bold().accessibilityAddTraits(.isHeader)
                     if phase == .empty {
                         DeviceBridge(); Text("まだ起動中の Pi はありません。このスマホから PC のフォルダを選んで、新しい Pi を起動できます。")
-                        Text("$ pi").font(.body.monospaced()).textSelection(.enabled)
+                        Text("$ pi").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled)
                         Text("PC のターミナルで起動した Pi も、ここに表示されます。").foregroundStyle(.secondary)
                     } else { Text("選ぶとチャットを開きます。").foregroundStyle(.secondary) }
                 }.listRowSeparator(.hidden)
@@ -23,8 +23,8 @@ struct FirstStepView: View {
                         ForEach(model.rows[host.id]?.groups["instance"] ?? [], id: \.id) { item in
                             Button { select(host.id, item.id) } label: {
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.object.piTitle.isEmpty ? item.id : item.object.piTitle).font(.headline)
-                                    Text(item.object.str("cwd")).font(.caption.monospaced()).foregroundStyle(.secondary)
+                                    Text(item.object.piTitle.isEmpty ? item.id : item.object.piTitle).modifier(PiFont(.sheet)).fontWeight(.semibold)
+                                    Text(item.object.str("cwd")).modifier(PiFont(.caption)).fontDesign(.monospaced).foregroundStyle(.secondary)
                                     if item.object.str("status") == "waiting_input" { Text("入力待ち").foregroundStyle(PiTheme.waiting) }
                                 }.frame(minHeight: 44)
                             }.accessibilityIdentifier("pi-\(item.id)")

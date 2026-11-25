@@ -21,7 +21,7 @@ struct MachineDetailView: View {
     var body: some View {
         Form {
             Section("状態") {
-                Text(MachineDetailView.summary(host, rows)); Text(verbatim: host.address).font(.callout.monospaced()).textSelection(.enabled)
+                Text(MachineDetailView.summary(host, rows)); Text(verbatim: host.address).modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled)
                 if let current = devices?.first(where: { $0["current"] as? Bool == true }), let paired = date(current["createdAt"]) { Text("\(paired) にペアリング").foregroundStyle(.secondary) }
             }
             Section("PC の PiMate") {
@@ -32,7 +32,7 @@ struct MachineDetailView: View {
                     else {
                         LabeledContent("照会時の最新版", value: latest)
                         if supports("packageUpdate") && check?["canUpdate"] as? Bool == true { confirmButton("実行時の最新版に更新…", .update) }
-                        else { Text("PC で実行：pi update npm:@phni3j9a/pimate").font(.callout.monospaced()).textSelection(.enabled) }
+                        else { Text("PC で実行：pi update npm:@phni3j9a/pimate").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled) }
                     }
                 } else { Text("最新版は未確認です").foregroundStyle(.secondary) }
                 if supports("hostRestart") { confirmButton("Host を再起動…", .restart) }
@@ -54,8 +54,8 @@ struct MachineDetailView: View {
                     ForEach(devices.indices, id: \.self) { i in
                         let d = devices[i], current = d["current"] as? Bool == true
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(verbatim: d.str("name")); if current { Text("この端末").font(.caption) }
-                            if let seen = date(d["lastSeenAt"]) { Text("最終接続 \(seen)").font(.caption).foregroundStyle(.secondary) }
+                            Text(verbatim: d.str("name")); if current { Text("この端末").modifier(PiFont(.caption)) }
+                            if let seen = date(d["lastSeenAt"]) { Text("最終接続 \(seen)").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
                         }
                         if !current && supports("pairedDevices"), let id = d["deviceId"] as? String { confirmButton("取り消し…", .revoke(id), d.str("name")) }
                     }
@@ -88,7 +88,7 @@ struct MachineDetailView: View {
             do {
                 let fixed = try model.confirmation(host: host.id, op)
                 guard fixed.device == host.deviceId else { throw CoreError.StaleTarget }
-                title = label; targetName = [host.name, target].filter { !$0.isEmpty }.joined(separator: " · "); confirmation = fixed
+                title = label; targetName = [host.displayName(in: model.hosts), target].filter { !$0.isEmpty }.joined(separator: " · "); confirmation = fixed
             }
             catch { self.error = "対象の登録が変わりました。状態を確認してください。" }
         }
