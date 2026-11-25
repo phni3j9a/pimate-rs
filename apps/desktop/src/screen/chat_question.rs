@@ -6,7 +6,7 @@ pub(super) struct Form {
     values: Vec<Entity<InputState>>,
     selected: Vec<Vec<String>>,
     busy: bool,
-    shown: Value,
+    shown: Arc<Value>,
     life: std::sync::Weak<()>,
 }
 impl Form {
@@ -34,7 +34,7 @@ impl Form {
             selected: vec![vec![]; count],
             busy: false,
             life: Arc::downgrade(life),
-            shown: q.clone(),
+            shown: Arc::new(q.clone()),
         }
     }
 }
@@ -52,7 +52,7 @@ pub(super) fn pending_form(
         cx,
         |w, cx| Form::new(life, q, w, cx),
     );
-    if form.read(cx).shown != *q || !form.read(cx).life.ptr_eq(&Arc::downgrade(life)) {
+    if form.read(cx).shown.as_ref() != q || !form.read(cx).life.ptr_eq(&Arc::downgrade(life)) {
         form.update(cx, |f, cx| *f = Form::new(life, q, w, cx));
     }
     form
@@ -81,7 +81,8 @@ impl Desktop {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let q = self.machines[page.host()].rows.get("question", id);
+        let shown = form.read(cx).shown.clone();
+        let q = shown.as_ref();
         let mut card = div()
             .id("question-card")
             .max_h(rems(18.))
@@ -143,6 +144,11 @@ impl Desktop {
                                         ))
                                         .disabled(form.read(cx).busy)
                                         .on_click(move |_, w, cx| {
+                                            if f.read(cx).busy
+                                                || f.read(cx).values.get(i) != Some(&field)
+                                            {
+                                                return;
+                                            }
                                             if !multiple {
                                                 field.update(cx, |s, cx| s.set_value("", w, cx));
                                             }
@@ -175,6 +181,7 @@ impl Desktop {
             let f = form.clone();
             let pg = page.clone();
             let id = id.to_owned();
+            let shown = shown.clone();
             let kind = kind.to_owned();
             actions = actions.child(
                 (if yes {
@@ -190,11 +197,14 @@ impl Desktop {
                 })
                 .disabled(form.read(cx).busy || (yes && !valid))
                 .on_click(cx.listener(move |this, _, w, cx| {
-                    if !pg.visible(this) || f.read(cx).busy {
+                    if !pg.visible(this)
+                        || f.read(cx).busy
+                        || !Arc::ptr_eq(&f.read(cx).shown, &shown)
+                    {
                         return;
                     }
                     let form = f.read(cx);
-                    let Ok(mut answer) = pg.question(&id, &form.shown) else {
+                    let Ok(mut answer) = pg.question(&id, &shown) else {
                         return;
                     };
                     if kind == "confirm" {
@@ -204,7 +214,6 @@ impl Desktop {
                     } else {
                         let values = form.values.clone();
                         let selected = form.selected.clone();
-                        let q = form.shown.clone();
                         let mut texts = vec![];
                         for v in values {
                             let text = v.read(cx).value().to_string();
@@ -224,7 +233,7 @@ impl Desktop {
                                         .map(|(i, (mut selected, t))| {
                                             let custom = (!t.trim().is_empty()).then_some(t);
                                             if custom.is_some()
-                                                && q["questions"][i]["multiSelect"] != true
+                                                && shown["questions"][i]["multiSelect"] != true
                                             {
                                                 selected.clear()
                                             }
@@ -242,12 +251,15 @@ impl Desktop {
                     });
                     let f = f.clone();
                     let pg = pg.clone();
+                    let shown = shown.clone();
                     cx.spawn(async move |this, cx| {
                         let r = answer.answer().await;
                         let _ = this.update(cx, |this, cx| {
                             f.update(cx, |f, cx| {
-                                f.busy = false;
-                                cx.notify()
+                                if Arc::ptr_eq(&f.shown, &shown) {
+                                    f.busy = false;
+                                    cx.notify()
+                                }
                             });
                             if pg.visible(this) {
                                 this.finish_send_notice(r.map(|_| String::new()));
@@ -330,6 +342,7 @@ mod tests {
         });
         for changed in ["panel", "question", "lifetime", "destination"] {
             let form = chat.read_with(w, |c, _| c.form.clone().unwrap());
+            let rendered = form.read_with(w, |f, _| f.shown.clone());
             w.update(|w, cx| {
                 form.update(cx, |f, cx| {
                     f.values[0].update(cx, |v, cx| v.set_value("draft", w, cx));
@@ -359,6 +372,7 @@ mod tests {
                     if changed == "panel" { "draft" } else { "" }
                 );
                 assert_eq!(f.selected[0].contains(&"A".into()), changed == "panel");
+                assert_eq!(Arc::ptr_eq(&rendered, &f.shown), changed == "panel");
             });
         }
     }
