@@ -40,6 +40,9 @@ const issue = (kind) => ({
 	labels: [],
 	url: "https://github.com/example/demo",
 });
+// Additional iOS regressions; keep the existing Android fixture responses unchanged.
+const tablePR = (number) => ({ ...issue("pr"), number, title: number === 56 ? "チェック未提供" : "空のチェック一覧" });
+const tableCases = process.env.PIMATE_DEMO_GITHUB_TABLES === "1";
 // Opt-in connection-loss test: a second auth_list must come from a newly acquired hold.
 let dropLogin = process.argv[3] === "reconnect";
 new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
@@ -117,6 +120,14 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 					status: { installed: true, loggedIn: true, login: "demo" },
 				});
 			case "github":
+				if (tableCases && m.query.kind === "pr" && [56, 57].includes(m.query.number)) {
+					const n = m.query.number;
+					const table = "| 項目 | 内容 |\n| --- | --- |\n| 手順 | [ガイド](https://example.org/guide) |\n| 外部 | ![外部の画像](https://example.invalid/photo.png) |\n| PC | ![PC の画像](out/before.png) |";
+					return result({ ok: true, data: { kind: "detail", item: {
+						...tablePR(n), ...(n === 57 ? { checks: [] } : {}), body: n === 56 ? table : "コメントの表", bodyTruncated: false,
+						createdAt: "2026-11-20", comments: n === 56 ? [] : [{ author: "demo", body: table, createdAt: "2026-11-20", bodyTruncated: false }], commentsTruncated: false,
+					} } });
+				}
 				return result({
 					ok: true,
 					data:
@@ -128,7 +139,7 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 										url: "https://github.com/example/demo",
 									},
 									issues: [issue("issue")],
-									prs: [issue("pr")],
+									prs: [issue("pr"), ...(tableCases ? [tablePR(56), tablePR(57)] : [])],
 								}
 							: {
 									kind: "detail",

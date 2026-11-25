@@ -7,6 +7,7 @@ struct GithubView: View {
     @State private var error = ""
     @State private var tab = "issue"
     @State private var retry = 0
+    @State private var table: OpenTable?
     var body: some View {
         List {
             if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure); Button("再読み込み") { retry += 1 } }
@@ -28,6 +29,8 @@ struct GithubView: View {
                 } else { detail(data.obj("item")) }
             } else if error.isEmpty { ProgressView("PC から読み込み中…") }
         }.navigationTitle(number.map { "\(kind == "issue" ? "Issue" : "PR") #\($0)" } ?? "GitHub").navigationBarTitleDisplayMode(.inline)
+        .environment(\.openPiTable, { table = $0 })
+        .fullScreenCover(item: $table) { TableViewer(shown: $0, context: nil) }
         .task(id: retry) {
             data = nil; error = ""
             do {
@@ -63,6 +66,7 @@ struct GithubView: View {
                 let checks = value.list("checks")
                 ForEach(checks.indices, id: \.self) { i in LabeledContent(checks[i].str("name"), value: checks[i].str("state")) }
                 if value["checksTruncated"] as? Bool == true { Text("CI チェックの一部を省略しています。続きは GitHub で確認してください。") }
+                else if !(value["checks"] is [Object]) { Text("CI チェックの内訳は未提供です") }
                 else if checks.isEmpty { Text("チェックはありません") }
             }
         }

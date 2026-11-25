@@ -271,7 +271,17 @@ extension ProbeTests {
         XCTAssertEqual(app.textFields["フォルダのパス"].value as? String, "/home/demo/code/demo"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
         XCTAssertTrue(app.buttons["GitHub"].waitForExistence(timeout: 12)); app.buttons["GitHub"].tap()
         let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
-        XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["PR"].tap(); tap(button("画面の実装"))
+        XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["PR"].tap()
+        if env["PIMATE_DEMO_GITHUB_TABLES"] == "1" {
+            for (title, note) in [("チェック未提供", "CI チェックの内訳は未提供です"), ("空のチェック一覧", "チェックはありません")] {
+                tap(button(title)); XCTAssertTrue(app.staticTexts[note].waitForExistence(timeout: 10))
+                tap(app.buttons["表を開く"]); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8))
+                // Untrusted GitHub images stay text, not tiles that fetch from the web or the PC.
+                XCTAssertTrue(app.staticTexts["外部の画像"].exists); XCTAssertFalse(app.buttons["外部の画像"].exists); XCTAssertFalse(app.buttons["PC の画像"].exists)
+                app.buttons["表を閉じる"].tap(); app.navigationBars.buttons.element(boundBy: 0).tap()
+            }
+        }
+        tap(button("画面の実装"))
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "CI チェックの一部を省略")).firstMatch.waitForExistence(timeout: 12)); shot("GitHub-PR"); tap(app.buttons["Pi に依頼"])
         XCTAssertTrue((app.textViews["message"].value as? String)?.contains("#20「画面の実装」") == true)
     }

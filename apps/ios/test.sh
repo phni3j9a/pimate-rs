@@ -65,9 +65,9 @@ TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateUITests/ProbeT
 PIMATE_DEMO_CHAT_FAILURE=1 start_fixture "$((${#fixtures[@]} + 1))"
 xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
 TEST_RUNNER_PIMATE_CHAT_FIXTURE=1 TEST_RUNNER_PIMATE_DEMO_CHAT_FAILURE=1 "${xcb[@]}" -only-testing:PiMateUITests/AgentReviewJourney/testChatPages test-without-building
-NODE_PATH="$lab/ws/node_modules" PIMATE_DEMO_SCREENS=list start_fixture "$((${#fixtures[@]} + 1))"
+NODE_PATH="$lab/ws/node_modules" PIMATE_DEMO_SCREENS=list PIMATE_DEMO_GITHUB_TABLES=1 start_fixture "$((${#fixtures[@]} + 1))"
 xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
-TEST_RUNNER_PIMATE_SCREEN_FIXTURE=list "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testMachineScreens test-without-building
+TEST_RUNNER_PIMATE_SCREEN_FIXTURE=list TEST_RUNNER_PIMATE_DEMO_GITHUB_TABLES=1 "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testMachineScreens test-without-building
 failed=0
 for variant in light dark large; do
   mode=light; size=large
