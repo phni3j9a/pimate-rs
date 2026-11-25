@@ -576,7 +576,10 @@ impl WaylandClient {
 
                             client.common.appearance = appearance;
 
-                            for window in client.windows.values_mut() {
+                            // An appearance observer can redraw and set the cursor on this client.
+                            let windows: Vec<_> = client.windows.values().cloned().collect();
+                            drop(client);
+                            for mut window in windows {
                                 window.set_appearance(appearance);
                             }
                         }

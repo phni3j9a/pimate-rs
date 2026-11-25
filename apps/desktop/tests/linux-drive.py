@@ -130,11 +130,14 @@ seat.NotifyKeyboardKeysym(0xffe3, False)
 copied = subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2)
 assert copied.strip() and copied in '開発用の会話' and copied != '開発用の会話', 'partial selection or copy focus lost during streaming'
 # Only switch the isolated GNOME settings. The test namespace and temporary HOME own dconf.
-subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','prefer-dark'],check=True)
-time.sleep(1.5)
-dark = snap('dark')
-assert dark.getpixel((x-110,y+12)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
-subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
+# Switch twice while updates and cursor/selection rendering can re-enter the platform.
+for n in range(2):
+    subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','prefer-dark'],check=True)
+    time.sleep(.65)
+    assert snap('dark').getpixel((x-110,y+12)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
+    subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
+    time.sleep(.65)
+    assert snap('light').getpixel((x-110,y+12)) == (241,243,244), 'desktop did not return to light appearance'
 time.sleep(12)
 assert prompts() == []
 empty_editor = snap('empty-editor')
