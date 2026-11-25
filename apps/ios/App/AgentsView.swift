@@ -41,7 +41,14 @@ struct AgentsView: View {
                                 ForEach(run.list("children"), id: \.selfID) { c in
                                     NavigationLink(value: AgentRoute(run: run.str("id"), child: c.str("id"))) {
                                         VStack(alignment: .leading, spacing: 4) {
-                                            Text(verbatim: c.str("title").isEmpty ? c.str("agent") : c.str("title")).font(.headline)
+                                            HStack(alignment: .firstTextBaseline) {
+                                                Text(verbatim: c.str("title").isEmpty ? c.str("agent") : c.str("title")).font(.headline)
+                                                if let ms = c["startedAt"] as? Double, ms > 0 {
+                                                    Spacer(); let start = Date(timeIntervalSince1970: ms / 1000)
+                                                    if let end = c["endedAt"] as? Double { Text(Duration.seconds(max(0, (end - ms) / 1000)).formatted(.time(pattern: .minuteSecond))).font(.caption.monospacedDigit()) }
+                                                    else { Text(start, style: .timer).font(.caption.monospacedDigit()).multilineTextAlignment(.trailing) }
+                                                }
+                                            }
                                             Text(verbatim: [agentState(c.str("state")), c.str("agent"), c.obj("activity").str("tool"), c.obj("activity").str("args")].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                                         }.padding(.vertical, 4)
                                     }.accessibilityIdentifier("agent-\(run.str("id"))-\(c.str("id"))")

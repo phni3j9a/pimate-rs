@@ -93,9 +93,10 @@ private struct Conversation: View {
             }
     }
 }
-private struct TurnView: View {
+struct TurnView: View {
     let turn: ChatTurn, active: Bool
     let runForCall: (String) -> String?, openRun: (String) -> Void
+    var caption: String? = nil
     @State private var expanded = false
     var body: some View {
         let firstWork = turn.work.first?.id
@@ -104,6 +105,7 @@ private struct TurnView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled) }
                     if let images = turn.images { HistoryPhotos(images: images) }
+                    if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing)
             }
             ForEach(turn.lines) { line in
