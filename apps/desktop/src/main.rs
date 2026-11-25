@@ -34,7 +34,7 @@ struct Desktop {
     sending: bool,
     epoch: u64,
     size: f32,
-    scroll: ScrollHandle,
+    scroll: ListState,
 }
 impl Desktop {
     fn new(w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -58,7 +58,7 @@ impl Desktop {
             sending: false,
             epoch: 0,
             size: 16.,
-            scroll: ScrollHandle::new(),
+            scroll: screen::transcript(),
         };
         app.reload(cx);
         app
@@ -231,7 +231,7 @@ impl Desktop {
                 let _ = m.conn.subscribe(None);
             }
             self.epoch += 1;
-            self.scroll = ScrollHandle::new();
+            self.scroll = screen::transcript();
             self.input = None;
             self.selected = Some((h, i));
             self.notice.clear();
