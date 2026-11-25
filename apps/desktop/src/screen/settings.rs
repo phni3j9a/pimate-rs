@@ -185,7 +185,9 @@ impl Desktop {
         cx: &Context<Self>,
     ) -> Button {
         let n = n.clone();
-        Button::new(id)
+        let id = id.into();
+        Button::new(id.clone())
+            .debug_selector(|| format!("nav-{id}"))
             .label(label)
             .on_click(cx.listener(move |this, _, _, cx| this.navigate(&n, r.clone(), cx)))
     }

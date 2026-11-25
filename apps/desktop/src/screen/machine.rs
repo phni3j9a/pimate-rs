@@ -355,38 +355,9 @@ mod tests {
     fn detail_opened_before_attach_loads_without_manual_refresh(cx: &mut gpui::TestAppContext) {
         use super::{Colors, Desktop, Machine, Route, Rows, settings::Nav};
         use gpui::AppContext;
-        use pimate_core::{Core, Credential, Error, Host, Item, SecretStore, Snapshot};
+        use pimate_core::{Item, Snapshot};
         use std::sync::Arc;
-        struct Store(Host);
-        impl SecretStore for Store {
-            fn hosts(&self) -> Result<Vec<Host>, Error> {
-                Ok(vec![])
-            }
-            fn save(&self, _: Host, _: String) -> Result<(), Error> {
-                unreachable!()
-            }
-            fn load(&self, _: String) -> Result<Credential, Error> {
-                Ok(Credential {
-                    host: self.0.clone(),
-                    token: "fixture".into(),
-                })
-            }
-            fn invalidate(&self, _: String, _: String) -> Result<(), Error> {
-                unreachable!()
-            }
-            fn forget(&self, _: String) -> Result<(), Error> {
-                unreachable!()
-            }
-        }
-        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let h = Host {
-            id: "fixture".into(),
-            name: "fixture".into(),
-            address: socket.local_addr().unwrap().to_string(),
-            device_id: "test".into(),
-            needs_pairing: false,
-        };
-        let core = Arc::new(Core::new(Arc::new(Store(h.clone()))));
+        let (_socket, h, core) = super::super::tests::test_host();
         cx.update(gpui_component::init);
         let (app, w) = cx.add_window_view(|w, cx| Desktop::new(core.clone(), w, cx));
         let nav = w.new(|_| Nav::default());

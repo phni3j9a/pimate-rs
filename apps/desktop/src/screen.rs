@@ -417,6 +417,17 @@ impl Render for Desktop {
             .text_color(p.ink)
             .text_size(rems(0.94))
             .child(side);
+        // The answer belongs to the pending question, not to the visible workspace panel.
+        let editor = self.editor();
+        let question = editor.as_ref().and_then(|key| {
+            let rows = &self.machines[&key.host].rows;
+            rows.group("question").first().map(|(id, q)| {
+                (
+                    id.clone(),
+                    chat_question::pending_form(key, &rows.view_life, id, q, w, cx),
+                )
+            })
+        });
         if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
             return root.child(panel);
         }
@@ -429,8 +440,8 @@ impl Render for Desktop {
                     .debug_selector(|| "chat-notice".into()),
             );
         }
-        if let Some(key) = self.editor() {
-            main = self.chat_area(main, key, &p, w, cx);
+        if let Some(key) = editor {
+            main = self.chat_area(main, key, question, &p, w, cx);
         } else if let Some(hint) = self.reconnect_hint() {
             main = main.child(hint);
         } else {
@@ -477,6 +488,141 @@ impl Render for Desktop {
 mod tests {
     use super::pending_panel;
     use gpui::{Context, ScrollHandle, Window, div, point, prelude::*, px, rems, size};
+    pub(super) fn test_host() -> (
+        std::net::TcpListener,
+        pimate_core::Host,
+        std::sync::Arc<pimate_core::Core>,
+    ) {
+        use pimate_core::{Core, Credential, Error, Host, SecretStore};
+        use std::sync::Arc;
+        struct Store(Host);
+        impl SecretStore for Store {
+            fn hosts(&self) -> Result<Vec<Host>, Error> {
+                Ok(vec![])
+            }
+            fn save(&self, _: Host, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+            fn load(&self, _: String) -> Result<Credential, Error> {
+                Ok(Credential {
+                    host: self.0.clone(),
+                    token: "fixture".into(),
+                })
+            }
+            fn invalidate(&self, _: String, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+            fn forget(&self, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+        }
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let h = Host {
+            id: "fixture".into(),
+            name: "fixture".into(),
+            address: socket.local_addr().unwrap().to_string(),
+            device_id: "test".into(),
+            needs_pairing: false,
+        };
+        let core = Arc::new(Core::new(Arc::new(Store(h.clone()))));
+        (socket, h, core)
+    }
+    #[gpui::test]
+    fn unanswered_input_survives_sidebar_routes(cx: &mut gpui::TestAppContext) {
+        use super::{Desktop, Machine, Rows};
+        use gpui::{ClipboardItem, VisualTestContext};
+        use gpui_component::Root;
+        use pimate_core::{Item, Snapshot};
+        use serde_json::json;
+        use std::sync::Arc;
+        let (_socket, h, core) = test_host();
+        let (tx, _rx) = crate::Delivery::channel();
+        let conn = core.connect(h.id.clone(), Arc::new(tx)).unwrap();
+        cx.update(gpui_component::init);
+        let mut desktop = None;
+        let (_, w) = cx.add_window_view(|w, cx| {
+            let app = cx.new(|cx| Desktop::new(core, w, cx));
+            desktop = Some(app.clone());
+            Root::new(app, w, cx)
+        });
+        let desktop = desktop.unwrap();
+        desktop.update(w, |d, cx| {
+            let rows = Rows::snapshot(Snapshot {
+                revision: 1,
+                items: [
+                    ("host", "connection", json!("connected")),
+                    ("host", "info", json!({"github":true})),
+                    ("view", "phase", json!("ready")),
+                    ("view", "instanceId", json!("pi")),
+                    ("question", "q", json!({"kind":"input","title":"Question"})),
+                ]
+                .map(|(c, id, v)| Item {
+                    collection: c.into(),
+                    id: id.into(),
+                    json: v.to_string(),
+                    position: 0,
+                })
+                .into(),
+            });
+            d.selected = Some((h.id.clone(), "pi".into()));
+            d.hosts = vec![h.clone()];
+            d.machines.insert(
+                h.id.clone(),
+                Machine {
+                    conn,
+                    registration: h,
+                    rows,
+                },
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        let click = |w: &mut VisualTestContext, id| {
+            let pos = w.debug_bounds(id).unwrap().center();
+            w.simulate_click(pos, Default::default());
+        };
+        click(w, "question-card");
+        w.simulate_keystrokes("s t a y");
+        for (dest, replaced) in [
+            ("nav-settings", false),
+            ("nav-github", false),
+            ("nav-settings", true),
+        ] {
+            click(w, dest);
+            if replaced {
+                desktop.update(w, |d, cx| {
+                    let rows = &mut d.machines.values_mut().next().unwrap().rows;
+                    rows.apply(
+                        (
+                            2,
+                            vec![pimate_core::Change::Upsert(Item {
+                                collection: "question".into(),
+                                id: "q".into(),
+                                json: json!({"kind":"input","title":"Replacement"}).to_string(),
+                                position: 0,
+                            })],
+                        ),
+                        || unreachable!(),
+                    );
+                    cx.notify();
+                });
+                w.run_until_parked();
+            }
+            click(w, "nav-back");
+            click(w, "question-card");
+            w.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("sentinel".into())));
+            w.simulate_keystrokes(if cfg!(target_os = "macos") {
+                "cmd-a cmd-c"
+            } else {
+                "ctrl-a ctrl-c"
+            });
+            assert_eq!(
+                w.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+                Some(if replaced { "sentinel" } else { "stay" }),
+                "{dest}"
+            );
+        }
+    }
     #[test]
     fn github_requires_both_a_ready_editor_and_host_query_support() {
         use pimate_core::{Item, Snapshot};

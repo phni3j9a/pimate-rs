@@ -23,6 +23,7 @@ impl Desktop {
         &mut self,
         mut main: Div,
         key: EditorKey,
+        question: Option<(String, Entity<super::chat_question::Form>)>,
         p: &Colors,
         w: &mut Window,
         cx: &mut Context<Self>,
@@ -30,13 +31,6 @@ impl Desktop {
         if self.receive_editor_text(w, cx) {
             self.bind_editor(w, cx);
         }
-        let rows = &self.machines[&key.host].rows;
-        let question = rows.group("question").first().map(|(id, q)| {
-            (
-                id.clone(),
-                super::chat_question::pending_form(&key, &rows.view_life, id, q, w, cx),
-            )
-        });
         if self.active_sheet().is_some() {
             return main.child(self.sheet_panel(&key, p, w, cx));
         }

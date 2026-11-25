@@ -85,6 +85,7 @@ impl Desktop {
         let q = shown.as_ref();
         let mut card = div()
             .id("question-card")
+            .debug_selector(|| "question-card".into())
             .max_h(rems(18.))
             .overflow_y_scroll()
             .mx_4()
