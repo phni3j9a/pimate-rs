@@ -135,7 +135,7 @@ impl Desktop {
                         })),
                 );
         }
-        main = main.child(self.conversation(&key, p, dark, media, w, cx));
+        main = main.child(self.conversation(&key, p, dark, media, inspector.clone(), w, cx));
         let pending_scroll = w
             .use_keyed_state(
                 SharedString::from(format!("pending-scroll:{key:?}")),
@@ -261,7 +261,7 @@ impl Desktop {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(self.attachments(&key, &page, cx))
+                            .child(self.attachments(&key, &page, w, cx))
                             .child(p.caption(if blocked {
                                 "入力待ちのため送信できません"
                             } else if cfg!(target_os = "macos") {

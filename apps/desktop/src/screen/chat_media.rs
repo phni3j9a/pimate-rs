@@ -327,7 +327,13 @@ impl Media {
     }
 }
 impl Desktop {
-    pub(super) fn attachments(&self, key: &EditorKey, page: &Page, cx: &Context<Self>) -> Div {
+    pub(super) fn attachments(
+        &self,
+        key: &EditorKey,
+        page: &Page,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let rows = &self.machines[&key.host].rows;
         let shown = Arc::new(self.state.attachments.images(key).to_vec());
         let limit = rows
@@ -387,18 +393,55 @@ impl Desktop {
         for i in 0..shown.len() {
             let imgs = shown.clone();
             let pg = page.clone();
-            row = row.child(
-                Button::new(("remove-image", i))
-                    .small()
-                    .label(format!("画像 {} を外す", i + 1))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if pg.visible(this) {
-                            if let Err(e) = this.state.attachments.remove(&pg, &imgs, i) {
-                                this.notice = format!("変更できません: {e}")
-                            }
-                            cx.notify()
+            let asset =
+                w.use_keyed_state(("draft-photo", i), cx, |_, _| None::<(String, Arc<Image>)>);
+            if asset
+                .read(cx)
+                .as_ref()
+                .is_none_or(|(s, _)| s != &imgs[i].data)
+            {
+                use base64::Engine;
+                let im = base64::engine::general_purpose::STANDARD
+                    .decode(&imgs[i].data)
+                    .ok()
+                    .and_then(|data| {
+                        // Restored drafts can originate on another client. Reject unbounded dimensions before GPUI decodes them.
+                        let reader = image::ImageReader::new(Cursor::new(&data))
+                            .with_guessed_format()
+                            .ok()?;
+                        let format = match reader.format()? {
+                            image::ImageFormat::Jpeg => ImageFormat::Jpeg,
+                            image::ImageFormat::Png => ImageFormat::Png,
+                            image::ImageFormat::WebP => ImageFormat::Webp,
+                            _ => return None,
+                        };
+                        let (w, h) = reader.into_dimensions().ok()?;
+                        if w.max(h) > 4096 || u64::from(w) * u64::from(h) > 4_000_000 {
+                            return None;
                         }
-                    })),
+                        Some(Arc::new(Image::from_bytes(format, data)))
+                    });
+                asset.update(cx, |s, _| *s = im.map(|im| (imgs[i].data.clone(), im)));
+            }
+            let preview = asset.read(cx).as_ref().map(|(_, im)| {
+                img(im.clone())
+                    .size(rems(2.))
+                    .object_fit(ObjectFit::Contain)
+            });
+            row = row.child(
+                div().flex().items_center().children(preview).child(
+                    Button::new(("remove-image", i))
+                        .small()
+                        .label(format!("画像 {} を外す", i + 1))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if pg.visible(this) {
+                                if let Err(e) = this.state.attachments.remove(&pg, &imgs, i) {
+                                    this.notice = format!("変更できません: {e}")
+                                }
+                                cx.notify()
+                            }
+                        })),
+                ),
             )
         }
         row

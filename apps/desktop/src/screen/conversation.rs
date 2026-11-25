@@ -113,6 +113,7 @@ impl Desktop {
         p: &Colors,
         dark: bool,
         media: super::chat_media::Media,
+        inspector: Entity<super::chat_review::Inspector>,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -174,20 +175,51 @@ impl Desktop {
                     v["text"].as_str()
                 }
                 .unwrap_or("");
+                let images = state::images::history_count(v);
+                let entry = row.map_or("stream", |(id, _)| id.as_str());
+                let open_run = |call: &str| -> Option<Button> {
+                    let run = data.original_run(call)?.to_owned();
+                    let ins = inspector.clone();
+                    Some(
+                        Button::new(SharedString::from(format!("original:{id}:{call}")))
+                            .small()
+                            .label("サブエージェントの実行を開く")
+                            .on_click(move |_, _, cx| {
+                                ins.update(cx, |s, cx| {
+                                    s.agents = true;
+                                    s.child = None;
+                                    s.run = Some(run.clone());
+                                    cx.notify()
+                                })
+                            }),
+                    )
+                };
                 if v["kind"] == "tool_result" {
-                    return tool_result(&conversation, &p, id, v, w, cx);
+                    let run = v["toolCallId"].as_str().and_then(open_run);
+                    return div()
+                        .child(tool_result(&conversation, &p, id, v, w, cx))
+                        .children(run)
+                        .when(images > 0, |b| {
+                            b.child(media.history(
+                                entry,
+                                v,
+                                data.get("view", "entryImages") == true,
+                                w,
+                                cx,
+                            ))
+                        })
+                        .into_any_element();
                 }
                 if text.is_empty()
-                    && let Some(calls) = v["toolCalls"].as_array().filter(|cs| !cs.is_empty())
+                    && let Some(calls) = v["toolCalls"].as_array().filter(|a| !a.is_empty())
                 {
                     return div()
                         .px_4()
                         .pt_2()
                         .child(p.caption(format!("Pi · {} 件のツールを使用", calls.len())))
+                        .children(calls.iter().filter_map(|c| open_run(c["id"].as_str()?)))
                         .into_any_element();
                 }
-                let images = state::images::history_count(v);
-                let entry = row.map_or("stream", |(id, _)| id);
                 let user = role == "あなた";
                 div()
                     .w_full()
