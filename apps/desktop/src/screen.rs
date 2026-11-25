@@ -2,6 +2,7 @@ mod chat_area;
 mod chat_commands;
 pub(crate) mod chat_media;
 mod chat_question;
+mod chat_review;
 mod conversation;
 mod sheet_chat;
 use super::*;

@@ -406,7 +406,7 @@ impl Desktop {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::decode;
     #[test]
     fn invalid_image_fails_without_rendering() {
         assert!(decode(b"not an image", false).is_err())

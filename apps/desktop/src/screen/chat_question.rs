@@ -260,7 +260,7 @@ impl Desktop {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::choose;
     #[test]
     fn choices_start_empty_and_toggle_without_duplicates() {
         let mut a = vec![];

@@ -29,6 +29,18 @@ impl Desktop {
         let send_page = page.clone();
         let key_page = page.clone();
         let rows = &self.machines[&key.host].rows;
+        let inspector = w.use_keyed_state(
+            SharedString::from(format!(
+                "inspector:{}:{:p}",
+                self.epoch,
+                Arc::as_ptr(&rows.view_life)
+            )),
+            cx,
+            |_, _| super::chat_review::Inspector::default(),
+        );
+        if inspector.read(cx).review_open {
+            return main.child(self.review_panel(&key, &page, &inspector, p, w, cx));
+        }
         let media = super::chat_media::Media {
             page: page.clone(),
             files: rows.get("view", "fileImages") == true,
@@ -88,7 +100,14 @@ impl Desktop {
                             .truncate(),
                         ),
                 )
-                .child(self.sheet_nav(&page, cx))
+                .child(
+                    div()
+                        .flex()
+                        .gap_1()
+                        .items_center()
+                        .child(self.review_button(&inspector, &page, cx))
+                        .child(self.sheet_nav(&page, cx)),
+                )
                 .child(
                     p.caption(status)
                         .text_color(if blocked { p.waiting } else { p.accent }),
