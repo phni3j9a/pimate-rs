@@ -29,6 +29,18 @@ impl Desktop {
         let send_page = page.clone();
         let key_page = page.clone();
         let rows = &self.machines[&key.host].rows;
+        let media = super::chat_media::Media {
+            page: page.clone(),
+            files: rows.get("view", "fileImages") == true,
+            viewer: w.use_keyed_state(
+                SharedString::from(format!("viewer:{:p}", Arc::as_ptr(&rows.view_life))),
+                cx,
+                |_, _| Default::default(),
+            ),
+        };
+        if let Some(viewer) = media.panel(p, w, cx) {
+            return main.child(viewer);
+        }
         let movement = rows.pending_move(&key, &self.drafts).or_else(|| {
             rows.pending_move_with(&key, |k| !self.state.attachments.images(k).is_empty())
         });
@@ -101,7 +113,7 @@ impl Desktop {
                         })),
                 );
         }
-        main = main.child(self.conversation(&key, p, dark, w, cx));
+        main = main.child(self.conversation(&key, p, dark, media, w, cx));
         let pending_scroll = w
             .use_keyed_state(
                 SharedString::from(format!("pending-scroll:{key:?}")),
@@ -226,6 +238,7 @@ impl Desktop {
                             .flex()
                             .items_center()
                             .justify_between()
+                            .child(self.attachments(&key, &page, cx))
                             .child(p.caption(if blocked {
                                 "入力待ちのため送信できません"
                             } else if cfg!(target_os = "macos") {

@@ -23,7 +23,7 @@ impl Desktop {
         let _load = w.use_keyed_state("command-request", cx, |_, cx| {
             cx.spawn(async move |_, cx| {
                 let r = pg.sheet(state::SheetAction::Commands).await.map(|_| ());
-                s.update(cx, |s, cx| {
+                let _ = s.update(cx, |s, cx| {
                     *s = Some(r);
                     cx.notify()
                 });

@@ -1,5 +1,6 @@
 mod chat_area;
 mod chat_commands;
+pub(crate) mod chat_media;
 mod chat_question;
 mod conversation;
 mod sheet_chat;

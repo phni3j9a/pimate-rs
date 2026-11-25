@@ -99,11 +99,9 @@ fn tool_result(
                 }),
         )
         .when(expanded, |panel| {
-            panel.child(
-                div().rounded_md().p_2().bg(p.surface).child(
-                    conversation.update(cx, |c, cx| c.documents.view(id, text, false, w, cx)),
-                ),
-            )
+            panel.child(div().rounded_md().p_2().bg(p.surface).child(
+                conversation.update(cx, |c, cx| c.documents.view(id, text, false, None, w, cx)),
+            ))
         })
         .into_any_element()
 }
@@ -114,6 +112,7 @@ impl Desktop {
         key: &EditorKey,
         p: &Colors,
         dark: bool,
+        media: super::chat_media::Media,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -187,9 +186,8 @@ impl Desktop {
                         .child(p.caption(format!("Pi · {} 件のツールを使用", calls.len())))
                         .into_any_element();
                 }
-                let images = v["imageCount"]
-                    .as_u64()
-                    .unwrap_or_else(|| v["images"].as_array().map_or(0, |a| a.len() as u64));
+                let images = state::images::history_count(v);
+                let entry = row.map_or("stream", |(id, _)| id);
                 let user = role == "あなた";
                 div()
                     .w_full()
@@ -209,13 +207,19 @@ impl Desktop {
                                     .px_3()
                                     .py_2()
                             })
-                            .child(
-                                conversation
-                                    .update(cx, |c, cx| c.documents.view(id, text, stream, w, cx)),
-                            ),
+                            .child(conversation.update(cx, |c, cx| {
+                                c.documents
+                                    .view(id, text, stream, Some((&media, entry)), w, cx)
+                            })),
                     )
                     .when(images > 0, |v| {
-                        v.child(p.caption(format!("画像 {images} 枚（プレビュー未対応）")))
+                        v.child(media.history(
+                            entry,
+                            &row.unwrap().1,
+                            data.get("view", "entryImages") == true,
+                            w,
+                            cx,
+                        ))
                     })
                     .into_any_element()
             })
