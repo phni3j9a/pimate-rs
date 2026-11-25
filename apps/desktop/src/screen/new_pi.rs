@@ -19,6 +19,23 @@ pub(super) struct Fields {
     submitted: bool,
     _folder_watch: Subscription,
 }
+fn first_message(w: &mut Window, cx: &mut Context<InputState>) -> InputState {
+    // Unlike multiline plain text, AutoGrow leaves Tab / Shift+Tab to the form.
+    InputState::new(w, cx)
+        .auto_grow(2, 2)
+        .placeholder("Pi への依頼")
+}
+fn spawn_error(error: Error, submitted: &mut bool) -> &'static str {
+    if matches!(
+        error,
+        Error::BadRequest | Error::Rejected | Error::Unsupported | Error::Blocked
+    ) {
+        *submitted = false;
+        "起動要求は拒否されました。フォルダや設定を確認して再実行できます。"
+    } else {
+        "起動結果を確認できません。再実行の前に一覧を確認してください。"
+    }
+}
 impl Desktop {
     pub(super) fn new_pi(
         &mut self,
@@ -52,11 +69,7 @@ impl Desktop {
         };
         if n.read(cx).spawn.is_none() {
             let folder = cx.new(|cx| InputState::new(w, cx).placeholder("/path/to/project"));
-            let message = cx.new(|cx| {
-                InputState::new(w, cx)
-                    .multi_line(true)
-                    .placeholder("Pi への依頼")
-            });
+            let message = cx.new(|cx| first_message(w, cx));
             let nav = n.downgrade();
             let watch = cx.subscribe(&folder, move |_, input, event, cx| {
                 if matches!(event, InputEvent::Change)
@@ -384,64 +397,66 @@ impl Desktop {
                         .label("起動")
                         .disabled(disabled)
                         .on_click(cx.listener(move |app, _, w, cx| {
-                            let f = nav.read(cx).spawn.as_ref().unwrap();
-                            if f.submitted || !page.visible(app) {
-                                return;
-                            }
-                            let path = f.folder.read(cx).value().to_string();
-                            let mut form = match page.spawn_form(f.ask) {
-                                Ok(f) => f,
-                                Err(_) => return,
-                            };
-                            form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
-                            form.message = f.message.read(cx).value().to_string();
-                            form.model = f.model.clone();
-                            form.thinking = f.thinking;
-                            if [f.folder.clone(), f.message.clone()]
-                                .iter()
-                                .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
-                            {
-                                return;
-                            }
-                            nav.update(cx, |s, _| {
-                                s.spawn.as_mut().unwrap().submitted = true;
-                                s.note = "起動要求の結果を確認しています…".into();
-                            });
-                            let timer = cx.background_executor().clone();
-                            let host = id.clone();
-                            app.page_task(
-                        &nav,
-                        w,
-                        cx,
-                        async move |_| {
-                            let x = form.spawn().await?;
-                            loop {
-                                let status = x.status()?;
-                                if status != SpawnStatus::Waiting {
-                                    break Ok::<_, Error>((x.id, status));
+                        let f = nav.read(cx).spawn.as_ref().unwrap();
+                        if f.submitted || !page.visible(app) {
+                            return;
+                        }
+                        let path = f.folder.read(cx).value().to_string();
+                        let mut form = match page.spawn_form(f.ask) {
+                            Ok(f) => f,
+                            Err(_) => return,
+                        };
+                        form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
+                        form.message = f.message.read(cx).value().to_string();
+                        form.model = f.model.clone();
+                        form.thinking = f.thinking;
+                        if [f.folder.clone(), f.message.clone()]
+                            .iter()
+                            .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
+                        {
+                            return;
+                        }
+                        nav.update(cx, |s, _| {
+                            s.spawn.as_mut().unwrap().submitted = true;
+                            s.note = "起動要求の結果を確認しています…".into();
+                        });
+                        let timer = cx.background_executor().clone();
+                        let host = id.clone();
+                        app.page_task(
+                            &nav,
+                            w,
+                            cx,
+                            async move |_| {
+                                let x = form.spawn().await?;
+                                loop {
+                                    let status = x.status().map_err(|_| Error::OutcomeUnknown)?;
+                                    if status != SpawnStatus::Waiting {
+                                        break Ok::<_, Error>((x.id, status));
+                                    }
+                                    timer.timer(std::time::Duration::from_millis(200)).await;
                                 }
-                                timer.timer(std::time::Duration::from_millis(200)).await;
-                            }
-                        },
-                        move |app, n, res, _, cx| {
-                            let msg = match res {
-                                Ok((id, SpawnStatus::Ready)) => {
-                                    app.navigate(n, Route::Home, cx);
-                                    app.select(host, id, cx);
-                                    return;
-                                }
-                                Ok((_, SpawnStatus::MessageUnconfirmed)) => {
-                                    "Pi は起動しましたが、最初のメッセージは未確認です。"
-                                }
-                                Ok(_) => "起動を受け付けましたが、一覧にはまだ表示されていません。",
-                                Err(_) => {
-                                    "起動結果を確認できません。再実行の前に一覧を確認してください。"
-                                }
-                            };
-                            n.update(cx, |s, _| s.note = msg.into());
-                        },
-                    );
-                        })),
+                            },
+                            move |app, n, res, _, cx| {
+                                let msg = match res {
+                                    Ok((id, SpawnStatus::Ready)) => {
+                                        app.navigate(n, Route::Home, cx);
+                                        app.select(host, id, cx);
+                                        return;
+                                    }
+                                    Ok((_, SpawnStatus::MessageUnconfirmed)) => {
+                                        "Pi は起動しましたが、最初のメッセージは未確認です。"
+                                    }
+                                    Ok(_) => {
+                                        "起動を受け付けましたが、一覧にはまだ表示されていません。"
+                                    }
+                                    Err(e) => n.update(cx, |s, _| {
+                                        spawn_error(e, &mut s.spawn.as_mut().unwrap().submitted)
+                                    }),
+                                };
+                                n.update(cx, |s, _| s.note = msg.into());
+                            },
+                        );
+                    })),
                 ),
         )
     }
@@ -455,6 +470,87 @@ fn known_trust(rows: &Value, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::known_trust;
+    #[test]
+    fn only_definite_refusal_unlocks_spawn() {
+        use pimate_core::Error;
+        for e in [
+            Error::Rejected,
+            Error::BadRequest,
+            Error::Blocked,
+            Error::Unsupported,
+        ] {
+            let mut locked = true;
+            assert!(super::spawn_error(e, &mut locked).contains("拒否"));
+            assert!(!locked);
+        }
+        for e in [
+            Error::OutcomeUnknown,
+            Error::Timeout,
+            Error::Offline,
+            Error::InvalidMessage,
+            Error::StaleTarget,
+        ] {
+            let mut locked = true;
+            assert!(super::spawn_error(e, &mut locked).contains("一覧を確認"));
+            assert!(locked);
+        }
+    }
+    #[gpui::test]
+    fn multiline_message_tabs_to_spawn_without_changing_the_request(cx: &mut gpui::TestAppContext) {
+        use gpui::{Context, Entity, Focusable, KeyUpEvent, Keystroke, Window, div, prelude::*};
+        use gpui_component::{
+            Root,
+            button::Button,
+            input::{Input, InputState},
+        };
+        use std::{cell::Cell, rc::Rc};
+        struct Form {
+            message: Entity<InputState>,
+            clicked: Rc<Cell<&'static str>>,
+        }
+        impl Render for Form {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let key = |id| {
+                    let clicked = self.clicked.clone();
+                    Button::new(id)
+                        .label(id)
+                        .on_click(move |_, _, _| clicked.set(id))
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(key("previous"))
+                    .child(Input::new(&self.message))
+                    .child(key("spawn"))
+            }
+        }
+        cx.update(gpui_component::init);
+        let clicked = Rc::new(Cell::new(""));
+        let mut input = None;
+        let (_, w) = cx.add_window_view(|w, cx| {
+            let message = cx.new(|cx| super::first_message(w, cx));
+            input = Some(message.clone());
+            let form = cx.new(|_| Form {
+                message,
+                clicked: clicked.clone(),
+            });
+            Root::new(form, w, cx)
+        });
+        let input = input.unwrap();
+        w.update(|w, cx| w.focus(&input.focus_handle(cx)));
+        w.simulate_keystrokes("a enter b tab");
+        w.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("enter").unwrap(),
+        });
+        assert_eq!(clicked.get(), "spawn");
+        w.update(|w, cx| w.focus(&input.focus_handle(cx)));
+        w.simulate_keystrokes("shift-tab");
+        w.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("enter").unwrap(),
+        });
+        assert_eq!(clicked.get(), "previous");
+        assert_eq!(w.update(|_, cx| input.read(cx).value().to_string()), "a\nb");
+    }
     #[test]
     fn trusted_path_is_exact() {
         let r = serde_json::json!([{"path":"/a ","trusted":true}]);
