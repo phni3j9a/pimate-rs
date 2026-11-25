@@ -22,6 +22,8 @@ jobs:
       - uses: actions/checkout@v6
       - run: rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
       - run: cargo install --locked cargo-ndk --version 4.1.2
+      # Cache Gradle dependencies; Maven Central has repeatedly returned 429 to fresh runners.
+      - uses: gradle/actions/setup-gradle@v4
       - run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.3.13750724" ./gradlew assembleDebug testDebugUnitTest assembleDebugAndroidTest
         working-directory: apps/android
       - name: Kotlin から Host の一覧と逐次差分を検証
