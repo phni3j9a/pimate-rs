@@ -68,7 +68,7 @@ impl Desktop {
         app
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
-        self.notice.clear();
+        self.state.registration.listing_known = false;
         let core = self.core.clone();
         // Replace any earlier reload: late results must not resurrect an old registration.
         self.reload_task = Some(cx.spawn(async move |this, cx| {
@@ -80,7 +80,10 @@ impl Desktop {
             let Ok(pending) = this.update(cx, |this, cx| match hosts {
                 Ok(hosts) => this.accept_hosts(hosts, cx),
                 Err(e) => {
-                    this.notice = format!("登録を読み出せません: {e}");
+                    this.state.registration.read_failed(e);
+                    if this.notice.is_empty() {
+                        this.notice = this.state.registration.message();
+                    }
                     cx.notify();
                     vec![]
                 }
@@ -111,6 +114,12 @@ impl Desktop {
         }));
     }
     fn accept_hosts(&mut self, hosts: Vec<Host>, cx: &mut Context<Self>) -> Vec<Host> {
+        self.state.registration.read_ok();
+        for h in &self.hosts {
+            if !model::registered(h, &hosts) {
+                self.state.purge(&h.id, &mut self.drafts);
+            }
+        }
         self.machines
             .retain(|_, m| model::registered(&m.registration, &hosts));
         if self
@@ -198,6 +207,7 @@ impl Desktop {
         let Some((link, _)) = self.confirmation.take() else {
             return;
         };
+        let first = self.state.registration.listing_known && self.hosts.is_empty();
         self.pairing = true;
         let core = self.core.clone();
         cx.spawn(async move |this, cx| {
@@ -206,14 +216,18 @@ impl Desktop {
                 this.pairing = false;
                 match result {
                     Ok(h) => {
+                        this.state.purge(&h.id, &mut this.drafts);
+                        this.state.registration.paired(&h.id, first);
                         this.machines.remove(&h.id);
                         this.notice = "登録しました".into();
                         this.reload(cx)
                     }
                     Err(Error::OutcomeUnknown) => {
+                        this.state.registration.save_unknown = true;
                         this.reload(cx);
-                        this.notice =
-                            "保存の結果が不明です。再登録する前に登録一覧を確認してください".into();
+                        if this.notice.is_empty() {
+                            this.notice = this.state.registration.message();
+                        }
                     }
                     Err(e) => this.notice = format!("登録できません: {e}"),
                 };
@@ -235,6 +249,7 @@ impl Desktop {
                 let _ = m.conn.subscribe(None);
             }
             self.epoch += 1;
+            self.state.close_page();
             self.scroll = ScrollHandle::new();
             self.input = None;
             self.selected = Some((h, i));

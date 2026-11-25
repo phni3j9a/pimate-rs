@@ -335,6 +335,7 @@ impl Desktop {
             self.machines.remove(&host.id);
             self.drafts.retain(|k, _| k.host != host.id);
             self.state.attachments.forget(&host.id);
+            self.state.instructions.forget(&host.id);
             if self.selected.as_ref().is_some_and(|(h, _)| h == &host.id) {
                 self.selected = None;
                 self.input = None;

@@ -4550,16 +4550,21 @@ version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-io",
+ "base64 0.22.1",
  "futures-lite 2.6.1",
  "gpui",
  "gpui-component",
+ "image",
  "oo7",
  "pimate-core",
  "pimate-markdown",
  "pimate-protocol",
+ "reqwest",
  "security-framework",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tokio",
  "uuid",
 ]
 

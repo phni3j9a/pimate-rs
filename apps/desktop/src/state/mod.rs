@@ -7,20 +7,27 @@ use crate::{
 use pimate_core::{Connection, Error, Operation};
 use serde_json::Value;
 use std::sync::{Arc, Weak};
+mod agents;
 mod chat;
+pub(crate) use agents::*;
+pub(crate) mod images;
 mod machine;
+pub(crate) mod review;
 pub(crate) use chat::*;
 pub(crate) use machine::*;
 
 #[derive(Default)]
 pub(crate) struct DesktopState {
     page: Arc<()>,
+    pub registration: Registration,
     pub attachments: Attachments,
     pub settings: Settings,
+    pub instructions: Instructions,
 }
 #[derive(Clone)]
 pub(crate) struct Page {
     pub host: String,
+    images: Arc<images::Images>,
     key: Option<EditorKey>,
     start: Value,
     conn: Weak<Connection>,
@@ -47,6 +54,7 @@ impl DesktopState {
         self.close_page();
         Page {
             host: host.into(),
+            images: Default::default(),
             start: m.rows.get("view", "startedAt").clone(),
             conn: Arc::downgrade(&m.conn),
             page: Arc::downgrade(&self.page),
@@ -104,5 +112,52 @@ impl Page {
                 .key
                 .as_ref()
                 .is_none_or(|k| app.editor().as_ref() == Some(k))
+    }
+}
+
+#[derive(Default)]
+pub struct Registration {
+    pub listing_known: bool,
+    pub save_unknown: bool,
+    pub error: Option<Error>,
+    pub paired_host: Option<String>,
+}
+impl Registration {
+    pub fn read_failed(&mut self, e: Error) {
+        self.listing_known = false;
+        self.error = Some(e)
+    }
+    pub fn read_ok(&mut self) {
+        self.listing_known = true;
+        self.error = None;
+    }
+    pub fn paired(&mut self, id: &str, first: bool) {
+        self.save_unknown = false;
+        self.error = None;
+        self.paired_host = first.then(|| id.into());
+    }
+    pub fn message(&self) -> String {
+        match (self.save_unknown, self.error) {
+            (true, Some(e)) => format!(
+                "保存の結果が不明です。登録も読み出せません: {e}。再登録前に一覧を確認してください"
+            ),
+            (true, None) => "保存の結果が不明です。再登録前に一覧を確認してください".into(),
+            (false, Some(e)) => format!("登録を読み出せません: {e}"),
+            _ => String::new(),
+        }
+    }
+}
+impl DesktopState {
+    pub(crate) fn purge(
+        &mut self,
+        host: &str,
+        drafts: &mut std::collections::HashMap<EditorKey, String>,
+    ) {
+        self.attachments.forget(host);
+        self.instructions.forget(host);
+        drafts.retain(|k, _| k.host != host);
+        if self.registration.paired_host.as_deref() == Some(host) {
+            self.registration.paired_host = None;
+        }
     }
 }
