@@ -28,7 +28,14 @@ final class AgentReviewJourney: XCTestCase {
         let preview = app.buttons["接続先を確認"]; XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 10), .completed)
         try tap(preview); try tap(app.buttons["このマシンに接続"]); try selectPi(real ? "real-chat" : "main")
         try tap(app.buttons["変更をレビュー"]); XCTAssertTrue(app.buttons["この変更について依頼"].waitForExistence(timeout: 15)); if !real { shot("Review") }
-        try tap(app.buttons["セッション全体"]); try tap(app.buttons["この変更について依頼"])
+        try tap(app.buttons["セッション全体"])
+        if real {
+            for line in ["− before edit", "+ after edit"] {
+                let row = app.staticTexts.matching(NSPredicate(format: "label ENDSWITH %@", line)).firstMatch
+                XCTAssertTrue(row.waitForExistence(timeout: 10), "Missing diff line: \(line)")
+            }
+        }
+        try tap(app.buttons["この変更について依頼"])
         XCTAssertTrue((app.textViews["message"].value as? String)?.contains("セッションの変更") == true)
         if real { XCTAssertTrue((app.textViews["message"].value as? String)?.contains("diff.txt") == true); return }
         app.navigationBars.buttons.element(boundBy: 0).tap(); try selectPi("api")
