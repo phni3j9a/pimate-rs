@@ -383,6 +383,65 @@ impl Desktop {
             || f.folder.read(cx).value().trim().is_empty()
             || self.machines.get(&id)?.rows.get("host", "connection") != "connected";
         let nav = n.clone();
+        let submit = cx.listener(move |app, _, w, cx| {
+            let f = nav.read(cx).spawn.as_ref().unwrap();
+            if f.submitted || !page.visible(app) {
+                return;
+            }
+            let path = f.folder.read(cx).value().to_string();
+            let mut form = match page.spawn_form(f.ask) {
+                Ok(f) => f,
+                Err(_) => return,
+            };
+            form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
+            form.message = f.message.read(cx).value().to_string();
+            form.model = f.model.clone();
+            form.thinking = f.thinking;
+            if [f.folder.clone(), f.message.clone()]
+                .iter()
+                .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
+            {
+                return;
+            }
+            nav.update(cx, |s, _| {
+                s.spawn.as_mut().unwrap().submitted = true;
+                s.note = "起動要求の結果を確認しています…".into();
+            });
+            let timer = cx.background_executor().clone();
+            let host = id.clone();
+            app.page_task(
+                &nav,
+                w,
+                cx,
+                async move |_| {
+                    let x = form.spawn().await?;
+                    loop {
+                        let status = x.status().map_err(|_| Error::OutcomeUnknown)?;
+                        if status != SpawnStatus::Waiting {
+                            break Ok::<_, Error>((x.id, status));
+                        }
+                        timer.timer(std::time::Duration::from_millis(200)).await;
+                    }
+                },
+                move |app, n, res, _, cx| {
+                    let msg = match res {
+                        Ok((id, SpawnStatus::Ready)) => {
+                            app.navigate(n, Route::Home, cx);
+                            app.select(host, id, cx);
+                            return;
+                        }
+                        Ok((_, SpawnStatus::MessageUnconfirmed)) => {
+                            "Pi は起動しましたが、最初のメッセージは未確認です。"
+                        }
+                        Ok(_) => "起動を受け付けましたが、一覧にはまだ表示されていません。",
+                        Err(e) => n.update(cx, |s, _| {
+                            spawn_error(e, &mut s.spawn.as_mut().unwrap().submitted)
+                        }),
+                    };
+                    n.update(cx, |s, _| s.note = msg.into());
+                },
+            );
+        });
         Some(
             line()
                 .flex_shrink_0()
@@ -396,67 +455,7 @@ impl Desktop {
                     p.primary("spawn", cx)
                         .label("起動")
                         .disabled(disabled)
-                        .on_click(cx.listener(move |app, _, w, cx| {
-                        let f = nav.read(cx).spawn.as_ref().unwrap();
-                        if f.submitted || !page.visible(app) {
-                            return;
-                        }
-                        let path = f.folder.read(cx).value().to_string();
-                        let mut form = match page.spawn_form(f.ask) {
-                            Ok(f) => f,
-                            Err(_) => return,
-                        };
-                        form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
-                        form.message = f.message.read(cx).value().to_string();
-                        form.model = f.model.clone();
-                        form.thinking = f.thinking;
-                        if [f.folder.clone(), f.message.clone()]
-                            .iter()
-                            .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
-                        {
-                            return;
-                        }
-                        nav.update(cx, |s, _| {
-                            s.spawn.as_mut().unwrap().submitted = true;
-                            s.note = "起動要求の結果を確認しています…".into();
-                        });
-                        let timer = cx.background_executor().clone();
-                        let host = id.clone();
-                        app.page_task(
-                            &nav,
-                            w,
-                            cx,
-                            async move |_| {
-                                let x = form.spawn().await?;
-                                loop {
-                                    let status = x.status().map_err(|_| Error::OutcomeUnknown)?;
-                                    if status != SpawnStatus::Waiting {
-                                        break Ok::<_, Error>((x.id, status));
-                                    }
-                                    timer.timer(std::time::Duration::from_millis(200)).await;
-                                }
-                            },
-                            move |app, n, res, _, cx| {
-                                let msg = match res {
-                                    Ok((id, SpawnStatus::Ready)) => {
-                                        app.navigate(n, Route::Home, cx);
-                                        app.select(host, id, cx);
-                                        return;
-                                    }
-                                    Ok((_, SpawnStatus::MessageUnconfirmed)) => {
-                                        "Pi は起動しましたが、最初のメッセージは未確認です。"
-                                    }
-                                    Ok(_) => {
-                                        "起動を受け付けましたが、一覧にはまだ表示されていません。"
-                                    }
-                                    Err(e) => n.update(cx, |s, _| {
-                                        spawn_error(e, &mut s.spawn.as_mut().unwrap().submitted)
-                                    }),
-                                };
-                                n.update(cx, |s, _| s.note = msg.into());
-                            },
-                        );
-                    })),
+                        .on_click(submit),
                 ),
         )
     }
