@@ -201,11 +201,17 @@ fn first_step_and_registration_preserve_unknown_independently_of_chat() {
     assert_eq!(r.first_step(), FirstStep::Empty);
     let mut s = DesktopState::default();
     s.registration.save_unknown = true;
-    s.registration.read_failed(Error::Storage);
+    let mut notice = String::new();
+    s.registration.read_failed(Error::Storage, &mut notice);
+    assert_eq!(notice, s.registration.message());
     assert!(
         s.registration.message().contains("不明") && s.registration.message().contains("Storage")
     );
-    s.registration.read_ok();
+    s.registration.read_ok(&mut notice);
+    assert!(notice.contains("不明") && !notice.contains("Storage"));
+    notice = "別の Host の送信結果".into();
+    s.registration.read_ok(&mut notice);
+    assert_eq!(notice, "別の Host の送信結果");
     assert!(s.registration.save_unknown);
     s.registration.paired("one", true);
     assert_eq!(s.registration.paired_host.take().as_deref(), Some("one"));

@@ -80,8 +80,7 @@ impl Desktop {
             let Ok(pending) = this.update(cx, |this, cx| match hosts {
                 Ok(hosts) => this.accept_hosts(hosts, cx),
                 Err(e) => {
-                    this.state.registration.read_failed(e);
-                    this.notice = this.state.registration.message();
+                    this.state.registration.read_failed(e, &mut this.notice);
                     cx.notify();
                     vec![]
                 }
@@ -116,7 +115,7 @@ impl Desktop {
         }));
     }
     fn accept_hosts(&mut self, hosts: Vec<Host>, cx: &mut Context<Self>) -> Vec<Host> {
-        self.state.registration.read_ok();
+        self.state.registration.read_ok(&mut self.notice);
         for h in &self.hosts {
             if !model::registered(h, &hosts) {
                 self.state.purge(&h.id, &mut self.drafts);

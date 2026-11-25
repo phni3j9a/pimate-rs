@@ -130,13 +130,18 @@ pub struct Registration {
     pub paired_host: Option<String>,
 }
 impl Registration {
-    pub fn read_failed(&mut self, e: Error) {
+    pub fn read_failed(&mut self, e: Error, notice: &mut String) {
         self.listing_known = false;
-        self.error = Some(e)
+        self.error = Some(e);
+        *notice = self.message();
     }
-    pub fn read_ok(&mut self) {
+    pub fn read_ok(&mut self, notice: &mut String) {
+        let showing_registration = self.message() == *notice;
         self.listing_known = true;
         self.error = None;
+        if showing_registration {
+            *notice = self.message();
+        }
     }
     pub fn paired(&mut self, id: &str, first: bool) {
         self.save_unknown = false;
