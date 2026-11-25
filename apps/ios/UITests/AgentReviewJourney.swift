@@ -32,7 +32,15 @@ final class AgentReviewJourney: XCTestCase {
         XCTAssertTrue((app.textViews["message"].value as? String)?.contains("セッションの変更") == true)
         if real { XCTAssertTrue((app.textViews["message"].value as? String)?.contains("diff.txt") == true); return }
         app.navigationBars.buttons.element(boundBy: 0).tap(); try selectPi("api")
-        let summary = app.buttons["agents-summary"]; XCTAssertTrue(summary.waitForExistence(timeout: 15)); shot("Chat-Subagents"); try tap(summary)
+        let summary = app.buttons["agents-summary"]; XCTAssertTrue(summary.waitForExistence(timeout: 15)); shot("Chat-Subagents")
+        if env["PIMATE_DEMO_CHAT_FAILURE"] == "1" {
+            let failed = app.buttons.matching(NSPredicate(format: "label CONTAINS %@ AND label CONTAINS %@", "subagent", "失敗")).firstMatch
+            try tap(failed); XCTAssertTrue(app.staticTexts["子の結果を集約できませんでした"].waitForExistence(timeout: 10))
+            try tap(app.buttons["サブエージェントの実行"])
+            XCTAssertTrue(app.buttons["agent-run-0"].waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["agent-scout-0"].exists)
+            try tap(app.buttons["閉じる"])
+        }
+        try tap(summary)
         let active = app.buttons["agent-run-0"]; XCTAssertTrue(active.waitForExistence(timeout: 12)); shot("Sheet-Subagents"); try tap(active)
         let instruction = app.textFields["サブエージェントへの指示"]
         XCTAssertTrue(instruction.waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["認証の期限切れ判定と、エラー時の処理を調べてください。"].waitForExistence(timeout: 12)); shot("Subagent-Detail")

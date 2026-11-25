@@ -351,6 +351,8 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。
 
+`PIMATE_DEMO_CHAT_FAILURE=1 scripts/android-demo.py` は `api` の親チャットにサブエージェントの失敗履歴を追加します（iOS の `AgentReviewJourney` では `TEST_RUNNER_PIMATE_DEMO_CHAT_FAILURE=1` も指定）。
+
 ### iOS 開発版
 
 Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を使います。macOS で `brew install xcodegen` と前述の Rust 3 ターゲットを用意し、`apps/ios/prepare.sh` → `open apps/ios/PiMate.xcodeproj`。Rust や binding の変更後も prepare を実行します。XcodeGen は差分が読める `apps/ios/project.yml` だけを管理し、同じ checkout でビルドした XCFramework（arm64 実機／arm64 + x86_64 simulator）と Swift を組み込みます。生成プロジェクト、バイナリ、テスト結果はコミットしません。

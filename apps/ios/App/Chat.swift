@@ -118,9 +118,11 @@ struct TurnView: View {
                             HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                     }
-                    if let run = w.callID.flatMap(runForCall) {
+                    let run = w.callID.flatMap(runForCall)
+                    if active || expanded || (run != nil && w.state == "失敗") { work(w) }
+                    if let run {
                         Button { openRun(run) } label: { Label("サブエージェントの実行", systemImage: "person.2").frame(minHeight: 44) }
-                    } else if active || expanded { work(w) }
+                    }
                     if let images = w.images { HistoryPhotos(images: images) }
                 }
             }
