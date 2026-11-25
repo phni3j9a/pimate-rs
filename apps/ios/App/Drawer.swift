@@ -1,13 +1,19 @@
 import SwiftUI
 
+extension Host {
+    func displayName(in hosts: [Host]) -> String {
+        hosts.contains { $0.id != id && $0.name == name } ? "\(name) · \(address)" : name
+    }
+}
+
 struct Drawer: View {
     let model: SessionModel
     let select: (String, String) -> Void
     @State private var query = ""
+    @State private var newPi = false
     @State private var pair = false
     @State private var settings = false
     @AppStorage("appearance") private var appearance = Appearance.system
-    @AppStorage("typeSize") private var size = TypeSize.standard
     private func items(_ host: Host, _ section: String) -> [Item] {
         (model.rows[host.id]?.groups["instance"] ?? []).filter {
             let o = $0.object
@@ -26,21 +32,29 @@ struct Drawer: View {
                     if (model.rows[host.id]?.groups["instance"] ?? []).isEmpty {
                         Text(Self.emptyMessage(connection: connection(host), rows: model.rows[host.id])).foregroundStyle(PiTheme.secondary)
                     }
-                } header: { HStack { Label(host.name, systemImage: "desktopcomputer"); Spacer(); Text(connection(host)) }.textCase(nil) }
+                } header: { HStack { Label(host.displayName(in: model.hosts), systemImage: "desktopcomputer"); Spacer(); Text(connection(host)) }.textCase(nil) }
             }
             if !model.message.isEmpty { Text(model.message).foregroundStyle(PiTheme.failure) }
         }.listStyle(.plain).scrollContentBackground(.hidden).background(PiTheme.background)
             .navigationTitle("Pi 一覧").searchable(text: $query, prompt: "名前・フォルダで検索")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("表示設定", systemImage: "slider.horizontal.3") { settings = true } }
+            .safeAreaInset(edge: .bottom) {
+                HStack(spacing: 18) {
+                    Button("設定", systemImage: "gearshape") { settings = true }.frame(minHeight: 44)
+                    Button { newPi = true } label: { Label("新しい Pi", systemImage: "plus") }.buttonStyle(PiPrimary())
+                }.padding(.horizontal, 20).padding(.vertical, 6).background(PiTheme.background)
+            }.sheet(isPresented: $newPi) {
+                NavigationStack {
+                    NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { newPi = false } } }
+                }
+            }.toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("マシンを追加", systemImage: "plus") { pair = true } }
             }.sheet(isPresented: $pair) {
                 NavigationStack { PairScreen(model: model) { pair = false }.toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { pair = false } } } }
             }.sheet(isPresented: $settings) {
-                NavigationStack { Form {
-                    Picker("配色", selection: $appearance) { ForEach(Appearance.allCases, id: \.self) { Text($0.rawValue) } }
-                    Picker("文字サイズ", selection: $size) { ForEach(TypeSize.allCases, id: \.self) { Text($0.rawValue) } }
-                }.navigationTitle("表示設定").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { settings = false } } } }.presentationDetents([.medium, .large]).preferredColorScheme(appearance.scheme)
+                NavigationStack {
+                    AppSettingsView(model: model).toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { settings = false } } }
+                }.preferredColorScheme(appearance.scheme)
             }
     }
     static func emptyMessage(connection: String, rows: Rows?) -> String {
@@ -66,8 +80,7 @@ struct Drawer: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
                         if waiting {
-                            let duplicate = model.hosts.contains { $0.id != host.id && $0.name == host.name }
-                            Label(duplicate ? "\(host.name) · \(host.address)" : host.name, systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
+                            Label(host.displayName(in: model.hosts), systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                         }
                         if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
                         Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)

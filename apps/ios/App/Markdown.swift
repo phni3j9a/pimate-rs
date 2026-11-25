@@ -169,20 +169,20 @@ private struct PhotoParagraph: View {
 }
 
 struct TableViewer: View {
-    let shown: OpenTable, context: PhotoContext
+    let shown: OpenTable, context: PhotoContext?
     @Environment(\.dismiss) private var dismiss
     @State private var photo: OpenPhoto?
     var body: some View {
         NavigationStack {
             ScrollView { MarkdownTable(table: shown.table, answer: shown.answer, full: true).padding() }
                 .modifier(PhotoViewport()).environment(\.markdownGallery, shown.gallery)
-                .environment(\.photoContext, PhotoContext(model: context.model, key: context.key, entries: context.entries, files: context.files, open: { photo = $0 }))
+                .environment(\.photoContext, context.map { PhotoContext(model: $0.model, key: $0.key, entries: $0.entries, files: $0.files, open: { photo = $0 }) })
                 .navigationTitle("表").navigationBarTitleDisplayMode(.inline).toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() }.accessibilityLabel("表を閉じる") }
                     ToolbarItem(placement: .primaryAction) { Button("表をコピー", systemImage: "doc.on.doc") {
                         UIPasteboard.general.string = shown.table.markdown; UIAccessibility.post(notification: .announcement, argument: "表を Markdown でコピーしました")
                     } }
                 }
-        }.accessibilityHidden(photo != nil).fullScreenCover(item: $photo) { PhotoViewer(gallery: $0, context: context) }
+        }.accessibilityHidden(photo != nil).fullScreenCover(item: $photo) { gallery in if let context { PhotoViewer(gallery: gallery, context: context) } }
     }
 }

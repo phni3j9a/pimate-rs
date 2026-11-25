@@ -26,7 +26,8 @@ final class AgentReviewJourney: XCTestCase {
         }
         try tap(app.buttons["リンクを貼り付ける"]); try tap(app.descendants(matching: .any)["paste"].firstMatch)
         let preview = app.buttons["接続先を確認"]; XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 10), .completed)
-        try tap(preview); try tap(app.buttons["このマシンに接続"]); try selectPi(real ? "real-chat" : "main")
+        try tap(preview); try confirmFixtureAddress(app); try tap(app.buttons["このマシンに接続"])
+        try tap(app.buttons["一覧を開く"]); try selectPi(real ? "real-chat" : "main")
         try tap(app.buttons["変更をレビュー"]); XCTAssertTrue(app.buttons["この変更について依頼"].waitForExistence(timeout: 15)); if !real { shot("Review") }
         try tap(app.buttons["セッション全体"])
         if real {
@@ -59,7 +60,8 @@ final class AgentReviewJourney: XCTestCase {
         XCTAssertTrue(app.staticTexts["あなた · 割り込む"].waitForExistence(timeout: 15))
         try tap(app.buttons["この子を停止…"]); try tap(app.buttons["この子を停止"])
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "閲覧のみ")).firstMatch.waitForExistence(timeout: 12))
-        app.navigationBars.buttons.element(boundBy: 0).tap(); try tap(app.buttons["agent-scout-0"])
+        try popSheetRoute(app, from: "認証", to: "サブエージェント"); try tap(app.buttons["agent-scout-0"])
+        XCTAssertTrue(app.navigationBars["ログイン処理の調査"].waitForExistence(timeout: 12))
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "閲覧のみ")).firstMatch.waitForExistence(timeout: 12)); XCTAssertFalse(instruction.exists); shot("Subagent-Detail-Readonly")
     }
 }
