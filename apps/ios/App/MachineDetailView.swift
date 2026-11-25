@@ -18,25 +18,17 @@ struct MachineDetailView: View {
     private var caps: Object { rows?.machineInfo ?? [:] }
     private var online: Bool { rows?.machineOnline == true }
     private func supports(_ key: String) -> Bool { online && caps[key] as? Bool == true }
+    private var reloadKey: [String] {
+        let info = rows?.groups["host"]?.first { $0.id == "info" }?.json ?? ""
+        return [rows?.connectionGeneration.uuidString ?? "", info, String(refresh)]
+    }
     var body: some View {
         Form {
             Section("状態") {
                 Text(MachineDetailView.summary(host, rows)); Text(verbatim: host.address).modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled)
                 if let current = devices?.first(where: { $0["current"] as? Bool == true }), let paired = date(current["createdAt"]) { Text("\(paired) にペアリング").foregroundStyle(.secondary) }
             }
-            Section("PC の PiMate") {
-                LabeledContent("現在の版", value: check?["current"] as? String ?? caps["version"] as? String ?? "未確認")
-                if check?.str("reason") == "not_package" { Text("開発版は PC で更新してください。") }
-                else if let latest = check?["latest"] as? String, !latest.isEmpty {
-                    if latest == check?.str("current") { Text("最新です") }
-                    else {
-                        LabeledContent("照会時の最新版", value: latest)
-                        if supports("packageUpdate") && check?["canUpdate"] as? Bool == true { confirmButton("実行時の最新版に更新…", .update) }
-                        else { Text("PC で実行：pi update npm:@phni3j9a/pimate").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled) }
-                    }
-                } else { Text("最新版は未確認です").foregroundStyle(.secondary) }
-                if supports("hostRestart") { confirmButton("Host を再起動…", .restart) }
-            }
+            maintenance
             Section("プロバイダー") {
                 NavigationLink("プロバイダーのログイン") { ProviderView(model: model, host: host) }.disabled(!supports("authSession"))
             }
@@ -48,19 +40,7 @@ struct MachineDetailView: View {
                 case .loggedIn(let login): Text("\(login) でログイン中")
                 }
             }
-            Section("ペアリング済みの端末") {
-                if let devices {
-                    if devices.isEmpty { Text("登録された端末はありません") }
-                    ForEach(devices.indices, id: \.self) { i in
-                        let d = devices[i], current = d["current"] as? Bool == true
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(verbatim: d.str("name")); if current { Text("この端末").modifier(PiFont(.caption)) }
-                            if let seen = date(d["lastSeenAt"]) { Text("最終接続 \(seen)").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
-                        }
-                        if !current && supports("pairedDevices"), let id = d["deviceId"] as? String { confirmButton("取り消し…", .revoke(id), d.str("name")) }
-                    }
-                } else { Text("端末一覧は未確認です").foregroundStyle(.secondary) }
-            }
+            pairedDevices
             Section {
                 if loading || action != nil { ProgressView("PC の応答を待っています…") }
                 if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure) }; if !note.isEmpty { Text(note) }
@@ -68,11 +48,41 @@ struct MachineDetailView: View {
                 confirmButton("このマシンを削除…", .forget)
             }
         }.disabled(action != nil).navigationTitle(host.name).navigationBarTitleDisplayMode(.inline)
-        .task(id: [rows?.connectionGeneration.uuidString ?? "", rows?.groups["host"]?.first { $0.id == "info" }?.json ?? "", String(refresh)]) { await load() }
+        .task(id: reloadKey) { await load() }
         .alert(title, isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), presenting: confirmation) { fixed in
             Button("キャンセル", role: .cancel) {}; Button("実行", role: .destructive) { perform(fixed) }
         } message: { fixed in Text(targetName + "\n" + fixed.warning + (fixed.action == .forget ? " 保存された下書きも削除されます。" : "")) }
         .onDisappear { action?.cancel() }
+    }
+    private var maintenance: some View {
+        Section("PC の PiMate") {
+            LabeledContent("現在の版", value: check?["current"] as? String ?? caps["version"] as? String ?? "未確認")
+            if check?.str("reason") == "not_package" { Text("開発版は PC で更新してください。") }
+            else if let latest = check?["latest"] as? String, !latest.isEmpty {
+                if latest == check?.str("current") { Text("最新です") }
+                else {
+                    LabeledContent("照会時の最新版", value: latest)
+                    if supports("packageUpdate") && check?["canUpdate"] as? Bool == true { confirmButton("実行時の最新版に更新…", .update) }
+                    else { Text("PC で実行：pi update npm:@phni3j9a/pimate").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled) }
+                }
+            } else { Text("最新版は未確認です").foregroundStyle(.secondary) }
+            if supports("hostRestart") { confirmButton("Host を再起動…", .restart) }
+        }
+    }
+    private var pairedDevices: some View {
+        Section("ペアリング済みの端末") {
+            if let devices {
+                if devices.isEmpty { Text("登録された端末はありません") }
+                ForEach(devices.indices, id: \.self) { i in
+                    let d = devices[i], current = d["current"] as? Bool == true
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: d.str("name")); if current { Text("この端末").modifier(PiFont(.caption)) }
+                        if let seen = date(d["lastSeenAt"]) { Text("最終接続 \(seen)").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
+                    }
+                    if !current && supports("pairedDevices"), let id = d["deviceId"] as? String { confirmButton("取り消し…", .revoke(id), d.str("name")) }
+                }
+            } else { Text("端末一覧は未確認です").foregroundStyle(.secondary) }
+        }
     }
     private func date(_ value: Any?) -> String? {
         guard let ms = value as? Double, ms > 0 else { return nil }; return Date(timeIntervalSince1970: ms / 1000).formatted(date: .abbreviated, time: .omitted)
