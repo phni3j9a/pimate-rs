@@ -21,6 +21,7 @@ struct Machine {
 }
 struct Desktop {
     core: Arc<Core>,
+    reload_task: Option<Task<()>>,
     hosts: Vec<Host>,
     machines: BTreeMap<String, Machine>,
     selected: Option<(String, String)>,
@@ -44,6 +45,7 @@ impl Desktop {
         .detach();
         let mut app = Self {
             core: Arc::new(Core::new(Arc::new(store::Store::open()))),
+            reload_task: None,
             hosts: vec![],
             machines: Default::default(),
             selected: None,
@@ -63,14 +65,48 @@ impl Desktop {
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.notice.clear();
-        let hosts = match self.core.hosts() {
-            Ok(h) => h,
-            Err(e) => {
-                self.notice = format!("登録を読み出せません: {e}");
-                cx.notify();
+        let core = self.core.clone();
+        // Replace any earlier reload: late results must not resurrect an old registration.
+        self.reload_task = Some(cx.spawn(async move |this, cx| {
+            let reader = core.clone();
+            let hosts = cx
+                .background_executor()
+                .spawn(async move { reader.hosts() })
+                .await;
+            let Ok(pending) = this.update(cx, |this, cx| match hosts {
+                Ok(hosts) => this.accept_hosts(hosts, cx),
+                Err(e) => {
+                    this.notice = format!("登録を読み出せません: {e}");
+                    cx.notify();
+                    vec![]
+                }
+            }) else {
                 return;
+            };
+            for h in pending {
+                let (sender, rx) = Delivery::channel();
+                let id = h.id.clone();
+                let reader = core.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move { reader.connect(id, Arc::new(sender)) })
+                    .await;
+                if this
+                    .update(cx, |this, cx| {
+                        match result {
+                            Ok(conn) => this.attach(h, conn, rx, cx),
+                            Err(e) => this.notice = format!("接続を開始できません: {e}"),
+                        }
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
             }
-        };
+        }));
+    }
+    fn accept_hosts(&mut self, hosts: Vec<Host>, cx: &mut Context<Self>) -> Vec<Host> {
         self.machines
             .retain(|_, m| model::registered(&m.registration, &hosts));
         if self
@@ -82,56 +118,59 @@ impl Desktop {
             self.epoch += 1;
             self.input = None;
         }
-        for h in &hosts {
-            if h.needs_pairing || self.machines.contains_key(&h.id) {
-                continue;
-            }
-            let (sender, rx) = Delivery::channel();
-            let id = h.id.clone();
-            match self.core.connect(id.clone(), Arc::new(sender)) {
-                Err(e) => self.notice = format!("接続を開始できません: {e}"),
-                Ok(conn) => {
-                    let generation = Arc::downgrade(&conn);
-                    let rows = Rows::snapshot(conn.snapshot());
-                    self.machines.insert(
-                        id.clone(),
-                        Machine {
-                            registration: h.clone(),
-                            conn,
-                            rows,
-                        },
-                    );
-                    cx.spawn(async move |this, cx| {
-                        while let Ok(batch) = rx.recv().await {
-                            if this
-                                .update(cx, |this, cx| {
-                                    let old = this.editor();
-                                    let Some(m) = this.machines.get_mut(&id) else {
-                                        return;
-                                    };
-                                    if !generation.ptr_eq(&Arc::downgrade(&m.conn)) {
-                                        return;
-                                    }
-                                    m.rows.apply(batch, || m.conn.snapshot());
-                                    if old != this.editor() {
-                                        this.epoch += 1;
-                                        this.notice.clear();
-                                        this.input = None;
-                                    }
-                                    cx.notify()
-                                })
-                                .is_err()
-                            {
-                                break;
-                            }
-                        }
-                    })
-                    .detach();
-                }
-            }
-        }
+        let pending = hosts
+            .iter()
+            .filter(|h| !h.needs_pairing && !self.machines.contains_key(&h.id))
+            .cloned()
+            .collect();
         self.hosts = hosts;
         cx.notify();
+        pending
+    }
+    fn attach(
+        &mut self,
+        h: Host,
+        conn: Arc<Connection>,
+        rx: async_channel::Receiver<model::Batch>,
+        cx: &mut Context<Self>,
+    ) {
+        let id = h.id.clone();
+        let generation = Arc::downgrade(&conn);
+        let rows = Rows::snapshot(conn.snapshot());
+        self.machines.insert(
+            id.clone(),
+            Machine {
+                registration: h,
+                conn,
+                rows,
+            },
+        );
+        cx.spawn(async move |this, cx| {
+            while let Ok(batch) = rx.recv().await {
+                if this
+                    .update(cx, |this, cx| {
+                        let old = this.editor();
+                        let Some(m) = this.machines.get_mut(&id) else {
+                            return;
+                        };
+                        if !generation.ptr_eq(&Arc::downgrade(&m.conn)) {
+                            return;
+                        }
+                        m.rows.apply(batch, || m.conn.snapshot());
+                        if old != this.editor() {
+                            this.epoch += 1;
+                            this.notice.clear();
+                            this.input = None;
+                        }
+                        cx.notify()
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
     fn paste(&mut self, cx: &mut Context<Self>) {
         self.confirmation = None;
@@ -166,6 +205,11 @@ impl Desktop {
                         this.machines.remove(&h.id);
                         this.notice = "登録しました".into();
                         this.reload(cx)
+                    }
+                    Err(Error::OutcomeUnknown) => {
+                        this.reload(cx);
+                        this.notice =
+                            "保存の結果が不明です。再登録する前に登録一覧を確認してください".into();
                     }
                     Err(e) => this.notice = format!("登録できません: {e}"),
                 };

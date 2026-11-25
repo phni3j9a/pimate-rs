@@ -34,3 +34,4 @@ tungstenite = { path = "vendor/tungstenite" }
 
 # xattr 0.2.3 uses the removed Linux ENOATTR alias; see apps/desktop.
 xattr = { path = "vendor/xattr" }
+gpui = { path = "vendor/gpui" }

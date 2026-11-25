@@ -59,7 +59,7 @@ impl Render for Desktop {
         side = side.child(
             Button::new("paste")
                 .label("リンクを貼り付ける")
-                .disabled(self.pairing || cfg!(not(target_os = "macos")))
+                .disabled(self.pairing || cfg!(not(any(target_os = "macos", target_os = "linux"))))
                 .on_click(cx.listener(|this, _, _, cx| this.paste(cx))),
         );
         if let Some((_, name)) = &self.confirmation {
@@ -209,7 +209,11 @@ impl Render for Desktop {
                     .unwrap_or_else(|| "接続後、左の一覧から Pi を選択してください。".into()),
             );
         }
-        main = main.child(chat).child(self.notice.clone());
+        main = main.child(chat).child(if self.pairing {
+            "登録・保存の結果を確認中…".into()
+        } else {
+            self.notice.clone()
+        });
         if let Some((key, input, _)) = &self.input {
             let key = key.clone();
             main = main.child(Input::new(input).h(px(86.))).child(

@@ -1,13 +1,13 @@
 # Rust で 4OS（iOS / Android / Linux / macOS）クライアントを作る UI 方式の調査
 
-## 決定（2026-11-23）
+## 決定（2026-11-24 更新）
 
 この調査のあとで、次のように決めた。下の「推奨」は、この決定より前に書いたもの。
 
 - **WebView を使う方式は使わない。** アプリの質が下がるため（利用者の判断）。これで方式 B の候補だった Dioxus の WebView 描画は外れ、Tauri も対象外になる。
 - **Discord の新クライアント Phoenix（2026-11-04 に CTO が発表）と同じ形にする。** Phoenix は、スマホを各 OS の標準 UI ＋ 共有の Rust 中核、デスクトップを GPUI で作り直している。CTO の言葉は "mobile keeps native UI but shares app code with desktop via Rust … it's not Tauri, it's GPUI"（[InfoQ 2026-11-19](https://www.infoq.com/news/2026/11/discord-rust-rewrite-gpui-zed/)、[The Verge 2026-11-05](https://www.theverge.com/news/1027379/discord-ditching-electron-web-app)）。スマホ側の UI が SwiftUI か UIKit かは公表されていない。
 - **構成**: iOS は SwiftUI、Android は Jetpack Compose（どちらも UniFFI で Rust の中核とつなぐ）。macOS / Linux は GPUI。
-- **Linux の条件**: 下の表のとおり GPUI は Linux の IME に不具合の報告がある。開発機（Wayland + IBus + Mozc）で確かめ、通らなければ Linux だけ GTK4（relm4）にする（[#2](https://github.com/phni3j9a/pimate-rs/issues/2)）。
+- **Linux も GPUI に決定**（[#2](https://github.com/phni3j9a/pimate-rs/issues/2)）。Wayland の seat 再通知で古い text_input を破棄する上流修正をバックポートし、仮想入力機器の後付けでも Mozc の確定は1回。試作の release・Intel UHD 630 では約20更新/秒、アプリの CPU は6.5%（llvmpipe では110%）。物理キーボード・実スリープ復帰・実モニターのちらつきは未確認。
 
 ---
 
