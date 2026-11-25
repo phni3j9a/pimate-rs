@@ -136,7 +136,7 @@ impl Desktop {
                                 .when(!desc.is_empty(), |b| b.child(p.caption(desc.to_owned()))),
                         );
                     }
-                    if custom {
+                    if custom && (parts.len() > 1 || part["question"] != q["title"]) {
                         card = card.child(Input::new(&field).disabled(form.read(cx).busy));
                     }
                 }

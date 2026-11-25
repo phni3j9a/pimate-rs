@@ -94,11 +94,19 @@ impl Desktop {
         let Some(sheet) = self.state.sheet.as_mut() else {
             return;
         };
+        let refresh_tree = matches!(action, A::Label(_));
+        let page = sheet.page.clone();
         let Ok(req) = sheet.begin(action) else { return };
         cx.spawn(async move |this, cx| {
             let reply = req.run().await;
             let _ = this.update(cx, |this, cx| {
                 reply.finish(this);
+                if refresh_tree
+                    && page.visible(this)
+                    && this.active_sheet().is_some_and(|s| s.error.is_none())
+                {
+                    this.sheet_action(A::Tree, cx)
+                }
                 cx.notify()
             });
         })
@@ -192,7 +200,7 @@ impl Desktop {
                 let saved = view("session")["file"]
                     .as_str()
                     .is_some_and(|s| !s.trim().is_empty());
-                body=body.child(section("この Pi",p).children(copy_attach(rows)).child(Button::new("shutdown").danger().label("この Pi を終了…").disabled(busy).on_click(cx.listener(move|this,_,w,cx|{if !page.visible(this){return}let Ok(stop)=page.shutdown_confirmation() else{return}; let pg=page.clone();let detail=if saved{"処理が止まります。保存済みの履歴は一覧から開き直せます。"}else{"処理が止まります。保存先が不明なため履歴が失われる可能性があります。"};let confirm=w.prompt(PromptLevel::Critical,&format!("{title} を終了しますか？"),Some(detail),&["キャンセル","終了する"],cx);cx.spawn(async move|this,cx|{if confirm.await==Ok(1){let r=stop.confirm().await;let _=this.update(cx,|this,cx|if pg.visible(this){this.finish_send_notice(r.map(|_|String::new()));cx.notify()});}}).detach();}))))
+                body=body.child(section("この Pi",p).children(copy_attach(rows)).child(Button::new("shutdown").danger().label("この Pi を終了…").disabled(busy).on_click(cx.listener(move|this,_,w,cx|{if !page.visible(this){return}let Ok(stop)=page.shutdown_confirmation() else{return}; let pg=page.clone();let detail=if saved{"処理が止まります。保存済みの履歴は一覧から開き直せます。"}else{"処理が止まります。保存先が不明なため履歴が失われる可能性があります。"};let confirm=w.prompt(PromptLevel::Critical,&format!("{title} を終了しますか？"),Some(detail),&[PromptButton::cancel("キャンセル"),PromptButton::new("終了する")],cx);cx.spawn(async move|this,cx|{if confirm.await==Ok(1){let r=stop.confirm().await;let _=this.update(cx,|this,cx|if pg.visible(this){this.finish_send_notice(r.map(|_|String::new()));cx.notify()});}}).detach();}))))
             }
             S::Tree => body = body.child(self.tree(key, pg, p, w, cx)),
             S::Resume | S::Fork => {
@@ -259,7 +267,36 @@ impl Desktop {
                     .collect();
                 let mut list = section("この Pi のモデル", p)
                     .child(p.caption("選択とお気に入りは PC の Pi にも反映されます。"));
-                let mut thinking = section("Thinking", p);
+                let only = w.use_keyed_state("favorite-filter", cx, |_, _| false);
+                let filter = *only.read(cx);
+                let search = w.use_keyed_state("model-search", cx, |w, cx| {
+                    InputState::new(w, cx).placeholder("モデルを検索")
+                });
+                let query = search.read(cx).value().to_lowercase();
+                list = list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("favorites-filter")
+                                .small()
+                                .label(if filter {
+                                    "★ お気に入りのみ"
+                                } else {
+                                    "すべてのモデル"
+                                })
+                                .on_click(move |_, _, cx| {
+                                    only.update(cx, |s, cx| {
+                                        *s = !*s;
+                                        cx.notify()
+                                    })
+                                }),
+                        )
+                        .child(div().flex_1().child(Input::new(&search))),
+                );
+                let mut matched = false;
+                let mut thinking = div().flex().flex_wrap().gap_1();
                 let mut active = false;
                 let mut level = None;
                 for (id, v) in models {
@@ -275,33 +312,40 @@ impl Desktop {
                         next.push(m.clone())
                     }
                     let name = v["name"].as_str().unwrap_or(&m.id);
-                    list = list.child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .items_center()
-                            .child(action(
-                                id.clone(),
-                                format!(
-                                    "{}{} · {}",
-                                    if selected { "✓ " } else { "" },
-                                    name,
-                                    m.provider
-                                ),
-                                busy || selected,
-                                pg,
-                                move || A::Select(m.clone()),
-                                cx,
-                            ))
-                            .child(action(
-                                format!("fav:{id}"),
-                                if fav { "★ 解除" } else { "☆ 追加" },
-                                busy,
-                                pg,
-                                move || A::Favorites(next.clone()),
-                                cx,
-                            )),
-                    );
+                    if (!filter || fav)
+                        && [name, &m.id, &m.provider]
+                            .iter()
+                            .any(|s| s.to_lowercase().contains(&query))
+                    {
+                        matched = true;
+                        list = list.child(
+                            div()
+                                .flex()
+                                .gap_2()
+                                .items_center()
+                                .child(action(
+                                    id.clone(),
+                                    format!(
+                                        "{}{} · {}",
+                                        if selected { "✓ " } else { "" },
+                                        name,
+                                        m.provider
+                                    ),
+                                    busy || selected,
+                                    pg,
+                                    move || A::Select(m.clone()),
+                                    cx,
+                                ))
+                                .child(action(
+                                    format!("fav:{id}"),
+                                    if fav { "★ 解除" } else { "☆ 追加" },
+                                    busy,
+                                    pg,
+                                    move || A::Favorites(next.clone()),
+                                    cx,
+                                )),
+                        );
+                    }
                     if selected {
                         active = true;
                         for val in v["thinkingLevels"].as_array().into_iter().flatten() {
@@ -326,7 +370,12 @@ impl Desktop {
                         }
                     }
                 }
-                body = body.child(list).child(thinking);
+                if !matched && !busy && sheet.error.is_none() {
+                    list = list.child(p.caption("該当するモデルはありません"))
+                }
+                body = body
+                    .child(list)
+                    .child(section("Thinking", p).child(thinking));
                 if let Some(m) = current.filter(|_| active && !view("defaultModel").is_null()) {
                     body = body.child(
                         section("新しい Pi の既定", p)
@@ -368,6 +417,14 @@ impl Desktop {
                         val("tokens"),
                         val("contextWindow")
                     ))
+                    .child(
+                        p.caption(
+                            ctx["percent"]
+                                .as_f64()
+                                .map(|v| format!("{v:.0}% 使用"))
+                                .unwrap_or_else(|| "使用率は不明".into()),
+                        ),
+                    )
                     .child(action(
                         "compact",
                         "コンテキストを圧縮",

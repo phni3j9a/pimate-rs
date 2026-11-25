@@ -20,15 +20,19 @@ impl Desktop {
         );
         let pg = page.clone();
         let s = status.clone();
-        let _load = w.use_keyed_state("command-request", cx, |_, cx| {
-            cx.spawn(async move |_, cx| {
-                let r = pg.sheet(state::SheetAction::Commands).await.map(|_| ());
-                let _ = s.update(cx, |s, cx| {
-                    *s = Some(r);
-                    cx.notify()
-                });
-            })
-        });
+        let _load = w.use_keyed_state(
+            SharedString::from(format!("command-request:{}", status.entity_id().as_u64())),
+            cx,
+            |_, cx| {
+                cx.spawn(async move |_, cx| {
+                    let r = pg.sheet(state::SheetAction::Commands).await.map(|_| ());
+                    let _ = s.update(cx, |s, cx| {
+                        *s = Some(r);
+                        cx.notify()
+                    });
+                })
+            },
+        );
         let mut row = div()
             .id("command-candidates")
             .overflow_x_scroll()
