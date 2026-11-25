@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - run: bash apps/desktop/tests/release.sh
+      - run: bash apps/desktop/tests/release.sh && python3 apps/desktop/tests/check-archive.py
       - id: select
         env:
           TAG: ${{ inputs.release_tag }}
@@ -70,6 +70,21 @@ jobs:
         with:
           name: crate-notices
       - run: cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh crates.txt
+      - name: Record the Linux executable's version on its own architecture
+        if: runner.os == 'Linux'
+        run: |
+          bin=target/release/pimate-desktop
+          mkdir receipts
+          { "$bin" --version; sha256sum "$bin" | cut -d' ' -f1; } > "receipts/$(uname -m).txt"
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: version-${{ matrix.runner }}
+          path: receipts/*.txt
+      - name: Verify the contents of the new archive
+        run: |
+          version=$(cargo metadata --no-deps --locked --format-version 1 | jq -er '.packages[] | select(.name == "pimate-desktop").version')
+          python3 apps/desktop/check-archive.py "$version" receipts dist/*
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.runner }}
@@ -80,6 +95,8 @@ jobs:
     needs: [source, build]
     runs-on: macos-latest
     environment: desktop-release
+    outputs:
+      signing: ${{ steps.sign.outputs.signing }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -89,7 +106,8 @@ jobs:
           pattern: desktop-*
           path: archives
           merge-multiple: true
-      - name: Optionally sign and notarize the macOS apps
+      - id: sign
+        name: Optionally sign and notarize the macOS apps
         env:
           P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
@@ -117,13 +135,20 @@ jobs:
         with:
           name: release-archives
           path: archives
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: version-*
+          path: receipts
+          merge-multiple: true
       - env:
           TAG: ${{ inputs.release_tag }}
+          SIGNING: ${{ needs.prepare-release.outputs.signing }}
           BUILT_SHA: ${{ needs.source.outputs.sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           test "$(bash apps/desktop/check-release.sh "$TAG")" = "$BUILT_SHA"
           prefix="archives/PiMate-Desktop-${TAG#desktop-v}-"
           files=("$prefix"macos-{arm64,x86_64}.zip "$prefix"linux-{aarch64,x86_64}.tar.gz)
-          for file in "${files[@]}"; do test -s "$file"; done
-          gh release create "$TAG" "${files[@]}" --verify-tag --generate-notes --latest=false
+          python3 apps/desktop/check-archive.py "${TAG#desktop-v}" receipts "${files[@]}"
+          case "$SIGNING" in 'ad-hoc・未公証'|'Developer ID 署名・公証済み') ;; *) exit 1 ;; esac
+          gh release create "$TAG" "${files[@]}" --verify-tag --notes "macOS: $SIGNING" --generate-notes --latest=false

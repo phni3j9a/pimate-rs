@@ -2,7 +2,8 @@
 # Run only on an ephemeral macOS runner in the protected release environment.
 set -euo pipefail
 if [[ -z $P12 && -z $P12_PASSWORD && -z $ASC_KEY && -z $ASC_KEY_ID && -z $ASC_ISSUER ]]; then
-  echo 'No Apple credentials: keeping ad-hoc signatures.'; exit 0
+  echo 'No Apple credentials: keeping ad-hoc signatures.'
+  echo 'signing=ad-hoc・未公証' >> "$GITHUB_OUTPUT"; exit 0
 fi
 : "${P12:?}" "${P12_PASSWORD:?}" "${ASC_KEY:?}" "${ASC_KEY_ID:?}" "${ASC_ISSUER:?}"
 umask 077
@@ -27,3 +28,4 @@ for zip in "$@"; do
   rm "$zip"; ditto -c -k --keepParent "$app" "$zip"
   rm -rf "$app" "$tmp/submit.zip"
 done
+echo 'signing=Developer ID 署名・公証済み' >> "$GITHUB_OUTPUT"
