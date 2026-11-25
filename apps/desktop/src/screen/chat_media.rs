@@ -30,9 +30,9 @@ enum GallerySource {
         images: Arc<[MarkdownImage]>,
     },
 }
-impl GallerySource {
-    fn http_link(&self, index: u64, id: String) -> Option<Button> {
-        let Self::Markdown { images, .. } = self else {
+impl Gallery {
+    pub(crate) fn http_link(&self, index: u64, id: String) -> Option<Button> {
+        let GallerySource::Markdown { images, .. } = &self.source else {
             return None;
         };
         let image = images.get(index as usize)?;
@@ -58,8 +58,6 @@ impl GallerySource {
                 .on_click(move |_, _, cx| cx.open_url(&url)),
         )
     }
-}
-impl Gallery {
     pub(crate) fn markdown(page: &Page, entry: &str, images: Arc<[MarkdownImage]>) -> Self {
         Self {
             page: page.clone(),
@@ -68,9 +66,6 @@ impl Gallery {
                 images,
             },
         }
-    }
-    pub(crate) fn http_link(&self, index: u64, id: String) -> Option<Button> {
-        self.source.http_link(index, id)
     }
     fn count(&self) -> u64 {
         match &self.source {
@@ -309,6 +304,7 @@ impl Media {
                             let v = self.viewer.clone();
                             let next = i.checked_add_signed(dir).filter(|&n| n < g.count());
                             Button::new(label)
+                                .debug_selector(|| label.to_owned())
                                 .label(label)
                                 .disabled(next.is_none())
                                 .on_click(move |_, _, cx| {
@@ -330,7 +326,7 @@ impl Media {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(link)
+                    .child(link.debug_selector(|| "gallery-http".into()))
                     .into_any_element()
             } else {
                 photo(format!("full:{i}").into(), g, i, false, w, cx)
@@ -500,21 +496,42 @@ mod tests {
 
 #[cfg(test)]
 mod gallery_tests {
-    use super::GallerySource;
-    #[test]
-    fn mixed_gallery_links_http_instead_of_fetching() {
-        let images = pimate_markdown::parse(
-            "![a](https://example.org/a.png) ![b](HTTP://example.org/b.png)",
-            true,
-        )
-        .images;
-        assert_eq!(images.len(), 2);
-        let src = GallerySource::Markdown {
-            entry: "answer".into(),
-            images: images.into(),
-        };
-        assert!(src.http_link(0, "first".into()).is_none());
-        assert!(src.http_link(1, "next".into()).is_some());
-        assert!(src.http_link(2, "missing".into()).is_none());
+    use super::{Colors, Gallery, Media, Viewer};
+    use gpui::{Context, Window, prelude::*};
+    #[gpui::test]
+    fn mixed_gallery_opens_http_only_after_next_and_explicit_link_click(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        struct Photos(Media);
+        impl Render for Photos {
+            fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.0.panel(&Colors::new(false), w, cx).unwrap()
+            }
+        }
+        let url = "http://example.org/b.png";
+        cx.update(gpui_component::init);
+        let (_, w) = cx.add_window_view(|_, cx| {
+            let page = crate::state::dummy_page();
+            let images = pimate_markdown::parse(&format!("![a](a.png) ![b]({url})"), true).images;
+            let g = Gallery::markdown(&page, "answer", images.into());
+            let viewer = cx.new(|_| Viewer {
+                photo: Some((g, 0)),
+                table: None,
+            });
+            cx.observe(&viewer, |_, _, cx| cx.notify()).detach();
+            Photos(Media {
+                page,
+                files: true,
+                viewer,
+            })
+        });
+        assert!(w.debug_bounds("gallery-http").is_none());
+        let next = w.debug_bounds("次へ").unwrap().center();
+        w.simulate_click(next, Default::default());
+        w.run_until_parked();
+        let link = w.debug_bounds("gallery-http").unwrap().center();
+        w.simulate_click(link, Default::default());
+        w.run_until_parked();
+        assert_eq!(cx.opened_url().as_deref(), Some(url));
     }
 }

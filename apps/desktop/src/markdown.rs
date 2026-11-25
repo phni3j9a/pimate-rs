@@ -215,27 +215,6 @@ fn rich_line(
     let Some((m, g)) = media else {
         return line(id, spans, w, cx);
     };
-    mixed_line(id, spans, w, cx, |j, i, w, cx| {
-        if let Some(link) = g.http_link(i.index, format!("link:{id}:{j}")) {
-            link.into_any_element()
-        } else {
-            m.tile(
-                &format!("md:{id}:{j}:{:p}", i.src.as_ptr()),
-                g.clone(),
-                i.index,
-                w,
-                cx,
-            )
-        }
-    })
-}
-fn mixed_line(
-    id: &str,
-    spans: &[Inline],
-    w: &mut Window,
-    cx: &mut App,
-    image: impl Fn(usize, &pimate_markdown::Image, &mut Window, &mut App) -> AnyElement,
-) -> AnyElement {
     if !spans.iter().any(|s| matches!(s, Inline::Image(_))) {
         return line(&format!("{id}:0"), spans, w, cx);
     }
@@ -247,7 +226,19 @@ fn mixed_line(
                 col = col.child(line(&format!("{id}:{start}"), &spans[start..j], w, cx));
             }
             start = j + 1;
-            col = col.child(image(j, i, w, cx));
+            col = col.child(
+                if let Some(link) = g.http_link(i.index, format!("link:{id}:{j}")) {
+                    link.into_any_element()
+                } else {
+                    m.tile(
+                        &format!("md:{id}:{j}:{:p}", i.src.as_ptr()),
+                        g.clone(),
+                        i.index,
+                        w,
+                        cx,
+                    )
+                },
+            );
         }
     }
     if start < spans.len() {
@@ -575,9 +566,13 @@ fn selected_prefix_copies_after_image_appends(cx: &mut gpui::TestAppContext) {
             let Content::Paragraph(spans) = &doc.blocks[0].content else {
                 panic!()
             };
-            mixed_line("answer", spans, w, cx, |_, _, _, _| {
-                div().child("image").into_any_element()
-            })
+            let media = Media {
+                page: crate::state::dummy_page(),
+                files: true,
+                viewer: w.use_state(cx, |_, _| Default::default()),
+            };
+            let gallery = Gallery::markdown(&media.page, "a", doc.images.into());
+            rich_line("answer", spans, Some((&media, &gallery)), w, cx)
         }
     }
     cx.update(gpui_component::init);
@@ -600,7 +595,7 @@ fn selected_prefix_copies_after_image_appends(cx: &mut gpui::TestAppContext) {
     assert!(!first.is_empty() && "stable paragraph".starts_with(&first));
     w.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("not copied".into())));
     v.update(w, |v, cx| {
-        v.0.push_str(" ![plot](https://example.org/image.png)");
+        v.0.push_str(" ![plot](http://example.org/image.png)");
         cx.notify()
     });
     w.run_until_parked();
