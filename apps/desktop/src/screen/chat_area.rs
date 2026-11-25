@@ -38,6 +38,9 @@ impl Desktop {
             cx,
             |_, _| super::chat_review::Inspector::default(),
         );
+        if inspector.read(cx).agents {
+            return main.child(self.agent_panel(&key, &page, &inspector, p, w, cx));
+        }
         if inspector.read(cx).review_open {
             return main.child(self.review_panel(&key, &page, &inspector, p, w, cx));
         }
@@ -186,6 +189,7 @@ impl Desktop {
         if let Some((id, q)) = rows.group("question").first() {
             main = main.child(self.question_card(&page, id, q, p, w, cx));
         }
+        main = main.children(self.agent_summary(rows, &inspector));
         let pc = rows.get("view", "pcPrompt");
         if !pc.is_null() {
             main = main.child(

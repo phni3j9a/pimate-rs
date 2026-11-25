@@ -1,3 +1,4 @@
+mod chat_agents;
 mod chat_area;
 mod chat_commands;
 pub(crate) mod chat_media;

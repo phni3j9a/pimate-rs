@@ -2,7 +2,7 @@ use super::*;
 use state::{Page, review::Review};
 #[derive(Default)]
 pub(super) struct Inspector {
-    pub review: Option<Review>,
+    pub review: Option<Arc<Review>>,
     pub review_open: bool,
     read: Option<Task<()>>,
     error: Option<Error>,
@@ -34,7 +34,7 @@ impl Inspector {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 match r {
-                    Ok(r) => this.review = Some(r),
+                    Ok(r) => this.review = Some(Arc::new(r)),
                     Err(e) => this.error = Some(e),
                 }
                 cx.notify()
@@ -79,7 +79,8 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3();
-        let state = ins.read(cx);
+        let review = ins.read(cx).review.clone();
+        let error = ins.read(cx).error;
         let mut controls = div().flex().gap_1().items_center();
         let pg1 = pg.clone();
         let ins1 = ins.clone();
@@ -105,8 +106,7 @@ impl Desktop {
                     .small()
                     .label(format!("ターン {}", i + 1))
                     .selected(
-                        state
-                            .review
+                        review
                             .as_ref()
                             .is_some_and(|r| r.turn.as_ref() == Some(&turn)),
                     )
@@ -117,7 +117,7 @@ impl Desktop {
                     }),
             );
         }
-        if let Some(r) = &state.review {
+        if let Some(r) = &review {
             if r.files.is_empty() {
                 body = body.child(p.caption("この範囲に読み込み済みの変更はありません"))
             }
@@ -180,7 +180,7 @@ impl Desktop {
                 }
                 body = body.child(card)
             }
-        } else if let Some(e) = state.error {
+        } else if let Some(e) = error {
             body = body.child(format!("差分を取得できません: {e}"))
         } else {
             body = body.child("差分を集計中…")
@@ -223,7 +223,7 @@ impl Desktop {
                 div().p_3().child(
                     p.primary("ask-changes", cx)
                         .label("この変更について依頼")
-                        .disabled(state.review.as_ref().is_none_or(|r| r.files.is_empty()))
+                        .disabled(review.as_ref().is_none_or(|r| r.files.is_empty()))
                         .on_click(cx.listener(move |this, _, w, cx| {
                             if !page.visible(this) {
                                 return;
@@ -231,6 +231,7 @@ impl Desktop {
                             let outcome = ask
                                 .read(cx)
                                 .review
+                                .clone()
                                 .as_ref()
                                 .map(|r| r.ask_about(this, w, cx));
                             match outcome {
