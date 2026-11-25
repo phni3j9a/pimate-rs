@@ -387,9 +387,11 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 
 **M8 の公開担当者へ（今回はタグ・公開・Developer ID 署名なし）:**
 
-1. GitHub Environment `desktop-release` の deployment branch policy を branch `main` のみに設定（tag は許可しない）。可能なら承認者も設定します。Apple Developer Program で **Developer ID Application** 証明書と秘密鍵を用意し、パスワード付き PKCS#12 にエクスポート。公証用に App Store Connect のチーム API キー・Key ID・Issuer ID を用意します。
+1. GitHub Environment `desktop-release` の deployment branch policy を branch `main` のみ・tag なしに設定済みです。公開前にもこの制限を確認してください。可能なら承認者も設定します。Apple Developer Program で **Developer ID Application** 証明書と秘密鍵を用意し、パスワード付き PKCS#12 にエクスポート。公証用に App Store Connect のチーム API キー・Key ID・Issuer ID を用意します。
 2. `desktop-release` の **Environment secrets のみ**に `DEVELOPER_ID_P12_BASE64`（p12 の base64）、`DEVELOPER_ID_PASSWORD`、`ASC_PRIVATE_KEY_BASE64`（p8 の base64）、`ASC_KEY_ID`、`ASC_ISSUER_ID` を設定します。repository・organization secret や動作確認 VM には置きません。5個すべて未設定なら ad-hoc のまま、一部だけなら失敗。設定済みなら公開時に一時 keychain で hardened runtime・タイムスタンプ付き署名 → `notarytool submit --wait` → staple と検証を経て zip を作り直します。
 3. 公開承認後、main に統合された対象 commit の既存 `desktop-v<版>` タグを指定し、Actions の **Use workflow from: main**・`publish=false`（既定）で dry-run。タグ名・main の履歴・Cargo 版を照合した SHA からビルドします。タグ push は公開を開始しません。検証後だけ `publish=true`。公開直前に live tag とビルド SHA を再照合し、同一実行の4成果物を新しい Release に添付します。公開済みファイルは上書きしません。
+
+Linux の配布物の接続試験は、tar.gz を展開し、`cargo build --locked -p pimate-host` 後に `apps/desktop/tests/linux-session.sh package /tmp/pi-package /展開先/bin/pimate-desktop`。模擬 Host は debug ビルド、起動するアプリには必ず展開したバイナリを指定します。隔離 GNOME の必要ツールは次節を参照してください。
 
 ### デスクトップ開発版（macOS・Linux）
 
