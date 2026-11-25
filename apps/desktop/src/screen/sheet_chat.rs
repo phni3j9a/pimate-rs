@@ -39,6 +39,22 @@ fn load(kind: S) -> Option<A> {
         _ => None,
     }
 }
+// Favorites replaces the PC's whole list. Never build that write from cached display rows.
+fn scoped(reply: Option<&Value>) -> Option<Vec<ModelRef>> {
+    serde_json::from_value(reply?.get("scoped")?.clone()).ok()
+}
+fn toggle_favorite(reply: Option<&Value>, model: &ModelRef, was_favorite: bool) -> Option<A> {
+    let mut current = scoped(reply)?;
+    if current.contains(model) != was_favorite {
+        return None;
+    }
+    if was_favorite {
+        current.retain(|m| m != model)
+    } else {
+        current.push(model.clone())
+    }
+    Some(A::Favorites(current))
+}
 fn nav(kind: S, page: &Page, cx: &Context<Desktop>) -> Button {
     let pg = page.clone();
     Button::new(label(kind))
@@ -102,18 +118,22 @@ impl Desktop {
         let Some(sheet) = self.state.sheet.as_mut() else {
             return;
         };
-        let refresh_tree = matches!(action, A::Label(_));
+        let reload = match action {
+            A::Label(_) => Some(A::Tree),
+            A::Select(_) | A::Thinking(_) | A::Default(_) => Some(A::Models),
+            _ => None,
+        };
         let page = sheet.page.clone();
         let Ok(req) = sheet.begin(action) else { return };
         cx.spawn(async move |this, cx| {
             let reply = req.run().await;
             let _ = this.update(cx, |this, cx| {
                 reply.finish(this);
-                if refresh_tree
+                if let Some(refresh) = reload
                     && page.visible(this)
                     && this.active_sheet().is_some_and(|s| s.error.is_none())
                 {
-                    this.sheet_action(A::Tree, cx)
+                    this.sheet_action(refresh, cx)
                 }
                 cx.notify()
             });
@@ -264,11 +284,7 @@ impl Desktop {
             S::Model => {
                 let models = rows.group("model");
                 let current = serde_json::from_value::<ModelRef>(view("model").clone()).ok();
-                let favorites: Vec<ModelRef> = models
-                    .iter()
-                    .filter(|(_, v)| v["favorite"] == true)
-                    .filter_map(|(_, v)| serde_json::from_value(v.clone()).ok())
-                    .collect();
+                let favorites = scoped(sheet.reply.as_ref());
                 let mut list = section("この Pi のモデル", p)
                     .child(p.caption("選択とお気に入りは PC の Pi にも反映されます。"));
                 let only = w.use_keyed_state("favorite-filter", cx, |_, _| false);
@@ -308,13 +324,11 @@ impl Desktop {
                         continue;
                     };
                     let selected = current.as_ref() == Some(&m);
-                    let fav = favorites.contains(&m);
-                    let mut next = favorites.clone();
-                    if fav {
-                        next.retain(|x| x != &m)
-                    } else {
-                        next.push(m.clone())
-                    }
+                    let fav = favorites
+                        .as_ref()
+                        .map_or(v["favorite"] == true, |f| f.contains(&m));
+                    let favorite_model = m.clone();
+                    let page = pg.clone();
                     let name = v["name"].as_str().unwrap_or(&m.id);
                     if (!filter || fav)
                         && [name, &m.id, &m.provider]
@@ -340,14 +354,23 @@ impl Desktop {
                                     move || A::Select(m.clone()),
                                     cx,
                                 ))
-                                .child(action(
-                                    format!("fav:{id}"),
-                                    if fav { "★ 解除" } else { "☆ 追加" },
-                                    busy,
-                                    pg,
-                                    move || A::Favorites(next.clone()),
-                                    cx,
-                                )),
+                                .child(
+                                    Button::new(SharedString::from(format!("fav:{id}")))
+                                        .label(if fav { "★ 解除" } else { "☆ 追加" })
+                                        .disabled(busy || favorites.is_none())
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if page.visible(this)
+                                                && let Some(a) = toggle_favorite(
+                                                    this.active_sheet()
+                                                        .and_then(|s| s.reply.as_ref()),
+                                                    &favorite_model,
+                                                    fav,
+                                                )
+                                            {
+                                                this.sheet_action(a, cx)
+                                            }
+                                        })),
+                                ),
                         );
                     }
                     if selected {
@@ -509,5 +532,28 @@ impl Desktop {
                     ),
             )
             .child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{A, ModelRef, toggle_favorite};
+    #[test]
+    fn favorite_requires_a_current_scoped_reply_and_preserves_unlisted_models() {
+        use serde_json::json;
+        let m = ModelRef {
+            provider: "p".into(),
+            id: "new".into(),
+        };
+        for reply in [None, Some(&json!({"model":m})), Some(&json!({"models":[]}))] {
+            assert!(toggle_favorite(reply, &m, false).is_none())
+        }
+        let reply = json!({"scoped":[{"provider":"p","id":"old"}]});
+        assert!(toggle_favorite(Some(&reply), &m, true).is_none());
+        let Some(A::Favorites(next)) = toggle_favorite(Some(&reply), &m, false) else {
+            panic!()
+        };
+        assert_eq!(next[0].id, "old");
+        assert_eq!(next[1], m);
     }
 }
