@@ -1,5 +1,6 @@
 mod conversation;
 mod first_step;
+mod github;
 mod machine;
 mod new_pi;
 mod providers;
@@ -321,6 +322,21 @@ impl Desktop {
             );
         }
         side.child(rows)
+            .when(self.editor().is_some(), |v| {
+                v.child(
+                    div().px_2().child(
+                        self.nav_button(
+                            n,
+                            "github",
+                            "GitHub　·　Issue / PR",
+                            Route::Github(pimate_protocol::GitHubQuery::List),
+                            cx,
+                        )
+                        .w_full()
+                        .ghost(),
+                    ),
+                )
+            })
             .child(
                 div().px_2().py_1().child(
                     self.nav_button(n, "new-pi", "＋ 新しい Pi", self.new_route(), cx)

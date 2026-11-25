@@ -13,7 +13,7 @@ pub(super) enum Route {
     New(String),
     Machine(String),
     Providers(String),
-    Github,
+    Github(pimate_protocol::GitHubQuery),
 }
 #[derive(Default)]
 pub(super) struct Nav {
@@ -23,6 +23,7 @@ pub(super) struct Nav {
     pub pref_error: bool,
     pub machine: super::machine::MachineData,
     pub providers: super::providers::ProviderData,
+    pub github: super::github::Github,
     pub spawn: Option<super::new_pi::Fields>,
     pub tasks: Vec<Task<()>>,
 }
@@ -99,7 +100,7 @@ impl Desktop {
             Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
                 self.open_machine(id).ok()
             }
-            Route::Github => self.open_chat().ok(),
+            Route::Github(_) => self.open_chat().ok(),
             _ => None,
         };
         n.update(cx, |s, _| {
@@ -336,9 +337,12 @@ impl Desktop {
             Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
             Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
-            _ => ("接続ガイド", div()),
+            Route::Github(q) => ("GitHub", self.github_view(n, p, q, w, cx)),
         };
         let back = match r {
+            Route::Github(q) if q != pimate_protocol::GitHubQuery::List => {
+                Route::Github(pimate_protocol::GitHubQuery::List)
+            }
             Route::Providers(id) => Route::Machine(id),
             Route::Machine(_) => Route::Settings,
             Route::SetupPc => Route::Tailscale,
