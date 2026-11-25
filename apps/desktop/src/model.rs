@@ -62,21 +62,36 @@ impl Rows {
         let missed = batch.contains(&Change::ResyncRequired);
         // Core emits upserts only for changed values. Inspect the whole ordered batch,
         // so a ready → offline → ready round trip invalidates the old confirmation.
-        let touches = |c: &str, ids: &[&str]| {
-            batch.iter().any(|change| {
-                let (col, id) = match change {
-                    Change::Upsert(i) => (&i.collection, &i.id),
-                    Change::Remove { collection, id } => (collection, id),
-                    _ => return false,
-                };
-                col == c && ids.contains(&id.as_str())
-            })
-        };
-        let host_changed = missed || touches("host", &["connection"]);
+        let mut host_changed = missed;
+        let mut view_changed = missed;
+        let mut session = self.get("view", "session")["id"]
+            .as_str()
+            .map(str::to_owned);
+        for change in &batch {
+            let (c, id, json) = match change {
+                Change::Upsert(i) => (&i.collection, &i.id, Some(&i.json)),
+                Change::Remove { collection, id } => (collection, id, None),
+                Change::ResyncRequired => continue,
+            };
+            match (c.as_str(), id.as_str()) {
+                ("host", "connection") => host_changed = true,
+                ("view", "instanceId" | "startedAt" | "phase") => view_changed = true,
+                ("view", "session") => {
+                    let next = json.and_then(|s| {
+                        serde_json::from_str::<Value>(s).expect("core JSON")["id"]
+                            .as_str()
+                            .map(str::to_owned)
+                    });
+                    view_changed |= next != session;
+                    session = next;
+                }
+                _ => (),
+            }
+        }
         if host_changed {
             self.host_life = Default::default();
         }
-        if host_changed || touches("view", &["instanceId", "startedAt", "phase", "session"]) {
+        if host_changed || view_changed {
             self.view_life = Default::default();
         }
         if batch.len() > 128 || missed {

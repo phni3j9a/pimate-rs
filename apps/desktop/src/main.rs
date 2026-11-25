@@ -171,7 +171,7 @@ impl Desktop {
                         if !generation.ptr_eq(&Arc::downgrade(&m.conn)) {
                             return;
                         }
-                        m.rows.apply(batch, || m.conn.snapshot());
+                        m.apply(batch, &mut this.state.instructions);
                         if old != this.editor() {
                             this.epoch += 1;
                             this.notice.clear();

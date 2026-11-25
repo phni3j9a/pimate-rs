@@ -47,7 +47,7 @@ impl SheetAction {
     }
 }
 impl Page {
-    pub async fn sheet(&self, a: SheetAction) -> Result<Value, Error> {
+    fn sheet_operation(&self, a: SheetAction) -> Result<Operation, Error> {
         if matches!(
             a,
             SheetAction::New
@@ -62,7 +62,14 @@ impl Page {
             }
         }
         let (m, p) = a.wire();
-        self.rc(m, p).await
+        Ok(Operation::Rc {
+            target: self.editor()?.target(),
+            method: m,
+            params: p.to_string(),
+        })
+    }
+    pub async fn sheet(&self, a: SheetAction) -> Result<Value, Error> {
+        self.perform(self.sheet_operation(a)?).await
     }
     pub async fn answer(
         &self,
@@ -278,7 +285,10 @@ impl Desktop {
 }
 fn submission_kind(r: &Rows, text: &str, images: bool) -> Result<SubmitKind, Error> {
     Ok(
-        if let Some(name) = text.trim_end().strip_prefix('/')
+        if let Some(name) = p::slash_command_name(text)
+            && text[name.len() + 1..]
+                .chars()
+                .all(|c| c == '\u{feff}' || (c.is_whitespace() && c != '\u{85}'))
             && r.get("command", name)["source"] == "builtin"
         {
             if images {
@@ -325,7 +335,9 @@ impl Submission {
         match std::mem::replace(&mut self.kind, SubmitKind::Send) {
             SubmitKind::Open(s) => open = Some(s),
             SubmitKind::Sheet(a) => {
-                self.page.sheet(a).await?;
+                // The receipt is correlated with our request, even if it caused a view switch.
+                let op = self.page.sheet_operation(a)?;
+                self.page.live()?.perform(op).await?;
             }
             SubmitKind::Send => {
                 let images = self
@@ -598,6 +610,33 @@ mod tests {
         ));
     }
     #[test]
+    fn slash_uses_ecmascript_not_rust_whitespace() {
+        let mut rows = Rows::default();
+        rows.apply(
+            (
+                1,
+                vec![super::super::tests::row(
+                    "command",
+                    "new",
+                    json!({"source":"builtin"}),
+                )],
+            ),
+            || panic!(),
+        );
+        assert!(matches!(
+            submission_kind(&rows, "/new\u{85}", false),
+            Ok(SubmitKind::Send)
+        ));
+        assert!(matches!(
+            submission_kind(&rows, "/new\u{feff}", false),
+            Ok(SubmitKind::Sheet(SheetAction::New))
+        ));
+        assert!(matches!(
+            submission_kind(&rows, "/new arg", false),
+            Ok(SubmitKind::Send)
+        ));
+    }
+    #[test]
     fn no_shell_syntax_from_host() {
         for s in ["", "--help", "a b", "a;whoami", "a\n", "$(x)"] {
             assert!(attach_command(s).is_none())
@@ -607,4 +646,35 @@ mod tests {
             "pimate attach pimate-pi.1"
         );
     }
+}
+#[cfg(test)]
+#[tokio::test]
+async fn builtin_ack_after_view_change_belongs_to_original_submission() {
+    let (mut m, rx, mut wire, server) = super::tests::fixture("chat").await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        m.conn.subscribe(Some("pi".into())).unwrap();
+        while m.rows.editor("chat", "pi").is_none() {
+            m.rows.apply(rx.recv().await.unwrap(), || m.conn.snapshot());
+        }
+        let mut s = DesktopState::default();
+        let page = s.open("chat", &m, m.rows.editor("chat", "pi"));
+        let submission = Submission {
+            page,
+            text: "/new".into(),
+            images: vec![],
+            kind: SubmitKind::Sheet(SheetAction::New),
+            _lock: Arc::new(()),
+        };
+        let ack = submission.submit().await.unwrap();
+        assert_eq!(wire.recv().await.unwrap(), "session_op");
+        assert!(matches!(ack.ticket.page.current(), Err(Error::StaleTarget)));
+        assert_eq!(
+            ack.ticket.page.editor().unwrap().session.as_deref(),
+            Some("same")
+        );
+        assert!(ack.open.is_none());
+    })
+    .await
+    .unwrap();
+    server.abort();
 }

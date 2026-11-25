@@ -260,7 +260,7 @@ async fn connected(host: Host) -> (Machine, async_channel::Receiver<crate::model
     }
     (m, rx)
 }
-async fn fixture(
+pub(super) async fn fixture(
     id: &'static str,
 ) -> (
     Machine,
@@ -280,6 +280,7 @@ async fn fixture(
     let server = tokio::spawn(async move {
         let mut ws = accept_async(sock.accept().await.unwrap().0).await.unwrap();
         let mut files = 0;
+        let mut started = false;
         while let Some(Ok(msg)) = ws.next().await {
             if !msg.is_text() {
                 continue;
@@ -290,6 +291,10 @@ async fn fixture(
                     json!({"type":"auth_ok","deviceId":"device","host":{"hostId":id,"name":id,"version":"1","protocol":1,"platform":"linux","authSession":true,"providerAuth":true}})
                 }
                 Some("subscribe") => {
+                    if started {
+                        continue;
+                    }
+                    started = true;
                     json!({"type":"subscribed","instanceId":"pi","snapshot":snapshot("pi",1),"history":{"session":{"id":"same"},"items":[]}})
                 }
                 Some("auth_session") => {
@@ -310,6 +315,11 @@ async fn fixture(
                                 req["params"]["confirmed"] == true
                                     && req["params"]["requestId"] == "q"
                             );
+                            json!({})
+                        }
+                        "session_op" => {
+                            assert!(req["params"]["op"] == "new");
+                            ws.send(Message::text(json!({"type":"event","instanceId":"pi","sessionId":"same","seq":2,"event":{"type":"session_changed","reason":"new","session":{"id":"next"}}}).to_string())).await.unwrap();
                             json!({})
                         }
                         "commands" => json!({"commands":[]}),
@@ -450,4 +460,28 @@ fn same_batch_selection_does_not_transfer_move_to_next_pi() {
     };
     assert_eq!(r.pending_move_with(&key("first"), |_| true), Some(7));
     assert_eq!(r.pending_move_with(&key("second"), |_| true), None);
+}
+#[test]
+fn rename_preserves_page_but_roundtrip_to_another_session_invalidates_it() {
+    let mut r = Rows::default();
+    let session = |s: &str, name: &str| row("view", "session", json!({"id":s,"name":name}));
+    r.apply(
+        (
+            1,
+            vec![
+                row("view", "phase", json!("ready")),
+                row("view", "instanceId", json!("pi")),
+                session("id", "before"),
+            ],
+        ),
+        || panic!(),
+    );
+    let page = Arc::downgrade(&r.view_life);
+    r.apply((2, vec![session("id", "after")]), || panic!());
+    assert!(page.upgrade().is_some());
+    r.apply(
+        (3, vec![session("other", "after"), session("id", "after")]),
+        || panic!(),
+    );
+    assert!(page.upgrade().is_none());
 }

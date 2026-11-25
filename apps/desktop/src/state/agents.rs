@@ -262,26 +262,52 @@ impl Sent {
 #[derive(Default)]
 pub struct Instructions(VecDeque<Sent>);
 impl Instructions {
-    pub fn accept(&mut self, s: Sent) {
-        if s.size() <= 65536 {
-            self.0.push_back(s);
-            self.trim();
+    fn accept(&mut self, s: Sent, m: &Machine) {
+        if !s.connection.ptr_eq(&Arc::downgrade(&m.conn))
+            || s.editor.host != m.registration.id
+            || s.size() > 65536
+        {
+            return;
         }
+        self.0.push_back(s);
+        self.resolve(m);
+        self.trim();
     }
     fn trim(&mut self) {
         while self.0.len() > 128 || self.0.iter().map(Sent::size).sum::<usize>() > 65536 {
             self.0.pop_front();
         }
     }
-    pub fn resolve(&mut self, page: &Page) -> Result<(), Error> {
-        let r = page.current()?;
+    fn resolve(&mut self, m: &Machine) {
+        if self.0.is_empty() {
+            return;
+        }
+        let r = &m.rows;
+        let Some(k) = r
+            .get("view", "instanceId")
+            .as_str()
+            .and_then(|pi| r.editor(&m.registration.id, pi))
+        else {
+            return;
+        };
+        let start = r.get("view", "startedAt");
+        if !start.is_u64() {
+            return;
+        }
+        let conn = Arc::downgrade(&m.conn);
+        self.0.retain(|s| {
+            s.editor.host != k.host
+                || s.editor.instance != k.instance
+                || (s.connection.ptr_eq(&conn) && s.start == *start)
+        });
         for s in &mut self.0 {
-            if s.matches(page) {
-                s.resumed_child(&r);
+            if s.editor == k
+                && (k.session.is_some() || s.life.ptr_eq(&Arc::downgrade(&r.view_life)))
+            {
+                s.resumed_child(r);
             }
         }
         self.trim();
-        Ok(())
     }
     pub fn resumed(&self, page: &Page, source: &Child, run: &str) -> Option<&Child> {
         self.0
@@ -312,6 +338,19 @@ impl Instructions {
         self.0.retain(|s| s.editor.host != h)
     }
 }
+impl Machine {
+    pub(crate) fn apply(&mut self, batch: crate::model::Batch, history: &mut Instructions) {
+        self.rows.apply(batch, || self.conn.snapshot());
+        history.resolve(self);
+    }
+}
+impl Desktop {
+    pub fn accept_instruction(&mut self, s: Sent) {
+        if let Some(m) = self.machines.get(&s.editor.host) {
+            self.state.instructions.accept(s, m)
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::super::tests::row;
@@ -330,4 +369,67 @@ mod tests {
         }
         assert_eq!(r.subagent_counts()["complete"], 1);
     }
+}
+#[cfg(test)]
+#[tokio::test]
+async fn resume_binds_late_child_once_without_open_detail() {
+    use super::tests::{fixture, row};
+    let (mut m, _rx, _wire, server) = fixture("one").await;
+    let mut history = Instructions::default();
+    let mut state = DesktopState::default();
+    let update = |rev, changes| (rev, changes);
+    let ready = |id: &str, start: u64| {
+        vec![
+            row("view", "phase", json!("ready")),
+            row("view", "instanceId", json!("pi")),
+            row("view", "session", json!({"id":id})),
+            row("view", "startedAt", json!(start)),
+        ]
+    };
+    let base = m.conn.snapshot().revision + 1;
+    m.apply(update(base, ready("s", 41)), &mut history);
+    let k = m.rows.editor("one", "pi").unwrap();
+    let old = Child {
+        run: "source".into(),
+        child: "x".into(),
+    };
+    let page = state.open("one", &m, Some(k.clone()));
+    history.accept(
+        Sent {
+            editor: k.clone(),
+            start: json!(41),
+            connection: page.conn.clone(),
+            life: page.life.clone(),
+            child: old.clone(),
+            action: Instruction::Resume,
+            text: "go".into(),
+            new_run: Some("new".into()),
+            index: Some(7),
+            destination: None,
+        },
+        &m,
+    );
+    state.close_page();
+    let children = |id: &str| {
+        row(
+            "run",
+            "new",
+            json!({"children":[{"id":"a","index":1},{"id":id,"index":7}]}),
+        )
+    };
+    let mut wrong = ready("other", 41);
+    wrong.push(children("other-session"));
+    m.apply(update(base + 1, wrong), &mut history);
+    assert!(history.0[0].destination.is_none());
+    let mut correct = ready("s", 41);
+    correct.push(children("b"));
+    m.apply(update(base + 2, correct), &mut history);
+    m.apply(update(base + 3, vec![children("later")]), &mut history);
+    let page = state.open("one", &m, Some(k));
+    let dest = history.resumed(&page, &old, "new").unwrap();
+    assert_eq!(dest.child, "b");
+    assert_eq!(history.for_child(&page, dest)[0].text, "go");
+    m.apply(update(base + 4, ready("s", 42)), &mut history);
+    assert!(history.0.is_empty());
+    server.abort();
 }
