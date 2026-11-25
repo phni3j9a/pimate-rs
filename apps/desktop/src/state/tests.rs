@@ -201,17 +201,12 @@ fn first_step_and_registration_preserve_unknown_independently_of_chat() {
     assert_eq!(r.first_step(), FirstStep::Empty);
     let mut s = DesktopState::default();
     s.registration.save_unknown = true;
-    let mut notice = String::new();
-    s.registration.read_failed(Error::Storage, &mut notice);
-    assert_eq!(notice, s.registration.message());
+    s.registration.read_failed(Error::Storage);
     assert!(
         s.registration.message().contains("不明") && s.registration.message().contains("Storage")
     );
-    s.registration.read_ok(&mut notice);
-    assert!(notice.contains("不明") && !notice.contains("Storage"));
-    notice = "別の Host の送信結果".into();
-    s.registration.read_ok(&mut notice);
-    assert_eq!(notice, "別の Host の送信結果");
+    s.registration.read_ok();
+    assert!(!s.registration.message().contains("Storage"));
     assert!(s.registration.save_unknown);
     s.registration.paired("one", true);
     assert_eq!(s.registration.paired_host.take().as_deref(), Some("one"));
@@ -490,4 +485,113 @@ fn rename_preserves_page_but_roundtrip_to_another_session_invalidates_it() {
         || panic!(),
     );
     assert!(page.upgrade().is_none());
+}
+
+#[gpui::test]
+fn registration_and_chat_notices_stay_visible_in_both_completion_orders(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(gpui_component::init);
+    // No credentials or network needed to render completion of an unrelated pairing.
+    let h = Host {
+        id: "other".into(),
+        name: "Other".into(),
+        address: String::new(),
+        device_id: "test".into(),
+        needs_pairing: true,
+    };
+    let core = Arc::new(Core::new(Arc::new(Memory(h.clone()))));
+    let (app, w) = cx.add_window_view(|w, cx| Desktop::new(core, w, cx));
+    for pair_succeeded in [true, false] {
+        app.update(w, |app, cx| {
+            if pair_succeeded {
+                app.finish_send_notice(Err(Error::OutcomeUnknown));
+                app.finish_pair(Ok(h.clone()), false, cx);
+            } else {
+                app.finish_pair(Err(Error::OutcomeUnknown), false, cx);
+                app.finish_send_notice(Ok("{}".into()));
+            }
+        });
+        w.run_until_parked();
+        app.read_with(w, |app, _| {
+            if pair_succeeded {
+                assert_eq!(app.state.registration.message(), "登録しました");
+                assert!(app.notice.contains("再送前"));
+            } else {
+                assert!(
+                    app.state
+                        .registration
+                        .message()
+                        .contains("保存の結果が不明")
+                );
+                assert!(app.notice.contains("受付"));
+            }
+        });
+        let registration = w.debug_bounds("registration-notice").unwrap();
+        let chat = w.debug_bounds("chat-notice").unwrap();
+        assert!(registration.right() <= chat.left());
+    }
+}
+
+#[gpui::test]
+fn reload_retires_only_the_recovered_hosts_connection_error(cx: &mut gpui::TestAppContext) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    struct Retry {
+        hosts: Vec<Host>,
+        allow_first: AtomicBool,
+    }
+    impl SecretStore for Retry {
+        fn hosts(&self) -> Result<Vec<Host>, Error> {
+            Ok(self.hosts.clone())
+        }
+        fn load(&self, id: String) -> Result<Credential, Error> {
+            if id == self.hosts[0].id && self.allow_first.load(Ordering::Relaxed) {
+                Ok(Credential {
+                    host: self.hosts[0].clone(),
+                    token: "fixture-only".into(),
+                })
+            } else {
+                Err(Error::Storage)
+            }
+        }
+        fn save(&self, _: Host, _: String) -> Result<(), Error> {
+            unreachable!()
+        }
+        fn forget(&self, _: String) -> Result<(), Error> {
+            unreachable!()
+        }
+        fn invalidate(&self, _: String, _: String) -> Result<(), Error> {
+            unreachable!()
+        }
+    }
+    cx.update(gpui_component::init);
+    let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let store = Arc::new(Retry {
+        hosts: ["a", "b"]
+            .map(|id| Host {
+                id: id.into(),
+                name: "Same display name".into(),
+                address: socket.local_addr().unwrap().to_string(),
+                device_id: "fixture".into(),
+                needs_pairing: false,
+            })
+            .into(),
+        allow_first: AtomicBool::new(false),
+    });
+    let core = Arc::new(Core::new(store.clone()));
+    let (app, w) = cx.add_window_view(|w, cx| Desktop::new(core, w, cx));
+    app.read_with(w, |app, _| {
+        assert_eq!(app.state.registration.connection_errors.len(), 2)
+    });
+    store.allow_first.store(true, Ordering::Relaxed);
+    app.update(w, |app, cx| app.reload(cx));
+    w.run_until_parked();
+    app.read_with(w, |app, _| {
+        assert!(app.machines.contains_key("a"));
+        assert_eq!(app.state.registration.connection_errors.len(), 1);
+        assert_eq!(
+            app.state.registration.connection_errors["b"],
+            Error::Storage
+        );
+    });
 }

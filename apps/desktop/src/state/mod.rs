@@ -125,23 +125,19 @@ impl Page {
 pub struct Registration {
     pub listing_known: bool,
     pub pair_message: String,
+    pub connection_errors: std::collections::HashMap<String, Error>,
     pub save_unknown: bool,
     pub error: Option<Error>,
     pub paired_host: Option<String>,
 }
 impl Registration {
-    pub fn read_failed(&mut self, e: Error, notice: &mut String) {
+    pub fn read_failed(&mut self, e: Error) {
         self.listing_known = false;
         self.error = Some(e);
-        *notice = self.message();
     }
-    pub fn read_ok(&mut self, notice: &mut String) {
-        let showing_registration = self.message() == *notice;
+    pub fn read_ok(&mut self) {
         self.listing_known = true;
         self.error = None;
-        if showing_registration {
-            *notice = self.message();
-        }
     }
     pub fn paired(&mut self, id: &str, first: bool) {
         self.save_unknown = false;
@@ -165,6 +161,7 @@ impl DesktopState {
         host: &str,
         drafts: &mut std::collections::HashMap<EditorKey, String>,
     ) {
+        self.registration.connection_errors.remove(host);
         self.attachments.forget(host);
         self.instructions.forget(host);
         drafts.retain(|k, _| k.host != host);

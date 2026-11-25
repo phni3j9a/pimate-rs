@@ -40,14 +40,14 @@ struct Desktop {
     scroll: ListState,
 }
 impl Desktop {
-    fn new(w: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(core: Arc<Core>, w: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe_window_appearance(w, |_, w, cx| {
             gpui_component::Theme::sync_system_appearance(Some(w), cx);
             cx.notify()
         })
         .detach();
         let mut app = Self {
-            core: Arc::new(Core::new(Arc::new(store::Store::open()))),
+            core,
             state: Default::default(),
             reload_task: None,
             hosts: vec![],
@@ -80,7 +80,7 @@ impl Desktop {
             let Ok(pending) = this.update(cx, |this, cx| match hosts {
                 Ok(hosts) => this.accept_hosts(hosts, cx),
                 Err(e) => {
-                    this.state.registration.read_failed(e, &mut this.notice);
+                    this.state.registration.read_failed(e);
                     cx.notify();
                     vec![]
                 }
@@ -100,9 +100,7 @@ impl Desktop {
                         match result {
                             Ok(conn) => this.attach(h, conn, rx, cx),
                             Err(e) => {
-                                this.state.registration.pair_message =
-                                    format!("{} に接続できません: {e}", h.name);
-                                this.notice = this.state.registration.message();
+                                this.state.registration.connection_errors.insert(h.id, e);
                             }
                         }
                         cx.notify();
@@ -115,7 +113,7 @@ impl Desktop {
         }));
     }
     fn accept_hosts(&mut self, hosts: Vec<Host>, cx: &mut Context<Self>) -> Vec<Host> {
-        self.state.registration.read_ok(&mut self.notice);
+        self.state.registration.read_ok();
         for h in &self.hosts {
             if !model::registered(h, &hosts) {
                 self.state.purge(&h.id, &mut self.drafts);
@@ -149,6 +147,7 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) {
         let id = h.id.clone();
+        self.state.registration.connection_errors.remove(&id);
         let generation = Arc::downgrade(&conn);
         let rows = Rows::snapshot(conn.snapshot());
         self.machines.insert(
@@ -199,7 +198,6 @@ impl Desktop {
         } else {
             self.state.registration.pair_message =
                 "有効なペアリングリンクをコピーしてください".into();
-            self.notice = self.state.registration.message();
         }
         cx.notify();
     }
@@ -215,29 +213,29 @@ impl Desktop {
         let core = self.core.clone();
         cx.spawn(async move |this, cx| {
             let result = core.pair(link, "PiMate Desktop".into()).await;
-            let _ = this.update(cx, |this, cx| {
-                this.pairing = false;
-                match result {
-                    Ok(h) => {
-                        this.state.purge(&h.id, &mut this.drafts);
-                        this.state
-                            .registration
-                            .paired(&h.id, first && this.hosts.is_empty());
-                        this.machines.remove(&h.id);
-                        this.state.registration.pair_message = "登録しました".into();
-                        this.reload(cx)
-                    }
-                    Err(Error::OutcomeUnknown) => {
-                        this.state.registration.save_unknown = true;
-                        this.reload(cx);
-                    }
-                    Err(e) => this.state.registration.pair_message = format!("登録できません: {e}"),
-                };
-                this.notice = this.state.registration.message();
-                cx.notify()
-            });
+            let _ = this.update(cx, |this, cx| this.finish_pair(result, first, cx));
         })
         .detach();
+        cx.notify();
+    }
+    fn finish_pair(&mut self, result: Result<Host, Error>, first: bool, cx: &mut Context<Self>) {
+        self.pairing = false;
+        match result {
+            Ok(h) => {
+                self.state.purge(&h.id, &mut self.drafts);
+                self.state
+                    .registration
+                    .paired(&h.id, first && self.hosts.is_empty());
+                self.machines.remove(&h.id);
+                self.state.registration.pair_message = "登録しました".into();
+                self.reload(cx)
+            }
+            Err(Error::OutcomeUnknown) => {
+                self.state.registration.save_unknown = true;
+                self.reload(cx);
+            }
+            Err(e) => self.state.registration.pair_message = format!("登録できません: {e}"),
+        };
         cx.notify();
     }
     fn select(&mut self, h: String, i: String, cx: &mut Context<Self>) {
@@ -370,28 +368,29 @@ impl Desktop {
                     && this.epoch == epoch
                     && this.editor().as_ref() == Some(&key)
                 {
-                    this.notice = match result {
-                        Ok(_) => "Pi が受付（履歴は別途確認）",
-                        Err(
-                            Error::Blocked
-                            | Error::Rejected
-                            | Error::BadRequest
-                            | Error::Unsupported
-                            | Error::BuiltinCommand,
-                        ) => "送信は拒否されました",
-                        Err(Error::StaleTarget) => {
-                            "対象が変わりました。現在の履歴を確認してください"
-                        }
-                        Err(Error::Offline) => "送信していません。接続先を確認してください",
-                        Err(_) => "結果不明です。再送前に履歴を確認してください",
-                    }
-                    .into()
+                    this.finish_send_notice(result);
                 }
                 cx.notify()
             });
         })
         .detach();
         cx.notify();
+    }
+    fn finish_send_notice(&mut self, result: Result<String, Error>) {
+        self.notice = match result {
+            Ok(_) => "Pi が受付（履歴は別途確認）",
+            Err(
+                Error::Blocked
+                | Error::Rejected
+                | Error::BadRequest
+                | Error::Unsupported
+                | Error::BuiltinCommand,
+            ) => "送信は拒否されました",
+            Err(Error::StaleTarget) => "対象が変わりました。現在の履歴を確認してください",
+            Err(Error::Offline) => "送信していません。接続先を確認してください",
+            Err(_) => "結果不明です。再送前に履歴を確認してください",
+        }
+        .into()
     }
 }
 
@@ -446,7 +445,9 @@ fn main() {
             },
             |w, cx| {
                 w.set_window_title("PiMate RS");
-                let view = cx.new(|cx| Desktop::new(w, cx));
+                let view = cx.new(|cx| {
+                    Desktop::new(Arc::new(Core::new(Arc::new(store::Store::open()))), w, cx)
+                });
                 cx.new(|cx| Root::new(view, w, cx))
             },
         )
