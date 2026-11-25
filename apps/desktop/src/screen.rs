@@ -345,6 +345,8 @@ impl Render for Desktop {
         }
         if let Some(key) = self.editor() {
             main = self.chat_area(main, key, &p, w, cx);
+        } else if let Some(hint) = self.reconnect_hint() {
+            main = main.child(hint);
         } else {
             let title = if self.hosts.is_empty() {
                 "PC の Pi とつなぐ"

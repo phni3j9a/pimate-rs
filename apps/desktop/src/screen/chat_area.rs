@@ -1,6 +1,24 @@
 use super::sheet_chat::copy_attach;
 use super::*;
 impl Desktop {
+    pub(super) fn reconnect_hint(&self) -> Option<Div> {
+        let (h, pi) = self.selected.as_ref()?;
+        let m = self.machines.get(h)?;
+        if !matches!(
+            m.rows.get("host", "connection").as_str(),
+            Some("offline" | "connecting" | "reconnecting")
+        ) {
+            return None;
+        }
+        let count = m
+            .rows
+            .group("draft")
+            .iter()
+            .filter(|(_, d)| d["instanceId"] == *pi && d["status"] == "unconfirmed")
+            .count();
+        Some(div().p_4().child(format!("{} に再接続中です",m.registration.name)).child(if count==0{"接続が戻るまで送信できません。下書きは保持しています。".to_owned()}else{format!("{count} 件の送信が未確認です。接続が戻ったら履歴を確認してください。自動では再送しません。") }))
+    }
+
     pub(super) fn chat_area(
         &mut self,
         mut main: Div,
@@ -226,6 +244,7 @@ impl Desktop {
         }
         main = main.children(self.commands(&key, &page, p, w, cx));
         if let Some((_, input, _)) = &self.input {
+            let has_photos = !self.state.attachments.images(&key).is_empty();
             let movement = movement.is_some();
             let disabled = self.state.attachments.busy()
                 || blocked
@@ -243,6 +262,9 @@ impl Desktop {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .when(has_photos, |b| {
+                        b.child(self.attachments(&key, &page, w, cx))
+                    })
                     .child(
                         div()
                             .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
@@ -260,7 +282,9 @@ impl Desktop {
                             .flex()
                             .items_center()
                             .justify_between()
-                            .child(self.attachments(&key, &page, w, cx))
+                            .when(!has_photos, |b| {
+                                b.child(self.attachments(&key, &page, w, cx))
+                            })
                             .child(p.caption(if blocked {
                                 "入力待ちのため送信できません"
                             } else if cfg!(target_os = "macos") {
