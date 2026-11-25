@@ -1,6 +1,7 @@
 mod markdown;
 mod model;
 mod screen;
+pub(crate) mod state;
 mod store;
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -20,6 +21,8 @@ struct Machine {
     rows: Rows,
 }
 struct Desktop {
+    #[allow(dead_code)] // Screen integration lives in the designer branch.
+    state: state::DesktopState,
     core: Arc<Core>,
     reload_task: Option<Task<()>>,
     hosts: Vec<Host>,
@@ -45,6 +48,7 @@ impl Desktop {
         .detach();
         let mut app = Self {
             core: Arc::new(Core::new(Arc::new(store::Store::open()))),
+            state: Default::default(),
             reload_task: None,
             hosts: vec![],
             machines: Default::default(),

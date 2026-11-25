@@ -79,6 +79,23 @@ mod desktop {
                 },
             }
         }
+        pub(crate) fn forget_matching(&self, host: &Host) -> Result<(), Error> {
+            let mut matched = false;
+            self.edit(|rows| {
+                matched = rows
+                    .get(&host.id)
+                    .is_some_and(|r| r.host(host.id.clone()) == *host);
+                if matched {
+                    rows.remove(&host.id);
+                }
+                matched
+            })?;
+            if matched {
+                Ok(())
+            } else {
+                Err(Error::StaleTarget)
+            }
+        }
         #[cfg(target_os = "macos")]
         fn read(&self) -> Result<Records, Error> {
             match get_generic_password(&self.service, ACCOUNT) {

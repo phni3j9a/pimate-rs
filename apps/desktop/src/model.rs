@@ -33,6 +33,8 @@ impl EditorKey {
 }
 #[derive(Default)]
 pub struct Rows {
+    pub host_life: std::sync::Arc<()>,
+    pub view_life: std::sync::Arc<()>,
     revision: u64,
     moves: HashMap<String, (String, String, u64)>,
     groups: HashMap<String, Vec<(String, Value)>>,
@@ -57,8 +59,50 @@ impl Rows {
             return;
         }
         let missed = batch.contains(&Change::ResyncRequired);
+        // Check each change, including a disconnect/reconnect in one delivery.
+        let mut host_changed = missed;
+        let mut view_changed = missed;
+        for change in &batch {
+            let (c, id, changed) = match change {
+                Change::Upsert(i) => (&i.collection, &i.id, || {
+                    self.get(&i.collection, &i.id)
+                        != &serde_json::from_str::<Value>(&i.json).expect("core JSON")
+                }),
+                Change::Remove { collection, id } => {
+                    host_changed |= collection == "host" && id == "connection";
+                    view_changed |= collection == "view"
+                        && matches!(
+                            id.as_str(),
+                            "instanceId" | "startedAt" | "phase" | "session"
+                        );
+                    continue;
+                }
+                _ => continue,
+            };
+            if c == "host" && id == "connection" {
+                host_changed |= changed();
+            }
+            if c == "view"
+                && matches!(
+                    id.as_str(),
+                    "instanceId" | "startedAt" | "phase" | "session"
+                )
+            {
+                view_changed |= changed();
+            }
+        }
+        if host_changed {
+            self.host_life = Default::default();
+        }
+        if host_changed || view_changed {
+            self.view_life = Default::default();
+        }
         if batch.len() > 128 || missed {
-            let next = Self::snapshot(snapshot());
+            let mut next = Self::snapshot(snapshot());
+            if next.revision == rev {
+                std::mem::swap(&mut next.host_life, &mut self.host_life);
+                std::mem::swap(&mut next.view_life, &mut self.view_life);
+            }
             // Identical endpoints after a delivery gap do not identify the same move.
             let changed = missed
                 || next.revision > rev
@@ -114,17 +158,22 @@ impl Rows {
         }
     }
     pub fn pending_move(&self, k: &EditorKey, drafts: &HashMap<EditorKey, String>) -> Option<u64> {
+        self.pending_move_with(k, |key| drafts.get(key).is_some_and(|s| !s.is_empty()))
+    }
+    pub fn pending_move_with(
+        &self,
+        k: &EditorKey,
+        has_draft: impl FnOnce(&EditorKey) -> bool,
+    ) -> Option<u64> {
         let (from, to, rev) = self.moves.get(&k.instance)?;
         if Some(to) != k.session.as_ref() {
             return None;
         }
-        drafts
-            .get(&EditorKey {
-                session: Some(from.clone()),
-                ..k.clone()
-            })
-            .is_some_and(|s| !s.is_empty())
-            .then_some(*rev)
+        has_draft(&EditorKey {
+            session: Some(from.clone()),
+            ..k.clone()
+        })
+        .then_some(*rev)
     }
     pub fn confirm_move(&mut self, k: &EditorKey, shown: u64) {
         if self
