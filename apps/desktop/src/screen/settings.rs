@@ -12,6 +12,7 @@ pub(super) enum Route {
     First(String),
     New(String),
     Machine(String),
+    Providers(String),
     Github,
 }
 #[derive(Default)]
@@ -20,6 +21,7 @@ pub(super) struct Nav {
     pub page: Option<Page>,
     pub note: String,
     pub pref_error: bool,
+    pub machine: super::machine::MachineData,
     pub spawn: Option<super::new_pi::Fields>,
     pub tasks: Vec<Task<()>>,
 }
@@ -93,7 +95,9 @@ impl Desktop {
     pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
         self.state.close_page();
         let page = match &route {
-            Route::Machine(id) | Route::New(id) => self.open_machine(id).ok(),
+            Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
+                self.open_machine(id).ok()
+            }
             Route::Github => self.open_chat().ok(),
             _ => None,
         };
@@ -321,6 +325,7 @@ impl Desktop {
         let r = n.read(cx).route.clone();
         let (title, body) = match &r {
             Route::Home => return None,
+            Route::Machine(id) => ("マシン詳細", self.machine_view(n, p, id, w, cx)),
             Route::New(id) => ("新しい Pi", self.new_pi(n, p, id, w, cx)),
             Route::Settings => ("設定", self.settings_view(n, p, cx)),
             Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
@@ -329,6 +334,7 @@ impl Desktop {
             _ => ("接続ガイド", div()),
         };
         let back = match r {
+            Route::Providers(id) => Route::Machine(id),
             Route::Machine(_) => Route::Settings,
             Route::SetupPc => Route::Tailscale,
             _ => Route::Home,

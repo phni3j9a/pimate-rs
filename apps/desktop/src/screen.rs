@@ -1,5 +1,6 @@
 mod conversation;
 mod first_step;
+mod machine;
 mod new_pi;
 mod settings;
 use super::*;
