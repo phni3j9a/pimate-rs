@@ -226,12 +226,16 @@ impl Desktop {
         });
         // Marked-text edits notify the entity without emitting InputEvent::Change.
         let observer = cx.observe_in(&input, w, |this, state, w, cx| {
-            if this.input.as_ref().is_none_or(|v| v.1 != state) {
+            let Some((bound, _, _)) = this.input.as_ref().filter(|v| v.1 == state) else {
                 return;
-            }
-            let marked = state.update(cx, |s, cx| s.marked_text_range(w, cx).is_some());
-            if marked != this.composing {
-                this.composing = marked;
+            };
+            if sync_composition(
+                &state,
+                w,
+                cx,
+                &mut this.composing,
+                this.drafts.entry(bound.clone()).or_default(),
+            ) {
                 cx.notify();
             }
         });
@@ -325,6 +329,27 @@ impl Desktop {
     }
 }
 
+fn sync_composition(
+    input: &Entity<InputState>,
+    w: &mut Window,
+    cx: &mut App,
+    composing: &mut bool,
+    draft: &mut String,
+) -> bool {
+    input.update(cx, |s, cx| {
+        let marked = s.marked_text_range(w, cx).is_some();
+        if marked == *composing {
+            return false;
+        }
+        *composing = marked;
+        // macOS unmarkText can commit the displayed text without a Change event.
+        if !marked {
+            *draft = s.value().to_string();
+        }
+        true
+    })
+}
+
 fn committed_input_matches(
     input: &Entity<InputState>,
     expected: &str,
@@ -366,9 +391,33 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::committed_input_matches;
+    use super::{committed_input_matches, sync_composition};
     use gpui::{AppContext, EntityInputHandler};
     use gpui_component::input::InputState;
+    #[gpui::test]
+    fn unmark_without_replacement_commits_composed_draft(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        cx.add_empty_window().update(|w, cx| {
+            let mut draft = String::from("明日");
+            let mut composing = false;
+            let input = cx.new(|cx| {
+                InputState::new(w, cx)
+                    .multi_line(true)
+                    .default_value(draft.clone())
+            });
+            input.update(cx, |s, cx| {
+                s.replace_and_mark_text_in_range(Some(2..2), "会う", None, w, cx)
+            });
+            assert!(sync_composition(&input, w, cx, &mut composing, &mut draft));
+            assert!(composing);
+            assert_eq!(draft, "明日");
+            input.update(cx, |s, cx| s.unmark_text(w, cx));
+            assert!(sync_composition(&input, w, cx, &mut composing, &mut draft));
+            assert!(!composing);
+            assert_eq!(draft, "明日会う");
+            assert!(committed_input_matches(&input, &draft, w, cx));
+        });
+    }
     #[gpui::test]
     fn send_and_ack_require_the_live_committed_input(cx: &mut gpui::TestAppContext) {
         cx.update(gpui_component::init);

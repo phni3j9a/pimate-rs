@@ -56,10 +56,13 @@ impl Rows {
         if rev <= self.revision {
             return;
         }
-        if batch.len() > 128 || batch.contains(&Change::ResyncRequired) {
+        let missed = batch.contains(&Change::ResyncRequired);
+        if batch.len() > 128 || missed {
             let next = Self::snapshot(snapshot());
-            let changed = self.get("notice", "sessionChanged")
-                != next.get("notice", "sessionChanged")
+            // Identical endpoints after a delivery gap do not identify the same move.
+            let changed = missed
+                || next.revision > rev
+                || self.get("notice", "sessionChanged") != next.get("notice", "sessionChanged")
                 || self.get("host", "selection") != next.get("host", "selection");
             let prior = std::mem::take(&mut self.moves);
             *self = next;
@@ -312,6 +315,49 @@ mod tests {
         assert_eq!(r.pending_move(&dst, &drafts), Some(2));
         r.confirm_move(&dst, 2);
         assert_eq!(r.pending_move(&dst, &drafts), None);
+    }
+    #[test]
+    fn resync_forgets_confirmation_even_with_identical_move_notice() {
+        let snap = Snapshot {
+            revision: 1,
+            items: vec![
+                Item {
+                    collection: "host".into(),
+                    ..field("selection", r#""p""#, 0)
+                },
+                Item {
+                    collection: "notice".into(),
+                    ..field(
+                        "sessionChanged",
+                        r#"{"from":{"id":"A"},"to":{"id":"B"}}"#,
+                        0,
+                    )
+                },
+            ],
+        };
+        let mut rows = Rows::snapshot(snap.clone());
+        let dest = EditorKey {
+            host: "h".into(),
+            instance: "p".into(),
+            session: Some("B".into()),
+        };
+        let drafts = HashMap::from([(
+            EditorKey {
+                session: Some("A".into()),
+                ..dest.clone()
+            },
+            "keep".into(),
+        )]);
+        rows.confirm_move(&dest, 1);
+        assert_eq!(rows.pending_move(&dest, &drafts), None);
+        rows.apply((4, vec![Change::ResyncRequired]), || Snapshot {
+            revision: 5,
+            ..snap
+        });
+        rows.confirm_move(&dest, 1);
+        assert_eq!(rows.pending_move(&dest, &drafts), Some(5));
+        rows.confirm_move(&dest, 5);
+        assert_eq!(rows.pending_move(&dest, &drafts), None);
     }
     #[test]
     fn subscription_error_is_only_shown_for_its_own_selection() {
