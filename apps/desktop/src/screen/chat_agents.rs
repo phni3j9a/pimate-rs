@@ -24,6 +24,13 @@ fn instruction(c: &Value) -> Option<(&'static str, bool)> {
         None
     }
 }
+type StopScope<'a> = (&'a str, Option<&'a str>, &'a str);
+fn stop_key(scope: StopScope<'_>) -> SharedString {
+    format!("stop:{scope:?}").into()
+}
+fn matches_scope(shown: StopScope<'_>, current: StopScope<'_>) -> bool {
+    shown == current
+}
 #[derive(Default)]
 struct Record {
     record: Option<WorkRecord>,
@@ -99,66 +106,113 @@ impl Desktop {
         )
     }
     fn stop_button(
-        &self,
         pg: &Page,
         id: &str,
         child: Option<&str>,
         action: &str,
-        cx: &Context<Self>,
-    ) -> Button {
-        let page = pg.clone();
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let scope = (id, child, action);
+        // An inline confirmation is unmounted as soon as this exact control disappears.
+        // A native OS prompt cannot be withdrawn when the Host changes its scope.
+        let pending = w.use_keyed_state(stop_key(scope), cx, |_, _| None::<state::Stop>);
+        let (label, warning) = match action {
+            "stop_child" => ("この子を停止", "選択した子だけが対象です。"),
+            "abort_parent" => (
+                "親の Pi ごと停止",
+                "この実行と親の Pi のターンも停止します。",
+            ),
+            "interrupt" => (
+                "実行全体を一時停止",
+                "この実行のすべての子が一時停止します。",
+            ),
+            "stop" => ("実行全体を停止", "この実行のすべての子が停止します。"),
+            _ => return div(),
+        };
+        let pg = pg.clone();
+        let key = stop_key(scope);
+        if pending.read(cx).is_some() {
+            let cancel = pending.clone();
+            return div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(format!("{label}しますか？ {warning}"))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new(SharedString::from(format!("cancel:{key}")))
+                                .small()
+                                .label("キャンセル")
+                                .on_click(move |_, _, cx| {
+                                    cancel.update(cx, |s, cx| {
+                                        s.take();
+                                        cx.notify()
+                                    })
+                                }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("confirm:{key}")))
+                                .danger()
+                                .small()
+                                .label(label)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !pg.visible(this) {
+                                        return;
+                                    }
+                                    let Some(stop) = pending.update(cx, |s, cx| {
+                                        cx.notify();
+                                        s.take()
+                                    }) else {
+                                        return;
+                                    };
+                                    let pg = pg.clone();
+                                    cx.spawn(async move |this, cx| {
+                                        let r = stop.confirm().await;
+                                        let _ = this.update(cx, |this, cx| {
+                                            if pg.visible(this) {
+                                                this.finish_send_notice(r.map(|_| String::new()));
+                                                cx.notify()
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                                })),
+                        ),
+                );
+        }
         let id = id.to_owned();
         let child = child.map(str::to_owned);
-        let label = match action {
-            "stop_child" => "この子を停止",
-            "abort_parent" => "親の Pi ごと停止",
-            "interrupt" => "実行全体を一時停止",
-            _ => "実行全体を停止",
-        };
-        Button::new(SharedString::from(format!("stop:{id}:{child:?}")))
-            .danger()
-            .small()
-            .label(format!("{label}…"))
-            .on_click(cx.listener(move |this, _, w, cx| {
-                if !page.visible(this) {
-                    return;
-                }
-                let stop = match page.stop(&id, child.as_deref()) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        this.notice = format!("対象が変わりました: {e}");
-                        cx.notify();
+        let action = action.to_owned();
+        div().child(
+            Button::new(key)
+                .danger()
+                .small()
+                .label(format!("{label}…"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !pg.visible(this) {
                         return;
                     }
-                };
-                let scope = stop.scope();
-                let warning = match scope.2 {
-                    "stop_child" => "選択した子だけが対象です。",
-                    "abort_parent" => "この実行と親の Pi のターンも停止します。",
-                    "interrupt" => "この実行のすべての子が一時停止します。",
-                    _ => "この実行のすべての子が停止します。",
-                };
-                let choice = w.prompt(
-                    PromptLevel::Critical,
-                    &format!("{label}しますか？"),
-                    Some(warning),
-                    &[PromptButton::cancel("キャンセル"), PromptButton::new(label)],
-                    cx,
-                );
-                let pg = page.clone();
-                cx.spawn(async move |this, cx| {
-                    if choice.await == Ok(1) {
-                        let r = stop.confirm().await;
-                        let _ = this.update(cx, |this, cx| {
-                            if pg.visible(this) {
-                                this.finish_send_notice(r.map(|_| String::new()));
+                    match pg.stop(&id, child.as_deref()) {
+                        Ok(stop)
+                            if matches_scope((&id, child.as_deref(), &action), stop.scope()) =>
+                        {
+                            pending.update(cx, |s, cx| {
+                                *s = Some(stop);
                                 cx.notify()
-                            }
-                        });
+                            })
+                        }
+                        _ => {
+                            this.notice =
+                                "停止の対象が変わりました。現在の状態を確認してください。".into();
+                            cx.notify()
+                        }
                     }
-                })
-                .detach();
-            }))
+                })),
+        )
     }
     pub(super) fn agent_panel(
         &self,
@@ -378,8 +432,14 @@ impl Desktop {
                         run["stopAction"].as_str()
                     };
                     if let Some(a) = a {
-                        body =
-                            body.child(self.stop_button(page, &unit.run, Some(&unit.child), a, cx))
+                        body = body.child(Self::stop_button(
+                            page,
+                            &unit.run,
+                            Some(&unit.child),
+                            a,
+                            w,
+                            cx,
+                        ))
                     }
                 }
             } else {
@@ -439,7 +499,7 @@ impl Desktop {
                     if r["active"] == true
                         && let Some(a) = r["stopAction"].as_str()
                     {
-                        card = card.child(self.stop_button(page, id, None, a, cx))
+                        card = card.child(Self::stop_button(page, id, None, a, w, cx))
                     }
                     body = body.child(card)
                 }
@@ -485,7 +545,21 @@ impl Desktop {
 }
 #[cfg(test)]
 mod tests {
-    use super::instruction;
+    use super::{instruction, matches_scope, stop_key};
+    #[test]
+    fn child_stop_never_opens_or_keeps_a_parent_confirmation() {
+        let shown = ("run", Some("child"), "stop_child");
+        assert!(matches_scope(shown, shown));
+        for changed in [
+            ("run", Some("child"), "abort_parent"),
+            ("run", None, "stop"),
+            ("run", Some("other"), "stop_child"),
+            ("next", Some("child"), "stop_child"),
+        ] {
+            assert!(!matches_scope(shown, changed));
+            assert_ne!(stop_key(shown), stop_key(changed));
+        }
+    }
     use serde_json::json;
     #[test]
     fn while_running_only_steer() {
