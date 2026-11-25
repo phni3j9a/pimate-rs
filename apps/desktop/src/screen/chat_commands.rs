@@ -7,7 +7,7 @@ impl Desktop {
         p: &Colors,
         w: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
+    ) -> Option<Stateful<Div>> {
         let text = self.drafts.get(key)?;
         let prefix = text.strip_prefix('/')?;
         if prefix.chars().any(char::is_whitespace) || self.composing {
