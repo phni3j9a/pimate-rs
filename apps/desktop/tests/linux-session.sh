@@ -3,7 +3,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(realpath "$here/../../..")
 if [[ ${1:-} != inner ]]; then
-  [[ ${1:-} == check || ${1:-} == hotplug ]] || { echo "usage: $0 check|hotplug OUTPUT_DIRECTORY" >&2; exit 2; }
+  [[ ${1:-} == check || ${1:-} == hotplug || ${1:-} == package ]] || { echo "usage: $0 check|hotplug|package OUTPUT_DIRECTORY" >&2; exit 2; }
   bin=$(realpath "${CARGO_TARGET_DIR:-$root/target}/debug"); [[ -x $bin/pimate && -x $bin/pimate-desktop ]]
   mkdir -p "$2"; out=$(realpath "$2"); home=$(mktemp -d); trap 'rm -rf -- "$home"' EXIT
   mkdir -m700 "$home/run" "$home/Desktop" "$home/tmp"
@@ -43,6 +43,7 @@ unset DISPLAY
 WAYLAND_DEBUG=client "$bin/pimate-desktop" --demo >app.log 2>&1 & app=$!
 sleep 4; kill -0 "$app"
 python3 "$here/linux-drive.py" "$mode" "$out"
+[[ $mode != package ]] || exit 0
 test "$(grep -Fc '.commit_string("ニホンゴ")' app.log)" = 1
 if [[ $mode == hotplug ]]; then
   # Assert pointer capability was added during live composition, on the same input object.

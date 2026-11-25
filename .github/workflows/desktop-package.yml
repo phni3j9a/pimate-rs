@@ -25,6 +25,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - run: bash apps/desktop/tests/release.sh
       - id: select
         env:
           TAG: ${{ inputs.release_tag }}
@@ -60,3 +61,55 @@ jobs:
           name: desktop-${{ matrix.runner }}
           path: dist/*
           if-no-files-found: error
+  prepare-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: [source, build]
+    runs-on: macos-latest
+    environment: desktop-release
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-*
+          path: archives
+          merge-multiple: true
+      - name: Optionally sign and notarize the macOS apps
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_PASSWORD }}
+          ASC_KEY: ${{ secrets.ASC_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER: ${{ secrets.ASC_ISSUER_ID }}
+        run: bash apps/desktop/notarize.sh archives/*.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-archives
+          path: archives/*
+  publish:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    needs: [source, prepare-release]
+    runs-on: ubuntu-latest
+    environment: desktop-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-archives
+          path: archives
+      - env:
+          TAG: ${{ inputs.release_tag }}
+          BUILT_SHA: ${{ needs.source.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(bash apps/desktop/check-release.sh "$TAG")" = "$BUILT_SHA"
+          prefix="archives/PiMate-Desktop-${TAG#desktop-v}-"
+          files=("$prefix"macos-{arm64,x86_64}.zip "$prefix"linux-{aarch64,x86_64}.tar.gz)
+          for file in "${files[@]}"; do test -s "$file"; done
+          gh release create "$TAG" "${files[@]}" --verify-tag --generate-notes --latest=false
