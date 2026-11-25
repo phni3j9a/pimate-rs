@@ -1,0 +1,1 @@
+crates.io xattr 0.2.3 (MIT / Apache-2.0), used by GPUI's async-tar. In `src/sys/mod.rs` Linux and Android use `libc::ENODATA` instead of the removed `libc::ENOATTR` alias. Preserve the platform-group cfg on *both* definitions so that macOS receives exactly one `ENOATTR`. Remove the patch once the transitive dependency no longer needs it.

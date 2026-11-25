@@ -373,6 +373,20 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 - **Chat-Edge**: `edge` の connection・phase / unconfirmed / pcPrompt / attachCommand、`move` の from・to と `local`。`needsMoveConfirmation` のときは前の会話に下書きを保持、入力欄の「新しい送信先を確認」から `confirmMove(_:id:)` で今回だけ確認（端末の操作元は推定しない）。`attachCommand` が nil ならコピー操作を出さないこと。
 - 画面は `Chat.swift`・`Composer.swift`・`Markdown.swift`・`Transcript.swift`・`Question.swift` と新規 View を変更可。`SessionModel.swift`・`Rows.swift`・`ChatSheet.swift`・`ChatImages.swift`・`ChatNotices.swift`・`Photo.swift`・Keychain・Rust/FFI と生成物は維持してください。実機・見た目・スクリーンショット比較は後半の範囲です。
 
+### デスクトップ開発版（macOS・#49 前半）
+
+Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.sh`。開発用 `.app` をビルド先に作り LaunchServices から起動します。ssh から裸の実行ファイルを起動するとウィンドウは出ても日本語 IME が ASCII 入力になったためです。`apps/desktop` は FFI を使わず、中核と Markdown の Rust API を直接呼びます。`リンクを貼り付ける` → 表示されたマシン名・アドレスを確認 → 登録。左の Pi を選択して会話を開きます。Enter は改行・IME の確定だけで、送信はボタンです。表示は OS の明暗に追従し、文字サイズを3段階で変更できます。
+
+- [Linux 試作の結果（#2）](https://github.com/phni3j9a/pimate-rs/issues/2) と同じ `gpui 0.2.2` と型互換な `gpui-component 0.5.1` の複数行 `InputState`・選択可能な `TextView` を使用。`gpui-kit 0.10` は別系列です。共通 Markdown AST から生成した HTML だけを表示し、画像やローカルファイルを自動取得しません。Linux の xattr 0.2.3 は削除された libc の ENOATTR 別名を ENODATA に置換（`vendor/xattr`）。Linux はビルドまで。秘密の平文保存にはフォールバックしません。実際の Linux ログインセッションの IME 検証と保存先は別途必要です。
+- macOS の `store.rs` は登録をメタデータ・token 一体の Keychain 項目に格納します。アプリの複数起動時もファイルロックで置換と条件付き失効を直列化します。ロックファイルに資格情報は書きません。`cargo test --locked -p pimate-desktop` は毎回固有の `.test.*` サービスで試験。模擬 Host（前述の `scripts/android-demo.py`）を試すときは `apps/desktop/run-macos.sh --demo`（先に起動中のアプリを終了）で別サービスを使い、使い終えたらアプリ終了後 `security delete-generic-password -s dev.pimate.rs.desktop.demo -a registrations` で模擬登録だけ削除できます。
+- 画面担当は `screen.rs` と `markdown.rs` を変更できます。`model.rs` の revision と `main.rs` の接続・編集状態は維持してください。Host ごとの配送スレッド → 有界チャネル → GPUI Entity（UI スレッド）。過負荷・大きな差分は snapshot、再登録前の配送は接続の同一性で破棄。編集本文は Host・Pi・session（null 可）別でメモリだけに保持し、送信時のキーを渡します。RC の受付と履歴は別で、結果不明を成功扱いせず自動再送しません。未確認の復元は対象が一致し、入力が空の明示操作だけです。
+
+VM 2 での登録・一覧・逐次表示・日本語送信の記録は PR #50 に載せている。macOS の日本語ローマ字入力では `nihongo` → Space → Return は候補選択で、もう一度 Return で確定・送信ボタン有効化、ボタンを押して初めて送信しました。文字列の貼り付けによる代替ではありません。
+
+変換中は、確定済みの前半があっても送信できません。送信後の ACK は別の接続世代でも送信元の未変更の下書きだけを片付け、追加入力や変換中の編集は捨てません。検証には `PIMATE_DEMO_DESKTOP_REVIEW=1 scripts/android-demo.py`（模擬 RC だけを 50 ms ごと4文字の差分・送信 ACK は3秒待機に変更）を使います。`/demo/android` を選び、終了を待たずに表・本文が成長することを確認。確定済み本文に `nihongo` を変換中のまま追加して送信ボタンを押しても送られず、確定して送信した直後に追加の語を変換しても、受付後まで入力欄に残ります。
+
+「登録を読み直す」は削除・失効・置換された接続を閉じます。PC 側から同じ Pi のセッションが移動したときは、前のセッションに編集本文がある場合、表示された新しい送信先を確認するまで送信できません。購読失敗時は同じ Pi の選び直しで再試行します。
+
 ### iOS の残りの画面で使う状態（#48 前半）
 
 画面を開いた時のマシン ID／`EditorKey` を捕捉し、画面を閉じたら Task をキャンセルします。操作の失敗や切断は空一覧・成功に変換せず、書き込みを自動再送しません。
