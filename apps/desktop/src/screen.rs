@@ -59,7 +59,7 @@ impl Render for Desktop {
         side = side.child(
             Button::new("paste")
                 .label("リンクを貼り付ける")
-                .disabled(self.pairing || cfg!(not(target_os = "macos")))
+                .disabled(self.pairing || cfg!(not(any(target_os = "macos", target_os = "linux"))))
                 .on_click(cx.listener(|this, _, _, cx| this.paste(cx))),
         );
         if let Some((_, name)) = &self.confirmation {

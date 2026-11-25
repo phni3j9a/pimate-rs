@@ -26,10 +26,15 @@ jobs:
           security list-keychains -d user -s "$keychain"
           security default-keychain -d user -s "$keychain"
           cargo test --locked -p pimate-desktop
-  linux-build:
+  linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - run: rustup update stable && rustup default stable
-      - run: sudo apt-get update && sudo apt-get install -y libclang-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev dbus-daemon gnome-keyring libglib2.0-bin
       - run: cargo build --locked -p pimate-desktop
+      - run: cargo test --locked -p pimate-desktop
+      - name: Test with an isolated Secret Service
+        run: |
+          bin=$(cargo test --locked -p pimate-desktop --no-run --message-format=json | jq -r 'select(.executable != null) | .executable')
+          apps/desktop/test-linux-store.sh "$bin"

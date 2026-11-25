@@ -4549,8 +4549,10 @@ name = "pimate-desktop"
 version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
+ "futures-lite 2.6.1",
  "gpui",
  "gpui-component",
+ "oo7",
  "pimate-core",
  "pimate-markdown",
  "pimate-protocol",
