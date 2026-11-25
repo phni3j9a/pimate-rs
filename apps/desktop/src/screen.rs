@@ -310,9 +310,10 @@ impl Desktop {
             let card = if let Some(e) = error {
                 card.child(
                     div()
-                        .text_color(p.waiting)
+                        .text_color(p.ink)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .font_family("monospace")
-                        .child(e.to_string()),
+                        .child(format!("Error: {e}")),
                 )
             } else {
                 card
