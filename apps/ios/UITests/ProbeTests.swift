@@ -17,6 +17,7 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["pair-address"].label.hasPrefix("127.0.0.1:"))
         app.buttons["キャンセル"].tap(); XCTAssertTrue(insert.exists); XCTAssertFalse(app.buttons["pi-waiting"].exists)
         insert.tap(); preview.tap(); app.buttons["このマシンに接続"].tap()
+        XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
         main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
@@ -169,6 +170,7 @@ extension ProbeTests {
         let preview = app.buttons["接続先を確認"]
         XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 8), .completed)
         preview.tap(); app.buttons["このマシンに接続"].tap()
+        XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let main = app.buttons["pi-main"]
         XCTAssertTrue(main.waitForExistence(timeout: 15)); main.tap()
         func open(_ title: String) { app.buttons["chat-options"].tap(); app.buttons[title].tap() }
