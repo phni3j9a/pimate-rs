@@ -11,6 +11,15 @@ use serde_json::Value;
 pub fn transcript() -> ListState {
     ListState::new(0, ListAlignment::Top, px(100.))
 }
+fn pending_panel(id: SharedString, handle: &ScrollHandle) -> Stateful<Div> {
+    div()
+        .id(id)
+        .min_h_0()
+        .max_h(rems(6.))
+        .overflow_y_scroll()
+        .track_scroll(handle)
+        .px_4()
+}
 struct Colors {
     bg: Hsla,
     surface: Hsla,
@@ -383,7 +392,15 @@ impl Render for Desktop {
                     );
             }
             main = main.child(self.conversation(&key, &p, dark, w, cx));
-            let mut chat = div().px_4();
+            let pending_scroll = w
+                .use_keyed_state(
+                    SharedString::from(format!("pending-scroll:{key:?}")),
+                    cx,
+                    |_, _| ScrollHandle::new(),
+                )
+                .read(cx)
+                .clone();
+            let mut chat = pending_panel("pending-drafts".into(), &pending_scroll);
             for (id, d) in rows.group("draft") {
                 if d["instanceId"] == key.instance
                     && d["sessionId"].as_str() == key.session.as_deref()
@@ -428,7 +445,13 @@ impl Render for Desktop {
                     }
                 }
             }
-            main = main.child(chat);
+            main = main.child(
+                div()
+                    .relative()
+                    .flex_shrink_0()
+                    .child(chat)
+                    .vertical_scrollbar(&pending_scroll),
+            );
             if let Some((_, input, _)) = &self.input {
                 let movement = rows.pending_move(&key, &self.drafts).is_some();
                 let disabled = blocked
@@ -525,5 +548,52 @@ impl Render for Desktop {
             .text_size(rems(0.94))
             .child(side)
             .child(main)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pending_panel;
+    use gpui::{Context, ScrollHandle, Window, div, point, prelude::*, px, rems, size};
+    #[gpui::test]
+    fn long_pending_draft_scrolls_without_displacing_editor(cx: &mut gpui::TestAppContext) {
+        struct Probe(ScrollHandle);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_1().min_h_0().debug_selector(|| "chat".into()))
+                    .child(
+                        div().relative().flex_shrink_0().child(
+                            pending_panel("test-drafts".into(), &self.0)
+                                .child("long pending draft\n".repeat(200))
+                                .child(div().h(px(32.)).child("入力欄へ戻す")),
+                        ),
+                    )
+                    .child(div().h(rems(6.)).debug_selector(|| "editor".into()))
+            }
+        }
+        let (view, w) = cx.add_window_view(|_, _| Probe(ScrollHandle::new()));
+        w.simulate_resize(size(px(600.), px(400.)));
+        w.run_until_parked();
+        let scroller = view.read_with(w, |v, _| v.0.clone());
+        let area = scroller.bounds();
+        let editor = w.debug_bounds("editor").unwrap();
+        assert!(area.size.height > px(0.) && area.size.height <= px(120.));
+        assert!(
+            w.debug_bounds("chat").unwrap().size.height > px(0.) && editor.bottom() <= px(400.)
+        );
+        assert!(scroller.max_offset().height > px(1000.));
+        scroller.set_offset(point(px(0.), -scroller.max_offset().height));
+        view.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        let restore = scroller.bounds_for_item(1).unwrap();
+        assert!(
+            restore.top() + scroller.offset().y >= area.top()
+                && restore.bottom() + scroller.offset().y <= area.bottom() + px(1.)
+        );
+        assert_eq!(editor, w.debug_bounds("editor").unwrap());
     }
 }
