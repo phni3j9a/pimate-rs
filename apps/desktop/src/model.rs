@@ -101,8 +101,7 @@ impl Rows {
             }
             return;
         }
-        let mut moved = false;
-        let mut local = false;
+
         for change in batch {
             match change {
                 Change::Upsert(Item {
@@ -111,7 +110,6 @@ impl Rows {
                     position,
                     json,
                 }) => {
-                    moved |= collection == "notice" && id == "sessionChanged";
                     let v: Value = serde_json::from_str(&json).expect("core JSON");
                     match (collection.as_str(), id.as_str()) {
                         ("busy", "operation") => {
@@ -120,10 +118,20 @@ impl Rows {
                         }
                         ("operationResult", "latest") => self.receipts.result(&v),
                         ("notice", "sessionChanged") => {
-                            local = self
+                            let pi = self
                                 .get("view", "instanceId")
                                 .as_str()
-                                .is_some_and(|pi| self.receipts.local_move(pi, &v))
+                                .or_else(|| self.get("host", "selection").as_str())
+                                .map(str::to_owned);
+                            if let Some(pi) = pi {
+                                if self.receipts.local_move(&pi, &v) {
+                                    self.moves.remove(&pi);
+                                } else if let (Some(from), Some(to)) =
+                                    (v["from"]["id"].as_str(), v["to"]["id"].as_str())
+                                {
+                                    self.moves.insert(pi, (from.into(), to.into(), rev));
+                                }
+                            }
                         }
                         _ => (),
                     }
@@ -143,15 +151,6 @@ impl Rows {
             }
         }
         self.revision = rev;
-        if moved {
-            if local {
-                if let Some(pi) = self.get("view", "instanceId").as_str().map(str::to_owned) {
-                    self.moves.remove(&pi);
-                }
-            } else {
-                self.remember_move();
-            }
-        }
     }
     fn remember_move(&mut self) {
         let n = self.get("notice", "sessionChanged");

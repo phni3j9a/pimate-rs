@@ -78,17 +78,7 @@ async fn machine_ack_journey() {
         device_id: "device".into(),
         needs_pairing: false,
     };
-    let core = Core::new(Arc::new(Memory(h.clone())));
-    let (tx, rx) = crate::model::Delivery::channel();
-    let conn = core.connect(h.id.clone(), Arc::new(tx)).unwrap();
-    let mut m = Machine {
-        registration: h,
-        rows: Rows::snapshot(conn.snapshot()),
-        conn,
-    };
-    while m.rows.get("host", "connection") != "connected" {
-        m.rows.apply(rx.recv().await.unwrap(), || m.conn.snapshot());
-    }
+    let (m, rx) = connected(h).await;
     let mut state = DesktopState::default();
     let old = state.open("test", &m, None);
     let pending = tokio::spawn(async move { old.query(MachineQuery::Devices).await });
@@ -250,4 +240,214 @@ pub(super) fn dummy_page() -> Page {
         page: Weak::new(),
         images: Default::default(),
     }
+}
+
+fn snapshot(pi: &str, start: u64) -> Value {
+    json!({"protocol":1,"instanceId":pi,"pid":1,"cwd":"/fixture","origin":"pc","abducoSession":null,"startedAt":start,"session":{"id":"same"},"status":"idle","model":null,"thinking":null,"pendingUI":[{"requestId":"q","kind":"confirm","title":"Continue?"}],"seq":1,"entryImages":true,"fileImages":true,"providerAuth":true,"slashCommands":true,"sessionTree":true,"promptImages":true,"promptImageLimit":4})
+}
+async fn connected(host: Host) -> (Machine, async_channel::Receiver<crate::model::Batch>) {
+    let (tx, rx) = crate::model::Delivery::channel();
+    let conn = Core::new(Arc::new(Memory(host.clone())))
+        .connect(host.id.clone(), Arc::new(tx))
+        .unwrap();
+    let mut m = Machine {
+        registration: host,
+        rows: Rows::snapshot(conn.snapshot()),
+        conn,
+    };
+    while m.rows.get("host", "connection") != "connected" {
+        m.rows.apply(rx.recv().await.unwrap(), || m.conn.snapshot());
+    }
+    (m, rx)
+}
+async fn fixture(
+    id: &'static str,
+) -> (
+    Machine,
+    async_channel::Receiver<crate::model::Batch>,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+    tokio::task::JoinHandle<()>,
+) {
+    let sock = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let host = Host {
+        id: id.into(),
+        name: id.into(),
+        device_id: "device".into(),
+        address: sock.local_addr().unwrap().to_string(),
+        needs_pairing: false,
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let server = tokio::spawn(async move {
+        let mut ws = accept_async(sock.accept().await.unwrap().0).await.unwrap();
+        let mut files = 0;
+        while let Some(Ok(msg)) = ws.next().await {
+            if !msg.is_text() {
+                continue;
+            }
+            let v: Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+            let reply = match v["type"].as_str() {
+                Some("auth") => {
+                    json!({"type":"auth_ok","deviceId":"device","host":{"hostId":id,"name":id,"version":"1","protocol":1,"platform":"linux","authSession":true,"providerAuth":true}})
+                }
+                Some("subscribe") => {
+                    json!({"type":"subscribed","instanceId":"pi","snapshot":snapshot("pi",1),"history":{"session":{"id":"same"},"items":[]}})
+                }
+                Some("auth_session") => {
+                    json!({"type":"auth_session_result","requestId":v["requestId"],"ok":true,"instanceId":"login"})
+                }
+                Some("auth_session_end") => {
+                    tx.send("released".into()).unwrap();
+                    continue;
+                }
+                Some("rc") => {
+                    let req = &v["request"];
+                    let m = req["method"].as_str().unwrap();
+                    tx.send(m.to_owned()).unwrap();
+                    let mut flow = json!({"id":"flow","provider":"openai","method":"api_key","revision":1,"expiresAt":9999999999999_u64,"status":"input","prompt":{"kind":"api_key","id":"prompt"}});
+                    let result = match m {
+                        "ui_respond" => {
+                            assert!(
+                                req["params"]["confirmed"] == true
+                                    && req["params"]["requestId"] == "q"
+                            );
+                            json!({})
+                        }
+                        "commands" => json!({"commands":[]}),
+                        "file_image" => {
+                            files += 1;
+                            json!({"image":{"mimeType":"image/jpeg","data":if files==1{"YQ=="}else{"Yg=="}}})
+                        }
+                        "hello" => json!({"snapshot":snapshot("login",1)}),
+                        "auth_list" => json!({"providers":[],"flow":flow}),
+                        "auth_respond" => {
+                            assert!(req["params"]["value"] == "fixture-answer");
+                            flow["status"] = json!("succeeded");
+                            flow["revision"] = json!(2);
+                            flow.as_object_mut().unwrap().remove("prompt");
+                            json!({"flow":flow})
+                        }
+                        _ => panic!("unexpected fixture method"),
+                    };
+                    json!({"type":"rc_result","instanceId":v["instanceId"],"response":{"type":"response","id":req["id"],"ok":true,"result":result}})
+                }
+                Some("ping") => json!({"type":"pong","t":v["t"]}),
+                _ => continue,
+            };
+            if ws.send(Message::text(reply.to_string())).await.is_err() {
+                break;
+            }
+        }
+    });
+    let (m, changes) = connected(host).await;
+    (m, changes, rx, server)
+}
+#[tokio::test]
+async fn two_hosts_question_image_and_login_use_the_pinned_connection() {
+    timeout(Duration::from_secs(8), two_host_journey())
+        .await
+        .unwrap();
+}
+async fn two_host_journey() {
+    use pimate_protocol as p;
+    let (mut a, ar, mut aw, server_a) = fixture("alpha").await;
+    let (mut b, br, mut bw, server_b) = fixture("beta").await;
+    for (m, changes) in [(&mut a, &ar), (&mut b, &br)] {
+        m.conn.subscribe(Some("pi".into())).unwrap();
+        while m.rows.editor(&m.registration.id, "pi").is_none() {
+            m.rows
+                .apply(changes.recv().await.unwrap(), || m.conn.snapshot());
+        }
+    }
+    let mut s = DesktopState::default();
+    let old = s.open("alpha", &a, a.rows.editor("alpha", "pi"));
+    let page = s.open("beta", &b, b.rows.editor("beta", "pi"));
+    let q = b.rows.get("question", "q");
+    let params = || {
+        serde_json::from_value::<p::UiRespondParams>(
+            json!({"requestId":"ignored","confirmed":true}),
+        )
+        .unwrap()
+    };
+    assert_eq!(old.answer("q", q, params()).await, Err(Error::StaleTarget));
+    assert_eq!(
+        page.answer("q", &json!({"title":"different"}), params())
+            .await,
+        Err(Error::StaleTarget)
+    );
+    let mut question = page.question("q", q).unwrap();
+    assert!(question.fields.confirmed.is_none());
+    question.fields.confirmed = Some(true);
+    question.answer().await.unwrap();
+    assert_eq!(bw.recv().await.unwrap(), "ui_respond");
+    page.sheet(SheetAction::Commands).await.unwrap();
+    assert_eq!(bw.recv().await.unwrap(), "commands");
+    let source = |answer| images::Source::File {
+        answer,
+        path: "same.jpg",
+    };
+    assert_eq!(&*page.image(source("answer1"), true).await.unwrap(), b"a");
+    assert_eq!(&*page.image(source("answer1"), true).await.unwrap(), b"a");
+    assert_eq!(&*page.image(source("answer2"), true).await.unwrap(), b"b");
+    for _ in 0..2 {
+        assert_eq!(bw.recv().await.unwrap(), "file_image");
+    }
+    assert!(bw.try_recv().is_err() && aw.try_recv().is_err());
+    let page = s.open("alpha", &a, None);
+    let login = page.login().await.unwrap();
+    for method in ["hello", "auth_list"] {
+        assert_eq!(aw.recv().await.unwrap(), method);
+    }
+    let action = || {
+        AuthAction::Respond(p::AuthRespondParams {
+            flow_id: "flow".into(),
+            prompt_id: "prompt".into(),
+            value: "fixture-answer".into(),
+        })
+    };
+    login.request(action()).await.unwrap();
+    let snapshot = a.conn.snapshot();
+    assert!(
+        snapshot
+            .items
+            .iter()
+            .all(|i| !i.json.contains("fixture-answer"))
+    );
+    let r = Rows::snapshot(snapshot);
+    assert_eq!(r.get("auth", "login")["revision"], 2);
+    assert_eq!(aw.recv().await.unwrap(), "auth_respond");
+    s.close_page();
+    assert_eq!(login.request(action()).await, Err(Error::StaleTarget));
+    drop(login);
+    assert_eq!(aw.recv().await.unwrap(), "released");
+    assert!(aw.try_recv().is_err());
+    server_a.abort();
+    server_b.abort();
+}
+#[test]
+fn same_batch_selection_does_not_transfer_move_to_next_pi() {
+    let mut r = Rows::default();
+    r.apply(
+        (
+            7,
+            vec![
+                row("view", "instanceId", json!("first")),
+                row("host", "selection", json!("first")),
+                row(
+                    "notice",
+                    "sessionChanged",
+                    json!({"from":{"id":"x"},"to":{"id":"y"}}),
+                ),
+                row("host", "selection", json!("second")),
+                row("view", "instanceId", json!("second")),
+            ],
+        ),
+        || panic!(),
+    );
+    let key = |i: &str| EditorKey {
+        host: "h".into(),
+        instance: i.into(),
+        session: Some("y".into()),
+    };
+    assert_eq!(r.pending_move_with(&key("first"), |_| true), Some(7));
+    assert_eq!(r.pending_move_with(&key("second"), |_| true), None);
 }

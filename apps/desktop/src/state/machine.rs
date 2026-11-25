@@ -156,7 +156,9 @@ impl Page {
                 .await
             {
                 Ok(v) => return Ok(Some(v)),
-                Err(Error::Rejected | Error::Blocked | Error::Unsupported) => (),
+                Err(Error::Rejected | Error::Blocked | Error::Unsupported | Error::StaleTarget) => {
+                    self.machine()?;
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -436,13 +438,18 @@ impl Page {
     }
 }
 impl GithubItem {
-    pub fn ask_about(&self, app: &mut Desktop) -> Result<(), Error> {
+    pub fn ask_about(
+        &self,
+        app: &mut Desktop,
+        w: &mut gpui::Window,
+        cx: &mut gpui::Context<Desktop>,
+    ) -> Result<(), Error> {
         let mut s = format!("#{}「{}」", self.number, self.title);
         if let Some(url) = &self.url {
             s.push(' ');
             s.push_str(url.as_str());
         }
-        self.page.append_reference(app, &s)
+        self.page.append_reference(app, &s, w, cx)
     }
 }
 #[cfg(test)]

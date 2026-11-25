@@ -48,6 +48,19 @@ impl SheetAction {
 }
 impl Page {
     pub async fn sheet(&self, a: SheetAction) -> Result<Value, Error> {
+        if matches!(
+            a,
+            SheetAction::New
+                | SheetAction::Reload
+                | SheetAction::Resume(_)
+                | SheetAction::Fork(_)
+                | SheetAction::Move(_, _)
+        ) {
+            let rows = self.current()?;
+            if rows.get("view", "status") != "idle" || rows.get("view", "agentActive") == true {
+                return Err(Error::Blocked);
+            }
+        }
         let (m, p) = a.wire();
         self.rc(m, p).await
     }
@@ -194,11 +207,18 @@ impl Desktop {
         self.state.attachments.replace(k, next);
         Ok(())
     }
-    pub fn restore_draft(&mut self, page: &Page, id: String) -> Result<(), Error> {
+    pub fn restore_draft(
+        &mut self,
+        page: &Page,
+        id: String,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), Error> {
         let k = page.editor()?;
         page.current()?;
         if !page.visible(self)
             || self.composing
+            || (self.input.is_some() && !self.live_matches(k, "", w, cx))
             || self.sending
             || self.state.attachments.busy()
             || !self.state.attachments.images(k).is_empty()
@@ -509,6 +529,44 @@ impl SheetReply {
         }
     }
 }
+/// The value being edited belongs to one version of one question, never to a bare request ID.
+pub struct Question {
+    page: Page,
+    id: String,
+    shown: Value,
+    pub fields: p::UiRespondParams,
+}
+impl Page {
+    pub fn question(&self, id: &str, shown: &Value) -> Result<Question, Error> {
+        if shown.is_null() || self.current()?.get("question", id) != shown {
+            return Err(Error::StaleTarget);
+        }
+        Ok(Question {
+            page: self.clone(),
+            id: id.into(),
+            shown: shown.clone(),
+            fields: p::UiRespondParams {
+                request_id: id.into(),
+                value: None,
+                confirmed: None,
+                cancelled: None,
+                answers: None,
+            },
+        })
+    }
+    pub async fn abort(&self) -> Result<Value, Error> {
+        self.perform(Operation::Abort {
+            target: self.editor()?.target(),
+        })
+        .await
+    }
+}
+impl Question {
+    pub async fn answer(self) -> Result<Value, Error> {
+        self.page.answer(&self.id, &self.shown, self.fields).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

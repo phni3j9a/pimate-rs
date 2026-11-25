@@ -221,7 +221,7 @@ impl Page {
                 let path = args["path"]
                     .as_str()
                     .filter(|s| !s.is_empty())
-                    .or_else(|| args["file_path"].as_str())
+                    .or_else(|| args["file_path"].as_str().filter(|s| !s.is_empty()))
                     .or_else(|| Patch::parse(patch?).path)
                     .unwrap_or("（不明なファイル）");
                 let path = path.strip_prefix('@').unwrap_or(path);
@@ -267,9 +267,24 @@ impl Page {
             latest_changed_turn: latest,
         }
     }
-    pub fn append_reference(&self, app: &mut Desktop, text: &str) -> Result<(), Error> {
+    pub fn append_reference(
+        &self,
+        app: &mut Desktop,
+        text: &str,
+        w: &mut gpui::Window,
+        cx: &mut gpui::Context<Desktop>,
+    ) -> Result<(), Error> {
         let k = self.editor()?;
-        if !self.visible(app) || app.composing {
+        if !self.visible(app)
+            || app.composing
+            || (app.input.is_some()
+                && !app.live_matches(
+                    k,
+                    app.drafts.get(k).map(String::as_str).unwrap_or_default(),
+                    w,
+                    cx,
+                ))
+        {
             return Err(Error::StaleTarget);
         }
         self.current()?;
@@ -283,7 +298,12 @@ impl Page {
     }
 }
 impl Review {
-    pub fn ask_about(&self, app: &mut Desktop) -> Result<(), Error> {
+    pub fn ask_about(
+        &self,
+        app: &mut Desktop,
+        w: &mut gpui::Window,
+        cx: &mut gpui::Context<Desktop>,
+    ) -> Result<(), Error> {
         let f = self.files.first().ok_or(Error::BadRequest)?;
         let scope = if self.turn.is_some() {
             "ターン"
@@ -298,6 +318,8 @@ impl Review {
         self.page.append_reference(
             app,
             &format!("この{scope}の変更（{}{others}）について：", f.path),
+            w,
+            cx,
         )
     }
 }

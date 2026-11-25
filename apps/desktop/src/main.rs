@@ -81,7 +81,6 @@ impl Desktop {
                 Ok(hosts) => this.accept_hosts(hosts, cx),
                 Err(e) => {
                     this.state.registration.read_failed(e);
-
                     cx.notify();
                     vec![]
                 }
@@ -100,7 +99,10 @@ impl Desktop {
                     .update(cx, |this, cx| {
                         match result {
                             Ok(conn) => this.attach(h, conn, rx, cx),
-                            Err(e) => this.notice = format!("接続を開始できません: {e}"),
+                            Err(e) => {
+                                this.state.registration.pair_message =
+                                    format!("{} に接続できません: {e}", h.name)
+                            }
                         }
                         cx.notify();
                     })
@@ -216,7 +218,9 @@ impl Desktop {
                 match result {
                     Ok(h) => {
                         this.state.purge(&h.id, &mut this.drafts);
-                        this.state.registration.paired(&h.id, first);
+                        this.state
+                            .registration
+                            .paired(&h.id, first && this.hosts.is_empty());
                         this.machines.remove(&h.id);
                         this.state.registration.pair_message = "登録しました".into();
                         this.reload(cx)

@@ -242,7 +242,7 @@ impl Sent {
                 .as_ref()
                 .map_or(0, |d| d.child.len() + d.run.len())
     }
-    pub fn resumed_child(&mut self, rows: &Rows) -> Option<&Child> {
+    fn resumed_child(&mut self, rows: &Rows) -> Option<&Child> {
         if self.destination.is_none() {
             let run = self.new_run.as_deref()?;
             let cs = rows.get("run", run)["children"].as_array()?;
@@ -282,6 +282,14 @@ impl Instructions {
         }
         self.trim();
         Ok(())
+    }
+    pub fn resumed(&self, page: &Page, source: &Child, run: &str) -> Option<&Child> {
+        self.0
+            .iter()
+            .rev()
+            .find(|s| s.matches(page) && &s.child == source && s.new_run.as_deref() == Some(run))?
+            .destination
+            .as_ref()
     }
     pub fn for_child(&self, page: &Page, child: &Child) -> Vec<&Sent> {
         let origin = self
