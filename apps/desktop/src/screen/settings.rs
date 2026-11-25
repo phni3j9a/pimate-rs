@@ -295,6 +295,9 @@ impl Desktop {
         let (title, body) = match &r {
             Route::Home => return None,
             Route::Settings => ("設定", self.settings_view(n, p, cx)),
+            Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
+            Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
+            Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
             _ => ("接続ガイド", div()),
         };
         let back = match r {

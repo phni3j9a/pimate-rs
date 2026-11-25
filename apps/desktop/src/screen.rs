@@ -1,4 +1,5 @@
 mod conversation;
+mod first_step;
 mod settings;
 use super::*;
 use gpui_component::{
@@ -309,6 +310,13 @@ impl Desktop {
                     .debug_selector(|| "registration-notice".into()),
             );
         }
+        if self.hosts.is_empty() {
+            rows = rows.child(
+                self.nav_button(n, "setup", "はじめての接続ガイド　›", Route::Tailscale, cx)
+                    .ghost()
+                    .w_full(),
+            );
+        }
         side.child(rows)
             .child(
                 div().px_2().py_1().child(
@@ -342,6 +350,9 @@ impl Render for Desktop {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.bind_editor(w, cx);
         let nav = self.init_navigation(w, cx);
+        if let Some(host) = self.state.registration.paired_host.take() {
+            self.navigate(&nav, Route::First(host), cx);
+        }
         let dark = self.palette(w, cx);
         w.set_rem_size(px(self.size));
         let p = Colors::new(dark);
