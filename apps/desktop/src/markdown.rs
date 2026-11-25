@@ -98,9 +98,13 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
     let down = state.clone();
     let drag = state.clone();
     let up = state.clone();
+    let keyboard_links = links.clone();
     div()
         .id(SharedString::from(id.to_owned()))
-        .track_focus(&focus)
+        .track_focus(&focus.tab_stop(!links.is_empty()))
+        .when(!links.is_empty(), |d| {
+            d.focus(|style| style.bg(cx.theme().muted))
+        })
         .cursor_text()
         .on_mouse_down(MouseButton::Left, move |e, w, cx| {
             let i = pos.index_for_position(e.position).unwrap_or_else(|i| i);
@@ -135,6 +139,31 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
             }
         })
         .on_key_down(move |e, _, cx| {
+            // One tab stop per linked paragraph, arrows select its next/previous link.
+            if !keyboard_links.is_empty() && !e.keystroke.modifiers.modified() {
+                let selected = state.read(cx).range(&text);
+                let current = keyboard_links.iter().position(|(r, _)| *r == selected);
+                let count = keyboard_links.len();
+                let next = match e.keystroke.key.as_str() {
+                    "left" => Some(current.map_or(count - 1, |i| (i + count - 1) % count)),
+                    "right" => Some(current.map_or(0, |i| (i + 1) % count)),
+                    "enter" => {
+                        cx.open_url(&keyboard_links[current.unwrap_or(0)].1);
+                        cx.stop_propagation();
+                        None
+                    }
+                    _ => None,
+                };
+                if let Some(i) = next {
+                    let r = &keyboard_links[i].0;
+                    state.update(cx, |s, cx| {
+                        s.anchor = r.start;
+                        s.end = r.end;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            }
             if e.keystroke.modifiers.secondary() && e.keystroke.key == "c" {
                 let r = state.read(cx).range(&text);
                 if !r.is_empty() {
@@ -274,23 +303,40 @@ fn sample(cache: &mut Cached, cx: &mut Context<Cached>, streaming: bool) {
         });
     }));
 }
-pub fn view(id: String, text: &str, streaming: bool, w: &mut Window, cx: &mut App) -> AnyElement {
-    let cache = w.use_keyed_state(SharedString::from(format!("parsed:{id}")), cx, |_, _| {
-        Cached::default()
-    });
-    cache.update(cx, |c, cx| {
-        if c.latest.as_ref() != text {
-            c.latest = text.into();
-        }
-        sample(c, cx, streaming)
-    });
-    // No generation in element IDs: an append elsewhere cannot unmount this text's selection.
-    let col = div().flex().flex_col().gap_2().min_w_0();
-    // Temporarily borrow the model independently of App while constructing GPUI elements.
-    cache.update(cx, |c, cx| {
-        col.children(c.blocks.iter().map(|b| block(&id, b, w, cx)))
-            .into_any_element()
-    })
+/// Keep recently visited messages measured when the virtual list unmounts a row.
+/// The cache belongs to one editor; old sessions and their text are not retained.
+#[derive(Default)]
+pub struct Messages(std::collections::VecDeque<(String, gpui::Entity<Cached>)>);
+impl Messages {
+    pub fn view(
+        &mut self,
+        id: String,
+        text: &str,
+        streaming: bool,
+        w: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        let cache = if let Some(i) = self.0.iter().position(|(k, _)| k == &id) {
+            self.0.remove(i).unwrap().1
+        } else {
+            let doc = cx.new(|_| Cached::default());
+            let view = w.current_view();
+            cx.observe(&doc, move |_, cx| cx.notify(view)).detach();
+            doc
+        };
+        let col = div().flex().flex_col().gap_2().min_w_0();
+        let result = cache.update(cx, |c, cx| {
+            if c.latest.as_ref() != text {
+                c.latest = text.into();
+            }
+            sample(c, cx, streaming);
+            col.children(c.blocks.iter().map(|b| block(&id, b, w, cx)))
+                .into_any_element()
+        });
+        self.0.push_front((id, cache));
+        self.0.truncate(64);
+        result
+    }
 }
 
 #[test]

@@ -34,11 +34,15 @@ def key(sym):
     time.sleep(.1)
 
 
-def click(x, y):
+def move(x, y):
     pointer.NotifyPointerMotionRelative(3000., 3000.)
     time.sleep(.15)
     pointer.NotifyPointerMotionRelative(float(x-1279), float(y-799))
     time.sleep(.15)
+
+
+def click(x, y):
+    move(x, y)
     pointer.NotifyPointerButton(272, True)
     pointer.NotifyPointerButton(272, False)
     time.sleep(.35)
@@ -87,8 +91,8 @@ if mode == 'check':
     os.kill(daemon, signal.SIGSTOP)
     try:
         started = time.monotonic()
-        click(x, y+95)  # reload
-        click(x, y+55)  # paste
+        click(x, y+695)  # reload
+        click(x, y+89)  # paste
         snap('confirm')
         def ocr(name):
             return subprocess.check_output(['tesseract', name+'.png', 'stdout', '--psm', '11'], text=True)
@@ -99,20 +103,38 @@ if mode == 'check':
     finally:
         os.kill(daemon, signal.SIGCONT)
 else:
-    click(x, y+55)
+    click(x, y+89)
     snap('confirm')
-click(x, y+126)
+click(x, y+208)
 time.sleep(2)
 image = snap('list')
 # English OCR locates the demo in the (sorted, variable-length) list.
 words = csv.DictReader(io.StringIO(subprocess.check_output(['tesseract','list.png','stdout','--psm','11','tsv'], text=True)), delimiter='\t')
 word = next(w for w in words if 'android' in w['text'].lower())
 click(int(word['left'])+8, int(word['top'])+6)
-time.sleep(.7)
+time.sleep(.8)
+# Select only the first characters in the heading, while 50 ms deltas are arriving.
+# The test monitor uses 16 px/rem and the heading follows the session + author labels.
+move(x+146, y+111)
+pointer.NotifyPointerButton(272, True)
+pointer.NotifyPointerMotionRelative(56.,0.)
+time.sleep(.12)
+pointer.NotifyPointerButton(272, False)
 a = snap('stream-start')
 time.sleep(2)
 b = snap('stream-later')
 assert ImageChops.difference(a,b).crop((x+160,y+60,x+760,y+490)).getbbox(), 'no visible stream update'
+seat.NotifyKeyboardKeysym(0xffe3, True)
+key(ord('c'))
+seat.NotifyKeyboardKeysym(0xffe3, False)
+copied = subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2)
+assert copied.strip() and copied in '開発用の会話' and copied != '開発用の会話', 'partial selection or copy focus lost during streaming'
+# Only switch the isolated GNOME settings. The test namespace and temporary HOME own dconf.
+subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','prefer-dark'],check=True)
+time.sleep(1.5)
+dark = snap('dark')
+assert dark.getpixel((x-110,y+12)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
+subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
 time.sleep(12)
 assert prompts() == []
 empty_editor = snap('empty-editor')
@@ -129,7 +151,7 @@ if mode == 'hotplug':
     time.sleep(.5)
     cleared = snap('after-keyboard-loss')
     # Compare the placeholder glyphs, excluding the caret, pointer and input border.
-    placeholder = (x+258, y+589, x+350, y+616)
+    placeholder = (x+158, y+615, x+225, y+634)
     assert ImageChops.difference(empty_editor, marked).crop(placeholder).getbbox()
     assert not ImageChops.difference(empty_editor, cleared).crop(placeholder).getbbox(), 'marked text remained after keyboard loss'
     # Without a keyboard, the vertical wheel must not be interpreted as Shift+wheel.
@@ -164,9 +186,14 @@ snap('commit')
 key(0xff0d)  # ordinary Enter adds newline, not a prompt
 time.sleep(3.5)
 assert prompts() == []
-click(x+335,y+694)
+if mode == 'check':
+    seat.NotifyKeyboardKeysym(0xffe3, True)
+    key(0xff0d)
+    seat.NotifyKeyboardKeysym(0xffe3, False)
+else:
+    click(x+796,y+694)
 time.sleep(4)
 assert prompts() == [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
 snap('sent')
-print(f'{mode}: paired, demo listed, stream changed, Enter: 0 prompts; button: 1 prompt = ニホンゴ + newline')
+print(f'{mode}: paired, demo listed, selection survived stream; Enter: 0 prompts; explicit send: 1 prompt = ニホンゴ + newline')
 seat.Stop()
