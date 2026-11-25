@@ -1,4 +1,5 @@
 mod conversation;
+mod settings;
 use super::*;
 use gpui_component::{
     Disableable, Selectable, Sizable,
@@ -7,6 +8,7 @@ use gpui_component::{
     scroll::ScrollableElement,
 };
 use serde_json::Value;
+use settings::{Navigation, Route};
 
 pub fn transcript() -> ListState {
     ListState::new(0, ListAlignment::Top, px(100.))
@@ -82,6 +84,7 @@ fn pi_title<'a>(v: &'a Value, id: &'a str) -> &'a str {
 impl Desktop {
     fn pi_row(
         &self,
+        n: &Navigation,
         h: &Host,
         id: &str,
         v: &Value,
@@ -89,6 +92,7 @@ impl Desktop {
         p: &Colors,
         cx: &Context<Self>,
     ) -> Button {
+        let nav = n.clone();
         let (host, pi) = (h.id.clone(), id.to_owned());
         let failed = v["failureText"].as_str().is_some_and(|s| !s.is_empty());
         let state = if failed {
@@ -150,9 +154,14 @@ impl Desktop {
                             .child(p.caption(detail).truncate()),
                     ),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.select(host.clone(), pi.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if nav.read(cx).route != Route::Home {
+                    this.navigate(&nav, Route::Home, cx);
+                }
+                this.select(host.clone(), pi.clone(), cx)
+            }))
     }
-    fn sidebar(&self, p: &Colors, cx: &Context<Self>) -> Div {
+    fn sidebar(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
         let mut rows = div()
             .id("machine-list")
             .flex_1()
@@ -177,7 +186,7 @@ impl Desktop {
                         );
                         any_waiting = true;
                     }
-                    rows = rows.child(self.pi_row(h, id, v, true, p, cx));
+                    rows = rows.child(self.pi_row(n, h, id, v, true, p, cx));
                 }
             }
         }
@@ -189,7 +198,11 @@ impl Desktop {
                     .px_2()
                     .flex()
                     .flex_col()
-                    .child(div().font_weight(FontWeight::BOLD).child(h.name.clone()))
+                    .child(
+                        div()
+                            .font_weight(FontWeight::BOLD)
+                            .child(self.host_label(h)),
+                    )
                     .child(p.caption(connection(h, data))),
             );
             if let Some(error) = self.state.registration.connection_errors.get(&h.id) {
@@ -208,7 +221,7 @@ impl Desktop {
                     );
                 }
                 for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
-                    rows = rows.child(self.pi_row(h, id, v, false, p, cx));
+                    rows = rows.child(self.pi_row(n, h, id, v, false, p, cx));
                 }
             }
         }
@@ -278,53 +291,81 @@ impl Desktop {
         if !registration.is_empty() {
             side = side.child(
                 p.caption(registration)
-                    .px_3()
-                    .pb_2()
+                    .mx_2()
+                    .mb_2()
+                    .p_2()
+                    .rounded_md()
+                    .border_l_2()
+                    .border_color(
+                        if self.state.registration.error.is_some()
+                            || self.state.registration.save_unknown
+                        {
+                            p.waiting
+                        } else {
+                            p.accent
+                        },
+                    )
+                    .bg(p.bg)
                     .debug_selector(|| "registration-notice".into()),
             );
         }
-        side.child(rows).child(
-            div()
-                .flex()
-                .gap_1()
-                .p_2()
-                .border_t_1()
-                .border_color(p.border)
-                .child(
-                    Button::new("reload")
-                        .small()
-                        .ghost()
-                        .label("登録を読み直す")
-                        .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
-                )
-                .child(
-                    Button::new("size")
-                        .small()
-                        .ghost()
-                        .label(format!("文字 {}", self.size))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.size = match this.size as u8 {
-                                16 => 19.,
-                                19 => 14.,
-                                _ => 16.,
-                            };
-                            this.scroll.reset(this.scroll.item_count());
-                            cx.notify()
-                        })),
+        side.child(rows)
+            .child(
+                div().px_2().py_1().child(
+                    self.nav_button(n, "new-pi", "＋ 新しい Pi", self.new_route(), cx)
+                        .w_full(),
                 ),
-        )
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .p_2()
+                    .border_t_1()
+                    .border_color(p.border)
+                    .child(
+                        Button::new("reload")
+                            .small()
+                            .ghost()
+                            .label("登録を読み直す")
+                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
+                    )
+                    .child(
+                        self.nav_button(n, "settings", "設定", Route::Settings, cx)
+                            .small()
+                            .ghost(),
+                    ),
+            )
     }
 }
 impl Render for Desktop {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.bind_editor(w, cx);
+        let nav = self.init_navigation(w, cx);
+        let dark = self.palette(w, cx);
         w.set_rem_size(px(self.size));
-        let dark = matches!(
-            w.appearance(),
-            WindowAppearance::Dark | WindowAppearance::VibrantDark
-        );
         let p = Colors::new(dark);
-        let side = self.sidebar(&p, cx);
+        let side = self.sidebar(&nav, &p, cx);
+        let root = div()
+            .flex()
+            .size_full()
+            .bg(p.bg)
+            .text_color(p.ink)
+            .text_size(rems(0.94))
+            .child(side);
+        #[cfg(target_os = "macos")]
+        let root = {
+            let n = nav.clone();
+            root.capture_key_down(cx.listener(move |this, e: &KeyDownEvent, _, cx| {
+                if e.keystroke.modifiers.platform && e.keystroke.key == "," {
+                    this.navigate(&n, Route::Settings, cx);
+                    cx.stop_propagation();
+                }
+            }))
+        };
+        if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
+            return root.child(panel);
+        }
         let mut main = div().flex().flex_col().flex_1().min_w_0();
         if !self.notice.is_empty() {
             main = main.child(
@@ -555,14 +596,7 @@ impl Render for Desktop {
                     ),
             );
         }
-        div()
-            .flex()
-            .size_full()
-            .bg(p.bg)
-            .text_color(p.ink)
-            .text_size(rems(0.94))
-            .child(side)
-            .child(main)
+        root.child(main)
     }
 }
 
