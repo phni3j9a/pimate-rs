@@ -6,7 +6,12 @@ use gpui::{
 };
 use gpui_component::ActiveTheme;
 use pimate_markdown::{Block, Content, Inline, Style as SpanStyle};
-use std::{ops::Range, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+    sync::Arc,
+    time::Duration,
+};
 
 fn web_link(s: &str) -> bool {
     s.split_once("://").is_some_and(|(scheme, host)| {
@@ -339,8 +344,36 @@ fn sample(cache: &mut Cached, cx: &mut Context<Cached>, streaming: bool) {
 /// Keep recently visited messages measured when the virtual list unmounts a row.
 /// The cache belongs to one editor; old sessions and their text are not retained.
 #[derive(Default)]
-pub struct Messages(std::collections::VecDeque<(String, gpui::Entity<Cached>)>);
+pub struct Messages {
+    mounted: HashMap<String, (bool, gpui::Entity<Cached>)>,
+    offscreen: VecDeque<(String, gpui::Entity<Cached>)>,
+}
 impl Messages {
+    /// Layout decides which rows are visible. Only the unmounted pool is bounded.
+    pub fn begin_frame(&mut self) {
+        self.mounted.retain(|id, (seen, doc)| {
+            if std::mem::take(seen) {
+                return true;
+            }
+            self.offscreen.push_front((id.clone(), doc.clone()));
+            false
+        });
+        self.offscreen.truncate(64);
+    }
+    fn take_offscreen(&mut self, id: &str) -> Option<gpui::Entity<Cached>> {
+        let i = self.offscreen.iter().position(|(k, _)| k == id)?;
+        self.offscreen.remove(i).map(|(_, doc)| doc)
+    }
+    pub fn finish_stream(&mut self, entry: Option<&str>) {
+        let doc = self
+            .mounted
+            .remove("stream")
+            .map(|(_, doc)| doc)
+            .or_else(|| self.take_offscreen("stream"));
+        if let (Some(doc), Some(id)) = (doc, entry) {
+            self.mounted.insert(format!("entry:{id}"), (true, doc));
+        }
+    }
     pub fn view(
         &mut self,
         id: String,
@@ -349,27 +382,29 @@ impl Messages {
         w: &mut Window,
         cx: &mut App,
     ) -> AnyElement {
-        let cache = if let Some(i) = self.0.iter().position(|(k, _)| k == &id) {
-            self.0.remove(i).unwrap().1
+        let cache = if let Some((seen, doc)) = self.mounted.get_mut(&id) {
+            *seen = true;
+            doc.clone()
         } else {
-            let doc = cx.new(|_| Cached::default());
-            let view = w.current_view();
-            cx.observe(&doc, move |_, cx| cx.notify(view)).detach();
+            let doc = self.take_offscreen(&id).unwrap_or_else(|| {
+                let doc = cx.new(|_| Cached::default());
+                let view = w.current_view();
+                cx.observe(&doc, move |_, cx| cx.notify(view)).detach();
+                doc
+            });
+            self.mounted.insert(id, (true, doc.clone()));
             doc
         };
         let col = div().flex().flex_col().gap_2().min_w_0();
         let namespace = cache.entity_id().as_u64().to_string();
-        let result = cache.update(cx, |c, cx| {
+        cache.update(cx, |c, cx| {
             if c.latest.as_ref() != text {
                 c.latest = text.into();
             }
             sample(c, cx, streaming);
             col.children(c.blocks.iter().map(|b| block(&namespace, b, w, cx)))
                 .into_any_element()
-        });
-        self.0.push_front((id, cache));
-        self.0.truncate(64);
-        result
+        })
     }
 }
 
@@ -421,4 +456,65 @@ fn reparsed_markup_never_retargets_the_selection(cx: &mut gpui::TestAppContext) 
         sel.reconcile(&"比較: alpha / alpha".into());
         assert!(sel.range(&sel.displayed).is_empty());
     });
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn tall_viewport_keeps_every_mounted_document(cx: &mut gpui::TestAppContext) {
+    use gpui::{Entity, ListAlignment, ListOffset, ListState, list, size};
+    struct History {
+        docs: Entity<Messages>,
+        scroll: ListState,
+    }
+    impl Render for History {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.docs.update(cx, |docs, _| docs.begin_frame());
+            let docs = self.docs.clone();
+            list(self.scroll.clone(), move |i, w, cx| {
+                div()
+                    .h(px(24.))
+                    .child(docs.update(cx, |docs, cx| {
+                        docs.view(i.to_string(), "short", false, w, cx)
+                    }))
+                    .into_any_element()
+            })
+            .size_full()
+        }
+    }
+    cx.update(gpui_component::init);
+    let (history, w) = cx.add_window_view(|_, cx| History {
+        docs: cx.new(|_| Messages::default()),
+        scroll: ListState::new(500, ListAlignment::Top, px(0.)),
+    });
+    w.simulate_resize(size(px(600.), px(2400.)));
+    w.run_until_parked();
+    let (docs, scroll) = history.read_with(w, |h, _| (h.docs.clone(), h.scroll.clone()));
+    let mounted = |w: &gpui::VisualTestContext| {
+        docs.read_with(w, |d, cx| {
+            d.mounted
+                .iter()
+                .filter(|(_, (seen, _))| *seen)
+                .map(|(id, (_, doc))| {
+                    assert_eq!(doc.read(cx).published.as_ref(), "short");
+                    (id.clone(), doc.entity_id())
+                })
+                .collect::<HashMap<_, _>>()
+        })
+    };
+    let initial = mounted(w);
+    assert!(initial.len() > 64, "only {} rows mounted", initial.len());
+    history.update(w, |_, cx| cx.notify());
+    w.run_until_parked();
+    assert_eq!(initial, mounted(w));
+    scroll.scroll_to(ListOffset {
+        item_ix: 250,
+        offset_in_item: px(0.),
+    });
+    history.update(w, |_, cx| cx.notify());
+    w.run_until_parked();
+    history.update(w, |_, cx| cx.notify());
+    w.run_until_parked();
+    let later = mounted(w);
+    assert!(later.len() > 64 && initial.keys().all(|id| !later.contains_key(id)));
+    docs.read_with(w, |d, _| assert_eq!(d.offscreen.len(), 64));
 }

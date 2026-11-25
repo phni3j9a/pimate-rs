@@ -1,4 +1,112 @@
 use super::*;
+use std::collections::HashSet;
+
+#[derive(Default)]
+struct Conversation {
+    documents: markdown::Messages,
+    expanded: HashSet<String>,
+    // The append boundary from the last time we saw a live answer, even if its row was offscreen.
+    stream_tail: Option<(usize, Option<String>)>,
+}
+impl Conversation {
+    fn prepare(
+        &mut self,
+        entries: &[(String, Value)],
+        streaming: bool,
+        list: &ListState,
+        stream_focused: bool,
+    ) {
+        self.documents.begin_frame();
+        if let Some((old, last)) = &self.stream_tail {
+            if *old <= entries.len() && old.checked_sub(1).map(|i| &entries[i].0) == last.as_ref() {
+                let added = &entries[*old..];
+                let done = added.iter().position(|(_, v)| v["kind"] == "assistant");
+                let inserted = done.unwrap_or(added.len());
+                if inserted > 0 && list.item_count() == old + 1 {
+                    // Interruptions are inserted *before* the streamed row, not after it.
+                    list.splice(*old..*old, inserted);
+                    if stream_focused && list.logical_scroll_top().item_ix < *old + inserted {
+                        list.scroll_to(ListOffset {
+                            item_ix: *old + inserted,
+                            offset_in_item: px(0.),
+                        });
+                    }
+                }
+                if done.is_some() || !streaming {
+                    self.documents
+                        .finish_stream(done.map(|i| added[i].0.as_str()));
+                }
+            } else {
+                // A replaced history is not an acknowledgement of the old stream.
+                self.documents.finish_stream(None);
+            }
+        }
+        if streaming {
+            if self.stream_tail.as_ref().is_none_or(|(n, last)| {
+                *n != entries.len() || last.as_ref() != entries.last().map(|(id, _)| id)
+            }) {
+                self.stream_tail = Some((entries.len(), entries.last().map(|(id, _)| id.clone())));
+            }
+        } else {
+            self.stream_tail = None;
+        }
+        let n = entries.len() + usize::from(streaming);
+        let old = list.item_count();
+        if old != n {
+            list.splice(old.min(n)..old, n.saturating_sub(old));
+        }
+    }
+}
+
+fn tool_result(
+    conversation: &Entity<Conversation>,
+    p: &Colors,
+    id: String,
+    v: &Value,
+    w: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let text = v["text"].as_str().unwrap_or("");
+    let name = v["toolName"].as_str().unwrap_or("ツール");
+    let open = conversation.clone();
+    let tool = id.clone();
+    let expanded = open.read(cx).expanded.contains(&tool);
+    let summary = format!(
+        "{}　{name} · {}",
+        if expanded { "▾" } else { "▸" },
+        if v["isError"] == true {
+            "失敗"
+        } else {
+            "完了"
+        }
+    );
+    div()
+        .px_4()
+        .py_1()
+        .child(
+            Button::new(SharedString::from(format!("tool:{id}")))
+                .ghost()
+                .justify_start()
+                .small()
+                .label(summary)
+                .on_click(move |_, _, cx| {
+                    open.update(cx, |c, cx| {
+                        if !c.expanded.remove(&tool) {
+                            c.expanded.insert(tool.clone());
+                        }
+                        cx.notify()
+                    })
+                }),
+        )
+        .when(expanded, |panel| {
+            panel.child(
+                div().rounded_md().p_2().bg(p.surface).child(
+                    conversation.update(cx, |c, cx| c.documents.view(id, text, false, w, cx)),
+                ),
+            )
+        })
+        .into_any_element()
+}
 
 impl Desktop {
     pub(super) fn conversation(
@@ -11,21 +119,25 @@ impl Desktop {
     ) -> AnyElement {
         let rows = &self.machines[&key.host].rows;
         let entries = rows.group("entry");
-        let n = entries.len()
-            + usize::from(
-                rows.get("stream", "text")
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty()),
-            );
-        // Top-align short answers; follow growing content only while the reader is at the end.
+        let streaming = rows
+            .get("stream", "text")
+            .as_str()
+            .is_some_and(|s| !s.is_empty());
+        let conversation = w.use_keyed_state(
+            SharedString::from(format!("documents:{key:?}")),
+            cx,
+            |_, _| Conversation::default(),
+        );
         let reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
+        let stream_reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
         let at_end = self.scroll.max_offset_for_scrollbar().height
             + self.scroll.scroll_px_offset_for_scrollbar().y
             < px(2.);
-        let old = self.scroll.item_count();
-        if old != n {
-            self.scroll.splice(old.min(n)..old, n.saturating_sub(old));
-        }
+        let focused = stream_reader.contains_focused(w, cx);
+        conversation.update(cx, |c, _| {
+            c.prepare(entries, streaming, &self.scroll, focused)
+        });
+        let n = self.scroll.item_count();
         if at_end && !reader.contains_focused(w, cx) {
             self.scroll.scroll_to(ListOffset {
                 item_ix: n,
@@ -41,11 +153,6 @@ impl Desktop {
         }
         let desktop = cx.entity();
         let k = key.clone();
-        let messages = w.use_keyed_state(
-            SharedString::from(format!("documents:{k:?}")),
-            cx,
-            |_, _| markdown::Messages::default(),
-        );
         let list = list(self.scroll.clone(), move |i, w, cx| {
             desktop.update(cx, |this, cx| {
                 let data = &this.machines[&k.host].rows;
@@ -61,17 +168,7 @@ impl Desktop {
                     _ if stream => "Pi · 応答中",
                     _ => "作業",
                 };
-                // A completed reply replaces its streamed slot without remounting the reader.
-                let id = if stream || v["kind"] == "assistant" {
-                    format!(
-                        "reply-after:{:?}",
-                        i.checked_sub(1)
-                            .and_then(|n| entries.get(n))
-                            .map(|(id, _)| id)
-                    )
-                } else {
-                    format!("entry:{}", row.unwrap().0)
-                };
+                let id = row.map_or_else(|| "stream".to_owned(), |(id, _)| format!("entry:{id}"));
                 let text = if stream {
                     data.get("stream", "text").as_str()
                 } else {
@@ -79,44 +176,7 @@ impl Desktop {
                 }
                 .unwrap_or("");
                 if v["kind"] == "tool_result" {
-                    let name = v["toolName"].as_str().unwrap_or("ツール");
-                    let open = w.use_keyed_state(
-                        SharedString::from(format!("{k:?}/detail/{id}")),
-                        cx,
-                        |_, _| false,
-                    );
-                    let expanded = *open.read(cx);
-                    let summary = format!(
-                        "{}　{name} · {}",
-                        if expanded { "▾" } else { "▸" },
-                        if v["isError"] == true {
-                            "失敗"
-                        } else {
-                            "完了"
-                        }
-                    );
-                    return div()
-                        .px_4()
-                        .py_1()
-                        .child(
-                            Button::new(SharedString::from(format!("tool:{id}")))
-                                .ghost()
-                                .justify_start()
-                                .small()
-                                .label(summary)
-                                .on_click(move |_, _, cx| {
-                                    open.update(cx, |show, cx| {
-                                        *show = !*show;
-                                        cx.notify()
-                                    })
-                                }),
-                        )
-                        .when(expanded, |panel| {
-                            panel.child(div().rounded_md().p_2().bg(p.surface).child(
-                                messages.update(cx, |cache, cx| cache.view(id, text, false, w, cx)),
-                            ))
-                        })
-                        .into_any_element();
+                    return tool_result(&conversation, &p, id, v, w, cx);
                 }
                 if text.is_empty()
                     && let Some(calls) = v["toolCalls"].as_array().filter(|cs| !cs.is_empty())
@@ -133,6 +193,7 @@ impl Desktop {
                 let user = role == "あなた";
                 div()
                     .w_full()
+                    .when(stream, |d| d.track_focus(&stream_reader))
                     .px_4()
                     .py_2()
                     .flex()
@@ -149,8 +210,8 @@ impl Desktop {
                                     .py_2()
                             })
                             .child(
-                                messages
-                                    .update(cx, |cache, cx| cache.view(id, text, stream, w, cx)),
+                                conversation
+                                    .update(cx, |c, cx| c.documents.view(id, text, stream, w, cx)),
                             ),
                     )
                     .when(images > 0, |v| {
@@ -209,5 +270,63 @@ mod tests {
                 "unexpected layout: {indices:?}"
             );
         }
+    }
+    #[gpui::test]
+    fn expanded_tool_survives_a_real_unmount(cx: &mut gpui::TestAppContext) {
+        struct Tools {
+            list: ListState,
+            conversation: gpui::Entity<super::Conversation>,
+        }
+        impl Render for Tools {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let c = self.conversation.clone();
+                list(self.list.clone(), move |i, w, cx| {
+                    div()
+                        .id(("row", i))
+                        .debug_selector(|| format!("tool-{i}"))
+                        .child(super::tool_result(
+                            &c,
+                            &super::Colors::new(false),
+                            i.to_string(),
+                            &serde_json::json!({"toolName":"read","text":"complete output"}),
+                            w,
+                            cx,
+                        ))
+                        .into_any_element()
+                })
+                .size_full()
+            }
+        }
+        cx.update(gpui_component::init);
+        let (view, w) = cx.add_window_view(|_, cx| Tools {
+            list: ListState::new(300, gpui::ListAlignment::Top, px(0.)),
+            conversation: cx.new(|_| Default::default()),
+        });
+        let bounds = w.debug_bounds("tool-0").unwrap();
+        w.simulate_click(
+            point(bounds.left() + px(50.), bounds.center().y),
+            Default::default(),
+        );
+        // The production view observes the Conversation through use_keyed_state.
+        view.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        let expanded = w.debug_bounds("tool-0").unwrap().size.height;
+        assert!(expanded > bounds.size.height);
+        let list = view.read_with(w, |v, _| v.list.clone());
+        list.scroll_to(ListOffset {
+            item_ix: 200,
+            offset_in_item: px(0.),
+        });
+        view.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        assert_eq!(list.logical_scroll_top().item_ix, 200);
+        assert!(list.bounds_for_item(0).is_none());
+        list.scroll_to(ListOffset {
+            item_ix: 0,
+            offset_in_item: px(0.),
+        });
+        view.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        assert_eq!(w.debug_bounds("tool-0").unwrap().size.height, expanded);
     }
 }

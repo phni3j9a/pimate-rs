@@ -4,6 +4,7 @@ import io
 import json
 import os
 import signal
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -129,6 +130,17 @@ key(ord('c'))
 seat.NotifyKeyboardKeysym(0xffe3, False)
 copied = subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2)
 assert copied.strip() and copied in '開発用の会話' and copied != '開発用の会話', 'partial selection or copy focus lost during streaming'
+# On the mock PC, a second RC client steers the running answer. The mock appends this
+# user entry before message_end(assistant); no focus changes in the desktop window.
+external = [['demo', 'PC-side interruption']]
+with socket.socket(socket.AF_UNIX) as peer:
+    peer.settimeout(6)
+    peer.connect(str(Path.home()/'lab/run/demo.sock'))
+    with peer.makefile('rb') as incoming:
+        peer.sendall((json.dumps(dict(id='pc-steer',method='prompt',params=dict(text=external[0][1],deliverAs='steer')))+'\n').encode())
+        while (reply := json.loads(incoming.readline())).get('id') != 'pc-steer':
+            pass  # skip interleaved stream events
+        assert reply['ok'] and reply['result']['deliveredAs'] == 'steer'
 # Only switch the isolated GNOME settings. The test namespace and temporary HOME own dconf.
 # Switch twice while updates and cursor/selection rendering can re-enter the platform.
 for n in range(2):
@@ -139,7 +151,13 @@ for n in range(2):
     time.sleep(.65)
     assert snap('light').getpixel((x-110,y+12)) == (241,243,244), 'desktop did not return to light appearance'
 time.sleep(12)
-assert prompts() == []
+assert prompts() == external
+# Discard the old clipboard contents so losing focus can't give a false positive.
+subprocess.run(['wl-copy', 'sentinel'],check=True)
+seat.NotifyKeyboardKeysym(0xffe3, True)
+key(ord('c'))
+seat.NotifyKeyboardKeysym(0xffe3, False)
+assert subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2) == copied, 'selection lost at interrupted message_end'
 empty_editor = snap('empty-editor')
 click(x+320, y+615)
 if mode == 'hotplug':
@@ -188,7 +206,7 @@ key(0xff0d)
 snap('commit')
 key(0xff0d)  # ordinary Enter adds newline, not a prompt
 time.sleep(3.5)
-assert prompts() == []
+assert prompts() == external
 if mode == 'check':
     seat.NotifyKeyboardKeysym(0xffe3, True)
     key(0xff0d)
@@ -196,7 +214,7 @@ if mode == 'check':
 else:
     click(x+796,y+694)
 time.sleep(4)
-assert prompts() == [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
+assert prompts() == external + [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
 snap('sent')
 print(f'{mode}: paired, demo listed, selection survived stream; Enter: 0 prompts; explicit send: 1 prompt = ニホンゴ + newline')
 seat.Stop()
