@@ -12,6 +12,14 @@ pub(super) fn copy_attach(rows: &Rows) -> Option<Button> {
             }),
     )
 }
+pub(super) fn preview(s: &str) -> String {
+    s.lines()
+        .find(|s| !s.trim().is_empty())
+        .unwrap_or("本文なし")
+        .chars()
+        .take(80)
+        .collect()
+}
 fn label(kind: S) -> &'static str {
     match kind {
         S::Model => "モデル",
@@ -218,11 +226,12 @@ impl Desktop {
                                 continue;
                             };
                             (
-                                v["name"]
-                                    .as_str()
-                                    .or(v["firstMessage"].as_str())
-                                    .unwrap_or("空のセッション")
-                                    .into(),
+                                preview(
+                                    v["name"]
+                                        .as_str()
+                                        .or(v["firstMessage"].as_str())
+                                        .unwrap_or("空のセッション"),
+                                ),
                                 Box::new(move || A::Resume(path.clone())),
                                 v["current"] == true,
                             )
@@ -230,12 +239,7 @@ impl Desktop {
                         S::Fork if v["kind"] == "user" => {
                             let id = id.clone();
                             (
-                                v["text"]
-                                    .as_str()
-                                    .unwrap_or("画像のみ")
-                                    .chars()
-                                    .take(140)
-                                    .collect(),
+                                preview(v["text"].as_str().unwrap_or("画像のみ")),
                                 Box::new(move || A::Fork(id.clone())),
                                 false,
                             )

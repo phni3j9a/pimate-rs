@@ -175,15 +175,12 @@ impl Desktop {
                         .child(
                             Button::new(SharedString::from(format!("node:{id}")))
                                 .small()
-                                .label(
+                                .label(super::sheet_chat::preview(
                                     v["label"]
                                         .as_str()
                                         .or(v["preview"].as_str())
-                                        .unwrap_or("本文なし")
-                                        .chars()
-                                        .take(100)
-                                        .collect::<String>(),
-                                )
+                                        .unwrap_or("本文なし"),
+                                ))
                                 .on_click(move |_, _, cx| {
                                     sel.update(cx, |s, cx| {
                                         *s = Some(id.clone());
