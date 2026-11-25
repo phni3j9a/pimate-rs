@@ -21,6 +21,7 @@ import tempfile
 import time
 import zlib
 
+DESKTOP_REVIEW = os.environ.get("PIMATE_DEMO_DESKTOP_REVIEW") == "1"
 ROOT = Path(__file__).resolve().parents[1]
 BODY = (
     "## 開発用の会話\n\n| 項目 | 状態 |\n| --- | --- |\n| Android | 接続済み |\n\n"
@@ -288,9 +289,10 @@ async def pi(
                 await work(
                     f"t{next(ids)}", 4
                 )  # Time to steer or stop the reply from a phone.
-            for i in range(0, len(BODY), 40):
-                await asyncio.sleep(0.2)
-                chunk = BODY[i : i + 40]
+            step, delay = (4, 0.05) if DESKTOP_REVIEW else (40, 0.2)
+            for i in range(0, len(BODY), step):
+                await asyncio.sleep(delay)
+                chunk = BODY[i : i + step]
                 partial += chunk
                 event("text_delta", delta=chunk)
             for text in queued:
@@ -511,6 +513,8 @@ async def pi(
                     elif task is None and iid == "edge":
                         task = asyncio.create_task(later(8, pc_resume))
                 elif method == "prompt":
+                    if DESKTOP_REVIEW:
+                        await asyncio.sleep(3)  # Allow editing/IME before the original receipt.
                     images = params.get("images") or []
                     more = (
                         dict(images=images, imageCount=len(images)) if images else {}
@@ -718,6 +722,8 @@ async def demo(lab, binary):
             ],
         ),
     ]
+    chat_failure = os.getenv("PIMATE_DEMO_CHAT_FAILURE") == "1"
+    failed_call = dict(id="failed-agent-call", name="subagent", args={})
     servers = [
         await pi(
             run,
@@ -846,11 +852,15 @@ async def demo(lab, binary):
             "api",
             "/home/me/work/api",
             name="認証まわりのレビュー",
-            seed=[("user", "認証を並列にレビューしてください。", {}), ("assistant", "レビュアーをバックグラウンドで起動しました。", dict(stopReason="stop"))],
+            seed=[("user", "認証を並列にレビューしてください。", {}), ("assistant", "レビュアーをバックグラウンドで起動しました。", dict(stopReason="stop"))] + ([
+                ("assistant", "", dict(toolCalls=[failed_call], stopReason="toolUse")),
+                ("tool_result", "子の結果を集約できませんでした", dict(toolName="subagent", toolCallId=failed_call["id"], isError=True)),
+            ] if chat_failure else []),
             age=5 * 60_000,
             runs=[
                 dict(
                     id="run",
+                    **({"toolCallId": failed_call["id"]} if chat_failure else {}),
                     backend="pi-subagents",
                     background=True,
                     mode="parallel",

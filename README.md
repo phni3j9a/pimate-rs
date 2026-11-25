@@ -351,6 +351,8 @@ Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md
 
 状態の端末試験: `SettingsContract` はテーマ／文字／質問ツールの保存と新しい ViewModel への追加ペアリングの復元・削除を検査。`MachineJourney` は未登録の RS debug アプリ＋上の模擬 Host 専用で、reverse 後に `cache/machine-link` に同じ手順でリンクを渡します。チャット未選択のままモデル・端末を取得し、レビューの参照を既存下書きに加えるところまで確認します（送信・実サービス操作なし）。
 
+`PIMATE_DEMO_CHAT_FAILURE=1 scripts/android-demo.py` は `api` の親チャットにサブエージェントの失敗履歴を追加します（iOS の `AgentReviewJourney` では `TEST_RUNNER_PIMATE_DEMO_CHAT_FAILURE=1` も指定）。
+
 ### iOS 開発版
 
 Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を使います。macOS で `brew install xcodegen` と前述の Rust 3 ターゲットを用意し、`apps/ios/prepare.sh` → `open apps/ios/PiMate.xcodeproj`。Rust や binding の変更後も prepare を実行します。XcodeGen は差分が読める `apps/ios/project.yml` だけを管理し、同じ checkout でビルドした XCFramework（arm64 実機／arm64 + x86_64 simulator）と Swift を組み込みます。生成プロジェクト、バイナリ、テスト結果はコミットしません。
@@ -373,6 +375,20 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 - **Chat-Edge**: `edge` の connection・phase / unconfirmed / pcPrompt / attachCommand、`move` の from・to と `local`。`needsMoveConfirmation` のときは前の会話に下書きを保持、入力欄の「新しい送信先を確認」から `confirmMove(_:id:)` で今回だけ確認（端末の操作元は推定しない）。`attachCommand` が nil ならコピー操作を出さないこと。
 - 画面は `Chat.swift`・`Composer.swift`・`Markdown.swift`・`Transcript.swift`・`Question.swift` と新規 View を変更可。`SessionModel.swift`・`Rows.swift`・`ChatSheet.swift`・`ChatImages.swift`・`ChatNotices.swift`・`Photo.swift`・Keychain・Rust/FFI と生成物は維持してください。実機・見た目・スクリーンショット比較は後半の範囲です。
 
+### デスクトップ開発版（macOS・#49 前半）
+
+Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.sh`。開発用 `.app` をビルド先に作り LaunchServices から起動します。ssh から裸の実行ファイルを起動するとウィンドウは出ても日本語 IME が ASCII 入力になったためです。`apps/desktop` は FFI を使わず、中核と Markdown の Rust API を直接呼びます。`リンクを貼り付ける` → 表示されたマシン名・アドレスを確認 → 登録。左の Pi を選択して会話を開きます。Enter は改行・IME の確定だけで、送信はボタンです。表示は OS の明暗に追従し、文字サイズを3段階で変更できます。
+
+- [Linux 試作の結果（#2）](https://github.com/phni3j9a/pimate-rs/issues/2) と同じ `gpui 0.2.2` と型互換な `gpui-component 0.5.1` の複数行 `InputState`・選択可能な `TextView` を使用。`gpui-kit 0.10` は別系列です。共通 Markdown AST から生成した HTML だけを表示し、画像やローカルファイルを自動取得しません。Linux の xattr 0.2.3 は削除された libc の ENOATTR 別名を ENODATA に置換（`vendor/xattr`）。Linux はビルドまで。秘密の平文保存にはフォールバックしません。実際の Linux ログインセッションの IME 検証と保存先は別途必要です。
+- macOS の `store.rs` は登録をメタデータ・token 一体の Keychain 項目に格納します。アプリの複数起動時もファイルロックで置換と条件付き失効を直列化します。ロックファイルに資格情報は書きません。`cargo test --locked -p pimate-desktop` は毎回固有の `.test.*` サービスで試験。模擬 Host（前述の `scripts/android-demo.py`）を試すときは `apps/desktop/run-macos.sh --demo`（先に起動中のアプリを終了）で別サービスを使い、使い終えたらアプリ終了後 `security delete-generic-password -s dev.pimate.rs.desktop.demo -a registrations` で模擬登録だけ削除できます。
+- 画面担当は `screen.rs` と `markdown.rs` を変更できます。`model.rs` の revision と `main.rs` の接続・編集状態は維持してください。Host ごとの配送スレッド → 有界チャネル → GPUI Entity（UI スレッド）。過負荷・大きな差分は snapshot、再登録前の配送は接続の同一性で破棄。編集本文は Host・Pi・session（null 可）別でメモリだけに保持し、送信時のキーを渡します。RC の受付と履歴は別で、結果不明を成功扱いせず自動再送しません。未確認の復元は対象が一致し、入力が空の明示操作だけです。
+
+VM 2 での登録・一覧・逐次表示・日本語送信の記録は PR #50 に載せている。macOS の日本語ローマ字入力では `nihongo` → Space → Return は候補選択で、もう一度 Return で確定・送信ボタン有効化、ボタンを押して初めて送信しました。文字列の貼り付けによる代替ではありません。
+
+変換中は、確定済みの前半があっても送信できません。送信後の ACK は別の接続世代でも送信元の未変更の下書きだけを片付け、追加入力や変換中の編集は捨てません。検証には `PIMATE_DEMO_DESKTOP_REVIEW=1 scripts/android-demo.py`（模擬 RC だけを 50 ms ごと4文字の差分・送信 ACK は3秒待機に変更）を使います。`/demo/android` を選び、終了を待たずに表・本文が成長することを確認。確定済み本文に `nihongo` を変換中のまま追加して送信ボタンを押しても送られず、確定して送信した直後に追加の語を変換しても、受付後まで入力欄に残ります。
+
+「登録を読み直す」は削除・失効・置換された接続を閉じます。PC 側から同じ Pi のセッションが移動したときは、前のセッションに編集本文がある場合、表示された新しい送信先を確認するまで送信できません。購読失敗時は同じ Pi の選び直しで再試行します。
+
 ### iOS の残りの画面で使う状態（#48 前半）
 
 画面を開いた時のマシン ID／`EditorKey` を捕捉し、画面を閉じたら Task をキャンセルします。操作の失敗や切断は空一覧・成功に変換せず、書き込みを自動再送しません。
@@ -380,7 +396,7 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 | 画面 | 状態と操作 |
 | --- | --- |
 | 変更レビュー | `await model.review(key, turn: userEntryID)`、セッション全体は `nil`。読み込み済み履歴から、開始したターンに属する edit/write を順に集計。`files[].pieces` に元の patch、行番号・件数・末尾改行、作成根拠、差分なしの理由。`askAbout(review)` で元のチャットの下書きへ追記（画像を残し送信しない）。 |
-| サブエージェント | `rows.subagentCounts`・`runs`。ツール行は `originalRun(toolCallId:)`、詳細は `workRecord(key, AgentChild(...))` を開いた子ごとに生成。`load()` は8ページまで、`more` なら続き、戻り値 true は取得中に更新あり。指示は子の `actions` にある場合だけ `control(key, child, action:text:)`。送信者のヒントは `instructions.forChild(key, child)`。resume 前の子と index を保持し、返った `newRunId` で `model.resumedChild(key, from: source, run: newRunId, index: index)` が **非 nil になった時に一度だけ run と子を一緒に**切り替える。この選択時の子 ID の対応を記録し、以後の並べ替えで指示のラベルを移さない。停止・一時停止は `rows.stopTarget(_:run:viewedChild:)` を確認時に固定し、現在の表示対象と一致する間だけ `control(approved)`。run 全体／親が止まる場合は影響範囲を明記。 |
+| サブエージェント | `rows.subagentCounts`・`runs`。ツール行は `originalRun(toolCallId:)`、詳細は `workRecord(key, AgentChild(...))` を開いた子ごとに生成。`load()` は8ページまで、`more` なら続き、戻り値 true は取得中に更新あり。指示は子の `actions` にある場合だけ `control(key, child, action:text:)`。送信者のヒントは `instructions.forChild(key, child)`。resume 前の子と index を保持し、返った `newRunId` で `model.resumedChild(key, from: source, run: newRunId, index: index)` が **非 nil になった時に一度だけ run と子を一緒に**切り替える。受付済みの再開は指示の履歴（最大128件）に保持し、同じ Host・会話・Pi の起動時刻が一致する状態で一度だけ子 ID を対応付ける。詳細を閉じたり別の Pi を開いたりしても、以後の並べ替えでラベルを移さない。セッション ID がない場合は同一の表示世代内に限る。停止・一時停止は `rows.stopTarget(_:run:viewedChild:)` を確認時に固定し、現在の表示対象と一致する間だけ `control(approved)`。run 全体／親が止まる場合は影響範囲を明記。 |
 | 新しい Pi | Host ごとに `SpawnForm(host:askTool:)` を作成。`machineRequest(id,.folders/.dirs(path:))` の結果から `folder(_:knownTrusted:)`。パスは空白を含め書き換えない。`hostModels(id)` は未購読でも最大3つの Pi に照会。Pi がない場合は PC の既定モデルを使える。`spawn(form)` の `.ready` のみその Host で select。`.messageUnconfirmed` は起動済みで初回本文だけ未確認、`.notListed` は起動済みで一覧未到着（20秒）。 |
 | マシン | 接続・能力は `rows[id].groups["host"]`。`machineRequest(id,.updateCheck/.githubStatus/.devices)`。更新・再起動・端末取消・登録削除は `confirmation(host:action)` と `warning` を表示し、確認した値を `confirm(_:)` に渡す。更新先は**実行時の最新版**、結果は Host の返した版。登録削除と PC 側の端末取消は別操作。 |
 | プロバイダー | `ProviderState(host:)` を作り、`.task(id: rows.connectionGeneration)` 内で `hold(model,generation:)`。接続世代の変化で専用 Pi を解放・再取得し、一覧も取り直す。`page.login` の `target.instance` で `provider`／`auth` 行を参照。入力 UI も世代で破棄。`login.request(.authBegin/.authRespond/.authCancel/.authLogout, fields)`、対象プロバイダーを固定してログアウトを確認。状態更新後は `.authList`、working/input/saving なら `followOnce()` をループ（Rust が接続・専用 Pi ごとの同時 wait を拒否）。`CredentialOutcome.storageUnknown` は一覧再確認、`savedNeedsReload` は保存済み・Pi 再読込。中核が検証した authorization のみ明示タップで開く。API キー・コードは入力時だけ使い、復元・ログ・画面撮影の対象外。 |

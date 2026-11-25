@@ -86,6 +86,7 @@ struct QuestionKey: Hashable { let editor: EditorKey; let requestId: String }
     private func publish(_ r: Rows, id: String) {
         let old = editor, changedView = host == id && rows[id]?.viewGeneration != r.viewGeneration
         rows[id] = r
+        instructions.resolveResumes(host: id, rows: r)
         if editor != old || changedView { images.clear(); sheet = nil }
         // A proven prompt receipt stays valid in the same editor even if presentation was invalidated.
         if editor != old { selection = UUID(); message = "" }

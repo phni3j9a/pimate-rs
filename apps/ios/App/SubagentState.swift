@@ -12,7 +12,7 @@ extension Rows {
         guard !toolCallId.isEmpty else { return nil }; return runs.first { $0.str("toolCallId") == toolCallId }?["id"] as? String
     }
     func resumedChild(run: String, index: Int?) -> AgentChild? {
-        let children = runs.first { $0.str("id") == run }?.list("children") ?? []
+        let children = groups["run"]?.first { $0.id == run }?.object.list("children") ?? []
         guard let id = (children.first { index != nil && $0["index"] as? Int == index } ?? children.first)?["id"] as? String else { return nil }
         return AgentChild(run: run, child: id)
     }
@@ -77,7 +77,7 @@ extension Rows {
 
 struct SentInstruction {
     let key: EditorKey, unit: AgentChild, action: String, text: String
-    let newRun: String?
+    let newRun: String?, startedAt: UInt64?, sourceGeneration: UUID?, sourceIndex: Int?
     var destinationChild: String?
     var units: Int { [newRun ?? "", destinationChild ?? "", key.host, key.target.instance, key.target.session ?? "", unit.run, unit.child, action, text].reduce(0) { $0 + $1.utf16.count } }
 }
@@ -91,11 +91,25 @@ struct ChildInstructions {
         while sent.count > 128 || total > 65536 { total -= sent.removeFirst().units }
     }
     mutating func forget(_ host: String) { sent.removeAll { $0.key.host == host } }
-    mutating func bindResume(_ key: EditorKey, from source: AgentChild, to destination: AgentChild) {
-        guard let i = sent.lastIndex(where: { $0.key == key && $0.unit == source && $0.newRun == destination.run }),
-              sent[i].destinationChild == nil else { return }
-        sent[i].destinationChild = destination.child
-        if sent[i].units > 65536 { sent.remove(at: i) } else { trim() }
+    mutating func resolveResumes(host: String, rows: Rows) {
+        guard !sent.isEmpty, let start = rows.field("startedAt").flatMap(UInt64.init),
+              let instance = rows.groups["view"]?.first(where: { $0.id == "instanceId" })?.string,
+              let target = rows.ready(instance) else { return }
+        sent.removeAll { $0.key.host == host && $0.key.target.instance == instance && $0.startedAt != nil && $0.startedAt != start }
+        var bound = false
+        for i in sent.indices.reversed() {
+            let s = sent[i]
+            guard s.key.host == host, s.key.target == target, s.startedAt == start,
+                  target.session != nil || s.sourceGeneration == rows.viewGeneration,
+                  s.destinationChild == nil, let run = s.newRun,
+                  let destination = rows.resumedChild(run: run, index: s.sourceIndex) else { continue }
+            sent[i].destinationChild = destination.child; bound = true
+            if sent[i].units > 65536 { sent.remove(at: i) }
+        }
+        if bound { trim() }
+    }
+    func resume(_ key: EditorKey, from source: AgentChild, run: String) -> SentInstruction? {
+        sent.last { $0.key == key && $0.unit == source && $0.newRun == run }
     }
     func forChild(_ key: EditorKey, _ unit: AgentChild) -> [SentInstruction] {
         let matching = sent.filter { $0.key == key }
@@ -104,10 +118,11 @@ struct ChildInstructions {
     }
 }
 extension SessionModel {
-    // Call once when the destination children arrive. Later reordering must not retarget the labels.
     func resumedChild(_ key: EditorKey, from source: AgentChild, run: String, index: Int?) -> AgentChild? {
-        guard key == editor, let selected = rows[key.host]?.resumedChild(run: run, index: index) else { return nil }
-        instructions.bindResume(key, from: source, to: selected); return selected
+        guard key == editor else { return nil }
+        if let child = instructions.resume(key, from: source, run: run)?.destinationChild { return AgentChild(run: run, child: child) }
+        // Even when an oversized instruction was not retained, its open detail can navigate.
+        return rows[key.host]?.resumedChild(run: run, index: index)
     }
     func workRecord(_ key: EditorKey, _ unit: AgentChild) throws -> WorkRecord {
         guard editor == key, let generation = rows[key.host]?.viewGeneration else { throw CoreError.StaleTarget }
@@ -130,8 +145,13 @@ extension SessionModel {
     func control(_ key: EditorKey, _ unit: AgentChild, action: String, text: String) async throws -> Object {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["steer", "follow_up", "resume"].contains(action), !body.isEmpty else { throw CoreError.BadRequest }
+        let start = rows[key.host]?.field("startedAt").flatMap(UInt64.init), generation = rows[key.host]?.viewGeneration
+        let index = action == "resume" ? rows[key.host]?.groups["run"]?.first { $0.id == unit.run }?.object.list("children").first { $0.str("id") == unit.child }?["index"] as? Int : nil
         let result = try decodeObject(await request(key, .subagentControl, ["runId": unit.run, "childId": unit.child, "action": action, "text": body]))
         instructions.accept(.init(key: key, unit: unit, action: action, text: body,
-                                  newRun: action == "resume" ? result["newRunId"] as? String : nil)); return result
+                                  newRun: action == "resume" ? result["newRunId"] as? String : nil,
+                                  startedAt: start, sourceGeneration: generation, sourceIndex: index))
+        if action == "resume", let rows = rows[key.host] { instructions.resolveResumes(host: key.host, rows: rows) }
+        return result
     }
 }
