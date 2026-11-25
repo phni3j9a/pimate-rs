@@ -33,7 +33,12 @@ jobs:
       - name: Kotlin から Host の一覧と逐次差分を検証
         run: |
           lib="$(dirname "$(realpath "$(command -v kotlinc)")")/../lib"
-          curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 15 -o "$RUNNER_TEMP/jna.jar" https://repo.maven.apache.org/maven2/net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+          # Maven Central rate-limits shared runners (429); try Google's mirror first, pin the hash.
+          jar=net/java/dev/jna/jna/5.17.0/jna-5.17.0.jar
+          for base in https://maven-central.storage-download.googleapis.com/maven2 https://repo.maven.apache.org/maven2; do
+            curl --fail --silent --show-error --retry 3 --retry-all-errors --retry-delay 10 -o "$RUNNER_TEMP/jna.jar" "$base/$jar" && break
+          done
+          echo "b3a9408e7c51e08ef0e3bfcc08f443f6ec0f6191ba8cd7c18d53d2b22e5bdbc0  $RUNNER_TEMP/jna.jar" | sha256sum -c -
           CARGO_TARGET_DIR=target KOTLIN_CP="$lib/kotlin-stdlib.jar:$lib/kotlinx-coroutines-core-jvm.jar:$RUNNER_TEMP/jna.jar" scripts/test-mobile.sh kotlin
   macos-host:
     runs-on: macos-latest
