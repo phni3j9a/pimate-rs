@@ -45,7 +45,11 @@ start_fixture() {
   grep -m1 '^pimate://pair?' "$lab/fixture-$n" | tr -d '\r\n' >"$file"
   [[ -s $file ]]
 }
-start_fixture 1; start_fixture 2
+# Reuse the loopback management fixture for Host 1 only. Never contact an actual provider.
+ws_version=$(node -p 'require("./packages/pimate/package-lock.json").packages["node_modules/ws"].version')
+npm install --prefix "$lab/ws" --ignore-scripts --no-audit --no-fund "ws@$ws_version"
+NODE_PATH="$lab/ws/node_modules" PIMATE_DEMO_SCREENS=list start_fixture 1
+start_fixture 2
 result="$build/Tests-$(date +%s).xcresult"
 TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 "${xcb[@]}" -only-testing:PiMateTests -resultBundlePath "$result" test-without-building
 [[ ! -e $link-1 && ! -e $link-2 ]]
