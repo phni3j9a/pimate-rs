@@ -205,3 +205,59 @@ extension ProbeTests {
         waitForLabel(true); node.tap(); XCTAssertEqual(field.value as? String, "review41"); app.buttons["ラベルを外す"].tap(); waitForLabel(false)
     }
 }
+
+extension ProbeTests {
+    // Run against a fresh loopback android-screen-fixture (never a user's registration).
+    func testMachineScreens() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let mode = env["PIMATE_SCREEN_FIXTURE"], ["list", "empty", "faux"].contains(mode) else { throw XCTSkip("Requires a disposable management Host") }
+        continueAfterFailure = false
+        let app = XCUIApplication(), variant = env["PIMATE_VARIANT"] ?? "light"
+        app.launchEnvironment["PIMATE_TEST_STORE"] = "1"
+        app.launchArguments = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]; app.launch()
+        func shot(_ name: String) {
+            let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot()); image.name = "\(name)-\(variant)"; image.lifetime = .keepAlways; add(image)
+        }
+        func button(_ label: String) -> XCUIElement { app.buttons.matching(NSPredicate(format: "label CONTAINS %@", label)).firstMatch }
+        func tap(_ element: XCUIElement) {
+            for _ in 0..<6 where !element.isHittable { app.swipeUp() }
+            XCTAssertTrue(element.isHittable); element.tap()
+        }
+        if mode == "list" {
+            tap(button("スマホと PC を Tailscale")); XCTAssertTrue(app.buttons["次へ：PC に PiMate を入れる"].waitForExistence(timeout: 6)); shot("Setup-Tailscale")
+            app.buttons["次へ：PC に PiMate を入れる"].tap(); XCTAssertTrue(app.buttons["この手順を PC に送る"].waitForExistence(timeout: 8)); shot("Setup-PC")
+            app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["閉じる"].tap()
+        }
+        tap(app.buttons["リンクを貼り付ける"]); app.descendants(matching: .any)["paste"].firstMatch.tap(); app.buttons["接続先を確認"].tap()
+        XCTAssertEqual(app.staticTexts["pair-name"].label, mode == "faux" ? "検証用 PC" : "デモ PC")
+        app.buttons["このマシンに接続"].tap()
+        if mode == "empty" {
+            XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label BEGINSWITH %@", "まだ起動中")).firstMatch.waitForExistence(timeout: 20)); shot("First-Step-Empty")
+            app.buttons["新しい Pi を起動"].tap(); XCTAssertTrue(app.textFields["フォルダのパス"].waitForExistence(timeout: 8)); return
+        }
+        XCTAssertTrue(app.staticTexts["選ぶとチャットを開きます。"].waitForExistence(timeout: 20))
+        if mode == "faux" {
+            let work = button("work"); tap(work)
+            let field = app.textViews["message"]; XCTAssertTrue(field.waitForExistence(timeout: 15)); field.tap(); field.typeText("say hello"); app.buttons["送信"].tap()
+            XCTAssertTrue(app.descendants(matching: .any).containing(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@", "Hello from the PiMate faux model.", "Hello from the PiMate faux model.")).firstMatch.waitForExistence(timeout: 45))
+            app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["新しい Pi"].tap(); tap(app.buttons["起動"])
+            XCTAssertTrue(field.waitForExistence(timeout: 30)); return
+        }
+        shot("First-Step"); app.buttons["一覧を開く"].tap(); app.buttons["設定"].tap()
+        let machine = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'machine-'")).firstMatch
+        XCTAssertTrue(machine.waitForExistence(timeout: 8)); shot("Settings"); machine.tap()
+        let update = app.buttons["実行時の最新版に更新…"]
+        XCTAssertTrue(update.waitForExistence(timeout: 12)); shot("Machine-Detail"); tap(update)
+        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "実行時の最新版に更新します")).firstMatch.exists); app.buttons["キャンセル"].tap()
+        tap(app.buttons["プロバイダーのログイン"]); XCTAssertTrue(app.buttons["API キーを設定"].waitForExistence(timeout: 15)); shot("Provider")
+        // Never capture a prompt, authorization code, pairing link or QR.
+        app.navigationBars.buttons.element(boundBy: 0).tap(); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["完了"].tap()
+        app.buttons["新しい Pi"].tap(); let recent = app.buttons["/home/demo/code/demo"]; XCTAssertTrue(recent.waitForExistence(timeout: 12)); shot("New-Pi"); tap(recent)
+        XCTAssertEqual(app.textFields["フォルダのパス"].value as? String, "/home/demo/code/demo"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
+        XCTAssertTrue(app.buttons["GitHub"].waitForExistence(timeout: 12)); app.buttons["GitHub"].tap()
+        let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
+        XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["PR"].tap(); tap(button("画面の実装"))
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "CI チェックの一部を省略")).firstMatch.waitForExistence(timeout: 12)); shot("GitHub-PR"); tap(app.buttons["Pi に依頼"])
+        XCTAssertTrue((app.textViews["message"].value as? String)?.contains("#20「画面の実装」") == true)
+    }
+}

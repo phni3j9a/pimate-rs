@@ -25,9 +25,13 @@ private struct SpawnFields<HostPicker: View>: View {
     @Binding var busy: Bool
     let select: (String, String) -> Void
     @ViewBuilder var hostPicker: () -> HostPicker
-    @State private var folders: [Object] = [], models: [Object] = []
-    @State private var dirs: [String]?, request: Task<Void, Never>?
-    @State private var loading = true, note = "", outcome = ""
+    @State private var folders: [Object] = []
+    @State private var models: [Object] = []
+    @State private var dirs: [String]?
+    @State private var request: Task<Void, Never>?
+    @State private var loading = true
+    @State private var note = ""
+    @State private var outcome = ""
     private var rows: Rows? { model.rows[form.host] }
     private func choose(_ path: String) {
         dirs = nil

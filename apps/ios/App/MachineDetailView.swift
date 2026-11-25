@@ -3,9 +3,16 @@ import SwiftUI
 struct MachineDetailView: View {
     let model: SessionModel, host: Host
     @Environment(\.dismiss) private var dismiss
-    @State private var devices: [Object]?, check: Object?, github = GithubStatus.unknown
-    @State private var confirmation: MachineConfirmation?, title = "", targetName = ""
-    @State private var note = "", error = "", refresh = 0, loading = false
+    @State private var devices: [Object]?
+    @State private var check: Object?
+    @State private var github = GithubStatus.unknown
+    @State private var confirmation: MachineConfirmation?
+    @State private var title = ""
+    @State private var targetName = ""
+    @State private var note = ""
+    @State private var error = ""
+    @State private var refresh = 0
+    @State private var loading = false
     @State private var action: Task<Void, Never>?
     private var rows: Rows? { model.rows[host.id] }
     private var caps: Object { rows?.machineInfo ?? [:] }

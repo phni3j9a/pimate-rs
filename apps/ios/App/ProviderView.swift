@@ -16,7 +16,9 @@ struct ProviderView: View {
 private struct ProviderConnection: View {
     let model: SessionModel, host: Host, generation: UUID, retry: () -> Void
     @State private var page: ProviderState
-    @State private var error = "", note = "", logout: String?
+    @State private var error = ""
+    @State private var note = ""
+    @State private var logout: String?
     @State private var pending: Task<Void, Never>?
     @Environment(\.scenePhase) private var phase
     @State private var captured = UIScreen.main.isCaptured

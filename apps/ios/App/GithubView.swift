@@ -3,7 +3,10 @@ import SwiftUI
 struct GithubView: View {
     let model: SessionModel, editor: EditorKey, close: () -> Void
     var kind = "list", number: Int?
-    @State private var data: Object?, error = "", tab = "issue", retry = 0
+    @State private var data: Object?
+    @State private var error = ""
+    @State private var tab = "issue"
+    @State private var retry = 0
     var body: some View {
         List {
             if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure); Button("再読み込み") { retry += 1 } }
@@ -59,7 +62,7 @@ struct GithubView: View {
         }
         if let item = GithubItem(editor, value) {
             if let url = item.url { Link("GitHub で開く", destination: url) }
-            Button("Pi に依頼") { do { try model.askAbout(item); close() } catch { error = "Pi が切り替わりました。下書きは変更していません。" } }
+            Button("Pi に依頼") { do { try model.askAbout(item); close() } catch { self.error = "Pi が切り替わりました。下書きは変更していません。" } }
                 .accessibilityHint("現在の下書きに参照を追加します。送信はしません。")
         }
     }

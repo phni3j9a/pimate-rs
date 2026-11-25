@@ -2,9 +2,11 @@ import SwiftUI
 
 struct AppSettingsView: View {
     let model: SessionModel
+    init(model: SessionModel) { self.model = model }
     private var settings = PiSettings()
     @State private var pair = false
-    @State private var check: Task<Void, Never>?, update: AppUpdate?
+    @State private var check: Task<Void, Never>?
+    @State private var update: AppUpdate?
     var body: some View {
         Form {
             Section("マシン") {
