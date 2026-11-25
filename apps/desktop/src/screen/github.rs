@@ -34,7 +34,19 @@ impl Desktop {
         if !n.read(cx).github.loaded {
             n.update(cx, |s, _| s.github.loaded = true);
             let query = q.clone();
-            self.page_task(n,w,cx,async move|p|{let mut v=p.github(query.clone()).await?;let data=v["data"].take();let ok=match query{GitHubQuery::List=>data["issues"].is_array()&&data["prs"].is_array(),GitHubQuery::Issue{number}=>data["item"]["kind"]=="issue"&&data["item"]["number"]==number,GitHubQuery::Pr{number}=>data["item"]["kind"]=="pr"&&data["item"]["number"]==number};ok.then_some(data).ok_or(Error::InvalidMessage)},|_,n,r,_,cx|{n.update(cx,|s,_|match r{Ok(data)=>s.github.data=Some(data),Err(_)=>s.note="取得できませんでした。PC の gh のログイン状態・リポジトリ・閲覧権限を確認してください。".into()});});
+            self.page_task(n,w,cx,async move|page|{
+                let mut reply=page.github(query.clone()).await?;
+                let data=reply["data"].take();let item=&data["item"];
+                let valid=match query {
+                    GitHubQuery::List=>data["issues"].is_array() && data["prs"].is_array(),
+                    GitHubQuery::Issue{number}=>item["kind"]=="issue"&&item["number"]==number,
+                    GitHubQuery::Pr{number}=>item["kind"]=="pr"&&item["number"]==number,
+                };
+                valid.then_some(data).ok_or(Error::InvalidMessage)
+            },|_,nav,result,_,cx|{nav.update(cx,|s,_|match result{
+                Ok(data)=>s.github.data=Some(data),
+                Err(_)=>s.note="取得できませんでした。PC の gh のログイン状態・リポジトリ・閲覧権限を確認してください。".into(),
+            });});
         }
         let Some(data) = n.read(cx).github.data.as_ref() else {
             return if n.read(cx).note.is_empty() {
@@ -146,6 +158,23 @@ impl Desktop {
                 }
             }),
         ));
+        if v["isDraft"] == true {
+            heading = heading.child(p.caption("ドラフト PR"));
+        }
+        if let Some(decision) = v["reviewDecision"].as_str() {
+            heading = heading.child(p.caption(format!("レビュー　{decision}")));
+        }
+        if let (Some(head), Some(base)) = (v["headRefName"].as_str(), v["baseRefName"].as_str()) {
+            heading = heading.child(p.caption(format!("{head} → {base}")));
+        }
+        if let (Some(files), Some(added), Some(deleted)) = (
+            v["changedFiles"].as_u64(),
+            v["additions"].as_u64(),
+            v["deletions"].as_u64(),
+        ) {
+            heading = heading
+                .child(p.caption(format!("変更 {files} ファイル　·　+{added} / −{deleted}")));
+        }
         heading = heading.child(controls);
         root = root.child(heading);
         if v["kind"] == "pr" {
@@ -193,7 +222,7 @@ impl Desktop {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::check_note;
     #[test]
     fn missing_checks_are_not_empty() {
         assert_ne!(

@@ -30,7 +30,13 @@ impl Desktop {
             s.providers.prompt = None;
             s.note.clear();
         });
-        self.page_task(n,w,cx,async move|_|{login.request(action).await?;login.request(AuthAction::List).await},|_,n,result,_,cx|{n.update(cx,|s,_|{s.providers.pending=false;if result.is_err(){s.note="資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。".into();}});});
+        self.page_task(n,w,cx,async move|_|{
+            login.request(action).await?;
+            login.request(AuthAction::List).await
+        },|_,n,result,_,cx|{n.update(cx,|s,_|{
+            s.providers.pending=false;
+            if result.is_err(){ s.note="資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。".into();}
+        });});
     }
     pub(super) fn providers_view(
         &mut self,
@@ -160,7 +166,16 @@ impl Desktop {
                 let f = fid.clone();
                 form = form
                     .child(p.caption(label))
-                    .child(Input::new(&input))
+                    .child(
+                        div()
+                            .capture_action(|_: &gpui_component::input::Copy, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .capture_action(|_: &gpui_component::input::Cut, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .child(Input::new(&input)),
+                    )
                     .child(p.primary("respond", cx).label("送信").on_click(cx.listener(
                         move |app, _, w, cx| {
                             if input.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()) {
@@ -230,7 +245,54 @@ impl Desktop {
                 .find(|h| h.id == id)
                 .map(|h| format!("{}（{}）", h.name, h.address))
                 .unwrap_or_default();
-            return v.child(group("ログアウトの確認",p).child(format!("{label} の {name} に保存された資格情報を削除します。")).child(line().child(Button::new("dismiss-logout").label("キャンセル").on_click(cx.listener(move|_,_,_,cx|{back.update(cx,|s,_|s.providers.logout=None);cx.notify();}))).child(Button::new("logout-yes").danger().label("ログアウト").on_click(cx.listener(move|app,_,w,cx|{nav.update(cx,|s,_|{s.providers.logout=None;s.providers.pending=true;});let l=login.clone();app.page_task(&nav,w,cx,async move|_|{let r=l.logout_confirmation(provider).confirm().await?;l.request(AuthAction::List).await?;Ok::<_,Error>(r)},|_,n,r,_,cx|{n.update(cx,|s,_|{s.providers.pending=false;s.note=match r{Ok(v)if v["refreshRequired"]==true=>"削除済みです。PC の Pi を /reload してください。",Ok(_)=>"ログアウトしました。",Err(_)=>"資格情報の削除結果は不明です。状態を再確認してください。"}.into();});});})))));
+            let cancel = Button::new("dismiss-logout")
+                .label("キャンセル")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    back.update(cx, |s, _| s.providers.logout = None);
+                    cx.notify();
+                }));
+            let confirm = Button::new("logout-yes")
+                .danger()
+                .label("ログアウト")
+                .on_click(cx.listener(move |app, _, w, cx| {
+                    nav.update(cx, |s, _| {
+                        s.providers.logout = None;
+                        s.providers.pending = true;
+                    });
+                    let l = login.clone();
+                    app.page_task(
+                        &nav,
+                        w,
+                        cx,
+                        async move |_| {
+                            let reply = l.logout_confirmation(provider).confirm().await?;
+                            l.request(AuthAction::List).await?;
+                            Ok::<_, Error>(reply)
+                        },
+                        |_, n, r, _, cx| {
+                            n.update(cx, |s, _| {
+                                s.providers.pending = false;
+                                s.note = match r {
+                                    Ok(v) if v["refreshRequired"] == true => {
+                                        "削除済みです。PC の Pi を /reload してください。"
+                                    }
+                                    Ok(_) => "ログアウトしました。",
+                                    Err(_) => {
+                                        "資格情報の削除結果は不明です。状態を再確認してください。"
+                                    }
+                                }
+                                .into();
+                            });
+                        },
+                    );
+                }));
+            return v.child(
+                group("ログアウトの確認", p)
+                    .child(format!(
+                        "{label} の {name} に保存された資格情報を削除します。"
+                    ))
+                    .child(line().child(cancel).child(confirm)),
+            );
         }
         match providers.as_array() {
             None => v = v.child("一覧は未確認です。"),

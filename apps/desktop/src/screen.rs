@@ -89,16 +89,16 @@ fn pi_title<'a>(v: &'a Value, id: &'a str) -> &'a str {
 impl Desktop {
     fn pi_row(
         &self,
-        n: &Navigation,
         h: &Host,
         id: &str,
         v: &Value,
-        waiting: bool,
+        nav: &Navigation,
         p: &Colors,
         cx: &Context<Self>,
     ) -> Button {
-        let nav = n.clone();
         let (host, pi) = (h.id.clone(), id.to_owned());
+        let waiting = v["section"] == "waiting";
+        let nav = nav.clone();
         let failed = v["failureText"].as_str().is_some_and(|s| !s.is_empty());
         let state = if failed {
             "失敗"
@@ -115,7 +115,7 @@ impl Desktop {
             _ => "PC",
         };
         let detail = if waiting {
-            format!("{state} · {} · {origin}", h.name)
+            format!("{state} · {} · {origin}", self.host_label(h))
         } else {
             format!("{state} · {origin} で起動")
         };
@@ -191,7 +191,7 @@ impl Desktop {
                         );
                         any_waiting = true;
                     }
-                    rows = rows.child(self.pi_row(n, h, id, v, true, p, cx));
+                    rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
         }
@@ -226,7 +226,7 @@ impl Desktop {
                     );
                 }
                 for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
-                    rows = rows.child(self.pi_row(n, h, id, v, false, p, cx));
+                    rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
         }
@@ -383,16 +383,6 @@ impl Render for Desktop {
             .text_color(p.ink)
             .text_size(rems(0.94))
             .child(side);
-        #[cfg(target_os = "macos")]
-        let root = {
-            let n = nav.clone();
-            root.capture_key_down(cx.listener(move |this, e: &KeyDownEvent, _, cx| {
-                if e.keystroke.modifiers.platform && e.keystroke.key == "," {
-                    this.navigate(&n, Route::Settings, cx);
-                    cx.stop_propagation();
-                }
-            }))
-        };
         if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
             return root.child(panel);
         }

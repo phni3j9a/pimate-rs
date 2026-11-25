@@ -25,6 +25,9 @@ pub(super) struct Nav {
     pub providers: super::providers::ProviderData,
     pub github: super::github::Github,
     pub spawn: Option<super::new_pi::Fields>,
+    pub back: Route,
+    pub generation: Arc<()>,
+    pub scroll: ScrollHandle,
     pub tasks: Vec<Task<()>>,
 }
 pub(super) type Navigation = Entity<Nav>;
@@ -53,7 +56,26 @@ pub(super) fn link(id: &'static str, title: &'static str, url: &'static str) -> 
 }
 impl Desktop {
     pub(super) fn init_navigation(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Navigation {
-        w.use_keyed_state("desktop-other-navigation", cx, |_, _| {
+        #[cfg(target_os = "macos")]
+        let app = cx.weak_entity();
+        w.use_keyed_state("desktop-other-navigation", cx, |_w, _cx| {
+            #[cfg(target_os = "macos")]
+            {
+                let nav = _cx.weak_entity();
+                let window = _w.window_handle().window_id();
+                _cx.intercept_keystrokes(move |e, w, cx| {
+                    if window == w.window_handle().window_id()
+                        && e.keystroke.modifiers == Modifiers::command()
+                        && e.keystroke.key == ","
+                        && let Some(nav) = nav.upgrade()
+                    {
+                        let _ = app.update(cx, |app, cx| app.navigate(&nav, Route::Settings, cx));
+                        cx.stop_propagation();
+                    }
+                })
+                .detach();
+            }
+
             let settings = Settings::path().and_then(|p| Settings::load(&p));
             let pref_error = settings.is_err();
             self.state.settings = settings.unwrap_or_default();
@@ -95,6 +117,20 @@ impl Desktop {
         dark
     }
     pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
+        let previous = &n.read(cx).route;
+        let back = match (&route, previous) {
+            (Route::New(_), Route::First(_))
+            | (Route::SetupPc, Route::Settings)
+            | (Route::Tailscale, Route::Settings) => previous.clone(),
+            (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
+            (Route::Github(q), _) if q != &pimate_protocol::GitHubQuery::List => {
+                Route::Github(pimate_protocol::GitHubQuery::List)
+            }
+            (Route::Providers(id), _) => Route::Machine(id.clone()),
+            (Route::Machine(_), _) => Route::Settings,
+            (Route::SetupPc, _) => Route::Tailscale,
+            _ => Route::Home,
+        };
         self.state.close_page();
         let page = match &route {
             Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
@@ -106,6 +142,7 @@ impl Desktop {
         n.update(cx, |s, _| {
             *s = Nav {
                 route,
+                back,
                 page,
                 pref_error: s.pref_error,
                 ..Default::default()
@@ -179,7 +216,11 @@ impl Desktop {
     ) -> Button {
         let n = n.clone();
         Button::new(id)
-            .label(label)
+            .label(if selected {
+                format!("✓ {label}")
+            } else {
+                label.to_owned()
+            })
             .selected(selected)
             .on_click(cx.listener(move |this, _, _, cx| {
                 apply(&mut this.state.settings);
@@ -339,15 +380,60 @@ impl Desktop {
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
             Route::Github(q) => ("GitHub", self.github_view(n, p, q, w, cx)),
         };
-        let back = match r {
-            Route::Github(q) if q != pimate_protocol::GitHubQuery::List => {
-                Route::Github(pimate_protocol::GitHubQuery::List)
-            }
-            Route::Providers(id) => Route::Machine(id),
-            Route::Machine(_) => Route::Settings,
-            Route::SetupPc => Route::Tailscale,
-            _ => Route::Home,
-        };
-        Some(div().flex().flex_col().flex_1().min_w_0().child(div().flex().items_center().justify_between().px_4().py_2().border_b_1().border_color(p.border).child(p.caption("PiMate  /  ワークスペース")).child(self.nav_button(n,"back","戻る",back,cx).ghost())).child(div().id(SharedString::from(format!("other-scroll-{title}"))).overflow_y_scroll().flex_1().min_h_0().child(div().mx_auto().w_full().max_w(rems(45.)).p_4().flex().flex_col().gap_3().child(div().font_weight(FontWeight::BOLD).text_size(rems(1.55)).child(title)).when(n.read(cx).pref_error,|v|v.child(p.caption("設定ファイルを読み書きできません。この起動中のみ反映します。"))).when(!n.read(cx).note.is_empty(),|v|v.child(p.caption(n.read(cx).note.clone()).p_2().bg(p.surface))).child(body))))
+        let back = n.read(cx).back.clone();
+        let header = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(p.border)
+            .child(p.caption("PiMate  /  ワークスペース"))
+            .child(self.nav_button(n, "back", "戻る", back, cx).ghost());
+        let scroll = n.read(cx).scroll.clone();
+        let body = div()
+            .mx_auto()
+            .w_full()
+            .max_w(rems(45.))
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(rems(1.55))
+                    .child(title),
+            )
+            .when(n.read(cx).pref_error, |v| {
+                v.child(p.caption("設定ファイルを読み書きできません。この起動中のみ反映します。"))
+            })
+            .when(!n.read(cx).note.is_empty(), |v| {
+                v.child(p.caption(n.read(cx).note.clone()).p_2().bg(p.surface))
+            })
+            .child(body);
+        let content = div()
+            .id("other-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .track_scroll(&scroll)
+            .child(body);
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .child(header)
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .child(content)
+                        .vertical_scrollbar(&scroll),
+                ),
+        )
     }
 }

@@ -1,6 +1,29 @@
 use super::*;
 use settings::{group, line, link};
 use state::FirstStep;
+fn bridge(p: &Colors) -> Div {
+    let chip = |s| {
+        div()
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(p.border)
+            .bg(p.bg)
+            .child(s)
+    };
+    line()
+        .p_3()
+        .justify_center()
+        .rounded_lg()
+        .bg(p.surface)
+        .text_color(p.accent)
+        .child(chip("この端末"))
+        .child("···")
+        .child(chip("Tailscale"))
+        .child("···")
+        .child(chip("PC"))
+}
 impl Desktop {
     pub(super) fn guide(&self, n: &Navigation, p: &Colors, pc: bool, cx: &Context<Self>) -> Div {
         let root = div().flex().flex_col().gap_3().child(p.caption(if pc {
@@ -10,6 +33,7 @@ impl Desktop {
         }));
         if !pc {
             return root
+                .child(bridge(p))
                 .child(
                     group("01　この端末", p)
                         .child("Tailscale にログインし、VPN の接続を許可してください。")
@@ -90,7 +114,7 @@ impl Desktop {
             ),
         );
         if phase == FirstStep::Empty {
-            v = v.child(
+            v = v.child(bridge(p)).child(
                 group("まだ起動中の Pi はありません", p)
                     .child("この端末から PC のフォルダを選んで、新しい Pi を起動できます。")
                     .child(

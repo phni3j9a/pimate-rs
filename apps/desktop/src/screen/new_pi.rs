@@ -10,6 +10,11 @@ pub(super) struct Fields {
     folders: Value,
     models: Value,
     model: Option<ModelRef>,
+    expanded: bool,
+    thinking: Option<pimate_protocol::ThinkingLevel>,
+    ask: bool,
+    dirs: Option<(String, Vec<String>)>,
+    loading_dirs: bool,
     busy: bool,
     submitted: bool,
     _folder_watch: Subscription,
@@ -59,7 +64,10 @@ impl Desktop {
                 {
                     let path = input.read(cx).value().to_string();
                     nav.update(cx, |s, _| {
-                        if let Some(f) = &mut s.spawn {
+                        if let Some(f) = &mut s.spawn
+                            && f.folder == input
+                        {
+                            f.dirs = None;
                             f.trusted = known_trust(&f.folders, &path).then_some(path);
                         }
                     });
@@ -74,6 +82,11 @@ impl Desktop {
                     folders: Value::Null,
                     models: Value::Null,
                     model: None,
+                    expanded: false,
+                    thinking: None,
+                    ask: self.state.settings.ask_tool,
+                    dirs: None,
+                    loading_dirs: false,
                     busy: true,
                     submitted: false,
                     _folder_watch: watch,
@@ -143,6 +156,66 @@ impl Desktop {
                     }),
             );
         }
+        if self.machines[id].rows.get("host", "info")["dirs"] == true {
+            let nav = n.clone();
+            let parent = path.clone();
+            recent = recent.child(
+                Button::new("browse")
+                    .small()
+                    .label("子フォルダを表示")
+                    .disabled(f.loading_dirs || locked || path.trim().is_empty())
+                    .on_click(cx.listener(move |app, _, w, cx| {
+                        let requested = parent.clone();
+                        let shown = requested.clone();
+                        nav.update(cx, |s, _| s.spawn.as_mut().unwrap().loading_dirs = true);
+                        app.page_task(
+                            &nav,
+                            w,
+                            cx,
+                            async move |page| page.query(MachineQuery::Dirs(requested)).await,
+                            move |_, nav, r, _, cx| {
+                                nav.update(cx, |s, cx| {
+                                    let f = s.spawn.as_mut().unwrap();
+                                    f.loading_dirs = false;
+                                    if f.folder.read(cx).value().as_ref() != shown {
+                                        return;
+                                    }
+                                    match r.ok().and_then(|v| {
+                                        serde_json::from_value::<Vec<String>>(v["dirs"].clone())
+                                            .ok()
+                                    }) {
+                                        Some(dirs) => f.dirs = Some((shown, dirs)),
+                                        None => {
+                                            s.note = "子フォルダを取得できませんでした。".into()
+                                        }
+                                    }
+                                });
+                            },
+                        );
+                    })),
+            );
+        }
+        if let Some((base, dirs)) = &f.dirs
+            && base == &path
+        {
+            if dirs.is_empty() {
+                recent = recent.child(p.caption("子フォルダはありません"));
+            }
+            for (i, name) in dirs.iter().enumerate() {
+                let sep = if base.ends_with('/') { "" } else { "/" };
+                let next = format!("{base}{sep}{name}");
+                let edit = folder.clone();
+                recent = recent.child(
+                    Button::new(("dir", i))
+                        .small()
+                        .label(name.clone())
+                        .disabled(locked)
+                        .on_click(move |_, w, cx| {
+                            edit.update(cx, |i, cx| i.set_value(next.clone(), w, cx))
+                        }),
+                );
+            }
+        }
         let trusted = f.trusted.as_ref() == Some(&path);
         let nav = n.clone();
         let shown = path.clone();
@@ -168,37 +241,117 @@ impl Desktop {
                     })),
             )
             .child(p.caption("信頼すると、このフォルダの設定と Extension を読み込みます。"));
-        let mut choices = line();
-        for (i, m) in std::iter::once(None)
-            .chain(f.models.as_array().into_iter().flatten().filter_map(|v| {
-                Some(Some(ModelRef {
-                    provider: v["provider"].as_str()?.into(),
-                    id: v["id"].as_str()?.into(),
+        let nav = n.clone();
+        let mut model = group("モデル", p).child(
+            Button::new("pick-model")
+                .justify_start()
+                .label(format!(
+                    "{}　{}",
+                    f.model
+                        .as_ref()
+                        .map(|m| format!("{} · {}", m.id, m.provider))
+                        .unwrap_or_else(|| "PC の既定".into()),
+                    if f.expanded { "▴" } else { "▾" }
+                ))
+                .disabled(locked)
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    nav.update(cx, |s, _| {
+                        let f = s.spawn.as_mut().unwrap();
+                        f.expanded = !f.expanded;
+                    });
+                    cx.notify();
+                })),
+        );
+        if f.expanded {
+            let mut choices = line();
+            for (i, m) in std::iter::once(None)
+                .chain(f.models.as_array().into_iter().flatten().filter_map(|v| {
+                    Some(Some(ModelRef {
+                        provider: v["provider"].as_str()?.into(),
+                        id: v["id"].as_str()?.into(),
+                    }))
                 }))
-            }))
-            .enumerate()
-        {
-            let nav = n.clone();
-            choices = choices.child(
-                Button::new(("model", i))
-                    .small()
-                    .selected(f.model == m)
-                    .disabled(locked)
-                    .label(
-                        m.as_ref()
-                            .map(|m| format!("{} · {}", m.id, m.provider))
-                            .unwrap_or_else(|| "PC の既定".into()),
-                    )
-                    .on_click(cx.listener(move |_, _, _, cx| {
-                        nav.update(cx, |s, _| s.spawn.as_mut().unwrap().model = m.clone());
-                        cx.notify();
-                    })),
-            );
+                .enumerate()
+            {
+                let nav = n.clone();
+                choices = choices.child(
+                    Button::new(("model", i))
+                        .small()
+                        .selected(f.model == m)
+                        .disabled(locked)
+                        .label(
+                            m.as_ref()
+                                .map(|m| format!("{} · {}", m.id, m.provider))
+                                .unwrap_or_else(|| "PC の既定".into()),
+                        )
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            nav.update(cx, |s, _| {
+                                let f = s.spawn.as_mut().unwrap();
+                                f.model = m.clone();
+                                f.thinking = None;
+                                f.expanded = false;
+                            });
+                            cx.notify();
+                        })),
+                );
+            }
+            model = model.child(choices);
         }
+        if let Some(selected) = &f.model
+            && let Some(levels) = f
+                .models
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|m| m["id"] == selected.id && m["provider"] == selected.provider)
+                .and_then(|m| m["thinkingLevels"].as_array())
+                .filter(|l| !l.is_empty())
+        {
+            let mut choices = line().child(p.caption("Thinking"));
+            for (i, (name, level)) in std::iter::once(("既定", None))
+                .chain(levels.iter().filter_map(|l| {
+                    Some((l.as_str()?, Some(serde_json::from_value(l.clone()).ok()?)))
+                }))
+                .enumerate()
+            {
+                let nav = n.clone();
+                choices = choices.child(
+                    Button::new(("thinking", i))
+                        .small()
+                        .label(name.to_string())
+                        .selected(f.thinking == level)
+                        .disabled(locked)
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            nav.update(cx, |s, _| s.spawn.as_mut().unwrap().thinking = level);
+                            cx.notify();
+                        })),
+                );
+            }
+            model = model.child(choices);
+        }
+        let ask = f.ask;
+        let nav = n.clone();
+        model = model.child(
+            Button::new("spawn-ask")
+                .small()
+                .ghost()
+                .justify_start()
+                .label(if ask {
+                    "✓ 質問ツール　オン"
+                } else {
+                    "質問ツール　オフ"
+                })
+                .selected(ask)
+                .disabled(locked)
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    nav.update(cx, |s, _| s.spawn.as_mut().unwrap().ask = !ask);
+                    cx.notify();
+                })),
+        );
         let disabled = locked
             || path.trim().is_empty()
             || self.machines[id].rows.get("host", "connection") != "connected";
-        v = v.child(folders).child(group("モデル", p).child(choices));
+        v = v.child(folders).child(model);
         if f.busy {
             v = v.child(p.caption("候補を取得中…"));
         }
@@ -218,13 +371,14 @@ impl Desktop {
                         return;
                     }
                     let path = f.folder.read(cx).value().to_string();
-                    let mut form = match page.spawn_form(app.state.settings.ask_tool) {
+                    let mut form = match page.spawn_form(f.ask) {
                         Ok(f) => f,
                         Err(_) => return,
                     };
                     form.folder(path.clone(), f.trusted.as_ref() == Some(&path));
                     form.message = f.message.read(cx).value().to_string();
                     form.model = f.model.clone();
+                    form.thinking = f.thinking;
                     if [f.folder.clone(), f.message.clone()]
                         .iter()
                         .any(|i| i.update(cx, |i, cx| i.marked_text_range(w, cx).is_some()))
@@ -281,7 +435,7 @@ fn known_trust(rows: &Value, path: &str) -> bool {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::known_trust;
     #[test]
     fn trusted_path_is_exact() {
         let r = serde_json::json!([{"path":"/a ","trusted":true}]);

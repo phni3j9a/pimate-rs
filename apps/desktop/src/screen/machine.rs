@@ -8,7 +8,7 @@ pub(super) struct MachineData {
     devices: Value,
     github: Value,
     busy: bool,
-    pending: Option<(String, Decision)>,
+    pending: Option<(Host, String, Decision)>,
 }
 enum Decision {
     Host(Confirmation),
@@ -36,6 +36,18 @@ impl Desktop {
         let Some(h) = self.hosts.iter().find(|h| h.id == id).cloned() else {
             return div().child("このマシンは登録されていません。");
         };
+        if n.read(cx).page.as_ref().is_some_and(|p| !p.visible(self))
+            || n.read(cx)
+                .machine
+                .pending
+                .as_ref()
+                .is_some_and(|(shown, _, _)| shown != &h)
+        {
+            self.navigate(n, Route::Machine(id.into()), cx);
+            n.update(cx, |s, _| {
+                s.note = "接続先が変わりました。実行済みの操作は自動再送しません。".into()
+            });
+        }
         let page = n.read(cx).page.clone().filter(|p| p.visible(self));
         let rows = self.machines.get(id).map(|m| &m.rows);
         let caps = rows.map(|r| r.get("host", "info")).unwrap_or(&Value::Null);
@@ -90,11 +102,23 @@ impl Desktop {
         let m = &n.read(cx).machine;
         let id = h.id.clone();
         let host_label = self.host_label(&h);
-        if let Some((warning, _)) = &m.pending {
+        if let Some((fixed, warning, _)) = &m.pending {
             let cancel = n.clone();
             let run = n.clone();
-            let target = h.clone();
-            return group("操作の確認",p).child(format!("{host_label}　·　{}",h.address)).child(warning.clone()).child(line().child(Button::new("cancel-action").label("キャンセル").on_click(cx.listener(move|_,_,_,cx|{cancel.update(cx,|s,_|s.machine.pending=None);cx.notify();}))).child(Button::new("confirm-action").danger().label("確認して実行").on_click(cx.listener(move|app,_,w,cx|{if !app.hosts.contains(&target){app.navigate(&run,Route::Settings,cx);return;}let Some((_,decision))=run.update(cx,|s,_|s.machine.pending.take())else{return;};match decision {Decision::Host(confirm)=>{run.update(cx,|s,_|{s.machine.busy=true;s.note="PC の応答を確認中…".into();});app.page_task(&run,w,cx,async move|_|confirm.confirm().await,|_,n,r,_,cx|{n.update(cx,|s,_|{s.machine=Default::default();s.note=match r{Ok(v)=>v["to"].as_str().map(|v|format!("{v} に更新しました。")).unwrap_or_else(||"PC が操作を受け付けました。".into()),Err(_)=>"操作結果は不明です。再実行する前に状態を確認してください。".into()};});});},Decision::Local(forget)=>{let nav=run.clone();let host=target.clone();run.update(cx,|s,_|s.machine.busy=true);cx.spawn(async move|app,cx|{let r=cx.background_executor().spawn(async move{forget.confirm()}).await;let _=app.update(cx,|app,cx|{let same=nav.read(cx).route==Route::Machine(host.id.clone());match r{Ok(h)=>{if same{app.navigate(&nav,Route::Settings,cx);}app.removed(&h,cx);},Err(_)=>if same{nav.update(cx,|s,_|{s.machine.busy=false;s.note="削除結果を確認できません。登録一覧を読み直してください。".into();});}}cx.notify();});}).detach();}}cx.notify();}))));
+            let cancel = Button::new("cancel-action")
+                .label("キャンセル")
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cancel.update(cx, |s, _| s.machine.pending = None);
+                    cx.notify();
+                }));
+            let confirm = Button::new("confirm-action")
+                .danger()
+                .label("確認して実行")
+                .on_click(cx.listener(move |app, _, w, cx| app.confirm_machine(&run, w, cx)));
+            return group("操作の確認", p)
+                .child(format!("{}　·　{}", fixed.name, fixed.address))
+                .child(warning.clone())
+                .child(line().child(cancel).child(confirm));
         }
         let c = &m.check;
         let mut maint = group("PC の PiMate", p).child(format!(
@@ -119,7 +143,26 @@ impl Desktop {
             let page = page.clone();
             let h = h.clone();
             let nav = n.clone();
-            Button::new(SharedString::from(format!("confirm-{label}-{}",target.as_deref().unwrap_or("")))).danger().label(label).disabled(m.busy).on_click(cx.listener(move|app,_,_,cx|{if !app.hosts.contains(&h){return;} let fixed=match &op {None=>app.forget_confirmation(&h.id).map(|f|("この端末の登録と、このマシンの下書きを削除します。PC 側の登録は取り消しません。".to_string(),Decision::Local(f))),Some(a)=>{let Some(page)=&page else{return;};let op=match a{Maintenance::UpdateLatest=>Maintenance::UpdateLatest,Maintenance::Restart=>Maintenance::Restart,Maintenance::Revoke(i)=>Maintenance::Revoke(i.clone())};page.confirmation(op).map(|c|(format!("{} {}",target.as_deref().unwrap_or(""),c.warning()),Decision::Host(c)))}};nav.update(cx,|s,_|match fixed{Ok(v)=>s.machine.pending=Some(v),Err(_)=>s.note="対象が変わりました。マシンを開き直してください。".into()});cx.notify();}))
+            let id = SharedString::from(format!(
+                "confirm-{label}-{}",
+                target.as_deref().unwrap_or("")
+            ));
+            let handler=cx.listener(move|app,_,_: &mut Window,cx:&mut Context<Self>|{
+                if !app.hosts.contains(&h){return;}
+                let fixed=match &op {
+                    None=>app.forget_confirmation(&h.id).map(|f| ("この端末の登録と、このマシンの下書きを削除します。PC 側の登録は取り消しません。".into(),Decision::Local(f))),
+                    Some(a)=>{let Some(page)=&page else{return;};
+                        let op=match a{Maintenance::UpdateLatest=>Maintenance::UpdateLatest,Maintenance::Restart=>Maintenance::Restart,Maintenance::Revoke(i)=>Maintenance::Revoke(i.clone())};
+                        page.confirmation(op).map(|c|(format!("{} {}",target.as_deref().unwrap_or(""),c.warning()),Decision::Host(c)))
+                    }
+                };
+                nav.update(cx,|s,_|match fixed {Ok((warning,decision))=>s.machine.pending=Some((h.clone(),warning,decision)),Err(_)=>s.note="対象が変わりました。マシンを開き直してください。".into()});cx.notify();
+            });
+            Button::new(id)
+                .danger()
+                .label(label)
+                .disabled(m.busy)
+                .on_click(handler)
         };
         let mut actions = line();
         if upd && c["canUpdate"] == true && c["latest"] != c["current"] {
@@ -157,7 +200,12 @@ impl Desktop {
         let summary = format!(
             "{}　·　{}　{}",
             connection(&h, rows),
-            caps["platform"].as_str().unwrap_or("OS 未確認"),
+            match caps["platform"].as_str() {
+                Some("darwin") => "macOS",
+                Some("linux") => "Linux",
+                Some(v) => v,
+                None => "OS 未確認",
+            },
             rows.filter(|r| r.get("host", "listKnown") == true)
                 .map(|r| format!("·　Pi {} 件", r.group("instance").len()))
                 .unwrap_or_default()
@@ -205,5 +253,75 @@ impl Desktop {
                     )
                     .child(button("このマシンを削除…", None, None)),
             )
+    }
+    fn confirm_machine(&mut self, n: &Navigation, w: &mut Window, cx: &mut Context<Self>) {
+        let Some((target, _, decision)) = n.update(cx, |s, _| s.machine.pending.take()) else {
+            return;
+        };
+        if !self.hosts.contains(&target) {
+            self.navigate(n, Route::Settings, cx);
+            return;
+        }
+        n.update(cx, |s, _| {
+            s.machine.busy = true;
+            s.note = "操作結果を確認中…".into();
+        });
+        match decision {
+            Decision::Host(confirm) => self.page_task(
+                n,
+                w,
+                cx,
+                async move |_| confirm.confirm().await,
+                |_, n, r, _, cx| {
+                    n.update(cx, |s, _| {
+                        s.machine = Default::default();
+                        s.note = match r {
+                            Ok(v) => v["to"]
+                                .as_str()
+                                .map(|v| format!("{v} に更新しました。"))
+                                .unwrap_or_else(|| "PC が操作を受け付けました。".into()),
+                            Err(_) => {
+                                "操作結果は不明です。再実行する前に状態を確認してください。".into()
+                            }
+                        };
+                    });
+                },
+            ),
+            Decision::Local(forget) => {
+                let nav = n.clone();
+                let generation = nav.read(cx).generation.clone();
+                // Dispatch can outlive this screen. Reconcile storage even if the user navigated away.
+                cx.spawn(async move |app, cx| {
+                    let result = cx
+                        .background_executor()
+                        .spawn(async move { forget.confirm() })
+                        .await;
+                    let _ = app.update(cx, |app, cx| {
+                        let same = nav.read(cx).route == Route::Machine(target.id.clone())
+                            && Arc::ptr_eq(&generation, &nav.read(cx).generation);
+                        match result {
+                            Ok(h) => {
+                                if same {
+                                    app.navigate(&nav, Route::Settings, cx);
+                                }
+                                app.removed(&h, cx);
+                            }
+                            Err(_) if same => {
+                                nav.update(cx, |s, _| {
+                                    s.machine.busy = false;
+                                    s.note =
+                                        "削除結果を確認できません。登録一覧を読み直してください。"
+                                            .into();
+                                });
+                            }
+                            Err(_) => {}
+                        }
+                        cx.notify();
+                    });
+                })
+                .detach();
+                cx.notify();
+            }
+        }
     }
 }
