@@ -94,9 +94,8 @@ impl Record {
                 s.task = None;
                 match r {
                     Ok((record, r)) => {
-                        if r.is_ok() {
-                            s.shown = Some(Transcript::from(&record));
-                        }
+                        // Pages fetched before a failing page are valid; show them with the error.
+                        s.shown = Some(Transcript::from(&record));
                         s.reader = Some(record);
                         s.error = r.err()
                     }
