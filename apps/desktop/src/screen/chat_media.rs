@@ -30,6 +30,35 @@ enum GallerySource {
         images: Arc<[MarkdownImage]>,
     },
 }
+impl GallerySource {
+    fn http_link(&self, index: u64, id: String) -> Option<Button> {
+        let Self::Markdown { images, .. } = self else {
+            return None;
+        };
+        let image = images.get(index as usize)?;
+        let url = &image.src;
+        if !url
+            .get(..7)
+            .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
+        {
+            return None;
+        }
+        let url = url.clone();
+        Some(
+            Button::new(SharedString::from(id))
+                .small()
+                .label(format!(
+                    "リンク: {}",
+                    if image.alt.is_empty() {
+                        &url
+                    } else {
+                        image.alt.as_str()
+                    }
+                ))
+                .on_click(move |_, _, cx| cx.open_url(&url)),
+        )
+    }
+}
 impl Gallery {
     pub(crate) fn markdown(page: &Page, entry: &str, images: Arc<[MarkdownImage]>) -> Self {
         Self {
@@ -39,6 +68,9 @@ impl Gallery {
                 images,
             },
         }
+    }
+    pub(crate) fn http_link(&self, index: u64, id: String) -> Option<Button> {
+        self.source.http_link(index, id)
     }
     fn count(&self) -> u64 {
         match &self.source {
@@ -292,7 +324,17 @@ impl Media {
                         })),
                 )
                 .child(close);
-            photo(format!("full:{i}").into(), g, i, false, w, cx)
+            if let Some(link) = g.http_link(i, "full-link".into()) {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(link)
+                    .into_any_element()
+            } else {
+                photo(format!("full:{i}").into(), g, i, false, w, cx)
+            }
         } else if let Some((t, g)) = v.table.clone() {
             let text = t.markdown.clone();
             head = head
@@ -453,5 +495,26 @@ mod tests {
     #[test]
     fn invalid_image_fails_without_rendering() {
         assert!(decode(b"not an image", false).is_err())
+    }
+}
+
+#[cfg(test)]
+mod gallery_tests {
+    use super::GallerySource;
+    #[test]
+    fn mixed_gallery_links_http_instead_of_fetching() {
+        let images = pimate_markdown::parse(
+            "![a](https://example.org/a.png) ![b](HTTP://example.org/b.png)",
+            true,
+        )
+        .images;
+        assert_eq!(images.len(), 2);
+        let src = GallerySource::Markdown {
+            entry: "answer".into(),
+            images: images.into(),
+        };
+        assert!(src.http_link(0, "first".into()).is_none());
+        assert!(src.http_link(1, "next".into()).is_some());
+        assert!(src.http_link(2, "missing".into()).is_none());
     }
 }

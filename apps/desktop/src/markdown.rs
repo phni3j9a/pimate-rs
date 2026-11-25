@@ -215,8 +215,29 @@ fn rich_line(
     let Some((m, g)) = media else {
         return line(id, spans, w, cx);
     };
+    mixed_line(id, spans, w, cx, |j, i, w, cx| {
+        if let Some(link) = g.http_link(i.index, format!("link:{id}:{j}")) {
+            link.into_any_element()
+        } else {
+            m.tile(
+                &format!("md:{id}:{j}:{:p}", i.src.as_ptr()),
+                g.clone(),
+                i.index,
+                w,
+                cx,
+            )
+        }
+    })
+}
+fn mixed_line(
+    id: &str,
+    spans: &[Inline],
+    w: &mut Window,
+    cx: &mut App,
+    image: impl Fn(usize, &pimate_markdown::Image, &mut Window, &mut App) -> AnyElement,
+) -> AnyElement {
     if !spans.iter().any(|s| matches!(s, Inline::Image(_))) {
-        return line(id, spans, w, cx);
+        return line(&format!("{id}:0"), spans, w, cx);
     }
     let mut col = div().flex().flex_col();
     let mut start = 0;
@@ -226,26 +247,7 @@ fn rich_line(
                 col = col.child(line(&format!("{id}:{start}"), &spans[start..j], w, cx));
             }
             start = j + 1;
-            if i.src
-                .get(..7)
-                .is_some_and(|s| s.eq_ignore_ascii_case("http://"))
-            {
-                let url = i.src.clone();
-                col = col.child(
-                    Button::new(gpui::SharedString::from(format!("link:{id}:{j}")))
-                        .small()
-                        .label(format!("リンク: {}", i.alt))
-                        .on_click(move |_, _, cx| cx.open_url(&url)),
-                );
-            } else {
-                col = col.child(m.tile(
-                    &format!("md:{id}:{j}:{:p}", i.src.as_ptr()),
-                    g.clone(),
-                    i.index,
-                    w,
-                    cx,
-                ));
-            }
+            col = col.child(image(j, i, w, cx));
         }
     }
     if start < spans.len() {
@@ -560,6 +562,50 @@ fn reparsed_markup_never_retargets_the_selection(cx: &mut gpui::TestAppContext) 
         sel.reconcile(&plain("[doc](https://old.example) [old](https://new.example)").into());
         assert!(sel.range(&sel.displayed).is_empty());
     });
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn selected_prefix_copies_after_image_appends(cx: &mut gpui::TestAppContext) {
+    use gpui::point;
+    struct Text(String);
+    impl Render for Text {
+        fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let doc = pimate_markdown::parse(&self.0, true);
+            let Content::Paragraph(spans) = &doc.blocks[0].content else {
+                panic!()
+            };
+            mixed_line("answer", spans, w, cx, |_, _, _, _| {
+                div().child("image").into_any_element()
+            })
+        }
+    }
+    cx.update(gpui_component::init);
+    let (v, w) = cx.add_window_view(|_, _| Text("stable paragraph".into()));
+    let a = point(px(1.), px(8.));
+    let b = point(px(39.), px(8.));
+    w.simulate_mouse_down(a, MouseButton::Left, Default::default());
+    w.simulate_mouse_move(b, MouseButton::Left, Default::default());
+    w.simulate_mouse_up(b, MouseButton::Left, Default::default());
+    let copy = if cfg!(target_os = "macos") {
+        "cmd-c"
+    } else {
+        "ctrl-c"
+    };
+    w.simulate_keystrokes(copy);
+    let first = w
+        .update(|_, cx| cx.read_from_clipboard())
+        .and_then(|c| c.text())
+        .unwrap();
+    assert!(!first.is_empty() && "stable paragraph".starts_with(&first));
+    w.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("not copied".into())));
+    v.update(w, |v, cx| {
+        v.0.push_str(" ![plot](https://example.org/image.png)");
+        cx.notify()
+    });
+    w.run_until_parked();
+    w.simulate_keystrokes(copy);
+    assert_eq!(cx.read_from_clipboard().and_then(|c| c.text()), Some(first));
 }
 
 #[cfg(test)]
