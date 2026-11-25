@@ -13,11 +13,35 @@ pub(super) struct ProviderData {
     logout: Option<(AuthProviderId, String)>,
     prompt: Option<(String, String, Entity<InputState>)>,
 }
-fn copy_device_code(code: String) -> Button {
-    Button::new("copy-device-code")
-        .label("認証用コードをコピー")
-        .tooltip("システムのクリップボードにコピーします")
-        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(code.clone())))
+fn device_code(flow: &str, code: &str, w: &mut Window, cx: &mut App) -> Div {
+    let state = w.use_keyed_state(
+        SharedString::from(format!("device-code:{flow}")),
+        cx,
+        |_, _| None::<String>,
+    );
+    let shown = state.read(cx).as_deref() == Some(code);
+    let current = code.to_owned();
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            Button::new("reveal-device-code")
+                .label(if shown {
+                    "認証用コードを隠す"
+                } else {
+                    "認証用コードを表示"
+                })
+                .on_click(move |_, _, cx| {
+                    state.update(cx, |s, cx| {
+                        *s = (!shown).then(|| current.clone());
+                        cx.notify();
+                    })
+                }),
+        )
+        .when(shown, |el| {
+            el.child(div().font_family("monospace").child(code.to_owned()))
+        })
 }
 impl settings::Nav {
     fn logout_ack(&mut self, result: Result<Value, Error>) -> bool {
@@ -175,7 +199,7 @@ impl Desktop {
                     .as_str()
                     .filter(|code| !code.is_empty())
                 {
-                    form = form.child(copy_device_code(code.to_owned()));
+                    form = form.child(device_code(&fid, code, w, cx));
                 }
             }
             if let Some(pid) = flow["prompt"]["id"].as_str().filter(|_| !busy) {
@@ -398,9 +422,9 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
-    use super::copy_device_code;
+    use super::device_code;
     use gpui::{
-        App, ClipboardItem, Context, Modifiers, TestAppContext, Window, div, point, prelude::*, px,
+        ClipboardItem, Context, Modifiers, TestAppContext, Window, div, point, prelude::*, px,
     };
 
     #[test]
@@ -422,23 +446,36 @@ mod tests {
         assert!(nav.note.contains("削除結果は不明") && !nav.note.contains("削除済み"));
     }
     #[gpui::test]
-    fn device_code_requires_explicit_copy(cx: &mut TestAppContext) {
-        struct Probe;
+    fn device_code_requires_explicit_reveal(cx: &mut TestAppContext) {
+        struct Probe(&'static str);
         impl Render for Probe {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
                 div()
                     .w(px(240.))
-                    .child(copy_device_code("DEMO-ONLY".into()).w_full())
+                    .child(device_code("demo-flow", self.0, w, cx))
+                    .child(div().h(px(1.)).debug_selector(|| "after-code".into()))
             }
         }
         cx.update(|cx| {
             gpui_component::init(cx);
             cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
         });
-        let (_, w) = cx.add_window_view(|_, _| Probe);
-        let clipboard = |cx: &mut App| cx.read_from_clipboard().and_then(|v| v.text()).unwrap();
-        assert_eq!(w.update(|_, cx| clipboard(cx)), "before");
+        let (probe, w) = cx.add_window_view(|_, _| Probe("DEMO-ONLY"));
+        let hidden = w.debug_bounds("after-code").unwrap().top();
         w.simulate_click(point(px(40.), px(15.)), Modifiers::none());
-        assert_eq!(w.update(|_, cx| clipboard(cx)), "DEMO-ONLY");
+        assert!(w.debug_bounds("after-code").unwrap().top() > hidden);
+        w.simulate_click(point(px(40.), px(15.)), Modifiers::none());
+        assert_eq!(w.debug_bounds("after-code").unwrap().top(), hidden);
+        w.simulate_click(point(px(40.), px(15.)), Modifiers::none());
+        probe.update(w, |p, cx| {
+            p.0 = "REPLACEMENT";
+            cx.notify()
+        });
+        w.run_until_parked();
+        assert_eq!(w.debug_bounds("after-code").unwrap().top(), hidden);
+        assert_eq!(
+            w.update(|_, cx| cx.read_from_clipboard().unwrap().text().unwrap()),
+            "before"
+        );
     }
 }
