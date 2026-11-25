@@ -375,6 +375,24 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 - **Chat-Edge**: `edge` の connection・phase / unconfirmed / pcPrompt / attachCommand、`move` の from・to と `local`。`needsMoveConfirmation` のときは前の会話に下書きを保持、入力欄の「新しい送信先を確認」から `confirmMove(_:id:)` で今回だけ確認（端末の操作元は推定しない）。`attachCommand` が nil ならコピー操作を出さないこと。
 - 画面は `Chat.swift`・`Composer.swift`・`Markdown.swift`・`Transcript.swift`・`Question.swift` と新規 View を変更可。`SessionModel.swift`・`Rows.swift`・`ChatSheet.swift`・`ChatImages.swift`・`ChatNotices.swift`・`Photo.swift`・Keychain・Rust/FFI と生成物は維持してください。実機・見た目・スクリーンショット比較は後半の範囲です。
 
+### デスクトップ配布版（macOS・Linux）
+
+版の正本は `apps/desktop/Cargo.toml` の `package.version`（変更時は `Cargo.lock` も更新）。初版は Host・Extension・Android と同じ **0.2.0**。以降の更新は独立した `desktop-vX.Y.Z` タグです。設定の「公開版を確認」はインストール版と比較できるよう、GitHub Releases のデスクトップ正式版の一覧をブラウザで開きます。自動インストールはしません。
+
+- **macOS:** `PiMate-Desktop-<版>-macos-{arm64,x86_64}.zip`。Apple Silicon / Intel ともネイティブ runner で Metal を含めてビルドし、不要なもう一方のバイナリを配らないため universal にはしません。zip を展開し `PiMate Desktop.app` を「アプリケーション」へ。開発版 `PiMate RS.app` を置換せず LaunchServices が区別できる名前と ID（配布版 `dev.pimate.desktop`、開発版 `dev.pimate.rs.desktop`）です。バンドルを区別しても通常起動の登録・設定の保存先は共通です。
+- **署名の確認:** ad-hoc は改変検出用で発行元の本人確認にはなりません。ブラウザから取得した未公証の `.app` は Gatekeeper に拒否される場合があります。出所と成果物を確認し、信頼できる場合だけ、一度開いて警告を閉じ「システム設定 → プライバシーとセキュリティ → このまま開く」で**そのアプリだけ**許可します（[Apple の手順](https://support.apple.com/102445)）。Gatekeeper 自体を切らず、隔離属性を一括削除しません。
+- **Linux:** `PiMate-Desktop-<版>-linux-{x86_64,aarch64}.tar.gz`。Ubuntu 24.04 同世代の glibc、Wayland または X11/XCB、xkbcommon（x11）、fontconfig、OpenSSL 3、Vulkan ローダーと対応 GPU ドライバ（Mesa 等）、ユーザーセッションの D-Bus と Secret Service の解除済み既定コレクション（GNOME Keyring 等）が必要です。展開後 `bin/pimate-desktop` で起動できます。アプリ一覧にも登録する場合は展開先の `bin/`・`share/` の内容を `~/.local/bin/`・`~/.local/share/` に同じ構造で配置し、デスクトップセッションの PATH に `~/.local/bin` を含めてください。
+
+[Desktop packages](.github/workflows/desktop-package.yml) は PR・main の対象変更で4種類の release archive を Actions artifact に残します。ローカルで組み立てるには同じ OS/CPU でリポジトリ直下から `cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh`（要 `jq`・`cargo-about` 0.9.3・Rust の標準ライブラリのライセンス文書）。MIT LICENSE、依存 crate・標準ライブラリの notices も収録し `dist/` に出力します。
+
+**M8 の公開担当者へ（今回はタグ・公開・Developer ID 署名なし）:**
+
+1. GitHub Environment `desktop-release` の deployment branch policy を branch `main` のみ・tag なしに設定済みです。公開前にもこの制限を確認してください。可能なら承認者も設定します。Apple Developer Program で **Developer ID Application** 証明書と秘密鍵を用意し、パスワード付き PKCS#12 にエクスポート。公証用に App Store Connect のチーム API キー・Key ID・Issuer ID を用意します。
+2. `desktop-release` の **Environment secrets のみ**に `DEVELOPER_ID_P12_BASE64`（p12 の base64）、`DEVELOPER_ID_PASSWORD`、`ASC_PRIVATE_KEY_BASE64`（p8 の base64）、`ASC_KEY_ID`、`ASC_ISSUER_ID` を設定します。repository・organization secret や動作確認 VM には置きません。5個すべて未設定なら ad-hoc のまま、一部だけなら失敗。設定済みなら公開時に一時 keychain で hardened runtime・タイムスタンプ付き署名 → `notarytool submit --wait` → staple と検証を経て zip を作り直します。
+3. 公開承認後、main に統合された対象 commit の既存 `desktop-v<版>` タグを指定し、Actions の **Use workflow from: main**・`publish=false`（既定）で dry-run。タグ名・main の履歴・Cargo 版を照合した SHA からビルドします。タグ push は公開を開始しません。検証後だけ `publish=true`。公開直前に live tag・ビルド SHA・最終アーカイブ内の版を再照合します。macOS は Info.plist の両版、Linux は native runner の `--version` と tar.gz 内バイナリの SHA-256 を照合し、公開権限のあるジョブではバイナリを起動しません。同一実行の4成果物を添付し、Release 本文に macOS の署名・公証状態を書きます。公開済みファイルは上書きしません。
+
+Linux の配布物の接続試験は、tar.gz を展開し、`cargo build --locked -p pimate-host` 後に `apps/desktop/tests/linux-session.sh package /tmp/pi-package /展開先/bin/pimate-desktop`。模擬 Host は debug ビルド、起動するアプリには必ず展開したバイナリを指定します。隔離 GNOME の必要ツールは次節を参照してください。
+
 ### デスクトップ開発版（macOS・Linux）
 
 Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.sh`。開発用 `.app` をビルド先に作り LaunchServices から起動します。ssh から裸の実行ファイルを起動するとウィンドウは出ても日本語 IME が ASCII 入力になったためです。`apps/desktop` は FFI を使わず、中核と Markdown の Rust API を直接呼びます。`リンクを貼り付ける` → 表示されたマシン名・アドレスを確認 → 登録。左の Pi を選択して会話を開きます。入力待ちはマシンをまたいで「要対応」に集め、各 Pi の起動元を併記します。Enter は改行・IME の候補選択／確定だけ。送信はボタンまたは **⌘↩（macOS）／Ctrl+Enter（Linux）** です。作業中は「割り込む」、質問・PC 操作の待機中は送信不可です。表示は OS の明暗に追従し、文字サイズを3段階で変更できます。

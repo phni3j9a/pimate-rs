@@ -366,6 +366,10 @@ fn committed_input_matches(
     })
 }
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
+        println!("pimate-desktop {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
     Application::new().run(|cx| {
         gpui_component::init(cx);
         cx.on_window_closed(|cx| {

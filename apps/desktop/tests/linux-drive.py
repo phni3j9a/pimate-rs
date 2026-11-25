@@ -115,6 +115,9 @@ image = snap('list')
 # English OCR locates the demo in the (sorted, variable-length) list.
 words = csv.DictReader(io.StringIO(subprocess.check_output(['tesseract','list.png','stdout','--psm','11','tsv'], text=True)), delimiter='\t')
 word = next(w for w in words if 'android' in w['text'].lower())
+if mode == 'package':
+    print('Package: paired with loopback Host, demo /android visible')
+    sys.exit(0)
 click(int(word['left'])+8, int(word['top'])+6)
 time.sleep(.8)
 # Select only the first characters in the heading, while 50 ms deltas are arriving.

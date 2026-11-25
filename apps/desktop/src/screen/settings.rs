@@ -345,7 +345,7 @@ impl Desktop {
                             .child(link(
                                 "releases",
                                 "公開版を確認 ↗",
-                                "https://github.com/phni3j9a/pimate-rs/releases",
+                                "https://github.com/phni3j9a/pimate-rs/releases?q=tag%3Adesktop-v+prerelease%3Afalse+draft%3Afalse",
                             ))
                             .child(link(
                                 "repo",
