@@ -6,6 +6,7 @@ mod chat_question;
 mod chat_review;
 mod conversation;
 mod sheet_chat;
+mod sheet_tree;
 use super::*;
 use gpui_component::{
     Disableable, Selectable, Sizable,

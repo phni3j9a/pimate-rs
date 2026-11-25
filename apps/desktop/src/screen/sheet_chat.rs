@@ -56,7 +56,7 @@ fn section(title: &str, p: &Colors) -> Div {
                 .child(title.to_owned()),
         )
 }
-fn action(
+pub(super) fn action(
     id: impl Into<SharedString>,
     title: impl Into<SharedString>,
     disabled: bool,
@@ -90,7 +90,7 @@ impl Desktop {
             cx.notify()
         }
     }
-    fn sheet_action(&mut self, action: A, cx: &mut Context<Self>) {
+    pub(super) fn sheet_action(&mut self, action: A, cx: &mut Context<Self>) {
         let Some(sheet) = self.state.sheet.as_mut() else {
             return;
         };
@@ -109,7 +109,7 @@ impl Desktop {
         &self,
         key: &EditorKey,
         p: &Colors,
-        _w: &mut Window,
+        w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let sheet = self.active_sheet().unwrap();
@@ -194,11 +194,12 @@ impl Desktop {
                     .is_some_and(|s| !s.trim().is_empty());
                 body=body.child(section("この Pi",p).children(copy_attach(rows)).child(Button::new("shutdown").danger().label("この Pi を終了…").disabled(busy).on_click(cx.listener(move|this,_,w,cx|{if !page.visible(this){return}let Ok(stop)=page.shutdown_confirmation() else{return}; let pg=page.clone();let detail=if saved{"処理が止まります。保存済みの履歴は一覧から開き直せます。"}else{"処理が止まります。保存先が不明なため履歴が失われる可能性があります。"};let confirm=w.prompt(PromptLevel::Critical,&format!("{title} を終了しますか？"),Some(detail),&["キャンセル","終了する"],cx);cx.spawn(async move|this,cx|{if confirm.await==Ok(1){let r=stop.confirm().await;let _=this.update(cx,|this,cx|if pg.visible(this){this.finish_send_notice(r.map(|_|String::new()));cx.notify()});}}).detach();}))))
             }
-            S::Resume | S::Fork | S::Tree => {
+            S::Tree => body = body.child(self.tree(key, pg, p, w, cx)),
+            S::Resume | S::Fork => {
                 let list = match kind {
                     S::Resume => rows.group("session"),
                     S::Fork => rows.group("entry"),
-                    _ => rows.group("node"),
+                    _ => unreachable!(),
                 };
                 let mut card = section(label(kind), p);
                 let mut n = 0;
@@ -229,24 +230,6 @@ impl Desktop {
                                     .collect(),
                                 Box::new(move || A::Fork(id.clone())),
                                 false,
-                            )
-                        }
-                        S::Tree => {
-                            let id = id.clone();
-                            (
-                                format!(
-                                    "{}　{}",
-                                    if v["isCurrent"] == true {
-                                        "現在位置"
-                                    } else if v["onBranch"] == true {
-                                        "現在の枝"
-                                    } else {
-                                        "別の枝"
-                                    },
-                                    v["preview"].as_str().unwrap_or("本文なし")
-                                ),
-                                Box::new(move || A::Move(id.clone(), false)),
-                                v["isCurrent"] == true,
                             )
                         }
                         _ => continue,
