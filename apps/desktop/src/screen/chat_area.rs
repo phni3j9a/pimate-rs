@@ -6,7 +6,6 @@ impl Desktop {
         mut main: Div,
         key: EditorKey,
         p: &Colors,
-        dark: bool,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
@@ -135,7 +134,7 @@ impl Desktop {
                         })),
                 );
         }
-        main = main.child(self.conversation(&key, p, dark, media, inspector.clone(), w, cx));
+        main = main.child(self.conversation(&key, p, media, inspector.clone(), w, cx));
         let pending_scroll = w
             .use_keyed_state(
                 SharedString::from(format!("pending-scroll:{key:?}")),

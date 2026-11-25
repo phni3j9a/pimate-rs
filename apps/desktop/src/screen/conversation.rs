@@ -111,7 +111,6 @@ impl Desktop {
         &self,
         key: &EditorKey,
         p: &Colors,
-        dark: bool,
         media: super::chat_media::Media,
         inspector: Entity<super::chat_review::Inspector>,
         w: &mut Window,
@@ -151,13 +150,13 @@ impl Desktop {
                 .child(p.caption("まだメッセージはありません"))
                 .into_any_element();
         }
+        let p = *p;
         let desktop = cx.entity();
         let k = key.clone();
         let list = list(self.scroll.clone(), move |i, w, cx| {
             desktop.update(cx, |this, cx| {
                 let data = &this.machines[&k.host].rows;
                 let entries = data.group("entry");
-                let p = Colors::new(dark);
                 let row = entries.get(i);
                 let v = row.map(|(_, v)| v).unwrap_or(&Value::Null);
                 let stream = row.is_none();

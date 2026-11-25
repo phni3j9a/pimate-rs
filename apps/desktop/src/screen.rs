@@ -28,6 +28,7 @@ fn pending_panel(id: SharedString, handle: &ScrollHandle) -> Stateful<Div> {
         .track_scroll(handle)
         .px_4()
 }
+#[derive(Clone, Copy)]
 struct Colors {
     bg: Hsla,
     surface: Hsla,
@@ -343,7 +344,7 @@ impl Render for Desktop {
             );
         }
         if let Some(key) = self.editor() {
-            main = self.chat_area(main, key, &p, dark, w, cx);
+            main = self.chat_area(main, key, &p, w, cx);
         } else {
             let title = if self.hosts.is_empty() {
                 "PC の Pi とつなぐ"
