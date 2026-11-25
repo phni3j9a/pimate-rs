@@ -1,0 +1,14 @@
+--- a/src/platform/linux/wayland/client.rs
++++ b/src/platform/linux/wayland/client.rs
+@@ -1153,6 +1153,11 @@
+             let mut state = client.borrow_mut();
+             if capabilities.contains(wl_seat::Capability::Keyboard) {
+                 let keyboard = seat.get_keyboard(qh, ());
++                if let Some(text_input) = state.text_input.take() {
++                    text_input.destroy();
++                    state.ime_pre_edit = None;
++                    state.composing = false;
++                }
+ 
+                 state.text_input = state
+                     .globals

@@ -1,0 +1,1 @@
+crates.io `gpui 0.2.2` + `gpui-text-input.patch`（[zed#46560](https://github.com/zed-industries/zed/pull/46560)、d92f477）。Wayland の seat の keyboard 能力が再通知されたとき古い text_input を destroy し、IME の状態を消してから作り直す。macOS のソースには変更なし。修正済みの公式 gpui と型互換な gpui-component が公開され、Wayland の後付け入力・macOS の IME/ACK 試験が通ったら vendor を外す。
