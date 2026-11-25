@@ -20,7 +20,7 @@ struct AgentDetailView: View {
         let rows = model.rows[key.host] ?? Rows(), row = rows.groups["run"]?.first { $0.id == route.run }
         let run = row?.object ?? [:], child = run.list("children").first { $0.str("id") == route.child }
         let destination = nextRun.flatMap { run in
-            model.instructions.resume(key, from: unit, run: run)?.destinationChild ?? rows.resumedChild(run: run, index: sourceIndex)?.child
+            model.resumedChild(key, from: unit, run: run, index: sourceIndex)
         }
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
@@ -66,9 +66,7 @@ struct AgentDetailView: View {
                 }.environment(\.photoContext, nil).presentationDragIndicator(.visible)
             }
             .onChange(of: destination, initial: true) { _, child in
-                if child != nil, let nextRun, let selected = model.resumedChild(key, from: unit, run: nextRun, index: sourceIndex) {
-                    navigate(.init(run: selected.run, child: selected.child))
-                }
+                if let child { navigate(.init(run: child.run, child: child.child)) }
             }
             .onChange(of: row) { refresh.request() }
             .task {
