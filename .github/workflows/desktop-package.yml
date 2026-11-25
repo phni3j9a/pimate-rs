@@ -1,10 +1,10 @@
 name: Desktop packages
 on:
   pull_request:
-    paths: ['apps/desktop/**', 'crates/**', 'Cargo.*', 'vendor/**', 'docs/design/icon-kit/desktop/**', '.github/workflows/desktop-package.yml']
+    paths: ['apps/desktop/**', 'crates/**', 'Cargo.*', 'vendor/**', 'docs/design/icon-kit/desktop/**', 'packages/pimate/notices/licenses.hbs', 'LICENSE', '.github/workflows/desktop-package.yml']
   push:
     branches: [main]
-    paths: ['apps/desktop/**', 'crates/**', 'Cargo.*', 'vendor/**', 'docs/design/icon-kit/desktop/**', '.github/workflows/desktop-package.yml']
+    paths: ['apps/desktop/**', 'crates/**', 'Cargo.*', 'vendor/**', 'docs/design/icon-kit/desktop/**', 'packages/pimate/notices/licenses.hbs', 'LICENSE', '.github/workflows/desktop-package.yml']
   workflow_dispatch:
     inputs:
       release_tag:
@@ -37,6 +37,17 @@ jobs:
             if [[ -n $TAG || $PUBLISH == true ]]; then sha=$(bash apps/desktop/check-release.sh "$TAG"); fi
           fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.select.outputs.sha }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: cargo about generate --locked --fail --manifest-path apps/desktop/Cargo.toml -c apps/desktop/about.toml packages/pimate/notices/licenses.hbs -o crates.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crate-notices
+          path: crates.txt
   build:
     needs: source
     strategy:
@@ -55,7 +66,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libclang-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev
       - if: runner.os == 'macOS'
         run: xcrun -sdk macosx metal -v || xcodebuild -downloadComponent MetalToolchain
-      - run: cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: crate-notices
+      - run: cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh crates.txt
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.runner }}

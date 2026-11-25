@@ -5,13 +5,21 @@ version=$(cargo metadata --no-deps --locked --format-version 1 | jq -er '.packag
 arch=$(uname -m); icons=docs/design/icon-kit/desktop
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
 bin=${CARGO_TARGET_DIR:-target}/release/pimate-desktop
-mkdir -p dist
+mkdir -p dist "$stage/notices"
+if [[ $# == 0 ]]; then
+  cargo about generate --locked --fail --manifest-path apps/desktop/Cargo.toml -c apps/desktop/about.toml packages/pimate/notices/licenses.hbs -o "$stage/notices/crates.txt"
+else
+  cp "$1" "$stage/notices/crates.txt"
+fi
+cp LICENSE "$stage/notices/"
+cp "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$stage/notices/"
 case $(uname -s) in
 Darwin)
   app="$stage/PiMate Desktop.app"; contents="$app/Contents"; p="$contents/Info.plist"
   mkdir -p "$contents/MacOS" "$contents/Resources"
   install -m755 "$bin" "$contents/MacOS/pimate-desktop"
   cp "$icons/macos/pimate-light.icns" "$contents/Resources/PiMate.icns"
+  mv "$stage/notices" "$contents/Resources/"
   cp apps/desktop/Info.plist "$p"
   plutil -replace CFBundleName -string 'PiMate Desktop' "$p"
   plutil -replace CFBundleIdentifier -string dev.pimate.desktop "$p"
@@ -27,6 +35,8 @@ Linux)
   mkdir -p "$tree/bin" "$tree/share/applications" "$tree/share/icons/hicolor/256x256/apps"
   install -m755 "$bin" "$tree/bin/pimate-desktop"
   cp "$icons/png/pimate-light-256.png" "$tree/share/icons/hicolor/256x256/apps/pimate-desktop.png"
+  mkdir -p "$tree/share/doc/pimate-desktop"
+  mv "$stage/notices" "$tree/share/doc/pimate-desktop/"
   cp apps/desktop/pimate-desktop.desktop "$tree/share/applications/"
   tar -C "$stage" -czf "dist/$name.tar.gz" "$name" ;;
 *) exit 2 ;;

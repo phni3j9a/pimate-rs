@@ -383,7 +383,7 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 - **署名の確認:** ad-hoc は改変検出用で発行元の本人確認にはなりません。ブラウザから取得した未公証の `.app` は Gatekeeper に拒否される場合があります。出所と成果物を確認し、信頼できる場合だけ、一度開いて警告を閉じ「システム設定 → プライバシーとセキュリティ → このまま開く」で**そのアプリだけ**許可します（[Apple の手順](https://support.apple.com/102445)）。Gatekeeper 自体を切らず、隔離属性を一括削除しません。
 - **Linux:** `PiMate-Desktop-<版>-linux-{x86_64,aarch64}.tar.gz`。Ubuntu 24.04 同世代の glibc、Wayland または X11/XCB、xkbcommon（x11）、fontconfig、OpenSSL 3、Vulkan ローダーと対応 GPU ドライバ（Mesa 等）、ユーザーセッションの D-Bus と Secret Service の解除済み既定コレクション（GNOME Keyring 等）が必要です。展開後 `bin/pimate-desktop` で起動できます。アプリ一覧にも登録する場合は展開先の `bin/`・`share/` の内容を `~/.local/bin/`・`~/.local/share/` に同じ構造で配置し、デスクトップセッションの PATH に `~/.local/bin` を含めてください。
 
-[Desktop packages](.github/workflows/desktop-package.yml) は PR・main の対象変更で4種類の release archive を Actions artifact に残します。ローカルで組み立てるには同じ OS/CPU でリポジトリ直下から `cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh`（要 `jq`）。`dist/` に出力します。
+[Desktop packages](.github/workflows/desktop-package.yml) は PR・main の対象変更で4種類の release archive を Actions artifact に残します。ローカルで組み立てるには同じ OS/CPU でリポジトリ直下から `cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh`（要 `jq`・`cargo-about` 0.9.3・Rust の標準ライブラリのライセンス文書）。MIT LICENSE、依存 crate・標準ライブラリの notices も収録し `dist/` に出力します。
 
 **M8 の公開担当者へ（今回はタグ・公開・Developer ID 署名なし）:**
 
