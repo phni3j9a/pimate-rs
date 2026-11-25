@@ -1,0 +1,62 @@
+name: Desktop packages
+on:
+  pull_request:
+    paths: ['apps/desktop/**', 'crates/**', 'Cargo.*', 'vendor/**', 'docs/design/icon-kit/desktop/**', '.github/workflows/desktop-package.yml']
+  push:
+    branches: [main]
+    paths: ['apps/desktop/**', 'crates/**', 'Cargo.*', 'vendor/**', 'docs/design/icon-kit/desktop/**', '.github/workflows/desktop-package.yml']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing desktop-vX.Y.Z tag on main
+        type: string
+      publish:
+        description: Publish the packages to GitHub Releases
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.select.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: select
+        env:
+          TAG: ${{ inputs.release_tag }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          sha=$GITHUB_SHA
+          if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
+            test "$GITHUB_REF" = refs/heads/main
+            if [[ -n $TAG || $PUBLISH == true ]]; then sha=$(bash apps/desktop/check-release.sh "$TAG"); fi
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+  build:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.runner }}
+    env:
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+      - run: rustup update stable && rustup default stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev
+      - if: runner.os == 'macOS'
+        run: xcrun -sdk macosx metal -v || xcodebuild -downloadComponent MetalToolchain
+      - run: cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.runner }}
+          path: dist/*
+          if-no-files-found: error
