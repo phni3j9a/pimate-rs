@@ -4,6 +4,7 @@ struct Drawer: View {
     let model: SessionModel
     let select: (String, String) -> Void
     @State private var query = ""
+    @State private var newPi = false
     @State private var pair = false
     @State private var settings = false
     @AppStorage("appearance") private var appearance = Appearance.system
@@ -31,7 +32,15 @@ struct Drawer: View {
             if !model.message.isEmpty { Text(model.message).foregroundStyle(PiTheme.failure) }
         }.listStyle(.plain).scrollContentBackground(.hidden).background(PiTheme.background)
             .navigationTitle("Pi 一覧").searchable(text: $query, prompt: "名前・フォルダで検索")
-            .toolbar {
+            .safeAreaInset(edge: .bottom) {
+                Button { newPi = true } label: { Label("新しい Pi", systemImage: "plus") }
+                    .buttonStyle(PiPrimary()).padding(.horizontal, 20).padding(.vertical, 6).background(PiTheme.background)
+            }.sheet(isPresented: $newPi) {
+                NavigationStack {
+                    NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { newPi = false } } }
+                }
+            }.toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("表示設定", systemImage: "slider.horizontal.3") { settings = true } }
                 ToolbarItem(placement: .topBarTrailing) { Button("マシンを追加", systemImage: "plus") { pair = true } }
             }.sheet(isPresented: $pair) {
