@@ -37,7 +37,7 @@ struct Probe: View {
                     if let host = model.host, let id = model.instance {
                         ChatScreen(model: model, host: host, instance: id).id([host, id])
                             .toolbar {
-                                if let key = model.editor {
+                                if let key = model.editor, model.rows[key.host]?.machineInfo["github"] as? Bool == true {
                                     ToolbarItem(placement: .topBarTrailing) {
                                         Button("GitHub", systemImage: "point.3.connected.trianglepath.dotted") { repo = RepoRoute(key: key) }
                                     }

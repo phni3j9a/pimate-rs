@@ -31,10 +31,21 @@ struct GithubView: View {
         .task(id: retry) {
             data = nil; error = ""
             do {
+                guard model.rows[editor.host]?.machineInfo["github"] as? Bool == true else { throw CoreError.Unsupported }
                 var q: Object = ["kind": kind]; q["number"] = number
                 let result = try await model.github(editor, query: q); try Task.checkCancellation()
                 guard let r = result["data"] as? Object, kind == "list" ? r["issues"] is [Object] && r["prs"] is [Object] : r.obj("item")["number"] as? Int == number else { throw CoreError.InvalidMessage }; data = r
-            } catch { if !Task.isCancelled { self.error = "GitHub から取得できませんでした。PC の接続と gh のログイン状態を確認してください。" } }
+            } catch CoreError.Rejected {
+                guard !Task.isCancelled else { return }
+                let status = model.rows[editor.host]?.machineInfo["githubStatus"] as? Bool == true ? try? await model.machineRequest(editor.host, .githubStatus) : nil
+                guard !Task.isCancelled else { return }
+                switch GithubStatus(status?["status"] as? Object) {
+                case .notInstalled: error = "PC に GitHub CLI（gh）がありません。"
+                case .loggedOut: error = "PC で gh auth login を実行してください。"
+                case .loggedIn: error = "取得できませんでした。現在の Pi が GitHub のリポジトリで動いているか、閲覧権限があるかを確認してください。"
+                case .unknown: error = "GitHub から取得できませんでした。PC の gh の状態は未確認です。"
+                }
+            } catch { if !Task.isCancelled { self.error = "PC から取得できませんでした。接続と Pi の状態を確認してください。" } }
         }
     }
     @ViewBuilder private func detail(_ value: Object) -> some View {
@@ -44,6 +55,10 @@ struct GithubView: View {
             if value["bodyTruncated"] as? Bool == true { Text("本文の一部を省略しています") }
         }
         if kind == "pr" {
+            if value["isDraft"] as? Bool == true { Text("ドラフト PR") }
+            if !value.str("reviewDecision").isEmpty { LabeledContent("レビュー", value: value.str("reviewDecision")) }
+            if let head = value["headRefName"] as? String, let base = value["baseRefName"] as? String { Text("\(head) → \(base)").font(.callout.monospaced()).textSelection(.enabled) }
+            if let n = value["changedFiles"] as? Int, let added = value["additions"] as? Int, let removed = value["deletions"] as? Int { Text("変更 \(n) ファイル · +\(added) / −\(removed)") }
             Section("CI チェック") {
                 let checks = value.list("checks")
                 ForEach(checks.indices, id: \.self) { i in LabeledContent(checks[i].str("name"), value: checks[i].str("state")) }

@@ -74,6 +74,7 @@ private struct SpawnFields<HostPicker: View>: View {
             Section("最初のメッセージ（任意）") { TextField("Pi への依頼", text: $form.message, axis: .vertical).lineLimit(2...8) }
             if !note.isEmpty { Text(note).foregroundStyle(PiTheme.failure) }
             if !outcome.isEmpty { Text(outcome).textSelection(.enabled) }
+        }.safeAreaInset(edge: .bottom) {
             Button(busy ? "起動を確認しています…" : "起動") {
                 guard !busy else { return }; busy = true; note = ""; request?.cancel()
                 let approved = form
@@ -85,9 +86,11 @@ private struct SpawnFields<HostPicker: View>: View {
                         case .notListed: outcome = "起動を受け付けましたが、一覧にはまだ表示されていません。"
                         case .messageUnconfirmed(_, let attach): outcome = "Pi は起動しましたが、最初のメッセージは未確認です。" + (attach.map { "\n" + $0 } ?? "")
                         }
+                    } catch CoreError.OutcomeUnknown {
+                        if !Task.isCancelled { outcome = "起動要求の結果は不明です。この画面を閉じ、Pi 一覧で確認してください。" }
                     } catch { if !Task.isCancelled { note = "起動を確認できません。再実行の前に Pi 一覧を確認してください。" } }
                 }
-            }.buttonStyle(PiPrimary()).disabled(!outcome.isEmpty || form.cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || rows?.machineOnline != true)
+            }.buttonStyle(PiPrimary()).padding(.horizontal, 20).padding(.vertical, 6).background(.bar).disabled(!outcome.isEmpty || form.cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || rows?.machineOnline != true)
         }.disabled(busy).task {
             defer { loading = false }
             do {

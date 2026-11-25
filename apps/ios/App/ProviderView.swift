@@ -40,7 +40,12 @@ private struct ProviderConnection: View {
                     if phase == .active && !captured {
                         if let url = URL(string: auth.str("url")), WebImage.valid(url, scheme: "https") {
                             Link("ブラウザで認証", destination: url)
-                            if !auth.str("userCode").isEmpty { Text(verbatim: auth.str("userCode")).font(.body.monospaced()).privacySensitive() }
+                            if !auth.str("userCode").isEmpty {
+                                Button("認証用コードをコピー") {
+                                    UIPasteboard.general.setItems([["public.utf8-plain-text": auth.str("userCode")]], options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(120)])
+                                    note = "認証用コードをコピーしました。"
+                                }
+                            }
                         }
                         if !prompt.str("id").isEmpty {
                             let id = flow.str("id"), pid = prompt.str("id")
@@ -68,7 +73,7 @@ private struct ProviderConnection: View {
             Button("ログイン状態を再確認", action: retry)
         }.disabled(pending != nil).task(id: generation) {
             do { try await page.hold(model, generation: generation) } catch { if !Task.isCancelled { self.error = "専用の Pi に接続できません。" } }
-        }.task(id: active ? flow.str("id") : nil) {
+        }.task(id: flow.str("id")) {
             guard let login = page.login, active else { return }
             do { while try await login.followOnce() { try Task.checkCancellation() }; _ = try await login.request(.authList) }
             catch { if !Task.isCancelled { self.error = "認証の進行状況を確認できません。入力し直す前に状態を再確認してください。" } }

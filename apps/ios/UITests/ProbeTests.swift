@@ -250,7 +250,14 @@ extension ProbeTests {
         XCTAssertTrue(update.waitForExistence(timeout: 12)); shot("Machine-Detail"); tap(update)
         XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "実行時の最新版に更新します")).firstMatch.exists); app.buttons["キャンセル"].tap()
         tap(app.buttons["プロバイダーのログイン"]); XCTAssertTrue(app.buttons["API キーを設定"].waitForExistence(timeout: 15)); shot("Provider")
-        // Never capture a prompt, authorization code, pairing link or QR.
+        // Synthetic input goes only to the loopback fixture. Never attach a prompt, code, link or QR.
+        if variant == "light" {
+            app.buttons["API キーを設定"].tap(); let key = app.secureTextFields["API キー"]
+            XCTAssertTrue(key.waitForExistence(timeout: 12)); key.tap(); key.typeText("fixture-only"); tap(app.buttons["送信"])
+            XCTAssertTrue(app.staticTexts["ログインしました。"].waitForExistence(timeout: 12)); tap(app.buttons["ログアウト…"])
+            app.alerts.buttons["キャンセル"].tap(); tap(app.buttons["ログアウト…"]); app.alerts.buttons["ログアウト"].tap()
+            XCTAssertTrue(app.staticTexts["未設定"].waitForExistence(timeout: 12))
+        }
         app.navigationBars.buttons.element(boundBy: 0).tap(); app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["完了"].tap()
         app.buttons["新しい Pi"].tap(); let recent = app.buttons["/home/demo/code/demo"]; XCTAssertTrue(recent.waitForExistence(timeout: 12)); shot("New-Pi"); tap(recent)
         XCTAssertEqual(app.textFields["フォルダのパス"].value as? String, "/home/demo/code/demo"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])

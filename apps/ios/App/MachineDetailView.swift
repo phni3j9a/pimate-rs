@@ -80,12 +80,16 @@ struct MachineDetailView: View {
     static func summary(_ host: Host, _ rows: Rows?) -> String {
         if host.needsPairing { return "再ペアリングが必要" }
         guard rows?.machineOnline == true else { return rows?.firstStep == .offline ? "接続できません" : "接続しています…" }
-        var parts = ["接続中"]; if let platform = rows?.machineInfo["platform"] as? String { parts.append(platform) }
+        var parts = ["接続中"]; if let platform = rows?.machineInfo["platform"] as? String { parts.append(["darwin": "macOS", "linux": "Linux"][platform] ?? platform) }
         if rows?.firstStep != .loading { parts.append("Pi \(rows?.groups["instance"]?.count ?? 0) 件") }; return parts.joined(separator: " · ")
     }
     private func confirmButton(_ label: String, _ op: MachineConfirmation.Action, _ target: String = "") -> some View {
         Button(label, role: .destructive) {
-            do { let fixed = try model.confirmation(host: host.id, op); title = label; targetName = [host.name, target].filter { !$0.isEmpty }.joined(separator: " · "); confirmation = fixed }
+            do {
+                let fixed = try model.confirmation(host: host.id, op)
+                guard fixed.device == host.deviceId else { throw CoreError.StaleTarget }
+                title = label; targetName = [host.name, target].filter { !$0.isEmpty }.joined(separator: " · "); confirmation = fixed
+            }
             catch { self.error = "対象の登録が変わりました。状態を確認してください。" }
         }
     }
