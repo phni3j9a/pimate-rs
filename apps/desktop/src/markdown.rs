@@ -19,8 +19,33 @@ struct Selection {
     focus: FocusHandle,
     anchor: usize,
     end: usize,
+    displayed: SharedString,
 }
 impl Selection {
+    fn reconcile(&mut self, text: &SharedString) {
+        let range = self.range(&self.displayed);
+        if self.displayed.as_str() != text.as_str()
+            && !text.starts_with(&self.displayed[..range.end])
+        {
+            // Re-parsing can remove markup before the selection. Never reuse a stale byte range.
+            let needle = &self.displayed[range];
+            if !needle.is_empty()
+                && self.displayed.find(needle) == self.displayed.rfind(needle)
+                && let Some(start) = text.find(needle)
+                && Some(start) == text.rfind(needle)
+            {
+                (self.anchor, self.end) = if self.anchor <= self.end {
+                    (start, start + needle.len())
+                } else {
+                    (start + needle.len(), start)
+                };
+            } else {
+                self.anchor = 0;
+                self.end = 0;
+            }
+        }
+        self.displayed = text.clone();
+    }
     fn range(&self, text: &str) -> Range<usize> {
         let r = self.anchor.min(self.end)..self.anchor.max(self.end);
         if text.get(r.clone()).is_some() {
@@ -39,8 +64,18 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
             focus: cx.focus_handle(),
             anchor: 0,
             end: 0,
+            displayed: SharedString::default(),
         },
     );
+    let text: SharedString = spans
+        .iter()
+        .map(|s| match s {
+            Inline::Image(i) => i.alt.as_str(),
+            Inline::Text { text, .. } => text.as_str(),
+        })
+        .collect::<String>()
+        .into();
+    state.update(cx, |s, _| s.reconcile(&text));
     let selected = state.read(cx);
     let focus = selected.focus.clone();
     let selected = if focus.is_focused(w) {
@@ -48,16 +83,16 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
     } else {
         0..0
     };
-    let mut text = String::new();
+    let mut end = 0;
     let mut runs = Vec::new();
     let mut links = Vec::new();
     for s in spans {
-        let start = text.len();
+        let start = end;
         let mut style = HighlightStyle::default();
         match s {
-            Inline::Image(i) => text.push_str(&i.alt),
+            Inline::Image(i) => end += i.alt.len(),
             Inline::Text { text: t, style: m } => {
-                text.push_str(t);
+                end += t.len();
                 style.font_weight = m.bold.then_some(FontWeight::BOLD);
                 style.font_style = m.italic.then_some(FontStyle::Italic);
                 style.strikethrough = m.strike.then_some(StrikethroughStyle {
@@ -66,7 +101,7 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
                 });
                 style.background_color = m.code.then(|| cx.theme().muted);
                 if let Some(url) = m.href.as_ref().filter(|u| web_link(u)) {
-                    links.push((start..text.len(), url.clone()));
+                    links.push((start..end, url.clone()));
                     style.color = Some(cx.theme().link);
                     style.underline = Some(UnderlineStyle {
                         thickness: px(1.),
@@ -76,7 +111,6 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
             }
         }
         // StyledText requires sorted, non-overlapping UTF-8 byte ranges.
-        let end = text.len();
         let mut a = start;
         for b in [selected.start, selected.end, end] {
             let b = b.min(end);
@@ -90,7 +124,6 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
             }
         }
     }
-    let text: SharedString = text.into();
     let styled = StyledText::new(text.clone()).with_highlights(runs);
     let pos = styled.layout().clone();
     let move_pos = pos.clone();
@@ -366,5 +399,26 @@ fn publishes_while_fifty_ms_deltas_are_still_arriving(cx: &mut gpui::TestAppCont
         assert_eq!(c.blocks[0].id, 0);
         assert!(c.blocks[1].plain_text().starts_with("delta"));
         assert_ne!(c.published.as_ref(), "stable\n\ndelta 0");
+    });
+}
+
+#[cfg(test)]
+#[gpui::test]
+fn reparsed_markup_never_retargets_the_selection(cx: &mut gpui::TestAppContext) {
+    let plain = |source| pimate_markdown::parse(source, false).blocks[0].plain_text();
+    cx.update(|cx| {
+        let mut sel = Selection {
+            focus: cx.focus_handle(),
+            anchor: 7,
+            end: 2,
+            displayed: plain("**alpha beta").into(),
+        };
+        sel.reconcile(&plain("**alpha beta**").into());
+        assert_eq!((sel.anchor, sel.end), (5, 0));
+        assert_eq!(&sel.displayed[sel.range(&sel.displayed)], "alpha");
+        sel.reconcile(&"alpha beta 日本語".into());
+        assert_eq!((sel.anchor, sel.end), (5, 0));
+        sel.reconcile(&"比較: alpha / alpha".into());
+        assert!(sel.range(&sel.displayed).is_empty());
     });
 }
