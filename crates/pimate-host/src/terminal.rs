@@ -252,10 +252,11 @@ impl Terminal {
         tokio::spawn(async move {
             let _ = child.wait().await;
         });
-        ensure!(
-            timeout(Duration::from_secs(8), ready.read_u8()).await?? == b'R',
-            "Pi launcher failed"
-        );
+        // Once spawned, the keeper may already hold a Pi even if its ready byte is late.
+        let ready = timeout(Duration::from_secs(8), ready.read_u8())
+            .await
+            .context("outcome_unknown")?;
+        ensure!(ready? == b'R', "Pi launcher failed");
         Ok((id, name, isolation))
     }
 }

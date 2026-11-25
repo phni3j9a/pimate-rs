@@ -198,10 +198,11 @@ pub async fn spawn(
             if v { "+pimate_ask" } else { "-pimate_ask" }.into(),
         ])
     }
-    let mut guard = last.try_lock().context("Another spawn is active")?;
+    // Another spawn is active or too recent: nothing was started, the client may retry later.
+    let mut guard = last.try_lock().context("busy")?;
     ensure!(
         guard.is_none_or(|t| t.elapsed() >= Duration::from_secs(3)),
-        "Another spawn is too recent"
+        "busy"
     );
     *guard = Some(Instant::now());
     let (id, name, _) = term

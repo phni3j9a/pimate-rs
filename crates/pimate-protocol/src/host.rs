@@ -278,6 +278,12 @@ pub enum SpawnErrorCode {
     SpawnFailed,
     #[serde(rename = "unsupported")]
     Unsupported,
+    /// Another spawn is active or too recent; nothing was started.
+    #[serde(rename = "busy")]
+    Busy,
+    /// The process was started but not confirmed; a Pi may run. Check the list before retrying.
+    #[serde(rename = "outcome_unknown")]
+    OutcomeUnknown,
 }
 
 /// Only the selected Host-known instance repository; no paths, repos or CLI arguments from the app.
@@ -769,6 +775,8 @@ pub enum SpawnResultOutcome {
 pub enum AuthSessionResultOutcomeFalseCode {
     #[serde(rename = "spawn_failed")]
     SpawnFailed,
+    #[serde(rename = "outcome_unknown")]
+    OutcomeUnknown,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
