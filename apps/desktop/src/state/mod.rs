@@ -12,6 +12,7 @@ mod chat;
 pub(crate) use agents::*;
 pub(crate) mod images;
 mod machine;
+pub(crate) mod receipts;
 pub(crate) mod review;
 pub(crate) use chat::*;
 pub(crate) use machine::*;
@@ -20,13 +21,14 @@ pub(crate) use machine::*;
 pub(crate) struct DesktopState {
     page: Arc<()>,
     pub registration: Registration,
+    pub sheet: Option<Sheet>,
     pub attachments: Attachments,
     pub settings: Settings,
     pub instructions: Instructions,
 }
 #[derive(Clone)]
 pub(crate) struct Page {
-    pub host: String,
+    host: String,
     images: Arc<images::Images>,
     key: Option<EditorKey>,
     start: Value,
@@ -49,6 +51,7 @@ impl Desktop {
 impl DesktopState {
     pub fn close_page(&mut self) {
         self.page = Arc::new(());
+        self.sheet = None;
     }
     fn open(&mut self, host: &str, m: &Machine, key: Option<EditorKey>) -> Page {
         self.close_page();
@@ -68,6 +71,9 @@ impl DesktopState {
     }
 }
 impl Page {
+    pub fn host(&self) -> &str {
+        &self.host
+    }
     fn live(&self) -> Result<Arc<Connection>, Error> {
         if self.page.strong_count() == 0 || self.life.strong_count() == 0 {
             return Err(Error::StaleTarget);
@@ -118,6 +124,7 @@ impl Page {
 #[derive(Default)]
 pub struct Registration {
     pub listing_known: bool,
+    pub pair_message: String,
     pub save_unknown: bool,
     pub error: Option<Error>,
     pub paired_host: Option<String>,
@@ -143,7 +150,7 @@ impl Registration {
             ),
             (true, None) => "保存の結果が不明です。再登録前に一覧を確認してください".into(),
             (false, Some(e)) => format!("登録を読み出せません: {e}"),
-            _ => String::new(),
+            _ => self.pair_message.clone(),
         }
     }
 }
@@ -161,3 +168,5 @@ impl DesktopState {
         }
     }
 }
+#[cfg(test)]
+mod tests;

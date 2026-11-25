@@ -257,6 +257,14 @@ async fn fetch(mut url: Url) -> Result<Vec<u8>, Error> {
     }
     Err(Error::BadRequest)
 }
+async fn deadline<T>(
+    limit: Duration,
+    f: impl std::future::Future<Output = Result<T, Error>>,
+) -> Result<T, Error> {
+    tokio::time::timeout(limit, f)
+        .await
+        .map_err(|_| Error::Timeout)?
+}
 async fn download(url: Url) -> Result<Vec<u8>, Error> {
     // GPUI's executor is not a Tokio reactor. Abort the one ephemeral request when its tile closes.
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
@@ -267,11 +275,7 @@ async fn download(url: Url) -> Result<Vec<u8>, Error> {
             .build()
             .expect("image runtime")
     });
-    let task = rt.spawn(async move {
-        tokio::time::timeout(Duration::from_secs(20), fetch(url))
-            .await
-            .map_err(|_| Error::Timeout)?
-    });
+    let task = rt.spawn(deadline(Duration::from_secs(20), fetch(url)));
     struct Abort(tokio::task::AbortHandle);
     impl Drop for Abort {
         fn drop(&mut self) {
@@ -280,4 +284,77 @@ async fn download(url: Url) -> Result<Vec<u8>, Error> {
     }
     let _abort = Abort(task.abort_handle());
     task.await.map_err(|_| Error::Offline)?
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn redirects_validate_every_hop_and_streamed_bytes() {
+        let u = Url::parse("https://example.test/a").unwrap();
+        assert!(redirect(&u, "/safe", 4).is_ok());
+        for (v, n) in [
+            ("http://example.test/x", 0),
+            ("//user:pass@example.test", 1),
+            ("file:///tmp/x", 0),
+            ("/sixth", 5),
+        ] {
+            assert!(redirect(&u, v, n).is_err())
+        }
+        let mut out = vec![];
+        assert!(append(&mut out, b"123", 4).is_ok());
+        assert!(append(&mut out, b"4", 4).is_ok());
+        assert!(append(&mut out, b"5", 4).is_err());
+        assert_eq!(out, b"1234");
+    }
+    #[tokio::test]
+    async fn even_an_unending_transfer_has_one_deadline() {
+        let start = std::time::Instant::now();
+        let result = deadline(Duration::from_millis(20), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(1)).await
+            }
+            #[allow(unreachable_code)]
+            Ok(())
+        })
+        .await;
+        assert_eq!(result, Err(Error::Timeout));
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+    #[test]
+    fn sparse_slots_do_not_allocate_by_count() {
+        let r = serde_json::json!({"imageCount":100_000_000,"images":[{"data":"eA=="}],"imageIndices":[2]});
+        assert_eq!(history_count(&r), 100_000_000);
+        assert!(matches!(
+            history_source("e", &r, 2, true, true),
+            Some(Source::Inline("eA=="))
+        ));
+        assert!(matches!(
+            history_source("e", &r, 99_999_999, false, true),
+            Some(Source::Entry("e", 99_999_999))
+        ));
+        assert!(history_source("e", &r, 0, true, false).is_none());
+    }
+    #[test]
+    fn cache_hit_refreshes_age_and_files_are_answer_scoped() {
+        let mut c = Cache::default();
+        let key = |n: usize| ImageId::File(n.to_string(), "same.png".into());
+        for n in 0..64 {
+            c.put(key(n), true, Arc::from([1]));
+        }
+        assert!(c.hit(&key(0), true).is_some());
+        c.put(key(64), true, Arc::from([2]));
+        assert!(c.hit(&key(0), true).is_some());
+        assert!(c.hit(&key(1), true).is_none());
+        assert!(c.hit(&key(64), false).is_none());
+    }
+    #[test]
+    fn picked_file_is_encoded_as_bounded_jpeg() {
+        let p = std::env::temp_dir().join(format!("{}.png", uuid::Uuid::new_v4()));
+        image::RgbImage::new(50, 100).save(&p).unwrap();
+        let r = encode_file(&p, 1024).unwrap();
+        assert_eq!(r.mime_type, p::PromptImageMimeType::ImageJpeg);
+        assert!(STANDARD.decode(r.data).unwrap().len() <= 1024);
+        assert!(encode_file(&p, 2).is_err());
+        std::fs::remove_file(p).unwrap();
+    }
 }

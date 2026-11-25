@@ -20,7 +20,6 @@ pub enum SheetAction {
     Move(String, bool),
     Label(p::SetLabelParams),
     Compact,
-    Shutdown,
 }
 impl SheetAction {
     fn wire(self) -> (M, Value) {
@@ -44,7 +43,6 @@ impl SheetAction {
             ),
             Label(v) => (M::SetLabel, json!(v)),
             Compact => (M::Compact, json!({})),
-            Shutdown => (M::Shutdown, json!({})),
         }
     }
 }
@@ -132,6 +130,9 @@ impl Attachments {
     ) -> Result<(), Error> {
         p.current()?;
         let k = p.editor()?;
+        if self.submitting.strong_count() > 0 {
+            return Err(Error::Blocked);
+        }
         if self.images(k) != shown || index >= shown.len() {
             return Err(Error::StaleTarget);
         }
@@ -243,10 +244,24 @@ impl Desktop {
         {
             return Err(Error::Blocked);
         }
-        let kind = if let Some(name) = text.trim_end().strip_prefix('/')
+        let kind = submission_kind(&r, &text, !images.is_empty())?;
+        let lock = Arc::new(());
+        self.state.attachments.submitting = Arc::downgrade(&lock);
+        Ok(Submission {
+            page: page.clone(),
+            text,
+            images,
+            kind,
+            _lock: lock,
+        })
+    }
+}
+fn submission_kind(r: &Rows, text: &str, images: bool) -> Result<SubmitKind, Error> {
+    Ok(
+        if let Some(name) = text.trim_end().strip_prefix('/')
             && r.get("command", name)["source"] == "builtin"
         {
-            if !images.is_empty() {
+            if images {
                 return Err(Error::BadRequest);
             }
             match name {
@@ -258,17 +273,8 @@ impl Desktop {
             }
         } else {
             SubmitKind::Send
-        };
-        let lock = Arc::new(());
-        self.state.attachments.submitting = Arc::downgrade(&lock);
-        Ok(Submission {
-            page: page.clone(),
-            text,
-            images,
-            kind,
-            _lock: lock,
-        })
-    }
+        },
+    )
 }
 fn image_limit(r: &Rows) -> usize {
     r.get("view", "promptImageLimit")
@@ -290,7 +296,7 @@ pub struct Submission {
 }
 pub struct Accepted {
     ticket: Submission,
-    pub open: Option<String>,
+    open: Option<String>,
 }
 impl Submission {
     pub async fn submit(mut self) -> Result<Accepted, Error> {
@@ -311,6 +317,7 @@ impl Submission {
                     })
                     .collect();
                 self.page
+                    .live()?
                     .perform(Operation::Send {
                         target: self.page.editor()?.target(),
                         text: self.text.clone(),
@@ -372,5 +379,174 @@ impl Picker {
                 super::images::encode_file(path, budget)
             })
             .collect()
+    }
+}
+impl Desktop {
+    /// Poll after rendering a ready editor. Do not put returned fork text over user edits.
+    pub fn receive_editor_text(&mut self, w: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(k) = self.editor() else { return false };
+        let Some(session) = &k.session else {
+            return false;
+        };
+        let empty = self.drafts.get(&k).is_none_or(String::is_empty)
+            && self.state.attachments.images(&k).is_empty()
+            && !self.state.attachments.busy()
+            && !self.sending
+            && (self.input.is_none() || self.live_matches(&k, "", w, cx));
+        let rows = &mut self.machines.get_mut(&k.host).unwrap().rows;
+        let start = rows.get("view", "startedAt").as_u64();
+        if let Some(text) = rows.receipts.take_text(&k.instance, start, session)
+            && empty
+        {
+            self.drafts.insert(k, text);
+            self.input = None;
+            return true;
+        }
+        false
+    }
+}
+
+pub struct Shutdown(Page);
+impl Page {
+    pub fn shutdown_confirmation(&self) -> Result<Shutdown, Error> {
+        self.editor()?;
+        if self.start.as_u64().is_none() {
+            return Err(Error::StaleTarget);
+        }
+        self.current()?;
+        Ok(Shutdown(self.clone()))
+    }
+}
+impl Shutdown {
+    pub async fn confirm(self) -> Result<Value, Error> {
+        self.0.rc(M::Shutdown, json!({})).await
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SheetPage {
+    Model,
+    Usage,
+    Session,
+    Resume,
+    Fork,
+    Tree,
+    Commands,
+}
+pub struct Sheet {
+    pub page: Page,
+    pub kind: SheetPage,
+    pending: Weak<()>,
+    pub reply: Option<Value>,
+    pub error: Option<Error>,
+}
+pub struct SheetRequest {
+    page: Page,
+    lock: Arc<()>,
+    action: SheetAction,
+}
+impl Desktop {
+    pub fn open_sheet(&mut self, kind: SheetPage) -> Result<Page, Error> {
+        let page = self.open_chat()?;
+        self.state.sheet = Some(Sheet {
+            page: page.clone(),
+            kind,
+            pending: Weak::new(),
+            reply: None,
+            error: None,
+        });
+        Ok(page)
+    }
+    pub fn active_sheet(&self) -> Option<&Sheet> {
+        self.state.sheet.as_ref().filter(|s| s.page.visible(self))
+    }
+}
+impl Sheet {
+    pub fn loading(&self) -> bool {
+        self.pending.strong_count() > 0
+    }
+    pub fn begin(&mut self, action: SheetAction) -> Result<SheetRequest, Error> {
+        self.page.live()?;
+        if self.loading() {
+            return Err(Error::Blocked);
+        }
+        let lock = Arc::new(());
+        self.pending = Arc::downgrade(&lock);
+        self.reply = None;
+        self.error = None;
+        Ok(SheetRequest {
+            page: self.page.clone(),
+            lock,
+            action,
+        })
+    }
+}
+pub struct SheetReply {
+    page: Page,
+    lock: Arc<()>,
+    result: Result<Value, Error>,
+}
+impl SheetRequest {
+    pub async fn run(self) -> SheetReply {
+        let result = self.page.sheet(self.action).await;
+        SheetReply {
+            page: self.page,
+            lock: self.lock,
+            result,
+        }
+    }
+}
+impl SheetReply {
+    pub fn finish(self, app: &mut Desktop) {
+        if self.page.visible(app)
+            && let Some(s) = &mut app.state.sheet
+            && s.pending.ptr_eq(&Arc::downgrade(&self.lock))
+        {
+            match self.result {
+                Ok(v) => s.reply = Some(v),
+                Err(e) => s.error = Some(e),
+            }
+        }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn slash_requires_exact_builtin_without_images() {
+        let mut r = Rows::default();
+        r.apply(
+            (
+                1,
+                vec![
+                    super::super::tests::row("command", "new", json!({"source":"builtin"})),
+                    super::super::tests::row("command", "tree", json!({"source":"builtin"})),
+                ],
+            ),
+            || panic!(),
+        );
+        assert!(matches!(
+            submission_kind(&r, "/new", false),
+            Ok(SubmitKind::Sheet(SheetAction::New))
+        ));
+        assert!(matches!(
+            submission_kind(&r, " /new", false),
+            Ok(SubmitKind::Send)
+        ));
+        assert!(matches!(submission_kind(&r,"/tree",false),Ok(SubmitKind::Open(s))if s=="tree"));
+        assert!(matches!(
+            submission_kind(&r, "/new", true),
+            Err(Error::BadRequest)
+        ));
+    }
+    #[test]
+    fn no_shell_syntax_from_host() {
+        for s in ["", "--help", "a b", "a;whoami", "a\n", "$(x)"] {
+            assert!(attach_command(s).is_none())
+        }
+        assert_eq!(
+            attach_command("pimate-pi.1").unwrap(),
+            "pimate attach pimate-pi.1"
+        );
     }
 }

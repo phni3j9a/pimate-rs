@@ -25,6 +25,8 @@ security-framework = "3"
 [dev-dependencies]
 gpui = { version = "=0.2.2", features = ["test-support"] }
 uuid.workspace = true
+tokio-tungstenite.workspace = true
+futures-util.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 oo7 = { version = "0.5", default-features = false, features = ["async-std", "native_crypto"] }

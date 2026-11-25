@@ -36,6 +36,7 @@ pub struct Rows {
     pub host_life: std::sync::Arc<()>,
     pub view_life: std::sync::Arc<()>,
     revision: u64,
+    pub receipts: crate::state::receipts::Receipts,
     moves: HashMap<String, (String, String, u64)>,
     groups: HashMap<String, Vec<(String, Value)>>,
 }
@@ -59,42 +60,23 @@ impl Rows {
             return;
         }
         let missed = batch.contains(&Change::ResyncRequired);
-        // Check each change, including a disconnect/reconnect in one delivery.
-        let mut host_changed = missed;
-        let mut view_changed = missed;
-        for change in &batch {
-            let (c, id, changed) = match change {
-                Change::Upsert(i) => (&i.collection, &i.id, || {
-                    self.get(&i.collection, &i.id)
-                        != &serde_json::from_str::<Value>(&i.json).expect("core JSON")
-                }),
-                Change::Remove { collection, id } => {
-                    host_changed |= collection == "host" && id == "connection";
-                    view_changed |= collection == "view"
-                        && matches!(
-                            id.as_str(),
-                            "instanceId" | "startedAt" | "phase" | "session"
-                        );
-                    continue;
-                }
-                _ => continue,
-            };
-            if c == "host" && id == "connection" {
-                host_changed |= changed();
-            }
-            if c == "view"
-                && matches!(
-                    id.as_str(),
-                    "instanceId" | "startedAt" | "phase" | "session"
-                )
-            {
-                view_changed |= changed();
-            }
-        }
+        // Core emits upserts only for changed values. Inspect the whole ordered batch,
+        // so a ready → offline → ready round trip invalidates the old confirmation.
+        let touches = |c: &str, ids: &[&str]| {
+            batch.iter().any(|change| {
+                let (col, id) = match change {
+                    Change::Upsert(i) => (&i.collection, &i.id),
+                    Change::Remove { collection, id } => (collection, id),
+                    _ => return false,
+                };
+                col == c && ids.contains(&id.as_str())
+            })
+        };
+        let host_changed = missed || touches("host", &["connection"]);
         if host_changed {
             self.host_life = Default::default();
         }
-        if host_changed || view_changed {
+        if host_changed || touches("view", &["instanceId", "startedAt", "phase", "session"]) {
             self.view_life = Default::default();
         }
         if batch.len() > 128 || missed {
@@ -108,6 +90,9 @@ impl Rows {
                 || next.revision > rev
                 || self.get("notice", "sessionChanged") != next.get("notice", "sessionChanged")
                 || self.get("host", "selection") != next.get("host", "selection");
+            self.receipts.result(next.get("operationResult", "latest"));
+            self.receipts.busy(next.get("busy", "operation"), None);
+            next.receipts = std::mem::take(&mut self.receipts);
             let prior = std::mem::take(&mut self.moves);
             *self = next;
             self.moves = prior;
@@ -117,6 +102,7 @@ impl Rows {
             return;
         }
         let mut moved = false;
+        let mut local = false;
         for change in batch {
             match change {
                 Change::Upsert(Item {
@@ -126,14 +112,29 @@ impl Rows {
                     json,
                 }) => {
                     moved |= collection == "notice" && id == "sessionChanged";
+                    let v: Value = serde_json::from_str(&json).expect("core JSON");
+                    match (collection.as_str(), id.as_str()) {
+                        ("busy", "operation") => {
+                            let pi = self.get("view", "instanceId").as_str().map(str::to_owned);
+                            self.receipts.busy(&v, pi.as_deref());
+                        }
+                        ("operationResult", "latest") => self.receipts.result(&v),
+                        ("notice", "sessionChanged") => {
+                            local = self
+                                .get("view", "instanceId")
+                                .as_str()
+                                .is_some_and(|pi| self.receipts.local_move(pi, &v))
+                        }
+                        _ => (),
+                    }
                     let g = self.groups.entry(collection).or_default();
                     g.retain(|(k, _)| k != &id);
-                    g.insert(
-                        (position as usize).min(g.len()),
-                        (id, serde_json::from_str(&json).expect("core JSON")),
-                    );
+                    g.insert((position as usize).min(g.len()), (id, v));
                 }
                 Change::Remove { collection, id } => {
+                    if collection == "busy" && id == "operation" {
+                        self.receipts.busy(&Value::Null, None);
+                    }
                     if let Some(g) = self.groups.get_mut(&collection) {
                         g.retain(|(k, _)| k != &id);
                     }
@@ -143,7 +144,13 @@ impl Rows {
         }
         self.revision = rev;
         if moved {
-            self.remember_move();
+            if local {
+                if let Some(pi) = self.get("view", "instanceId").as_str().map(str::to_owned) {
+                    self.moves.remove(&pi);
+                }
+            } else {
+                self.remember_move();
+            }
         }
     }
     fn remember_move(&mut self) {

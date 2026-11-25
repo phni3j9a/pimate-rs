@@ -407,9 +407,11 @@ mod desktop {
             needs_pairing: false,
         };
         s.save(h.clone(), "first".into()).unwrap();
+        let old = h.clone();
         h.device_id = "new".into();
         h.name = "two".into();
         s.save(h.clone(), "second".into()).unwrap();
+        assert_eq!(s.forget_matching(&old), Err(Error::StaleTarget));
         s.invalidate("other".into(), "new".into()).unwrap();
         s.invalidate(id.clone(), "old".into()).unwrap();
         let c = s.load(id.clone()).unwrap();
@@ -418,7 +420,7 @@ mod desktop {
         s.invalidate(id.clone(), "new".into()).unwrap();
         assert!(s.hosts().unwrap()[0].needs_pairing);
         assert!(s.load(id.clone()).unwrap().token.is_empty());
-        s.forget(id).unwrap();
+        s.forget_matching(&s.hosts().unwrap()[0]).unwrap();
         assert!(s.hosts().unwrap().is_empty());
     }
 }

@@ -66,9 +66,9 @@ impl Rows {
 }
 pub struct Stop {
     page: Page,
-    pub run: String,
-    pub viewed_child: Option<String>,
-    pub action: String,
+    run: String,
+    viewed_child: Option<String>,
+    action: String,
 }
 impl Page {
     pub fn stop(&self, run: &str, child: Option<&str>) -> Result<Stop, Error> {
@@ -141,6 +141,9 @@ impl Page {
     }
 }
 impl Stop {
+    pub fn scope(&self) -> (&str, Option<&str>, &str) {
+        (&self.run, self.viewed_child.as_deref(), &self.action)
+    }
     pub async fn confirm(self) -> Result<Value, Error> {
         let r = self.page.current()?;
         if r.stop_action(&self.run, self.viewed_child.as_deref()) != Some(&self.action) {
@@ -299,5 +302,24 @@ impl Instructions {
     }
     pub(super) fn forget(&mut self, h: &str) {
         self.0.retain(|s| s.editor.host != h)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::super::tests::row;
+    use super::*;
+    #[test]
+    fn completed_child_never_becomes_parent_stop() {
+        let mut r = Rows::default();
+        for (rev, state, actions, expected) in [
+            (1, "running", json!([]), Some("abort_parent")),
+            (2, "running", json!(["stop_child"]), Some("stop_child")),
+            (3, "complete", json!([]), None),
+        ] {
+            r.apply((rev,vec![row("run","r",json!({"active":true,"stopAction":"abort_parent","children":[{"id":"c","state":state,"actions":actions}]})),row("runWatch","r",json!(true))]),||panic!());
+            assert_eq!(r.stop_action("r", Some("c")), expected);
+            assert!(r.stop_action("r", Some("not-c")).is_none());
+        }
+        assert_eq!(r.subagent_counts()["complete"], 1);
     }
 }

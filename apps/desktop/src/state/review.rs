@@ -166,6 +166,11 @@ impl Page {
     pub fn review(&self, turn: Option<String>) -> Result<Review, Error> {
         let r = self.current()?;
         let k = self.editor()?;
+        let result = self.review_rows(&r, k, turn);
+        self.live()?;
+        Ok(result)
+    }
+    fn review_rows(&self, r: &Rows, k: &EditorKey, turn: Option<String>) -> Review {
         let cwd = r.get("instance", &k.instance)["cwd"]
             .as_str()
             .unwrap_or_default();
@@ -255,13 +260,12 @@ impl Page {
                 });
             }
         }
-        self.live()?;
-        Ok(Review {
+        Review {
             page: self.clone(),
             turn,
             files,
             latest_changed_turn: latest,
-        })
+        }
     }
     pub fn append_reference(&self, app: &mut Desktop, text: &str) -> Result<(), Error> {
         let k = self.editor()?;
@@ -295,5 +299,41 @@ impl Review {
             app,
             &format!("この{scope}の変更（{}{others}）について：", f.path),
         )
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn patch_counts_only_hunk_lines() {
+        let p = Patch::parse(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -2,2 +3,2 @@ text\n same\n-old\n+new\n\\ No newline at end of file\n",
+        );
+        assert_eq!(p.path, Some("f"));
+        assert_eq!((p.added, p.removed), (1, 1));
+        let lines = &p.hunks[0].lines;
+        assert_eq!(lines[1].old, Some(3));
+        assert_eq!(lines[2].new, Some(4));
+        assert!(lines[2].no_newline);
+    }
+    #[test]
+    fn review_keeps_call_order_and_unicode_identity() {
+        let page = super::super::tests::dummy_page();
+        let key = page.editor().unwrap();
+        let items=[("u",json!({"kind":"user"})),("a",json!({"kind":"assistant","toolCalls":[{"id":"1","name":"write","args":{"path":"./é","content":"body"}},{"id":"2","name":"edit","args":{"path":"sub/../é"}},{"id":"3","name":"write","args":{"path":"e\u{301}"}}]})),("r1",json!({"kind":"tool_result","toolCallId":"1","details":{"pimate":{"kind":"write_diff","existed":false}}})),("r2",json!({"kind":"tool_result","toolCallId":"2","details":{"patch":"patch"}})),("r3",json!({"kind":"tool_result","toolCallId":"3","detailsOmitted":true}))].into_iter().enumerate().map(|(i,(id,v))|pimate_core::Item{collection:"entry".into(),id:id.into(),position:i as u64,json:v.to_string()}).collect();
+        let r = Rows::snapshot(pimate_core::Snapshot { revision: 1, items });
+        let v = page.review_rows(&r, key, Some("u".into()));
+        assert_eq!(v.files.len(), 2);
+        let p = &v.files[0].pieces;
+        assert!(p[0].created);
+        assert_eq!(p[0].content.as_deref(), Some("body"));
+        assert_eq!(p[1].patch.as_deref(), Some("patch"));
+        assert_eq!(v.files[1].pieces[0].omitted.as_deref(), Some("too_large"));
+        assert!(
+            page.review_rows(&r, key, Some("other".into()))
+                .files
+                .is_empty()
+        );
     }
 }

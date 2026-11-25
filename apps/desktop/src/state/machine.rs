@@ -29,6 +29,26 @@ pub struct Settings {
     pub ask_tool: bool,
 }
 impl Settings {
+    pub fn path() -> std::io::Result<std::path::PathBuf> {
+        let home = || {
+            std::env::var_os("HOME")
+                .map(std::path::PathBuf::from)
+                .ok_or(std::io::ErrorKind::NotFound)
+        };
+        #[cfg(target_os = "macos")]
+        let dir = home()?.join("Library/Application Support");
+        #[cfg(not(target_os = "macos"))]
+        let dir = std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .map_or_else(|| home().map(|h| h.join(".config")), Ok)?;
+        let name = if cfg!(debug_assertions) && std::env::args().any(|s| s == "--demo") {
+            "pimate-rs-desktop-demo"
+        } else {
+            "pimate-rs-desktop"
+        };
+        Ok(dir.join(name).join("settings.json"))
+    }
     pub fn load(path: &Path) -> std::io::Result<Self> {
         match std::fs::read(path) {
             Ok(v) => Ok(serde_json::from_slice(&v)?),
@@ -230,23 +250,37 @@ impl SpawnForm {
             .into();
         Ok(Spawned {
             page: self.page,
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(20),
             id,
             message_unconfirmed: v["messageError"].as_str().is_some_and(|s| !s.is_empty()),
         })
     }
 }
 pub struct Spawned {
+    deadline: std::time::Instant,
     page: Page,
     pub id: String,
     pub message_unconfirmed: bool,
 }
+#[derive(Debug, PartialEq, Eq)]
+pub enum SpawnStatus {
+    Waiting,
+    Ready,
+    MessageUnconfirmed,
+    NotListed,
+}
 impl Spawned {
-    pub fn ready(&self) -> bool {
-        !self.message_unconfirmed
-            && self
-                .page
-                .current()
-                .is_ok_and(|r| !r.get("instance", &self.id).is_null())
+    pub fn status(&self) -> Result<SpawnStatus, Error> {
+        let r = self.page.current()?;
+        Ok(if self.message_unconfirmed {
+            SpawnStatus::MessageUnconfirmed
+        } else if !r.get("instance", &self.id).is_null() {
+            SpawnStatus::Ready
+        } else if std::time::Instant::now() >= self.deadline {
+            SpawnStatus::NotListed
+        } else {
+            SpawnStatus::Waiting
+        })
     }
 }
 struct Hold(Arc<Connection>, String);
@@ -257,7 +291,7 @@ impl Drop for Hold {
 }
 pub struct Login {
     page: Page,
-    pub target: pimate_core::Target,
+    target: pimate_core::Target,
     _hold: Hold,
 }
 pub enum AuthAction {
@@ -265,7 +299,6 @@ pub enum AuthAction {
     Begin(p::AuthBeginParams),
     Respond(p::AuthRespondParams),
     Cancel(p::AuthCancelParams),
-    Logout(p::AuthLogoutParams),
 }
 impl Login {
     pub async fn request(&self, action: AuthAction) -> Result<Value, Error> {
@@ -274,7 +307,6 @@ impl Login {
             AuthAction::Begin(v) => (RcMethod::AuthBegin, json!(v)),
             AuthAction::Respond(v) => (RcMethod::AuthRespond, json!(v)),
             AuthAction::Cancel(v) => (RcMethod::AuthCancel, json!(v)),
-            AuthAction::Logout(v) => (RcMethod::AuthLogout, json!(v)),
         };
         self.page
             .perform(Operation::Rc {
@@ -350,5 +382,121 @@ impl Forget {
     pub fn confirm(self) -> Result<pimate_core::Host, Error> {
         crate::store::Store::open().forget_matching(&self.0)?;
         Ok(self.0)
+    }
+}
+
+pub struct Logout<'a>(&'a Login, p::AuthLogoutParams);
+impl Login {
+    pub fn instance(&self) -> &str {
+        &self.target.instance
+    }
+    pub fn logout_confirmation(&self, provider: p::AuthProviderId) -> Logout<'_> {
+        Logout(self, p::AuthLogoutParams { provider })
+    }
+}
+impl Logout<'_> {
+    pub async fn confirm(self) -> Result<Value, Error> {
+        self.0
+            .page
+            .perform(Operation::Rc {
+                target: self.0.target.clone(),
+                method: RcMethod::AuthLogout,
+                params: json!(self.1).to_string(),
+            })
+            .await
+    }
+}
+pub struct GithubItem {
+    page: Page,
+    pub number: u64,
+    pub title: String,
+    pub url: Option<reqwest::Url>,
+}
+impl Page {
+    pub fn github_item(&self, item: &Value) -> Result<GithubItem, Error> {
+        self.editor()?;
+        let url = item["url"]
+            .as_str()
+            .and_then(|s| reqwest::Url::parse(s).ok())
+            .filter(|u| {
+                matches!(u.scheme(), "http" | "https")
+                    && u.has_host()
+                    && u.username().is_empty()
+                    && u.password().is_none()
+            });
+        Ok(GithubItem {
+            page: self.clone(),
+            number: item["number"]
+                .as_u64()
+                .filter(|n| *n > 0)
+                .ok_or(Error::InvalidMessage)?,
+            title: item["title"].as_str().unwrap_or_default().into(),
+            url,
+        })
+    }
+}
+impl GithubItem {
+    pub fn ask_about(&self, app: &mut Desktop) -> Result<(), Error> {
+        let mut s = format!("#{}「{}」", self.number, self.title);
+        if let Some(url) = &self.url {
+            s.push(' ');
+            s.push_str(url.as_str());
+        }
+        self.page.append_reference(app, &s)
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn path_trust_is_not_reused_with_trimmed_or_different_path() {
+        let mut form = SpawnForm {
+            page: super::super::tests::dummy_page(),
+            folder: String::new(),
+            trusted: None,
+            ask_tool: true,
+            message: String::new(),
+            model: None,
+            thinking: None,
+        };
+        form.folder("/tmp/work ".into(), true);
+        assert_eq!(
+            form.params().unwrap(),
+            json!({"cwd":"/tmp/work ","askTool":true,"trust":true})
+        );
+        form.folder("/tmp/work".into(), false);
+        assert_eq!(form.params().unwrap()["trust"], false);
+    }
+    #[test]
+    fn settings_only_persist_three_nonsecret_preferences() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let path = dir.join("settings.json");
+        let mut s = Settings::load(&path).unwrap();
+        s.ask_tool = true;
+        s.appearance = Appearance::Dark;
+        s.font_size = FontSize::Large;
+        s.save(&path).unwrap();
+        let s = Settings::load(&path).unwrap();
+        assert!(s.ask_tool && s.font_size == FontSize::Large && s.appearance == Appearance::Dark);
+        let v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(v.as_object().unwrap().len(), 3);
+        std::fs::write(&path, "{not-json}").unwrap();
+        assert!(Settings::load(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn auth_saved_and_storage_unknown_are_not_failures() {
+        assert!(matches!(
+            CredentialOutcome::from_flow(&json!({"status":"failed","error":"storage_failed"})),
+            CredentialOutcome::StorageUnknown
+        ));
+        assert!(matches!(
+            CredentialOutcome::from_flow(&json!({"status":"succeeded","refreshRequired":true})),
+            CredentialOutcome::NeedsReload
+        ));
+        assert!(matches!(
+            CredentialOutcome::from_flow(&json!({})),
+            CredentialOutcome::Unknown
+        ));
     }
 }

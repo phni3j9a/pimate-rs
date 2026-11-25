@@ -81,9 +81,7 @@ impl Desktop {
                 Ok(hosts) => this.accept_hosts(hosts, cx),
                 Err(e) => {
                     this.state.registration.read_failed(e);
-                    if this.notice.is_empty() {
-                        this.notice = this.state.registration.message();
-                    }
+
                     cx.notify();
                     vec![]
                 }
@@ -187,7 +185,7 @@ impl Desktop {
     }
     fn paste(&mut self, cx: &mut Context<Self>) {
         self.confirmation = None;
-        self.notice.clear();
+        self.state.registration.pair_message.clear();
         if let Some(link) = cx.read_from_clipboard().and_then(|v| v.text())
             && let Some(p) = pimate_protocol::parse_pairing_link(link.trim())
         {
@@ -196,7 +194,8 @@ impl Desktop {
                 format!("{} · {}", p.host_name, p.address),
             ));
         } else {
-            self.notice = "有効なペアリングリンクをコピーしてください".into()
+            self.state.registration.pair_message =
+                "有効なペアリングリンクをコピーしてください".into()
         }
         cx.notify();
     }
@@ -219,17 +218,14 @@ impl Desktop {
                         this.state.purge(&h.id, &mut this.drafts);
                         this.state.registration.paired(&h.id, first);
                         this.machines.remove(&h.id);
-                        this.notice = "登録しました".into();
+                        this.state.registration.pair_message = "登録しました".into();
                         this.reload(cx)
                     }
                     Err(Error::OutcomeUnknown) => {
                         this.state.registration.save_unknown = true;
                         this.reload(cx);
-                        if this.notice.is_empty() {
-                            this.notice = this.state.registration.message();
-                        }
                     }
-                    Err(e) => this.notice = format!("登録できません: {e}"),
+                    Err(e) => this.state.registration.pair_message = format!("登録できません: {e}"),
                 };
                 cx.notify()
             });
