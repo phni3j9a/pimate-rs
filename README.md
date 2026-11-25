@@ -407,6 +407,8 @@ VM 2 での登録・一覧・逐次表示・日本語送信の記録は PR #50 �
 | ログイン | `page.login().await` を画面の Task で保持し、切断・閉じるときに drop。`login.instance()` の `provider/auth` 行、必要に応じ `request(AuthAction::{List,Begin,Respond,Cancel})` と `follow_once()`。ログアウトは `logout_confirmation(provider)` → 確認後 `confirm()`。再接続では新しい page と hold で**一覧だけ**取り直す。`CredentialOutcome::from_flow` の `StorageUnknown` は一覧再確認、`NeedsReload` は保存済み。入力や応答をログ・設定に入れない。 |
 | 設定・初回案内・登録通知 | `state.settings` の `appearance/font_size/ask_tool` のみ `Settings::path()` と `load/save` で読み書き。起動時に読み出して画面のテーマ・文字サイズに適用、失敗時は通知。初回登録成功後 `state.registration.paired_host.take()`、マシンの `rows.first_step()`（Loading／Offline／Empty／List）。登録中の `pairing` と `state.registration.message()` は、チャットの `notice` と**別の欄**に同時表示。保存不明後に一覧の読み出しも失敗したときは両方の事実を表示する。 |
 
+現行の確認用画面が `notice` だけを読むため、登録の結果・失敗は当面 `state.registration` と `notice` に二重に反映します。designer が登録状態を別欄に描画する変更と同時に、この互換用の二重書きを外してください。
+
 画面から中核・FFI を変更する必要はありません。送信直前の snapshot 照合と中核の受付は原子的ではないので、未配達の再起動・同一 ID の再使用まで完全に排除するサーバー保証ではありません。
 
 ### iOS の残りの画面で使う状態（#48 前半）

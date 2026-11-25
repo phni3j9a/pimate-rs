@@ -81,6 +81,7 @@ impl Desktop {
                 Ok(hosts) => this.accept_hosts(hosts, cx),
                 Err(e) => {
                     this.state.registration.read_failed(e);
+                    this.notice = this.state.registration.message();
                     cx.notify();
                     vec![]
                 }
@@ -101,7 +102,8 @@ impl Desktop {
                             Ok(conn) => this.attach(h, conn, rx, cx),
                             Err(e) => {
                                 this.state.registration.pair_message =
-                                    format!("{} に接続できません: {e}", h.name)
+                                    format!("{} に接続できません: {e}", h.name);
+                                this.notice = this.state.registration.message();
                             }
                         }
                         cx.notify();
@@ -197,7 +199,8 @@ impl Desktop {
             ));
         } else {
             self.state.registration.pair_message =
-                "有効なペアリングリンクをコピーしてください".into()
+                "有効なペアリングリンクをコピーしてください".into();
+            self.notice = self.state.registration.message();
         }
         cx.notify();
     }
@@ -231,6 +234,7 @@ impl Desktop {
                     }
                     Err(e) => this.state.registration.pair_message = format!("登録できません: {e}"),
                 };
+                this.notice = this.state.registration.message();
                 cx.notify()
             });
         })
