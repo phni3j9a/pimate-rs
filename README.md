@@ -385,7 +385,7 @@ Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.
 - Linux の画面を自動で確かめるには `cargo build --locked -p pimate-host -p pimate-desktop` 後、`apps/desktop/tests/linux-session.sh check /tmp/pi-check` と `apps/desktop/tests/linux-session.sh hotplug /tmp/pi-hotplug`。GNOME Shell（Wayland）・IBus/Mozc・gnome-keyring・wl-clipboard・tesseract（英語）・python3-dbus・python3-pil・PID/user namespace が必要です。各回の一時 HOME・D-Bus・仮想モニターで動かし、縮小 WebP のみを指定先に残します。どちらも 50 ms の連続差分中に見出しの一部を選択し、別の模擬クライアントが割り込んだ後、応答が履歴に変わっても同じ文字列だけをコピーできることを確認します。`check` は応答しない keyring を待つ間も画面を操作できること、`hotplug` は変換中のキーボード喪失とマウス追加を検査し、送信回数は模擬 RC の受信時点で照合します。実機でのスリープ復帰・物理入力機器の着脱・X11 の IME は未検証です。
 - 画面担当は `screen.rs` と `markdown.rs` を変更できます。`model.rs` の revision と `main.rs` の接続・編集状態は維持してください。Host ごとの配送スレッド → 有界チャネル → GPUI Entity（UI スレッド）。過負荷・大きな差分は snapshot、再登録前の配送は接続の同一性で破棄。編集本文は Host・Pi・session（null 可）別でメモリだけに保持し、送信時のキーを渡します。RC の受付と履歴は別で、結果不明を成功扱いせず自動再送しません。未確認の復元は対象が一致し、入力が空の明示操作だけです。
 
-ツールの出力は会話内で一度開くと、画面外へスクロールして戻っても開いたままです。送信中・割り込み待ち・未確認の本文が長いときは、入力欄の上の待ち一覧をスクロールしてください。逐次 Markdown の構文が確定した時は選択文字列を照合し、対応を特定できない場合は選択を解除します。
+ツールの出力は会話内で一度開くと、画面外へスクロールして戻っても開いたままです。送信中・割り込み待ち・未確認の本文が長いときは、入力欄の上の待ち一覧をスクロールしてください。逐次の追記で選択範囲より前の表示が変わらなければ選択を保ち、構文の確定などで前の表示が変わったときは、別の箇所を推測せずに選択を解除します。
 
 中心画面の比較と実行記録は [PR #60](https://github.com/phni3j9a/pimate-rs/pull/60)。操作には文字ラベルを使いますが、GPUI 0.2.2 は画面要素を OS のアクセシビリティツリーに公開しません。VoiceOver / Orca による操作は未対応です。画像プレビュー・添付や、質問への回答などの追加画面もまだありません。
 

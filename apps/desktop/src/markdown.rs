@@ -29,25 +29,14 @@ struct Selection {
 impl Selection {
     fn reconcile(&mut self, text: &SharedString) {
         let range = self.range(&self.displayed);
+        // Re-parsing can remove markup before the selection, and the same words can reappear
+        // elsewhere (e.g. a new link label). Keep the range only when everything up to its end
+        // is unchanged; otherwise drop it rather than guess.
         if self.displayed.as_str() != text.as_str()
             && !text.starts_with(&self.displayed[..range.end])
         {
-            // Re-parsing can remove markup before the selection. Never reuse a stale byte range.
-            let needle = &self.displayed[range];
-            if !needle.is_empty()
-                && self.displayed.find(needle) == self.displayed.rfind(needle)
-                && let Some(start) = text.find(needle)
-                && Some(start) == text.rfind(needle)
-            {
-                (self.anchor, self.end) = if self.anchor <= self.end {
-                    (start, start + needle.len())
-                } else {
-                    (start + needle.len(), start)
-                };
-            } else {
-                self.anchor = 0;
-                self.end = 0;
-            }
+            self.anchor = 0;
+            self.end = 0;
         }
         self.displayed = text.clone();
     }
@@ -448,12 +437,23 @@ fn reparsed_markup_never_retargets_the_selection(cx: &mut gpui::TestAppContext) 
             end: 2,
             displayed: plain("**alpha beta").into(),
         };
-        sel.reconcile(&plain("**alpha beta**").into());
-        assert_eq!((sel.anchor, sel.end), (5, 0));
+        // Plain appends keep the selection.
+        sel.reconcile(&plain("**alpha beta gamma").into());
         assert_eq!(&sel.displayed[sel.range(&sel.displayed)], "alpha");
-        sel.reconcile(&"alpha beta 日本語".into());
-        assert_eq!((sel.anchor, sel.end), (5, 0));
-        sel.reconcile(&"比較: alpha / alpha".into());
+        // Closing the markup shifts the text before the selection: drop, never copy "pha b".
+        sel.reconcile(&plain("**alpha beta gamma**").into());
+        assert!(sel.range(&sel.displayed).is_empty());
+        // A selected word that becomes a link target must not jump to a new label with the same text.
+        let shown: SharedString = plain("[doc](https://old.example").into();
+        let at = shown.find("old").unwrap();
+        let mut sel = Selection {
+            focus: cx.focus_handle(),
+            anchor: at,
+            end: at + 3,
+            displayed: shown,
+        };
+        assert_eq!(&sel.displayed[sel.range(&sel.displayed)], "old");
+        sel.reconcile(&plain("[doc](https://old.example) [old](https://new.example)").into());
         assert!(sel.range(&sel.displayed).is_empty());
     });
 }
