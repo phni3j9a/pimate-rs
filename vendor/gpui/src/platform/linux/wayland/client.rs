@@ -196,6 +196,8 @@ pub(crate) struct WaylandClientState {
     gpu_context: BladeContext,
     wl_seat: wl_seat::WlSeat, // TODO: Multi seat support
     wl_pointer: Option<wl_pointer::WlPointer>,
+    seats: Vec<(u32, wl_seat::WlSeat, bool)>, // registry name, proxy, keyboard capability
+    keyboard_seat: Option<wl_seat::WlSeat>,
     wl_keyboard: Option<wl_keyboard::WlKeyboard>,
     cursor_shape_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
     data_device: Option<wl_data_device::WlDataDevice>,
@@ -274,6 +276,27 @@ pub(crate) enum PendingActivation {
 pub struct WaylandClientStatePtr(Weak<RefCell<WaylandClientState>>);
 
 impl WaylandClientState {
+    fn update_keyboard(
+        &mut self,
+        qh: &QueueHandle<WaylandClientStatePtr>,
+    ) -> Option<WaylandWindowStatePtr> {
+        let next = super::keyboard_seat::select(&self.seats, self.keyboard_seat.as_ref()).cloned();
+        if next == self.keyboard_seat {
+            return None;
+        }
+        let focus = self.release_keyboard();
+        if let Some(seat) = &next {
+            self.wl_keyboard = Some(seat.get_keyboard(qh, ()));
+            self.text_input = self
+                .globals
+                .text_input_manager
+                .as_ref()
+                .map(|manager| manager.get_text_input(seat, qh, ()));
+        }
+        self.keyboard_seat = next;
+        focus
+    }
+
     fn release_keyboard(&mut self) -> Option<WaylandWindowStatePtr> {
         self.wl_keyboard.take()?.release();
         if let Some(input) = self.text_input.take() {
@@ -286,6 +309,7 @@ impl WaylandClientState {
         self.pre_edit_text = None;
         self.repeat.current_id += 1;
         self.enter_token = None;
+        self.modifiers = Modifiers::default();
         self.keyboard_focused_window.take()
     }
 }
@@ -474,19 +498,20 @@ impl WaylandClient {
             registry_queue_init::<WaylandClientStatePtr>(&conn).unwrap();
         let qh = event_queue.handle();
 
-        let mut seat: Option<wl_seat::WlSeat> = None;
+        let mut seats = Vec::new();
         #[allow(clippy::mutable_key_type)]
         let mut in_progress_outputs = HashMap::default();
         globals.contents().with_list(|list| {
             for global in list {
                 match &global.interface[..] {
                     "wl_seat" => {
-                        seat = Some(globals.registry().bind::<wl_seat::WlSeat, _, _>(
+                        let seat = globals.registry().bind::<wl_seat::WlSeat, _, _>(
                             global.name,
                             wl_seat_version(global.version),
                             &qh,
                             (),
-                        ));
+                        );
+                        seats.push((global.name, seat, false));
                     }
                     "wl_output" => {
                         let output = globals.registry().bind::<wl_output::WlOutput, _, _>(
@@ -522,7 +547,7 @@ impl WaylandClient {
 
         let gpu_context = BladeContext::new().expect("Unable to init GPU context");
 
-        let seat = seat.unwrap();
+        let seat = seats.last().expect("Wayland seat").1.clone();
         let globals = Globals::new(
             globals,
             common.foreground_executor.clone(),
@@ -578,6 +603,8 @@ impl WaylandClient {
             gpu_context,
             wl_seat: seat,
             wl_pointer: None,
+            seats,
+            keyboard_seat: None,
             wl_keyboard: None,
             cursor_shape_device: None,
             data_device,
@@ -922,18 +949,14 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                     if let Some(wl_pointer) = state.wl_pointer.take() {
                         wl_pointer.release();
                     }
-                    let focus = state.release_keyboard();
-                    state.wl_seat.release();
-                    state.wl_seat = registry.bind::<wl_seat::WlSeat, _, _>(
+                    let seat = registry.bind::<wl_seat::WlSeat, _, _>(
                         name,
                         wl_seat_version(version),
                         qh,
                         (),
                     );
-                    drop(state);
-                    if let Some(window) = focus {
-                        cancel_keyboard_focus(window);
-                    }
+                    state.wl_seat = seat.clone();
+                    state.seats.push((name, seat, false));
                 }
                 "wl_output" => {
                     let output = registry.bind::<wl_output::WlOutput, _, _>(
@@ -949,8 +972,22 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                 }
                 _ => {}
             },
-            wl_registry::Event::GlobalRemove { name: _ } => {
-                // TODO: handle global removal
+            wl_registry::Event::GlobalRemove { name } => {
+                if let Some(i) = state.seats.iter().position(|(id, _, _)| *id == name) {
+                    let (_, seat, _) = state.seats.remove(i);
+                    let focus = state.update_keyboard(qh);
+                    if seat == state.wl_seat {
+                        state.wl_seat = state.globals.seat.clone();
+                    }
+                    // Pointer/selection globals retain the initial default seat.
+                    if seat != state.globals.seat {
+                        seat.release();
+                    }
+                    drop(state);
+                    if let Some(window) = focus {
+                        cancel_keyboard_focus(window);
+                    }
+                }
             }
             _ => {}
         }
@@ -1175,20 +1212,13 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
         {
             let client = state.get_client();
             let mut state = client.borrow_mut();
-            if seat != &state.wl_seat {
+            let Some((_, _, keyboard)) = state.seats.iter_mut().find(|(_, proxy, _)| proxy == seat)
+            else {
                 return;
-            }
-            let mut lost_focus = None;
-            if capabilities.contains(wl_seat::Capability::Keyboard) {
-                if state.wl_keyboard.is_none() {
-                    state.wl_keyboard = Some(seat.get_keyboard(qh, ()));
-                    state.text_input = state.globals.text_input_manager.as_ref()
-                        .map(|manager| manager.get_text_input(seat, qh, ()));
-                }
-            } else {
-                lost_focus = state.release_keyboard();
-            }
-            if capabilities.contains(wl_seat::Capability::Pointer) {
+            };
+            *keyboard = capabilities.contains(wl_seat::Capability::Keyboard);
+            let lost_focus = state.update_keyboard(qh);
+            if seat == &state.wl_seat && capabilities.contains(wl_seat::Capability::Pointer) {
                 let pointer = seat.get_pointer(qh, ());
                 state.cursor_shape_device = state
                     .globals

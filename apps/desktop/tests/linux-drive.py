@@ -123,6 +123,8 @@ if mode == 'hotplug':
     for char in 'ka':
         key(ord(char))
     marked = snap('before-keyboard-loss')
+    seat.NotifyKeyboardKeysym(0xffe1, True)  # remove with Shift held
+    time.sleep(.15)
     seat.Stop()
     time.sleep(.5)
     cleared = snap('after-keyboard-loss')
@@ -130,6 +132,16 @@ if mode == 'hotplug':
     placeholder = (x+258, y+589, x+350, y+616)
     assert ImageChops.difference(empty_editor, marked).crop(placeholder).getbbox()
     assert not ImageChops.difference(empty_editor, cleared).crop(placeholder).getbbox(), 'marked text remained after keyboard loss'
+    # Without a keyboard, the vertical wheel must not be interpreted as Shift+wheel.
+    pointer.NotifyPointerMotionRelative(0., -280.)
+    time.sleep(.2)
+    area = (x+160, y+100, x+710, y+460)
+    views = [snap('wheel-start').crop(area)]
+    for step in (-6, 6):
+        pointer.NotifyPointerAxisDiscrete(0, step)
+        time.sleep(.4)
+        views.append(snap(f'wheel-{step}').crop(area))
+    assert any(ImageChops.difference(views[0], v).getbbox() for v in views[1:]), 'stuck Shift after keyboard loss'
     seat = session()
     key(0xffe1)
     key(0xff1b)  # dismiss any candidate restored by the input method itself
