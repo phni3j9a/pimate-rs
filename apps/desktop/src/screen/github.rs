@@ -202,11 +202,14 @@ impl Desktop {
                 if source.is_empty() {
                     g = g.child(p.caption("本文はありません"));
                 } else {
-                    g = g.child(
-                        s.github
-                            .docs
-                            .view(format!("github-{i}"), &source, false, w, cx),
-                    );
+                    g = g.child(s.github.docs.view(
+                        format!("github-{i}"),
+                        &source,
+                        false,
+                        None,
+                        w,
+                        cx,
+                    ));
                 }
                 if truncated {
                     g = g.child(p.caption("一部を省略しています"));

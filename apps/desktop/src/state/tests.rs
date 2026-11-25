@@ -227,7 +227,7 @@ fn purging_replaced_host_preserves_other_hosts_drafts() {
     assert_eq!(drafts.len(), 1);
     assert_eq!(drafts[&key("b")], "B");
 }
-pub(super) fn dummy_page() -> Page {
+pub(crate) fn dummy_page() -> Page {
     Page {
         host: "a".into(),
         key: Some(EditorKey {

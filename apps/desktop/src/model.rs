@@ -254,42 +254,9 @@ pub fn registered(previous: &Host, current: &[Host]) -> bool {
     current.iter().any(|h| !h.needs_pairing && h == previous)
 }
 
-/// Clear only the originating, still-unchanged draft, never the newly visible editor.
-pub fn clear_accepted(
-    drafts: &mut HashMap<EditorKey, String>,
-    origin: &EditorKey,
-    text: &str,
-    accepted: bool,
-) -> bool {
-    if accepted && drafts.get(origin).is_some_and(|draft| draft == text) {
-        drafts.remove(origin);
-        true
-    } else {
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn late_receipts_never_touch_other_hosts_or_new_edits() {
-        let a = EditorKey {
-            host: "one".into(),
-            instance: "p".into(),
-            session: None,
-        };
-        let b = EditorKey {
-            host: "two".into(),
-            ..a.clone()
-        };
-        let mut drafts = HashMap::from([(a.clone(), "first".into()), (b.clone(), "first".into())]);
-        assert!(!clear_accepted(&mut drafts, &a, "first", false));
-        assert!(!clear_accepted(&mut drafts, &a, "older", true));
-        assert_eq!(drafts.len(), 2);
-        assert!(clear_accepted(&mut drafts, &a, "first", true));
-        assert_eq!(drafts.get(&b).unwrap(), "first");
-    }
     #[test]
     fn delta_moves_replaces_and_removes_in_order() {
         let mut r = Rows::default();

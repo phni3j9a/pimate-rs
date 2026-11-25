@@ -678,3 +678,64 @@ async fn builtin_ack_after_view_change_belongs_to_original_submission() {
     .unwrap();
     server.abort();
 }
+
+#[cfg(test)]
+#[gpui::test]
+fn accepted_submission_clears_only_an_unchanged_origin(cx: &mut gpui::TestAppContext) {
+    use pimate_core::{Core, Credential, Host, SecretStore};
+    struct Empty;
+    impl SecretStore for Empty {
+        fn hosts(&self) -> Result<Vec<Host>, Error> {
+            Ok(vec![])
+        }
+        fn load(&self, _: String) -> Result<Credential, Error> {
+            unreachable!()
+        }
+        fn save(&self, _: Host, _: String) -> Result<(), Error> {
+            unreachable!()
+        }
+        fn invalidate(&self, _: String, _: String) -> Result<(), Error> {
+            unreachable!()
+        }
+        fn forget(&self, _: String) -> Result<(), Error> {
+            unreachable!()
+        }
+    }
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (machine, _rx, _wire, server) = rt.block_on(super::tests::fixture("origin"));
+    cx.update(gpui_component::init);
+    cx.add_window_view(move |w, cx| {
+        let key = EditorKey {
+            host: "origin".into(),
+            instance: "pi".into(),
+            session: Some("s".into()),
+        };
+        let other = EditorKey {
+            host: "other".into(),
+            ..key.clone()
+        };
+        let mut app = Desktop::new(Arc::new(Core::new(Arc::new(Empty))), w, cx);
+        let page = app.state.open("origin", &machine, Some(key.clone()));
+        app.machines.insert(key.host.clone(), machine);
+        let ack = || Accepted {
+            ticket: Submission {
+                page: page.clone(),
+                text: "sent".into(),
+                images: vec![],
+                kind: SubmitKind::Send,
+                _lock: Arc::new(()),
+            },
+            open: None,
+        };
+        app.drafts.insert(other.clone(), "sent".into());
+        app.drafts.insert(key.clone(), "later edit".into());
+        ack().finish(&mut app, w, cx);
+        assert_eq!(app.drafts[&key], "later edit");
+        app.drafts.insert(key.clone(), "sent".into());
+        ack().finish(&mut app, w, cx);
+        assert!(!app.drafts.contains_key(&key));
+        assert_eq!(app.drafts[&other], "sent");
+        app
+    });
+    server.abort();
+}
