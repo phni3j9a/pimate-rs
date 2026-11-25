@@ -325,12 +325,13 @@ impl Messages {
             doc
         };
         let col = div().flex().flex_col().gap_2().min_w_0();
+        let namespace = cache.entity_id().as_u64().to_string();
         let result = cache.update(cx, |c, cx| {
             if c.latest.as_ref() != text {
                 c.latest = text.into();
             }
             sample(c, cx, streaming);
-            col.children(c.blocks.iter().map(|b| block(&id, b, w, cx)))
+            col.children(c.blocks.iter().map(|b| block(&namespace, b, w, cx)))
                 .into_any_element()
         });
         self.0.push_front((id, cache));

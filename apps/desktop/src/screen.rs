@@ -1,3 +1,4 @@
+mod conversation;
 use super::*;
 use gpui_component::{
     Disableable, Selectable, Sizable,
@@ -381,103 +382,7 @@ impl Render for Desktop {
                             })),
                     );
             }
-            let entries = rows.group("entry");
-            let n = entries.len()
-                + usize::from(
-                    rows.get("stream", "text")
-                        .as_str()
-                        .is_some_and(|s| !s.is_empty()),
-                );
-            // Top-align short answers; follow growing content only while the reader is at the end.
-            let reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
-            let at_end = self.scroll.max_offset_for_scrollbar().height
-                + self.scroll.scroll_px_offset_for_scrollbar().y
-                < px(2.);
-            let old = self.scroll.item_count();
-            if old != n {
-                self.scroll.splice(old.min(n)..old, n.saturating_sub(old));
-            }
-            if at_end && !reader.contains_focused(w, cx) {
-                self.scroll.scroll_to(ListOffset {
-                    item_ix: n,
-                    offset_in_item: px(0.),
-                });
-            }
-            if n == 0 {
-                main = main.child(
-                    div()
-                        .flex_1()
-                        .p_4()
-                        .child(p.caption("まだメッセージはありません")),
-                );
-            } else {
-                let desktop = cx.entity();
-                let k = key.clone();
-                let messages = w.use_keyed_state(
-                    SharedString::from(format!("documents:{k:?}")),
-                    cx,
-                    |_, _| markdown::Messages::default(),
-                );
-                let list = list(self.scroll.clone(), move |i, w, cx| {
-                    desktop.update(cx, |this, cx| {
-                        let data = &this.machines[&k.host].rows;
-                        let entries = data.group("entry");
-                        let (id, text, role, stream) = if let Some((id, v)) = entries.get(i) {
-                            (
-                                format!("{k:?}/entry/{id}"),
-                                v["text"].as_str().unwrap_or(""),
-                                match v["kind"].as_str() {
-                                    Some("user") => "あなた",
-                                    Some("assistant") => "Pi",
-                                    Some("tool_result") => "ツールの結果",
-                                    _ => "作業",
-                                },
-                                false,
-                            )
-                        } else {
-                            (
-                                format!("{k:?}/stream/{:?}", entries.last().map(|e| &e.0)),
-                                data.get("stream", "text").as_str().unwrap_or(""),
-                                "Pi · 応答中",
-                                true,
-                            )
-                        };
-                        let p = Colors::new(dark);
-                        let user = role == "あなた";
-                        div()
-                            .px_4()
-                            .py_2()
-                            .flex()
-                            .flex_col()
-                            .when(user, |v| v.items_end())
-                            .child(p.caption(role).mb_1().font_weight(FontWeight::SEMIBOLD))
-                            .child(
-                                div()
-                                    .when(user, |v| {
-                                        v.max_w(relative(0.9))
-                                            .rounded_lg()
-                                            .bg(p.bubble)
-                                            .px_3()
-                                            .py_2()
-                                    })
-                                    .child(messages.update(cx, |cache, cx| {
-                                        cache.view(id, text, stream, w, cx)
-                                    })),
-                            )
-                            .into_any_element()
-                    })
-                })
-                .size_full();
-                main = main.child(
-                    div()
-                        .relative()
-                        .flex_1()
-                        .min_h_0()
-                        .track_focus(&reader)
-                        .child(list)
-                        .vertical_scrollbar(&self.scroll),
-                );
-            }
+            main = main.child(self.conversation(&key, &p, dark, w, cx));
             let mut chat = div().px_4();
             for (id, d) in rows.group("draft") {
                 if d["instanceId"] == key.instance
