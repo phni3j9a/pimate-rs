@@ -190,6 +190,7 @@ impl Desktop {
                 .px_4(),
             );
         }
+        main = main.children(self.commands(&key, &page, p, w, cx));
         if let Some((_, input, _)) = &self.input {
             let movement = movement.is_some();
             let disabled = self.state.attachments.busy()
