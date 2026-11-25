@@ -2,6 +2,7 @@ mod conversation;
 mod first_step;
 mod machine;
 mod new_pi;
+mod providers;
 mod settings;
 use super::*;
 use gpui_component::{

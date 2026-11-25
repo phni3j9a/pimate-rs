@@ -22,6 +22,7 @@ pub(super) struct Nav {
     pub note: String,
     pub pref_error: bool,
     pub machine: super::machine::MachineData,
+    pub providers: super::providers::ProviderData,
     pub spawn: Option<super::new_pi::Fields>,
     pub tasks: Vec<Task<()>>,
 }
@@ -325,6 +326,10 @@ impl Desktop {
         let r = n.read(cx).route.clone();
         let (title, body) = match &r {
             Route::Home => return None,
+            Route::Providers(id) => (
+                "プロバイダーのログイン",
+                self.providers_view(n, p, id, w, cx),
+            ),
             Route::Machine(id) => ("マシン詳細", self.machine_view(n, p, id, w, cx)),
             Route::New(id) => ("新しい Pi", self.new_pi(n, p, id, w, cx)),
             Route::Settings => ("設定", self.settings_view(n, p, cx)),
