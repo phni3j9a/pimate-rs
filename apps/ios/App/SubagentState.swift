@@ -97,6 +97,9 @@ struct ChildInstructions {
         sent[i].destinationChild = destination.child
         if sent[i].units > 65536 { sent.remove(at: i) } else { trim() }
     }
+    func resume(_ key: EditorKey, from source: AgentChild, run: String) -> SentInstruction? {
+        sent.last { $0.key == key && $0.unit == source && $0.newRun == run }
+    }
     func forChild(_ key: EditorKey, _ unit: AgentChild) -> [SentInstruction] {
         let matching = sent.filter { $0.key == key }
         let origin = matching.last { $0.newRun == unit.run && $0.destinationChild == unit.child }?.unit
@@ -106,8 +109,25 @@ struct ChildInstructions {
 extension SessionModel {
     // Call once when the destination children arrive. Later reordering must not retarget the labels.
     func resumedChild(_ key: EditorKey, from source: AgentChild, run: String, index: Int?) -> AgentChild? {
-        guard key == editor, let selected = rows[key.host]?.resumedChild(run: run, index: index) else { return nil }
+        guard key == editor else { return nil }
+        if let child = instructions.resume(key, from: source, run: run)?.destinationChild { return AgentChild(run: run, child: child) }
+        guard let selected = rows[key.host]?.resumedChild(run: run, index: index) else { return nil }
         instructions.bindResume(key, from: source, to: selected); return selected
+    }
+    // Resume acknowledgement can precede the run delta, even after the detail is dismissed.
+    private func bindWhenReady(_ key: EditorKey, generation: UUID, source: AgentChild, run: String, index: Int?) {
+        let destination: AgentChild? = withObservationTracking {
+            guard rows[key.host]?.viewGeneration == generation, editor == key,
+                  let sent = instructions.resume(key, from: source, run: run), sent.destinationChild == nil else { return nil }
+            return rows[key.host]?.resumedChild(run: run, index: index)
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.editor == key, self.rows[key.host]?.viewGeneration == generation,
+                      let sent = self.instructions.resume(key, from: source, run: run), sent.destinationChild == nil else { return }
+                self.bindWhenReady(key, generation: generation, source: source, run: run, index: index)
+            }
+        }
+        if let destination { instructions.bindResume(key, from: source, to: destination) }
     }
     func workRecord(_ key: EditorKey, _ unit: AgentChild) throws -> WorkRecord {
         guard editor == key, let generation = rows[key.host]?.viewGeneration else { throw CoreError.StaleTarget }
@@ -130,8 +150,13 @@ extension SessionModel {
     func control(_ key: EditorKey, _ unit: AgentChild, action: String, text: String) async throws -> Object {
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["steer", "follow_up", "resume"].contains(action), !body.isEmpty else { throw CoreError.BadRequest }
+        let index = action == "resume" ? rows[key.host]?.runs.first { $0.str("id") == unit.run }?.list("children").first { $0.str("id") == unit.child }?["index"] as? Int : nil
         let result = try decodeObject(await request(key, .subagentControl, ["runId": unit.run, "childId": unit.child, "action": action, "text": body]))
         instructions.accept(.init(key: key, unit: unit, action: action, text: body,
-                                  newRun: action == "resume" ? result["newRunId"] as? String : nil)); return result
+                                  newRun: action == "resume" ? result["newRunId"] as? String : nil))
+        if action == "resume", let run = result["newRunId"] as? String, let generation = rows[key.host]?.viewGeneration {
+            bindWhenReady(key, generation: generation, source: unit, run: run, index: index)
+        }
+        return result
     }
 }

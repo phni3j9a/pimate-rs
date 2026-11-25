@@ -89,6 +89,18 @@ private final class MachineCore: Core, @unchecked Sendable {
         XCTAssertEqual(m.instructions.forChild(key, destination).map(\.text), ["new child", "old child"])
         XCTAssertTrue(m.instructions.forChild(key, AgentChild(run: "next", child: "z")).isEmpty)
     }
+    func testResumeLabelsLateChildWithoutOpenDetail() async throws {
+        let core = MachineCore(noHandle: .init())
+        core.a.items.append(item("run", "old", #"{"id":"old","children":[{"id":"x","index":7}]}"#))
+        let m = SessionModel(core: core); try m.select(host: "a", instance: "pi"); let key = try XCTUnwrap(m.editor)
+        core.a.reply = { _ in #"{"newRunId":"new"}"# }
+        _ = try await m.control(key, .init(run: "old", child: "x"), action: "resume", text: "もう一度")
+        let destination = AgentChild(run: "new", child: "b")
+        try core.listeners["a"]?.changed(revision: 2, changes: [.upsert(item("run", "new", #"{"id":"new","children":[{"id":"a","index":1},{"id":"b","index":7}]}"#))])
+        for _ in 0..<50 where m.instructions.forChild(key, destination).isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(m.instructions.forChild(key, destination).map(\.text), ["もう一度"])
+        XCTAssertTrue(m.instructions.forChild(key, .init(run: "new", child: "a")).isEmpty)
+    }
     func testLoginInvalidatedAcrossUndrawnReconnect() async throws {
         let core = MachineCore(noHandle: .init()), m = SessionModel(core: core)
         try await m.withLogin("b") { login in
