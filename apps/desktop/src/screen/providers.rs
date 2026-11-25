@@ -13,6 +13,12 @@ pub(super) struct ProviderData {
     logout: Option<(AuthProviderId, String)>,
     prompt: Option<(String, String, Entity<InputState>)>,
 }
+fn copy_device_code(code: String) -> Button {
+    Button::new("copy-device-code")
+        .label("認証用コードをコピー")
+        .tooltip("システムのクリップボードにコピーします")
+        .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(code.clone())))
+}
 impl Desktop {
     fn auth_request(
         &self,
@@ -139,8 +145,11 @@ impl Desktop {
                         .label("ブラウザで認証 ↗")
                         .on_click(move |_, _, cx| cx.open_url(url.as_str())),
                 );
-                if let Some(code) = flow["authorization"]["userCode"].as_str() {
-                    form = form.child(format!("認証用コード　{code}"));
+                if let Some(code) = flow["authorization"]["userCode"]
+                    .as_str()
+                    .filter(|code| !code.is_empty())
+                {
+                    form = form.child(copy_device_code(code.to_owned()));
                 }
             }
             if let Some(pid) = flow["prompt"]["id"].as_str().filter(|_| !busy) {
@@ -363,5 +372,34 @@ impl Desktop {
             }
         }
         v.child(reload.disabled(busy))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_device_code;
+    use gpui::{
+        App, ClipboardItem, Context, Modifiers, TestAppContext, Window, div, point, prelude::*, px,
+    };
+
+    #[gpui::test]
+    fn device_code_requires_explicit_copy(cx: &mut TestAppContext) {
+        struct Probe;
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(240.))
+                    .child(copy_device_code("DEMO-ONLY".into()).w_full())
+            }
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+        });
+        let (_, w) = cx.add_window_view(|_, _| Probe);
+        let clipboard = |cx: &mut App| cx.read_from_clipboard().and_then(|v| v.text()).unwrap();
+        assert_eq!(w.update(|_, cx| clipboard(cx)), "before");
+        w.simulate_click(point(px(40.), px(15.)), Modifiers::none());
+        assert_eq!(w.update(|_, cx| clipboard(cx)), "DEMO-ONLY");
     }
 }
