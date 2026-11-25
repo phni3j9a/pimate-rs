@@ -192,6 +192,9 @@ impl Desktop {
                     .child(div().font_weight(FontWeight::BOLD).child(h.name.clone()))
                     .child(p.caption(connection(h, data))),
             );
+            if let Some(error) = self.state.registration.connection_errors.get(&h.id) {
+                rows = rows.child(p.caption(format!("接続できません: {error}")).px_2());
+            }
             if let Some(data) = data {
                 let entries = data.group("instance");
                 if entries.is_empty() {
@@ -268,13 +271,17 @@ impl Desktop {
                     )),
             );
         }
-        let msg = if self.pairing {
-            "登録・保存の結果を確認中…"
-        } else {
-            &self.notice
-        };
-        if !msg.is_empty() {
-            side = side.child(p.caption(msg.to_owned()).px_3().pb_2());
+        if self.pairing {
+            side = side.child(p.caption("登録・保存の結果を確認中…").px_3().pb_2());
+        }
+        let registration = self.state.registration.message();
+        if !registration.is_empty() {
+            side = side.child(
+                p.caption(registration)
+                    .px_3()
+                    .pb_2()
+                    .debug_selector(|| "registration-notice".into()),
+            );
         }
         side.child(rows).child(
             div()
@@ -319,6 +326,14 @@ impl Render for Desktop {
         let p = Colors::new(dark);
         let side = self.sidebar(&p, cx);
         let mut main = div().flex().flex_col().flex_1().min_w_0();
+        if !self.notice.is_empty() {
+            main = main.child(
+                p.caption(self.notice.clone())
+                    .px_4()
+                    .py_2()
+                    .debug_selector(|| "chat-notice".into()),
+            );
+        }
         if let Some(key) = self.editor() {
             let rows = &self.machines[&key.host].rows;
             let session = rows.get("view", "session");

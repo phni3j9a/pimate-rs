@@ -33,7 +33,10 @@ impl EditorKey {
 }
 #[derive(Default)]
 pub struct Rows {
+    pub host_life: std::sync::Arc<()>,
+    pub view_life: std::sync::Arc<()>,
     revision: u64,
+    pub receipts: crate::state::receipts::Receipts,
     moves: HashMap<String, (String, String, u64)>,
     groups: HashMap<String, Vec<(String, Value)>>,
 }
@@ -57,13 +60,54 @@ impl Rows {
             return;
         }
         let missed = batch.contains(&Change::ResyncRequired);
+        // Core emits upserts only for changed values. Inspect the whole ordered batch,
+        // so a ready → offline → ready round trip invalidates the old confirmation.
+        let mut host_changed = missed;
+        let mut view_changed = missed;
+        let mut session = self.get("view", "session")["id"]
+            .as_str()
+            .map(str::to_owned);
+        for change in &batch {
+            let (c, id, json) = match change {
+                Change::Upsert(i) => (&i.collection, &i.id, Some(&i.json)),
+                Change::Remove { collection, id } => (collection, id, None),
+                Change::ResyncRequired => continue,
+            };
+            match (c.as_str(), id.as_str()) {
+                ("host", "connection") => host_changed = true,
+                ("view", "instanceId" | "startedAt" | "phase") => view_changed = true,
+                ("view", "session") => {
+                    let next = json.and_then(|s| {
+                        serde_json::from_str::<Value>(s).expect("core JSON")["id"]
+                            .as_str()
+                            .map(str::to_owned)
+                    });
+                    view_changed |= next != session;
+                    session = next;
+                }
+                _ => (),
+            }
+        }
+        if host_changed {
+            self.host_life = Default::default();
+        }
+        if host_changed || view_changed {
+            self.view_life = Default::default();
+        }
         if batch.len() > 128 || missed {
-            let next = Self::snapshot(snapshot());
+            let mut next = Self::snapshot(snapshot());
+            if next.revision == rev {
+                std::mem::swap(&mut next.host_life, &mut self.host_life);
+                std::mem::swap(&mut next.view_life, &mut self.view_life);
+            }
             // Identical endpoints after a delivery gap do not identify the same move.
             let changed = missed
                 || next.revision > rev
                 || self.get("notice", "sessionChanged") != next.get("notice", "sessionChanged")
                 || self.get("host", "selection") != next.get("host", "selection");
+            self.receipts.result(next.get("operationResult", "latest"));
+            self.receipts.busy(next.get("busy", "operation"), None);
+            next.receipts = std::mem::take(&mut self.receipts);
             let prior = std::mem::take(&mut self.moves);
             *self = next;
             self.moves = prior;
@@ -72,7 +116,7 @@ impl Rows {
             }
             return;
         }
-        let mut moved = false;
+
         for change in batch {
             match change {
                 Change::Upsert(Item {
@@ -81,15 +125,39 @@ impl Rows {
                     position,
                     json,
                 }) => {
-                    moved |= collection == "notice" && id == "sessionChanged";
+                    let v: Value = serde_json::from_str(&json).expect("core JSON");
+                    match (collection.as_str(), id.as_str()) {
+                        ("busy", "operation") => {
+                            let pi = self.get("view", "instanceId").as_str().map(str::to_owned);
+                            self.receipts.busy(&v, pi.as_deref());
+                        }
+                        ("operationResult", "latest") => self.receipts.result(&v),
+                        ("notice", "sessionChanged") => {
+                            let pi = self
+                                .get("view", "instanceId")
+                                .as_str()
+                                .or_else(|| self.get("host", "selection").as_str())
+                                .map(str::to_owned);
+                            if let Some(pi) = pi {
+                                if self.receipts.local_move(&pi, &v) {
+                                    self.moves.remove(&pi);
+                                } else if let (Some(from), Some(to)) =
+                                    (v["from"]["id"].as_str(), v["to"]["id"].as_str())
+                                {
+                                    self.moves.insert(pi, (from.into(), to.into(), rev));
+                                }
+                            }
+                        }
+                        _ => (),
+                    }
                     let g = self.groups.entry(collection).or_default();
                     g.retain(|(k, _)| k != &id);
-                    g.insert(
-                        (position as usize).min(g.len()),
-                        (id, serde_json::from_str(&json).expect("core JSON")),
-                    );
+                    g.insert((position as usize).min(g.len()), (id, v));
                 }
                 Change::Remove { collection, id } => {
+                    if collection == "busy" && id == "operation" {
+                        self.receipts.busy(&Value::Null, None);
+                    }
                     if let Some(g) = self.groups.get_mut(&collection) {
                         g.retain(|(k, _)| k != &id);
                     }
@@ -98,9 +166,6 @@ impl Rows {
             }
         }
         self.revision = rev;
-        if moved {
-            self.remember_move();
-        }
     }
     fn remember_move(&mut self) {
         let n = self.get("notice", "sessionChanged");
@@ -114,17 +179,22 @@ impl Rows {
         }
     }
     pub fn pending_move(&self, k: &EditorKey, drafts: &HashMap<EditorKey, String>) -> Option<u64> {
+        self.pending_move_with(k, |key| drafts.get(key).is_some_and(|s| !s.is_empty()))
+    }
+    pub fn pending_move_with(
+        &self,
+        k: &EditorKey,
+        has_draft: impl FnOnce(&EditorKey) -> bool,
+    ) -> Option<u64> {
         let (from, to, rev) = self.moves.get(&k.instance)?;
         if Some(to) != k.session.as_ref() {
             return None;
         }
-        drafts
-            .get(&EditorKey {
-                session: Some(from.clone()),
-                ..k.clone()
-            })
-            .is_some_and(|s| !s.is_empty())
-            .then_some(*rev)
+        has_draft(&EditorKey {
+            session: Some(from.clone()),
+            ..k.clone()
+        })
+        .then_some(*rev)
     }
     pub fn confirm_move(&mut self, k: &EditorKey, shown: u64) {
         if self
