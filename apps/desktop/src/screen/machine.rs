@@ -24,6 +24,9 @@ fn github_status(v: &Value) -> String {
         _ => "ログイン状態は未確認です".into(),
     }
 }
+fn provider_supported(caps: &Value) -> bool {
+    caps["authSession"] == true && caps["providerAuth"] == true
+}
 impl Desktop {
     pub(super) fn machine_view(
         &mut self,
@@ -47,6 +50,12 @@ impl Desktop {
             n.update(cx, |s, _| {
                 s.note = "接続先が変わりました。実行済みの操作は自動再送しません。".into()
             });
+        }
+        // Registration can appear before Desktop::attach supplies its connection.
+        if n.read(cx).page.is_none()
+            && let Ok(page) = self.open_machine(id)
+        {
+            n.update(cx, |s, _| s.page = Some(page));
         }
         let page = n.read(cx).page.clone().filter(|p| p.visible(self));
         let rows = self.machines.get(id).map(|m| &m.rows);
@@ -229,7 +238,7 @@ impl Desktop {
                         Route::Providers(id.clone()),
                         cx,
                     )
-                    .disabled(!supports("authSession")),
+                    .disabled(!online || !provider_supported(caps)),
                 ),
             )
             .child(group("GitHub", p).child(github_status(if online {
@@ -323,5 +332,101 @@ impl Desktop {
                 cx.notify();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_supported;
+    #[test]
+    fn provider_login_needs_both_capabilities() {
+        for session in [false, true] {
+            for provider in [false, true] {
+                assert_eq!(
+                    provider_supported(
+                        &serde_json::json!({"authSession":session,"providerAuth":provider})
+                    ),
+                    session && provider
+                );
+            }
+        }
+    }
+    #[gpui::test]
+    fn detail_opened_before_attach_loads_without_manual_refresh(cx: &mut gpui::TestAppContext) {
+        use super::{Colors, Desktop, Machine, Route, Rows, settings::Nav};
+        use gpui::AppContext;
+        use pimate_core::{Core, Credential, Error, Host, Item, SecretStore, Snapshot};
+        use std::sync::Arc;
+        struct Store(Host);
+        impl SecretStore for Store {
+            fn hosts(&self) -> Result<Vec<Host>, Error> {
+                Ok(vec![])
+            }
+            fn save(&self, _: Host, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+            fn load(&self, _: String) -> Result<Credential, Error> {
+                Ok(Credential {
+                    host: self.0.clone(),
+                    token: "fixture".into(),
+                })
+            }
+            fn invalidate(&self, _: String, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+            fn forget(&self, _: String) -> Result<(), Error> {
+                unreachable!()
+            }
+        }
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let h = Host {
+            id: "fixture".into(),
+            name: "fixture".into(),
+            address: socket.local_addr().unwrap().to_string(),
+            device_id: "test".into(),
+            needs_pairing: false,
+        };
+        let core = Arc::new(Core::new(Arc::new(Store(h.clone()))));
+        cx.update(gpui_component::init);
+        let (app, w) = cx.add_window_view(|w, cx| Desktop::new(core.clone(), w, cx));
+        let nav = w.new(|_| Nav::default());
+        w.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.hosts = vec![h.clone()];
+                app.navigate(&nav, Route::Machine(h.id.clone()), cx);
+                let render = |app: &mut Desktop,
+                              window: &mut gpui::Window,
+                              cx: &mut gpui::Context<Desktop>| {
+                    let _ = app.machine_view(&nav, &Colors::new(false), &h.id, window, cx);
+                };
+                render(app, window, cx);
+                assert!(nav.read(cx).page.is_none() && !nav.read(cx).machine.loaded);
+                let (tx, _rx) = crate::Delivery::channel();
+                let conn = core.connect(h.id.clone(), Arc::new(tx)).unwrap();
+                let rows = Rows::snapshot(Snapshot {
+                    revision: 1,
+                    items: vec![Item {
+                        position: 0,
+                        collection: "host".into(),
+                        id: "connection".into(),
+                        json: "\"connected\"".into(),
+                    }],
+                });
+                app.machines.insert(
+                    h.id.clone(),
+                    Machine {
+                        registration: h.clone(),
+                        conn,
+                        rows,
+                    },
+                );
+                render(app, window, cx);
+                assert!(
+                    nav.read(cx).page.as_ref().unwrap().visible(app) && nav.read(cx).machine.loaded
+                );
+                render(app, window, cx);
+                assert_eq!(nav.read(cx).tasks.len(), 1);
+            })
+        });
     }
 }
