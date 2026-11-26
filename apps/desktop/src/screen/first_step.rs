@@ -136,7 +136,7 @@ impl Desktop {
                     Button::new(SharedString::from(format!("first-{i}")))
                         .justify_start()
                         .when(v["working"] == true, |row| {
-                            row.child(working_spinner(p.accent))
+                            row.child(self.working_spinner(p.accent))
                         })
                         .child(div().flex_1().truncate().child(format!(
                             "{}　·　{}",
