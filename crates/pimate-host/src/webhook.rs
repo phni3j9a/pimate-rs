@@ -135,18 +135,30 @@ pub fn answered(dir: &Path, k: &str) -> bool {
 static RED: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r###"(?i)(sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|(?:sk|rk)_[a-z]+_[A-Za-z0-9_]{16,}|whsec_[A-Za-z0-9+/=_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[abposr]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|npm_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|-----BEGIN [A-Z ]*PRIVATE KEY-----|https://hooks\.slack\.com/services/[A-Za-z0-9/]+|https://(?:ptb\.|canary\.)?discord(?:app)?\.com/api/webhooks/\d+/[\w-]+|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_.-]+|\b(?:(?:api|secret|access|private|client)[_-]?(?:key|secret)s?|tokens?|secrets?|passwds?|passwords?)["']?\s*[:=]\s*(?:"(?:[^"\\\n]|\\.){4,}"|'(?:[^'\\\n]|\\.){4,}'|\S{6,})|\bauthorization\s*[:=]\s*(?:(?:bearer|basic|token)\s+)?[A-Za-z0-9._~+/=-]{12,}|\bbearer\s+[A-Za-z0-9._~+/=-]{16,})"###).expect("redaction pattern")
 });
+pub fn display_home() -> String {
+    home()
+        .ok()
+        .and_then(|p| p.into_os_string().into_string().ok())
+        .unwrap_or_default()
+}
+pub fn display_text(s: &str, home: &str) -> String {
+    let text = RED.replace_all(s, "[redacted]");
+    if home.is_empty() {
+        text.into_owned()
+    } else {
+        text.replace(home, "~")
+    }
+}
 fn clean(v: &mut Value, k: &str, home: &str) {
     match v {
-        Value::String(s) if k != "id" && !k.ends_with("Id") => {
-            *s = RED.replace_all(s, "[redacted]").into_owned();
-            if !home.is_empty() {
-                *s = s.replace(home, "~")
-            }
-        }
+        Value::String(s) if k != "id" && !k.ends_with("Id") => *s = display_text(s, home),
         Value::Array(a) => a.iter_mut().for_each(|v| clean(v, k, home)),
         Value::Object(m) => m.iter_mut().for_each(|(k, v)| clean(v, k, home)),
         _ => (),
     }
+}
+pub fn redact(v: &mut Value) {
+    clean(v, "", &display_home());
 }
 pub fn payload(
     c: &Value,
@@ -239,15 +251,7 @@ pub fn payload(
         }
     };
     d.as_object_mut().unwrap().extend(json!({"event":event,"eventId":key(json!([event,id,reference])),"machine":machine,"instanceId":id,"sessionId":session,"title":title,"cwd":cwd,"sentAt":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"text":text}).as_object().unwrap().clone());
-    clean(
-        &mut d,
-        "",
-        home()
-            .ok()
-            .and_then(|p| p.into_os_string().into_string().ok())
-            .as_deref()
-            .unwrap_or(""),
-    );
+    redact(&mut d);
     d
 }
 async fn post(c: &Value, v: &Value) -> Result<(u16, bool)> {

@@ -223,6 +223,7 @@ struct Stream<'a> {
     requests: HashMap<String, Value>,
     user: String,
     last: String,
+    last_entry: Option<String>,
     error: String,
 }
 fn refresh_session(row: &mut Value, latest: &mut watch::Receiver<Value>, m: &Value) {
@@ -287,7 +288,13 @@ impl Stream<'_> {
         let s = &m["sessionId"];
         let e = &m["event"];
         match e["type"].as_str() {
+            Some("agent_start") => {
+                self.last.clear();
+                self.last_entry = None;
+                self.error.clear();
+            }
             Some("session_changed") => {
+                self.last_entry = None;
                 self.last.clear();
                 self.user.clear();
                 self.error.clear();
@@ -308,8 +315,10 @@ impl Stream<'_> {
                 let text = i["text"].as_str().unwrap_or("");
                 if i["kind"] == "user" {
                     self.user = text.chars().take(400).collect();
+                    self.last_entry = None;
                     self.last.clear()
                 } else if i["kind"] == "assistant" {
+                    self.last_entry = i["entryId"].as_str().map(str::to_owned);
                     self.last = text.chars().take(600).collect();
                     self.error = i["errorMessage"].as_str().unwrap_or("").into()
                 }
@@ -333,6 +342,9 @@ impl Stream<'_> {
                 }
             };
             if !self.last.is_empty() {
+                if let Some(id) = &self.last_entry {
+                    d["lastReplyEntryId"] = json!(id);
+                }
                 d["lastReply"] = json!(self.last)
             }
             self.hook(ev, s, &t.seq.to_string(), d)
@@ -435,6 +447,7 @@ impl Monitor {
                     requests: Default::default(),
                     user: String::new(),
                     last: String::new(),
+                    last_entry: None,
                     error: String::new(),
                 };
                 for r in s["pendingUI"].as_array().into_iter().flatten() {

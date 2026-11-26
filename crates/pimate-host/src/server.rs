@@ -169,6 +169,17 @@ pub async fn serve(config: Config, ips: Vec<IpAddr>, port: u16) -> Result<()> {
     login.close(&config::run_dir()).await;
     result
 }
+fn log_incompatible(
+    prev: &serde_json::Map<String, Value>,
+    next: &serde_json::Map<String, Value>,
+    mut log: impl FnMut(&str, &Value),
+) {
+    for (id, version) in next {
+        if prev.get(id) != Some(version) {
+            log(id, version);
+        }
+    }
+}
 async fn listen(
     config: Config,
     ips: Vec<IpAddr>,
@@ -180,6 +191,13 @@ async fn listen(
     let terminal = crate::terminal::Terminal;
     terminal.refresh(&dir, &mut discovery.instances).await;
     let (tx, instances) = watch::channel(summaries(discovery.instances));
+    let warn = |id: &str, version: &Value| {
+        eprintln!(
+            "Ignoring incompatible RC {id}: protocol {version}, expected {}",
+            pimate_protocol::PROTOCOL_VERSION
+        )
+    };
+    log_incompatible(&Default::default(), &discovery.incompatible, warn);
     let (versions, incompatible) = watch::channel(discovery.incompatible);
     let mut listeners = vec![];
     let mut addresses = vec![];
@@ -225,6 +243,7 @@ async fn listen(
             if let Ok(mut v) = rc::list(&dir).await {
                 app.terminal.refresh(&dir, &mut v.instances).await;
                 app.login.observe(&dir, v.login);
+                log_incompatible(&versions.borrow(), &v.incompatible, warn);
                 versions.send_replace(v.incompatible);
                 let next = summaries(v.instances);
                 let mut monitor = app.monitor.lock().unwrap();
@@ -648,6 +667,18 @@ fn settings(c: &Config, device: &str, m: &Value) -> Result<Value, u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn incompatible_logs_only_added_or_changed_protocols() {
+        let previous = json!({"same": 2, "changed": 3, "gone": 4});
+        let next = json!({"same": 2, "changed": 5, "added": 6});
+        let mut logged = json!({});
+        log_incompatible(
+            previous.as_object().unwrap(),
+            next.as_object().unwrap(),
+            |id, v| logged[id] = v.clone(),
+        );
+        assert_eq!(logged, json!({"added":6, "changed":5}));
+    }
     #[tokio::test]
     async fn revoke_notifies_while_reply_is_blocked() {
         let (tx, mut peer) = tokio::sync::broadcast::channel(1);

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { verifyBinary } from './binary-record.mjs';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 
 // Always stage from scratch: a missing target must never reuse an old binary.
 const src = JSON.parse(readFileSync('package.json'));
@@ -11,6 +11,7 @@ mkdirSync(`${out}/dist`, { recursive: true });
 copyFileSync('dist/extension.js', `${out}/dist/extension.js`);
 copyFileSync('scripts/cli.js', `${out}/dist/cli.js`);
 chmodSync(`${out}/dist/cli.js`, 0o755);
+cpSync('grok-bot', `${out}/grok-bot`, { recursive: true });
 copyFileSync('LICENSE', `${out}/LICENSE`);
 copyFileSync('../../README.md', `${out}/README.md`);
 const hostManifest = '../../crates/pimate-host/Cargo.toml';

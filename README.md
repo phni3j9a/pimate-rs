@@ -73,7 +73,7 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 
 出力は `packages/pimate/dist/extension.js`。開発時の `PIMATE_EXTENSION` はこの絶対パス、`/pimate` の管理コマンドには `PIMATE_HOST_BINARY` を **この checkout の Rust バイナリの絶対パス**に設定します。未指定時は npm パッケージの `bin/<platform>-<arch>/pimate` のみを実行し、別のインストールを PATH から探しません。配布版の Host は逆にこの配置から `dist/extension.js` を解決します。
 
-Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`packages/pimate/LICENSE`）。`diff`・`qrcode` 等の第三者コードは dist にバンドルせず npm 依存としてライセンスを保持します。元の `THIRD_PARTY_NOTICES` は abduco と Bot のスキル／Webhook 用なので Extension には転記しません。旧パッケージの abduco・Bot 用スキルは同梱しません。
+Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`packages/pimate/LICENSE`）。`diff`・`qrcode` 等の第三者コードは dist にバンドルせず npm 依存としてライセンスを保持します。abduco は同梱しません。Grok Bot 用の4つの Skill とテンプレートの構成は `grok-bot/` に同梱し、Skill・Webhook の派生元のライセンスは `notices/T3-Tots.txt` に収録します。
 
 ### npm 配布と TS 版からの切り替え（M8 で公開を承認した後）
 
@@ -157,6 +157,8 @@ kill "$host_pid"                  # この例で起動した Host のみ停止
 
 ### 外部エージェントと Webhook
 
+Grok Bot から使うには、公開テンプレート **[PiMate](https://x.ai/bot/EL8LzPmNquZTjEawTxAI1)** を追加します。Bot は PC 上の Skill を自動で読みません。テンプレートは旧版向けなので、今回の Skill を含むパッケージの導入・更新後は、Bot に `~/.pi/agent/npm/node_modules/@phni3j9a/pimate/grok-bot/skills/` の各 `SKILL.md` を読み、同じ名前・説明のプライベート Skill として全文を保存し直すよう依頼してください。新しい PC の確認は `pimate-getting-started`、質問をチャットで受け取る任意の Routine の設定は [テンプレート構成](packages/pimate/grok-bot/TEMPLATE.md)を参照してください。
+
 `spawn --cwd DIR [-- pi args]` は `origin: "grok-bot"` の新しい Pi を作り、`instanceId`・`attachCommand` などを JSON で返します。`prompt ID TEXT` は `--steer` / `--follow-up` を選択でき、`TEXT` が `-` なら標準入力を読みます。`abort ID` はターンを中断、`shutdown ID` は Pi を終了します。`watch ID` は RC の生イベントを表示します。
 
 ```sh
@@ -165,7 +167,7 @@ pimate wait "$id" --timeout 60      # timeout は送信失敗ではない。prom
 pimate history "$id" --last 4        # 直近の会話を古い順で返す
 ```
 
-`outcome` は `done` / `failed` / `aborted` / `waiting_input` / `timeout` / `idle` / `closed`。`waiting_input` の `pending` に対して `ui ID REQUEST <値|--confirm|--cancel|--answers JSON>` で回答します。`--wait` は既定300秒。結果に含まれる `failed`・`timeout` と、CLI 自体の失敗（終了コード1）は異なります。
+`outcome` は `done` / `failed` / `aborted` / `waiting_input` / `timeout` / `idle` / `closed`。`waiting_input` の `pending` に対して `ui ID REQUEST <値|--confirm|--cancel|--answers JSON>` で回答します。通常の値と `--answers` は原文一致専用です。Webhook カードは `ui ID REQUEST --label LABEL`、質問票は `--answer-labels JSON` を使います。PC 内で全候補を表示用に変換し、一意に一致するときだけ送信します。カードに回答した後は Webhook の続きを待ち、`wait` を呼びません。`wait`・`prompt --wait` は既定では原文を返し、`--redact` を付けた場合だけ Webhook と同じ伏せ字を適用します。Bot が監視外の Pi を待つときは必ず `--redact` を付けます。平文の質問への返信前は `history ID --last 1` の最新行の `entryId` と完了通知の `lastReplyEntryId` で同じ発言か確認できます。`--wait` は既定300秒。結果に含まれる `failed`・`timeout` と、CLI 自体の失敗（終了コード1）は異なります。
 
 Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘッダー（`Authorization: ...`）を端末の標準入力から渡します。`webhook test` は実際に送信します。`webhook watch ID` で明示した Pi の質問・解決・完了・失敗・子の待機などを送ります。`status` には資格情報を出しません。解除は `webhook unwatch ID`、設定ごとの削除は `webhook off` です。秘密の伏せ字は完全ではなく、送信先には質問や回答の一部が届きます。初回送信の100枠が埋まった場合、新規通知はログに記録して破棄します。配信済みまたは配信中の質問に対する解決通知だけは、質問の配信成功後に別タスクで枠を待ち、Pi の監視を止めません。再送キューはメモリ内のみ。アプリへの push 通知は実装しません。
 

@@ -1633,7 +1633,8 @@ async fn agent_cli_contract() -> Result<()> {
     let exes = std::iter::once(PathBuf::from(env!("CARGO_BIN_EXE_pimate")))
         .chain(env::var_os("PIMATE_TEST_TS_CLI").map(PathBuf::from));
     for exe in exes {
-        for (args, expected) in [
+        let rust = exe == Path::new(env!("CARGO_BIN_EXE_pimate"));
+        let mut cases = vec![
             (
                 vec!["prompt", "i", "hello", "--wait"],
                 json!({"deliveredAs":"prompt","outcome":"done","reply":"OK"}),
@@ -1667,14 +1668,54 @@ async fn agent_cli_contract() -> Result<()> {
                 json!([{"kind":"user","text":"hello"},{"kind":"assistant","text":"OK"}]),
             ),
             (
-                vec!["ui", "i", "R", "--answers", "[1]"],
-                json!({"requestId":"R","answers":[1]}),
+                vec!["ui", "i", "R", "--answers", r#"[{"selected":["x"]}]"#],
+                json!({}),
             ),
             (vec!["abort", "i"], json!({"accepted":true})),
             (vec!["shutdown", "i"], json!({"accepted":true})),
-        ] {
+        ];
+        if rust {
+            cases.extend([
+            (vec!["ui", "i", "R", "--label", "~/one"], json!({})),
+            (vec!["ui", "i", "R", "~/one"], json!({})),
+            (vec!["ui", "i", "R", "--label"], json!({})),
+            (vec!["ui", "i", "R", "--answer-labels"], json!({})),
+            (vec!["ui", "i", "R", "--answer-labels", r#"[{"selected":["~/one"]}]"#], json!({})),
+            (vec!["wait", "i", "--timeout", "3"], json!({"outcome":"waiting_input","pending":[{"kind":"editor","requestId":"R","title":"token=supersecret"}]})),
+            (vec!["wait", "i", "--redact", "--timeout", "3"], json!({"outcome":"waiting_input","pending":[{"kind":"editor","requestId":"R","title":"[redacted]"}]})),
+            (vec!["prompt", "i", "secret", "--wait"], json!({"deliveredAs":"prompt","outcome":"done","reply":"token=supersecret"})),
+            (vec!["prompt", "i", "secret", "--wait", "--redact"], json!({"deliveredAs":"prompt","outcome":"done","reply":"[redacted]"})),
+            (vec!["history", "i", "--last", "1"], json!([{"kind":"assistant","text":"OK","entryId":"a1"}])),
+        ]);
+        }
+        for (args, expected) in cases {
             let l = UnixListener::bind(run.join("i.sock"))?;
             let raced = args == ["wait", "i", "--timeout", "2"];
+            let original = root.join("one").to_str().unwrap().to_owned();
+            let mut dialogs = json!([]);
+            let mut ui_params = Value::Null;
+            if args[0] == "ui" {
+                if args.len() > 4 && matches!(args[3], "--answers" | "--answer-labels") {
+                    let label = if args[3] == "--answers" {
+                        "x"
+                    } else {
+                        &original
+                    };
+                    dialogs = json!([{"kind":"questionnaire","requestId":"R","questions":[{"options":[{"label":label}]}]}]);
+                    ui_params = json!({"requestId":"R","answers":[{"selected":[label]}]});
+                } else {
+                    let label = if args.len() > 4 && args[3] == "--label" {
+                        &original
+                    } else {
+                        args[3]
+                    };
+                    dialogs = json!([{"kind":"select","requestId":"R","options":[label]}]);
+                    ui_params = json!({"requestId":"R","value":label});
+                }
+            } else if args[0] == "wait" && args.last() == Some(&"3") {
+                dialogs = json!([{"kind":"editor","requestId":"R","title":"token=supersecret"}]);
+            }
+            let entry_ids = args == ["history", "i", "--last", "1"];
             let pending = args == ["wait", "i"] || raced;
             let job = tokio::spawn(async move {
                 let (sock, _) = l.accept().await?;
@@ -1695,20 +1736,32 @@ async fn agent_cli_contract() -> Result<()> {
                                     io.send(json!({"type":"event","instanceId":"i","seq":n+1,"event":e}).to_string()).await?;
                                 }
                             }
-                            json!({"snapshot":{"protocol":1,"seq":0,"instanceId":"i","status":"running","pendingUI":if pending{json!([{"kind":"confirm","requestId":"R"}])}else{json!([])}}})
+                            json!({"snapshot":{"protocol":1,"seq":0,"instanceId":"i","status":"running","pendingUI":if !dialogs.as_array().unwrap().is_empty() { dialogs.clone() } else if pending{json!([{"kind":"confirm","requestId":"R"}])}else{json!([])}}})
                         }
                         Some("prompt") => {
                             let mode = r["params"]["deliverAs"].as_str().unwrap_or("prompt");
+                            let text = if r["params"]["text"] == "secret" {
+                                "token=supersecret"
+                            } else {
+                                "OK"
+                            };
                             close = r["params"]["text"] == "bye";
                             if !close {
-                                for(seq,e)in [json!({"type":"agent_start"}),json!({"type":"message_end","item":match mode{"prompt"=>json!({"kind":"assistant","text":"OK"}),"steer"=>json!({"kind":"assistant","stopReason":"error","errorMessage":"bad"}),_=>json!({"kind":"user"})}}),json!({"type":"agent_settled","aborted":mode=="followUp"})].into_iter().enumerate(){io.send(json!({"type":"event","seq":seq+1,"instanceId":"i","event":e}).to_string()).await?}
+                                for(seq,e)in [json!({"type":"agent_start"}),json!({"type":"message_end","item":match mode{"prompt"=>json!({"kind":"assistant","text":text}),"steer"=>json!({"kind":"assistant","stopReason":"error","errorMessage":"bad"}),_=>json!({"kind":"user"})}}),json!({"type":"agent_settled","aborted":mode=="followUp"})].into_iter().enumerate(){io.send(json!({"type":"event","seq":seq+1,"instanceId":"i","event":e}).to_string()).await?}
                             }
                             json!({"deliveredAs":mode})
                         }
                         Some("history") => {
-                            json!({"items":[{"kind":"assistant","text":"old"},{"kind":"user","text":"hello"},{"kind":"toolResult"},{"kind":"assistant","text":"OK"}]})
+                            if entry_ids {
+                                json!({"items":[{"kind":"assistant","text":"OK","entryId":"a1"}]})
+                            } else {
+                                json!({"items":[{"kind":"assistant","text":"old"},{"kind":"user","text":"hello"},{"kind":"toolResult"},{"kind":"assistant","text":"OK"}]})
+                            }
                         }
-                        Some("ui_respond") => r["params"].clone(),
+                        Some("ui_respond") => {
+                            assert_eq!(r["params"], ui_params);
+                            json!({})
+                        }
                         Some("abort" | "shutdown") => json!({"accepted":true}),
                         _ => bail!("unknown call"),
                     };
@@ -1800,7 +1853,7 @@ async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result
                     json!({"type":"ui_request_end","requestId":"r","by":"tui"}),
                     json!({"type":"session_changed","session":{"id":"s2","name":"New title"}}),
                     json!({"type":"agent_start"}),
-                    json!({"type":"message_end","item":{"kind":"assistant","stopReason":"stop","text":"token=secret123"}}),
+                    json!({"type":"message_end","item":{"kind":"assistant","stopReason":"stop","text":"token=secret123","entryId":"reply42"}}),
                     json!({"type":"agent_settled","aborted":false}),
                 ];
                 for (i, e) in events.into_iter().enumerate() {
@@ -1832,6 +1885,7 @@ async fn watched_dialog_and_settle_feed_loopback_without_subscribing() -> Result
             }
             Some("pi.finished") => {
                 assert_eq!(v["lastReply"], "[redacted]");
+                assert_eq!(v["lastReplyEntryId"], "reply42");
                 assert_eq!(v["sessionId"], "s2");
                 assert_eq!(v["title"], "New title");
             }

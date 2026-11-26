@@ -1,5 +1,5 @@
 T3 Tots (https://github.com/Deepusleepy/t3-tots)
-Adapted webhook redaction patterns
+Adapted skill text and webhook redaction patterns
 
 MIT License
 

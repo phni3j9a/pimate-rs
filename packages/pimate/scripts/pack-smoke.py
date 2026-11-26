@@ -58,6 +58,9 @@ def smoke(lab, stack):
     run('npm', 'install', '--ignore-scripts', '--legacy-peer-deps', str(tarball),
         '@earendil-works/pi-coding-agent@1.6.0', timeout=240)
     installed = lab / 'node_modules/@phni3j9a/pimate'
+    for file in ['grok-bot/TEMPLATE.md', *(f'grok-bot/skills/pimate-{name}/SKILL.md'
+                  for name in ['getting-started', 'phone-answers', 'rules', 'send'])]:
+        assert (installed / file).read_bytes() == (pkg / file).read_bytes(), file
     manifest = json.loads((installed / 'package.json').read_text())
     sums = json.loads((installed / 'bin/SHA256SUMS.json').read_text())
     assert len(sums) == 4
