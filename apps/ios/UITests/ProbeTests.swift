@@ -42,7 +42,8 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
-        main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
+        for _ in 0..<5 where !main.isHittable || main.frame.midY >= app.buttons["新しい Pi"].frame.minY { app.swipeUp() }
+        XCTAssertTrue(main.isHittable); main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
         if variant == "light" {
             let read = app.staticTexts["read"].firstMatch
             XCTAssertTrue(read.isHittable); read.tap()
