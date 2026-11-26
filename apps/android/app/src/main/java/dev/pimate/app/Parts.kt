@@ -521,6 +521,7 @@ internal fun FullScreen(
         SideEffect {
             window?.run {
                 setDimAmount(0f)
+                if (Build.VERSION.SDK_INT >= 29) isNavigationBarContrastEnforced = false
                 // ダイアログの窓は既定でシステムの帯を避けて置かれる。帯の下まで広げる。
                 setLayout(
                     WindowManager.LayoutParams.MATCH_PARENT,

@@ -22,6 +22,27 @@ class PictureRowsTest {
     }
 
     @Test
+    fun imageOnlyEditKeepsItsReviewWithoutAnEmptyExpander() {
+        val history =
+            listOf(
+                Entry("u", "user"),
+                Entry("a", "assistant", calls = listOf(Call("c", "edit", "foo"))),
+                Entry(
+                    "r",
+                    "tool_result",
+                    callId = "c",
+                    pics = ImageSlots("r", 1, emptyMap()),
+                    change = Piece("c", false, "patch", null, null, null),
+                ),
+            )
+        fun summary(entries: List<Entry>) =
+            buildRows(entries, emptyList(), false).filterIsInstance<ChatRow.Summary>().single()
+        assertFalse(summary(history).expandable)
+        assertEquals("u", summary(history).reviewTurn)
+        assertTrue(summary(history + Entry("b", "assistant", thinking = "考える")).expandable)
+    }
+
+    @Test
     fun toolImageStaysInCollapsedTurn() {
         val pics = ImageSlots("r", 1, emptyMap())
         val rows =

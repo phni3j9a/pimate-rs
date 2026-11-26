@@ -54,6 +54,27 @@ class ChatReviewContract {
     }
 
     @Test
+    fun nonExpandableSummaryStillOpensItsChangeReview() {
+        var reviewed: String? = null
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    RowView(
+                        ChatRow.Summary("turn:u", "ツール 1 回", "u", "1 ファイル ›", false),
+                        false,
+                        review = { reviewed = it },
+                    ) {
+                        error("no rows to expand")
+                    }
+                }
+            }
+        }
+        ui.onNodeWithText("ツール 1 回").assert(!hasClickAction())
+        ui.onNodeWithText("1 ファイル ›").performClick()
+        ui.runOnIdle { assertEquals("u", reviewed) }
+    }
+
+    @Test
     fun copyAnswerKeepsMarkdownAndWhitespace() {
         val source = "**太字**\n\n```kt\n\tval n = 1\n```\n"
         ui.runOnUiThread {
@@ -138,7 +159,9 @@ class ChatReviewContract {
         ui.runOnUiThread {
             ui.activity.setContent {
                 PiTheme(1f) {
-                    Column(Modifier.height(360.dp).verticalScroll(rememberScrollState(Int.MAX_VALUE))) {
+                    Column(
+                        Modifier.height(360.dp).verticalScroll(rememberScrollState(Int.MAX_VALUE))
+                    ) {
                         ChangeDiff(piece) { holds++ }
                     }
                 }

@@ -117,7 +117,7 @@ class RemainingJourney {
         val id = model.hosts.single().id
         val before = model.rowsFor(id).connectionGeneration
         tap("プロバイダーのログイン")
-        find(hasText("openai"))
+        find(hasText("OpenAI"))
         // Like the browser covering the activity: the listener runs, but Compose gets no frames.
         ui.mainClock.autoAdvance = false
         try {
@@ -129,11 +129,11 @@ class RemainingJourney {
                     } &&
                     now.groups["provider"].isNullOrEmpty()
             }
-            ui.onNodeWithText("openai").assertExists()
+            ui.onNodeWithText("OpenAI").assertExists()
         } finally {
             ui.mainClock.autoAdvance = true
         }
-        find(hasText("anthropic"))
+        find(hasText("Anthropic"))
         find(hasText("API キーを設定"))
     }
 
@@ -231,12 +231,14 @@ class RemainingJourney {
             tap("API キーを設定")
             find(hasSetTextAction() and hasText("API キー")).performTextInput("fixture-only")
             tap("送信")
-            find(hasText("ログインしました"))
+            find(hasText("ログインしました", substring = true))
             tap("ログアウト")
             tap("キャンセル")
             tap("ログアウト")
             tap("ログアウト")
+            find(hasText("保存した認証情報を削除しました", substring = true))
             find(hasText("未設定"))
+            ui.onNodeWithText("ログインしました", substring = true).assertDoesNotExist()
             icon("戻る")
         }
         tap("このマシンを削除")
@@ -271,6 +273,8 @@ class RemainingJourney {
             shot("GitHub-Issue")
             icon("戻る")
             tap("PR")
+            find(hasText("#20", substring = true))
+            shot("GitHub-PR-List")
             tap("#20", true)
             find(hasText("画面の動作と表示", substring = true))
             find(hasText("CI チェックの一部を省略", substring = true))

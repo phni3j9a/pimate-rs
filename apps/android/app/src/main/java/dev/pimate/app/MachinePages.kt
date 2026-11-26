@@ -30,7 +30,7 @@ import uniffi.pimate_ffi.*
 
 private fun Rows.hostValue(name: String) = groups["host"].orEmpty().find { it.id == name }?.json
 
-private fun Rows.info() = hostValue("info")?.let(::JSONObject) ?: JSONObject()
+internal fun Rows.info() = hostValue("info")?.let(::JSONObject) ?: JSONObject()
 
 internal fun Rows.supportsRevoke() =
     hostValue("connection") == "\"connected\"" && info().optBoolean("pairedDevices")
@@ -436,7 +436,7 @@ private fun HostMark(connection: String?, failed: Boolean) {
 
 /** 設定・マシン詳細の行。1行は 52dp、補足つきは 60dp（TS 版 0.1.23 の settings.tsx / machine.tsx と同じ寸法）。 */
 @Composable
-private fun ListRow(
+internal fun ListRow(
     title: String,
     sub: String = "",
     subColor: Color = pi.textSecondary,
@@ -946,7 +946,7 @@ internal fun authResultText(flow: JSONObject): String =
         "succeeded" ->
             if (flow.optBoolean("refreshRequired"))
                 "認証情報は保存されました。反映するには PC の Pi で /reload または再起動してください。再入力は不要です。"
-            else "ログインしました"
+            else "ログインしました。起動中の Pi には /reload または再起動後に反映されます。"
         "failed" ->
             if (flow.str("error") == "storage_failed") "認証情報が保存されたか不明です。再入力する前にプロバイダーの一覧を確認してください。"
             else "ログインできませんでした"
@@ -1020,6 +1020,8 @@ private fun OnlineProviderPage(m: SessionModel, id: String, close: () -> Unit, r
                     message =
                         if (method == RcMethod.AUTH_LOGOUT && result.optBoolean("refreshRequired"))
                             "保存した認証情報を削除しました。反映するには PC の Pi で /reload または再起動してください。"
+                        else if (method == RcMethod.AUTH_LOGOUT)
+                            "ログアウトしました。起動中の Pi には /reload または再起動後に反映されます。"
                         else ""
                     login.request(RcMethod.AUTH_LIST)
                 }
@@ -1030,7 +1032,6 @@ private fun OnlineProviderPage(m: SessionModel, id: String, close: () -> Unit, r
     }
     Page("プロバイダーのログイン", close) {
         SheetError(error)
-        if (message.isNotEmpty()) Hint(message)
         if (
             error.isNotEmpty() ||
                 login != null && (providers.isEmpty() || flow?.str("error") == "storage_failed")
@@ -1081,34 +1082,44 @@ private fun OnlineProviderPage(m: SessionModel, id: String, close: () -> Unit, r
                 enabled = !busy,
             )
         } else {
-            if (flow != null) Hint(authResultText(flow))
-            providers.forEach { p ->
-                Label(p.str("id"))
-                Hint(if (p.optBoolean("configured")) "設定済み" else "未設定")
-                p.optJSONArray("methods").strings().forEach { method ->
-                    TextAction(
-                        if (method == "oauth") "ブラウザでログイン" else "API キーを設定",
-                        {
-                            send(
-                                RcMethod.AUTH_BEGIN,
-                                JSONObject().put("provider", p.str("id")).put("method", method),
+            Hint("認証情報は PC のログイン専用の Pi で保存します。作業中の Pi に反映するには /reload または再起動が必要です。")
+            if (message.isNotEmpty()) Hint(message) else if (flow != null) Hint(authResultText(flow))
+            if (login != null && providers.isEmpty()) Hint("プロバイダーの一覧がありません。")
+            providers
+                .groupBy { it.str("vendor") }
+                .toSortedMap()
+                .forEach { (vendor, members) ->
+                    Label(vendor)
+                    members.forEach { p ->
+                        if (p.str("member").isNotEmpty()) Text(p.str("member"), style = Type.header)
+                        Hint(if (p.optBoolean("configured")) "設定済み" else "未設定")
+                        p.optJSONArray("methods").strings().forEach { method ->
+                            TextAction(
+                                if (method == "oauth") "ブラウザでログイン" else "API キーを設定",
+                                {
+                                    send(
+                                        RcMethod.AUTH_BEGIN,
+                                        JSONObject()
+                                            .put("provider", p.str("id"))
+                                            .put("method", method),
+                                    )
+                                },
+                                enabled = !busy,
                             )
-                        },
-                        enabled = !busy,
-                    )
-                }
-                if (login != null && p.str("stored").isNotEmpty()) {
-                    val provider = p.str("id")
-                    ConfirmAction(
-                        login to provider,
-                        "ログアウト",
-                        "PC に保存した $provider の認証を削除します。",
-                        enabled = !busy,
-                    ) {
-                        send(RcMethod.AUTH_LOGOUT, JSONObject().put("provider", provider))
+                        }
+                        if (login != null && p.str("stored").isNotEmpty()) {
+                            val provider = p.str("id")
+                            ConfirmAction(
+                                login to provider,
+                                "ログアウト",
+                                "PC に保存した $provider の認証を削除します。",
+                                enabled = !busy,
+                            ) {
+                                send(RcMethod.AUTH_LOGOUT, JSONObject().put("provider", provider))
+                            }
+                        }
                     }
                 }
-            }
         }
     }
 }

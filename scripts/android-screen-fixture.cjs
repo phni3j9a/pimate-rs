@@ -249,7 +249,6 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 						delete flow.prompt;
 					} else if (method === "auth_logout") {
 						stored = false;
-						flow = null;
 						return reply(id, { refreshRequired: true });
 					} else return phone.close();
 					reply(id, { flow });
