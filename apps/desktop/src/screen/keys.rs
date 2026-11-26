@@ -16,6 +16,7 @@ macro_rules! commands {
             // documented app shortcuts in the composer without changing other inputs.
             cx.bind_keys([$(KeyBinding::new($key,$name,Some("Composer > Input")),)*]);
             cx.bind_keys([
+                KeyBinding::new("secondary-enter", Enter {secondary:true},Some("QuestionCard")),
                 KeyBinding::new("enter", PairEnter, Some("PairDialog")),
                 KeyBinding::new("tab", PairTab, Some("PairDialog")),
                 KeyBinding::new("shift-tab", PairTab, Some("PairDialog")),
@@ -123,16 +124,21 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
         let text_space = key == "space" && e.context_stack.iter().any(|c| c.contains("Input"));
         let owns = match key {
             "escape" => true,
-            "enter" => matches!(
-                top,
-                Some(
-                    Overlay::Menu
-                        | Overlay::Pair
-                        | Overlay::Palette
-                        | Overlay::Slash
-                        | Overlay::Tooltip
-                )
-            ),
+            "enter" => {
+                (top.is_none()
+                    && e.keystroke.modifiers.secondary()
+                    && e.context_stack.iter().any(|c| c.contains("QuestionCard")))
+                    || matches!(
+                        top,
+                        Some(
+                            Overlay::Menu
+                                | Overlay::Pair
+                                | Overlay::Palette
+                                | Overlay::Slash
+                                | Overlay::Tooltip
+                        )
+                    )
+            }
             "tab" => {
                 tip_tab
                     || matches!(

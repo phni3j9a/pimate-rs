@@ -1773,6 +1773,78 @@ mod key_tests {
         (rt, wire, server)
     }
     #[gpui::test]
+    fn question_keys_send_the_selected_option_once(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, server) = attach_active(&app, w, "question-keys");
+        let pos = w.debug_bounds("choice-0-0-false").unwrap().center();
+        w.simulate_click(pos, Default::default());
+        press(w, "3 up down 2");
+        assert!(w.debug_bounds("choice-0-1-true").is_some());
+        w.simulate_keystrokes("secondary-enter secondary-enter");
+        w.run_until_parked();
+        assert_eq!(
+            rt.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), wire.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }),
+            "ui_respond"
+        );
+        assert!(wire.try_recv().is_err());
+        server.abort();
+    }
+    #[gpui::test]
+    fn queued_steer_has_no_undo_and_only_unconfirmed_text_returns_to_input(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use pimate_core::Operation;
+        let (app, w, _) = tests::open_chat(cx);
+        let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
+        let (conn, target) = app.read_with(w, |app, _| {
+            (
+                app.machines["key-menu"].conn.clone(),
+                app.editor().unwrap().target(),
+            )
+        });
+        let refresh = |app: &mut super::Desktop, cx: &mut gpui::Context<super::Desktop>| {
+            app.machines.get_mut("key-menu").unwrap().rows = super::Rows::snapshot(conn.snapshot());
+            cx.notify()
+        };
+        rt.block_on(conn.perform(Operation::Send {
+            target: target.clone(),
+            text: "保持した指示".into(),
+            images: vec![],
+        }))
+        .unwrap();
+        app.update(w, refresh);
+        w.run_until_parked();
+        assert_eq!(wire.try_recv().unwrap(), "prompt");
+        assert_eq!(
+            app.read_with(w, |app, _| app.machines["key-menu"].rows.group("draft")[0]
+                .1["status"]
+                .clone()),
+            "queued"
+        );
+        assert!(w.debug_bounds("restore-draft").is_none());
+        // Simulate a separately requested stop, not a cancel button on the draft.
+        rt.block_on(conn.perform(Operation::Abort { target }))
+            .unwrap();
+        app.update(w, refresh);
+        w.run_until_parked();
+        assert_eq!(wire.try_recv().unwrap(), "abort");
+        let pos = w.debug_bounds("restore-draft").unwrap().center();
+        w.simulate_click(pos, Default::default());
+        w.run_until_parked();
+        assert_eq!(
+            app.read_with(w, |app, cx| app.input.as_ref().unwrap().1.read(cx).value()),
+            "保持した指示"
+        );
+        assert!(wire.try_recv().is_err());
+        server.abort();
+    }
+    #[gpui::test]
     fn pairing_confirmation_keeps_enter_off_the_composer(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| keys::init(cx));

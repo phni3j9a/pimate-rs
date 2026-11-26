@@ -259,6 +259,7 @@ impl Desktop {
                     let id = id.clone();
                     chat = chat.child(
                         Button::new(SharedString::from(format!("restore-{id}")))
+                            .debug_selector(|| "restore-draft".into())
                             .label("入力欄へ戻す")
                             .on_click(cx.listener(move |this, _, w, cx| {
                                 if pg.visible(this) {
