@@ -5,6 +5,10 @@ final class TranscriptTests: XCTestCase {
     private func item(_ id: String, _ o: Object) throws -> Item {
             Item(collection: "entry", id: id, position: 0, json: String(decoding: try JSONSerialization.data(withJSONObject: o), as: UTF8.self))
         }
+    func testMeasuredThinkingLabels() {
+        XCTAssertEqual(WorkLine.thoughtTitle(nil), "Thought"); XCTAssertEqual(WorkLine.thoughtTitle(999), "Thought")
+        XCTAssertEqual(WorkLine.thoughtTitle(11900), "Thought for 12s"); XCTAssertEqual(WorkLine.thoughtTitle(61500), "Thought for 1m 2s")
+    }
     func testImageOnlyTurnSurvivesBeforeReply() throws {
         for (o, count): (Object, Int) in [(["imageCount": 4], 4), (["images": [["mimeType": "image/png"]]], 1)] {
             let result = try ChatTurn.read([item("user", o.merging(["kind": "user", "text": ""]) { a, _ in a })], live: [])

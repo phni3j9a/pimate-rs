@@ -53,6 +53,7 @@ private struct Conversation: View {
     var body: some View {
         let groups = rows.groups, questions = groups["question"] ?? [], stream = groups["stream"] ?? []
         let entries = groups["entry"] ?? [], tools = groups["tool"] ?? [], edge = model.edge
+        let timing = groups["thinkingMs"] ?? []
         let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
         VStack(spacing: 0) {
@@ -65,7 +66,7 @@ private struct Conversation: View {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }) }
-                        if !thinking.isEmpty { DisclosureGroup("考えています…") { Text(verbatim: thinking) } }
+                        if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
                         if !text.isEmpty {
                             // A new streamed answer must not render with the previous answer's parsed blocks.
                             let answer = "stream:" + (entries.last?.id ?? "begin")
@@ -114,8 +115,8 @@ private struct Conversation: View {
             }
             .environment(\.openPiTable, { table = $0 })
             .fullScreenCover(item: $table) { TableViewer(shown: $0, context: photos) }
-            .task(id: [entries, tools]) {
-                let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools) }
+            .task(id: [entries, tools, timing]) {
+                let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools, timing: timing) }
                 let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
                 if !Task.isCancelled { turns = result; loaded = true }
             }
@@ -127,6 +128,7 @@ struct TurnView: View {
     var caption: String? = nil
     @State private var expanded = false
     var body: some View {
+        let folds = !active && turn.work.contains { !$0.isThought }
         let firstWork = turn.work.first?.id
         VStack(alignment: .leading, spacing: 12) {
             if !turn.prompt.isEmpty || turn.imageCount > 0 {
@@ -141,13 +143,13 @@ struct TurnView: View {
                 case .reply(let reply):
                     MarkdownBody(source: reply.text, answer: reply.id)
                 case .work(let w):
-                    if !active && w.id == firstWork {
+                    if folds && w.id == firstWork {
                         Button { expanded.toggle() } label: {
                             HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                     }
                     let run = w.callID.flatMap(runForCall)
-                    if active || expanded || (run != nil && w.state == "失敗") { work(w) }
+                    if !folds || expanded || (run != nil && w.state == "失敗") { work(w) }
                     if let run {
                         Button { openRun(run) } label: { Label("サブエージェントの実行", systemImage: "person.2").frame(minHeight: 44) }
                     }
@@ -157,10 +159,20 @@ struct TurnView: View {
         }
     }
     private func work(_ line: WorkLine) -> some View {
-            DisclosureGroup {
+            ActiveDisclosure(automatic: line.state == "実行中") {
                 Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
             } label: {
-                HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.name == "考えた内容" ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)
+                HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.isThought ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)
             }.foregroundStyle(line.state == "失敗" ? PiTheme.failure : PiTheme.secondary)
+    }
+}
+
+private struct ActiveDisclosure<Content: View, Label: View>: View {
+    let automatic: Bool
+    @ViewBuilder let content: () -> Content
+    @ViewBuilder let label: () -> Label
+    @State private var manual: Bool?
+    var body: some View {
+        DisclosureGroup(isExpanded: Binding(get: { manual ?? automatic }, set: { manual = $0 }), content: content, label: label)
     }
 }
