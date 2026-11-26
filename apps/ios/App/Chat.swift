@@ -27,6 +27,15 @@ struct ChatScreen: View {
         return ["revoked", "invalid_token", "auth_failed", "offline", "protocol_mismatch"].contains(connection) ? "一覧でマシンの接続と起動状態を確認してください。" : nil
     }
 }
+struct TailMetrics: Equatable {
+    let height: CGFloat, viewport: CGRect
+    var nearTail: Bool { height - viewport.maxY < 48 }
+    func shouldFollow(after old: Self?, dragging: Bool) -> Bool {
+        guard !dragging, !viewport.isEmpty else { return false }
+        guard let old, !old.viewport.isEmpty else { return true }
+        return old.nearTail && (height != old.height || viewport.height != old.viewport.height)
+    }
+}
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     @State private var turns: [ChatTurn] = []
@@ -38,7 +47,8 @@ private struct Conversation: View {
         PhotoContext(model: model, key: key, entries: rows.field("entryImages") == "true", files: rows.field("fileImages") == "true", open: { photo = $0 })
     }
     @State private var loaded = false
-    @State private var position: String? = "tail"
+    @State private var metrics: TailMetrics?
+    @GestureState private var dragging = false
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
         let groups = rows.groups, questions = groups["question"] ?? [], stream = groups["stream"] ?? []
@@ -50,7 +60,8 @@ private struct Conversation: View {
                 Circle().fill(questions.isEmpty && !pc ? PiTheme.accent : PiTheme.waiting).frame(width: 6, height: 6)
                 Text(pc && questions.isEmpty ? "PC で操作待ち" : !questions.isEmpty ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
             }.foregroundStyle(PiTheme.secondary).padding(.bottom, 6).accessibilityElement(children: .combine)
-            ScrollView {
+            ScrollViewReader { reader in
+                ScrollView {
                     LazyVStack(alignment: .leading, spacing: 22) {
                         if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                         ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }) }
@@ -65,9 +76,26 @@ private struct Conversation: View {
                         if let prompt = edge?.pcPrompt, questions.isEmpty { TerminalCard(title: prompt.str("title"), command: edge?.attachCommand) }
                         ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
                         Color.clear.frame(height: 1).id("tail")
-                    }.scrollTargetLayout().padding(.horizontal, 20).padding(.vertical, 12)
-                }.modifier(PhotoViewport()).scrollPosition(id: $position, anchor: .bottom).defaultScrollAnchor(.bottom).scrollDismissesKeyboard(.interactively)
-                    .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { position = "tail"; UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
+                    }.padding(.horizontal, 20).padding(.vertical, 12)
+                    .onGeometryChange(for: TailMetrics.self) { geometry in
+                        let viewport = geometry.bounds(of: .scrollView) ?? .zero
+                        return TailMetrics(height: geometry.size.height, viewport: viewport)
+                    } action: { next in
+                        let follow = next.shouldFollow(after: metrics, dragging: dragging)
+                        metrics = next
+                        if follow { reader.scrollTo("tail", anchor: .bottom) }
+                    }
+                }.modifier(PhotoViewport()).scrollDismissesKeyboard(.interactively)
+                    .simultaneousGesture(DragGesture().updating($dragging) { _, state, _ in state = true })
+                    .overlay(alignment: .bottomTrailing) {
+                        if metrics?.nearTail == false {
+                            Button { withAnimation { reader.scrollTo("tail", anchor: .bottom) } } label: {
+                                Label("最新へ", systemImage: "arrow.down").padding(10).background(.regularMaterial, in: Capsule())
+                            }.padding(8)
+                        }
+                    }
+                    .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
+            }
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
             .safeAreaInset(edge: .bottom, spacing: 8) {
                 VStack(spacing: 0) {

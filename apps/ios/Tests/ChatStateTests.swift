@@ -9,6 +9,13 @@ final class ChatStateTests: XCTestCase {
             XCTAssertEqual(Composer.canStop(rows), expected)
         }
     }
+    func testTailFollowsQuestionGrowthOnlyWhileReadingLatest() {
+        func metrics(_ y: CGFloat, _ height: CGFloat) -> TailMetrics { TailMetrics(height: height, viewport: CGRect(x: 0, y: y, width: 300, height: 500)) }
+        let after = metrics(500, 1300)
+        XCTAssertTrue(after.shouldFollow(after: metrics(453, 1000), dragging: false))
+        XCTAssertFalse(after.shouldFollow(after: metrics(452, 1000), dragging: false))
+        XCTAssertFalse(after.shouldFollow(after: metrics(500, 1000), dragging: true))
+    }
     func testReceiptsSurviveSceneAndSnapshotButNeverChangeOwner() {
         let busy = row("busy", "operation", #"{"id":"r","method":"session_op","op":"fork","sessionId":"source"}"#)
         let done = row("operationResult", "latest", #"{"id":"r","sessionId":"dest","outcome":"done","forkText":"original"}"#)
