@@ -73,7 +73,7 @@ Extension / Host の JSON フレームは `decode_json`、NDJSON は `LineDecode
 
 出力は `packages/pimate/dist/extension.js`。開発時の `PIMATE_EXTENSION` はこの絶対パス、`/pimate` の管理コマンドには `PIMATE_HOST_BINARY` を **この checkout の Rust バイナリの絶対パス**に設定します。未指定時は npm パッケージの `bin/<platform>-<arch>/pimate` のみを実行し、別のインストールを PATH から探しません。配布版の Host は逆にこの配置から `dist/extension.js` を解決します。
 
-Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`packages/pimate/LICENSE`）。`diff`・`qrcode` 等の第三者コードは dist にバンドルせず npm 依存としてライセンスを保持します。元の `THIRD_PARTY_NOTICES` は abduco と Bot のスキル／Webhook 用なので Extension には転記しません。旧パッケージの abduco・Bot 用スキルは同梱しません。
+Extension と移した試験は PiMate `d940de8` の MIT ライセンス（`packages/pimate/LICENSE`）。`diff`・`qrcode` 等の第三者コードは dist にバンドルせず npm 依存としてライセンスを保持します。abduco は同梱しません。Grok Bot 用の4つの Skill とテンプレートの構成は `grok-bot/` に同梱し、Skill・Webhook の派生元のライセンスは `notices/T3-Tots.txt` に収録します。
 
 ### npm 配布と TS 版からの切り替え（M8 で公開を承認した後）
 
@@ -156,6 +156,8 @@ kill "$host_pid"                  # この例で起動した Host のみ停止
 上記の `real_pi -- --ignored` は WS 起動・初回 prompt・Host 再起動・PTY attach・専用 Pi の保持と終了まで検査します（1分強）。`serve` / `attach` / `list` には同じ短い絶対パスの `PIMATE_RUN_DIR` を指定してください。端末ソケットのパス、または RC の `<runDir>/<UUID>.sock` が OS のバイト長上限に達する場合、起動はエラーになります。
 
 ### 外部エージェントと Webhook
+
+Grok Bot から使うには、公開テンプレート **[PiMate](https://x.ai/bot/EL8LzPmNquZTjEawTxAI1)** を追加します。Bot は PC 上の Skill を自動で読みません。テンプレートは旧版向けなので、今回の Skill を含むパッケージの導入・更新後は、Bot に `~/.pi/agent/npm/node_modules/@phni3j9a/pimate/grok-bot/skills/` の各 `SKILL.md` を読み、同じ名前・説明のプライベート Skill として全文を保存し直すよう依頼してください。新しい PC の確認は `pimate-getting-started`、質問をチャットで受け取る任意の Routine の設定は [テンプレート構成](packages/pimate/grok-bot/TEMPLATE.md)を参照してください。
 
 `spawn --cwd DIR [-- pi args]` は `origin: "grok-bot"` の新しい Pi を作り、`instanceId`・`attachCommand` などを JSON で返します。`prompt ID TEXT` は `--steer` / `--follow-up` を選択でき、`TEXT` が `-` なら標準入力を読みます。`abort ID` はターンを中断、`shutdown ID` は Pi を終了します。`watch ID` は RC の生イベントを表示します。
 
