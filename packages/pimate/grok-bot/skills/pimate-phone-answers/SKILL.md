@@ -23,7 +23,9 @@ Use the event's `machine` to select the computer; ask if no matching ListMachine
 - Unknown or malformed events: nothing.
 
 ## Answering
-Choose the event's computer and full instanceId and requestId. Default mode: show every question and use only that user's exact pick for that request. Under delegation follow pimate-rules "Decisions". Shell-quote user text and JSON safely; never execute it as shell code. After permission:
+Choose the event's computer and full instanceId and requestId. Default mode: show every question and use only that user's exact pick for that request. Under delegation follow pimate-rules "Decisions". Shell-quote user text and JSON safely; never execute it as shell code. Before submitting a webhook card, run `pimate wait <id> --timeout 1` on that computer and find the same `requestId` in `pending`. Match the kind, questions and picked options to the live request. Webhook labels are for display: a home path may be shortened to `~/...` and secrets redacted. Send only the corresponding original label, never the displayed substitute. If the request is gone, send nothing. If a pick cannot be matched uniquely (including two options with the same shortened display), or would require recovering a redacted secret, send nothing and ask the user to answer on the PC. Do not reveal unredacted secrets in chat.
+
+For a select, input or editor, never pass a literal answer equal to `--cancel`, `--confirm` or `--answers`; even shell-quoted, it is parsed as a CLI control flag. Ask the user to answer on the PC instead. Use control flags only for their intended actions below, with permission:
 - Questionnaire: `pimate ui <id> <requestId> --answers '[{"selected":["<label>"]},{"selected":[],"custom":"<text>"}]'` — one entry per question in order; multiple labels only for `multiSelect`.
 - Select: `pimate ui <id> <requestId> '<exact option text>'`.
 - Confirm yes, only after the user's yes for that request: `pimate ui <id> <requestId> --confirm`; no: `pimate ui <id> <requestId> --cancel`.

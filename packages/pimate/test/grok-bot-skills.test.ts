@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 const skills = new URL("../grok-bot/skills/", import.meta.url);
@@ -20,7 +21,7 @@ describe("Grok Bot skills", () => {
 		expect(commands.size).toBeGreaterThan(0);
 		expect(webhookActions.size).toBeGreaterThan(0);
 		for (const folder of folders) {
-			const text = readFileSync(join(skills.pathname, folder.name, "SKILL.md"), "utf8");
+			const text = readFileSync(join(fileURLToPath(skills), folder.name, "SKILL.md"), "utf8");
 			const frontmatter = text.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? "";
 			expect(frontmatter.match(/^name:\s*(\S+)\s*$/m)?.[1]).toBe(folder.name);
 			expect(frontmatter.match(/^description:\s*(\S.*)$/m)?.[1].trim()).toBeTruthy();
