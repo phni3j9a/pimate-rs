@@ -16,7 +16,7 @@ if [[ ${1:-} != inner ]]; then
     # 撮影用。出力先から命令（sh を含む）を読むので、既存のディレクトリは受け付けない。毎回、自分だけの
     # 新しいディレクトリ（権限 700）を作ってパスを表示し、FIFO・ログ・画像をすべてそこに置く。
     [[ $# == 1 ]] || { echo 'shots takes no directory: it makes a new one and prints its path' >&2; exit 2; }
-    out=$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/pimate-shots.XXXXXX")"); echo "$out"
+    out=$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/pimate-shots.XXXXXX")"); mkfifo -m 600 "$out/cmd" "$out/ack"; echo "$out"
   else
     mkdir -p "$2"; out=$(realpath "$2")
   fi

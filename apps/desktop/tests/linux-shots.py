@@ -8,7 +8,7 @@
 key ctrl+k / type TEXT / copy TEXT / copylink（ペアリングのリンク）/ gs SCHEMA KEY VALUE / sleep S / sh CMD / quit
 座標は仮想モニター（MONITOR、既定 1280x800）の画素。隔離した GNOME の中だけを操作する。
 """
-import os, subprocess, sys, time
+import os, stat, subprocess, sys, time
 from pathlib import Path
 import dbus
 assert os.environ['XDG_RUNTIME_DIR'] == str(Path.home()/'run')
@@ -69,7 +69,9 @@ def run(line):
     elif c == 'quit': raise SystemExit
     else: print('unknown', line, flush=True)
 fifo, ack = out/'cmd', out/'ack'
-for p in (fifo, ack): os.mkfifo(p)  # 新しいディレクトリなので、同じ名前のものはない（あれば何も消さずに止まる）
+# FIFO は linux-session.sh がパスを表示する前に作る（表示直後の書き込みも準備まで待つ）。
+for p in (fifo, ack):
+    if not stat.S_ISFIFO(os.lstat(p).st_mode): sys.exit(f'{p} is not a FIFO')
 (out/'ready').touch()
 while True:
     with open(fifo) as f: lines = f.read().splitlines()
