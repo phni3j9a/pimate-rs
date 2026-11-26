@@ -4,16 +4,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TranscriptTest {
-    @Test fun answeringChildPrefixesExistingDraft() {
+    @Test
+    fun answeringChildPrefixesExistingDraft() {
         val child = org.json.JSONObject().put("agent", "reviewer").put("title", "確認")
         assertEquals("確認（reviewer）の質問への回答: 下書き", childAnswerDraft(child, "下書き"))
     }
-    @Test fun thinkingLabelsMatchObservedDuration() {
+
+    @Test
+    fun thinkingLabelsMatchObservedDuration() {
         assertEquals("Thinking…", thinkingLabel(true, null))
         assertEquals("Thought", thinkingLabel(false, 999))
         assertEquals("Thought for 12s", thinkingLabel(false, 12_100))
         assertEquals("Thought for 1m 0s", thinkingLabel(false, 59_500))
     }
+
     private val read = Call("c1", "read", "src/greet.ts")
     private val bash = Call("c2", "bash", "npm test")
     private val turn =
@@ -34,9 +38,24 @@ class TranscriptTest {
 
     @Test
     fun editRowShowsPatchAndLinksToInitiatingTurn() {
-        val rows = buildRows(listOf(Entry("u", "user"), Entry("a", "assistant", calls=listOf(Call("c", "edit", "foo"))), Entry("r", "tool_result", "success", callId="c", patch="patch")), emptyList(), false)
+        val rows =
+            buildRows(
+                listOf(
+                    Entry("u", "user"),
+                    Entry("a", "assistant", calls = listOf(Call("c", "edit", "foo"))),
+                    Entry(
+                        "r",
+                        "tool_result",
+                        "success",
+                        callId = "c",
+                        change = Piece("c", false, "patch", null, null, null),
+                    ),
+                ),
+                emptyList(),
+                false,
+            )
         assertEquals("u", rows.filterIsInstance<ChatRow.Summary>().single().reviewTurn)
-        assertEquals("patch", rows.filterIsInstance<ChatRow.Tool>().single().output)
+        assertEquals("patch", rows.filterIsInstance<ChatRow.Tool>().single().change?.patch)
     }
 
     @Test

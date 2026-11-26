@@ -12,9 +12,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.*
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.SpanStyle
@@ -26,9 +26,9 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import org.json.*
 import uniffi.pimate_ffi.*
 
@@ -60,10 +60,11 @@ internal class ChatUi : ViewModel() {
         if (host == null || instance == null || result == null) return
         val id = result.str("id")
         if (receipt?.take(id, instance) == true) received = ReceivedResult(host, instance, result)
-        else resultFor(host, instance)?.let {
-            if (it.result.str("id") == id) it.update(result)
-            else received = null // Host の latest が更新された。古い案内・入力文を適用しない。
-        }
+        else
+            resultFor(host, instance)?.let {
+                if (it.result.str("id") == id) it.update(result)
+                else received = null // Host の latest が更新された。古い案内・入力文を適用しない。
+            }
     }
 
     fun resultFor(host: String?, instance: String?) =
@@ -327,85 +328,116 @@ internal fun ChatScreen(
                             )
                     val list = rememberLazyListState()
                     val scope = rememberCoroutineScope()
-                    var follow by remember(list) { mutableStateOf(true) }
-                    val drag = remember(list) { object : NestedScrollConnection {
-                        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                            if (available.y != 0f && source == NestedScrollSource.UserInput) follow = false
-                            return Offset.Zero
-                        }
-                    } }
-                    LaunchedEffect(list) {
-                        snapshotFlow { list.layoutInfo }.collect { info ->
-                            if (!list.canScrollForward) follow = true
-                            else if (follow && !list.isScrollInProgress && info.totalItemsCount > 0)
-                                list.requestScrollToItem(info.totalItemsCount - 1)
-                        }
-                    }
-                    Box(Modifier.weight(1f)) {
-                    LazyColumn(
-                        Modifier.fillMaxSize().nestedScroll(drag).testTag("chat"),
-                        list,
-                        contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
-                    ) {
-                        items(
-                            visible.size,
-                            key = {
-                                val id = visible[it].key
-                                // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
-                                if (id == "live:text") "live:${entries.lastOrNull()?.id}"
-                                else "row:$id"
-                            },
-                        ) { index ->
-                            val row = visible[index]
-                            Box(Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)) {
-                                RowView(
-                                    row,
-                                    if (row is ChatRow.Summary) "+${row.key}" in open
-                                    else isOpen(row),
-                                    review = { id: String -> show("review:$id") }.takeIf { key != null },
-                                ) {
-                                    // 手で行を開閉したレイアウトだけは末尾へ寄せない。
-                                    follow = false
-                                    list.requestScrollToItem(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset)
-                                    if (row is ChatRow.Summary) {
-                                        if (!open.remove("+${row.key}")) open.add("+${row.key}")
-                                    } else if (runLinks.containsKey(row.key) && key != null)
-                                        show("agents:" + runLinks.getValue(row.key))
-                                    else toggle(row)
+                    var follow by rememberSaveable(m.selected) { mutableStateOf(true) }
+                    val drag =
+                        remember(list) {
+                            object : NestedScrollConnection {
+                                override fun onPreScroll(
+                                    available: Offset,
+                                    source: NestedScrollSource,
+                                ): Offset {
+                                    if (available.y != 0f && source == NestedScrollSource.UserInput)
+                                        follow = false
+                                    return Offset.Zero
                                 }
                             }
                         }
-                        if (pcPrompt != null && questions.isEmpty())
-                            item("pcPrompt") { PcCard(pcPrompt.str("title"), m.attachCommand()) }
-                        items(questions, key = { "question:${it.id}" }) { item ->
-                            val edit = editor?.let { m.answers[it, item.id] }
-                            if (edit != null && target != null)
-                                Box(Modifier.padding(top = 24.dp)) {
-                                    QuestionCard(
-                                        remember(item.json) { JSONObject(item.json) },
-                                        edit,
-                                        m.can(
-                                            Operation.Answer(
-                                                target,
-                                                JSONObject()
-                                                    .put("requestId", item.id)
-                                                    .put("cancelled", true)
-                                                    .toString(),
-                                            )
-                                        ),
-                                    ) { answer ->
-                                        m.answer(editor, item.id, edit, answer)
+                    LaunchedEffect(list) {
+                        snapshotFlow { list.layoutInfo }
+                            .collect { info ->
+                                if (!list.canScrollForward) follow = true
+                                else if (
+                                    follow && !list.isScrollInProgress && info.totalItemsCount > 0
+                                )
+                                    list.requestScrollToItem(info.totalItemsCount - 1)
+                            }
+                    }
+                    Box(Modifier.weight(1f)) {
+                        LazyColumn(
+                            Modifier.fillMaxSize().nestedScroll(drag).testTag("chat"),
+                            list,
+                            contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
+                        ) {
+                            items(
+                                visible.size,
+                                key = {
+                                    val id = visible[it].key
+                                    // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
+                                    if (id == "live:text") "live:${entries.lastOrNull()?.id}"
+                                    else "row:$id"
+                                },
+                            ) { index ->
+                                val row = visible[index]
+                                Box(
+                                    Modifier.padding(
+                                        top = gap(visible.getOrNull(index - 1), row).dp
+                                    )
+                                ) {
+                                    RowView(
+                                        row,
+                                        if (row is ChatRow.Summary) "+${row.key}" in open
+                                        else isOpen(row),
+                                        review =
+                                            { id: String -> show("review:$id") }.takeIf {
+                                                key != null
+                                            },
+                                    ) {
+                                        // 手で行を開閉したレイアウトだけは末尾へ寄せない。
+                                        follow = false
+                                        list.requestScrollToItem(
+                                            list.firstVisibleItemIndex,
+                                            list.firstVisibleItemScrollOffset,
+                                        )
+                                        if (row is ChatRow.Summary) {
+                                            if (!open.remove("+${row.key}")) open.add("+${row.key}")
+                                        } else if (runLinks.containsKey(row.key) && key != null)
+                                            show("agents:" + runLinks.getValue(row.key))
+                                        else toggle(row)
                                     }
                                 }
+                            }
+                            if (pcPrompt != null && questions.isEmpty())
+                                item("pcPrompt") {
+                                    PcCard(pcPrompt.str("title"), m.attachCommand())
+                                }
+                            items(questions, key = { "question:${it.id}" }) { item ->
+                                val edit = editor?.let { m.answers[it, item.id] }
+                                if (edit != null && target != null)
+                                    Box(Modifier.padding(top = 24.dp)) {
+                                        QuestionCard(
+                                            remember(item.json) { JSONObject(item.json) },
+                                            edit,
+                                            m.can(
+                                                Operation.Answer(
+                                                    target,
+                                                    JSONObject()
+                                                        .put("requestId", item.id)
+                                                        .put("cancelled", true)
+                                                        .toString(),
+                                                )
+                                            ),
+                                        ) { answer ->
+                                            m.answer(editor, item.id, edit, answer)
+                                        }
+                                    }
+                            }
+                            item("bottom") { Spacer(Modifier.height(10.dp)) }
                         }
-                        item("bottom") { Spacer(Modifier.height(10.dp)) }
-                    }
-                    if (list.canScrollForward) {
-                        FilledTonalButton(
-                            onClick = { scope.launch { list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1) } },
-                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
-                        ) { Text("最新へ") }
-                    }
+                        if (list.canScrollForward) {
+                            FilledTonalButton(
+                                onClick = {
+                                    scope.launch {
+                                        list.animateScrollToItem(
+                                            list.layoutInfo.totalItemsCount - 1
+                                        )
+                                    }
+                                },
+                                modifier =
+                                    Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                            ) {
+                                Text("最新へ")
+                            }
+                        }
                     }
                 }
             }
@@ -454,7 +486,8 @@ internal fun ChatScreen(
                 else ->
                     if (name.startsWith("agents:"))
                         AgentsPage(m, at, close, name.removePrefix("agents:"))
-                    else if (name.startsWith("review:")) ReviewPage(m, at, close, name.removePrefix("review:"))
+                    else if (name.startsWith("review:"))
+                        ReviewPage(m, at, close, name.removePrefix("review:"))
                     else SessionSheet(m, at, name, { ui.sheet = it to at }, close)
             }
         }
@@ -490,13 +523,19 @@ private fun Header(
         Modifier.height(52.dp).padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = openDrawer, modifier = Modifier.semantics { contentDescription = "Instance 一覧を開く" }) {
+        IconButton(
+            onClick = openDrawer,
+            modifier = Modifier.semantics { contentDescription = "Instance 一覧を開く" },
+        ) {
             val color = pi.text
             Canvas(Modifier.size(24.dp)) {
-                for (y in listOf(6.dp, 12.dp, 18.dp)) drawLine(color,
+                for (y in listOf(6.dp, 12.dp, 18.dp)) drawLine(
+                    color,
                     androidx.compose.ui.geometry.Offset(3.dp.toPx(), y.toPx()),
                     androidx.compose.ui.geometry.Offset(21.dp.toPx(), y.toPx()),
-                    2.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
+                    2.dp.toPx(),
+                    androidx.compose.ui.graphics.StrokeCap.Round,
+                )
             }
         }
         Text(
@@ -667,7 +706,12 @@ internal fun PcCard(title: String, command: String?) {
 }
 
 @Composable
-internal fun RowView(row: ChatRow, open: Boolean, review: ((String) -> Unit)? = null, toggle: () -> Unit) {
+internal fun RowView(
+    row: ChatRow,
+    open: Boolean,
+    review: ((String) -> Unit)? = null,
+    toggle: () -> Unit,
+) {
     when (row) {
         is ChatRow.User ->
             Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
@@ -692,10 +736,12 @@ internal fun RowView(row: ChatRow, open: Boolean, review: ((String) -> Unit)? = 
                         )
                     }
             }
-        is ChatRow.Summary -> Row(verticalAlignment = Alignment.CenterVertically) {
-            Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
-            if (row.reviewTurn != null && review != null) TextAction("変更を確認", { review(row.reviewTurn) })
-        }
+        is ChatRow.Summary ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
+                if (row.reviewTurn != null && review != null)
+                    TextAction(row.reviewLabel, { review(row.reviewTurn) })
+            }
         is ChatRow.Thinking ->
             Column {
                 Expander(
@@ -719,7 +765,11 @@ internal fun RowView(row: ChatRow, open: Boolean, review: ((String) -> Unit)? = 
             }
         is ChatRow.Text ->
             Column {
-                Markdown(row.text, live = row.key == "live:text", answer = row.key.takeUnless { it == "live:text" })
+                Markdown(
+                    row.text,
+                    live = row.key == "live:text",
+                    answer = row.key.takeUnless { it == "live:text" },
+                )
                 CopyAction(row.text, "回答全文をコピー（Markdown）")
             }
         is ChatRow.Tool ->
@@ -778,7 +828,7 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                 .let { if (it.size > 40) listOf("…") + it.takeLast(40) else it }
                 .joinToString("\n")
         }
-    val canOpen = output.isNotEmpty() || row.state == ToolState.Running
+    val canOpen = row.change != null || output.isNotEmpty() || row.state == ToolState.Running
     // 実行中は、始まってからの秒数を右に出す（開始時刻が分かるときだけ）。
     val running by
         produceState("", row.since) {
@@ -839,7 +889,8 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                     pi.textSecondary,
                 )
         }
-        if (open && canOpen)
+        if (open && row.change != null) ChangeDiff(row.change)
+        else if (open && canOpen)
             SelectionContainer {
                 Text(
                     output.ifEmpty { "出力を待っています…" },

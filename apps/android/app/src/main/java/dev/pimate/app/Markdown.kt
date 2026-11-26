@@ -43,8 +43,7 @@ private val parsed = android.util.LruCache<Pair<Boolean, String>, Doc>(64)
 private var lastLive: Triple<Boolean, String, Doc>? = null
 
 private fun cached(source: String, files: Boolean) =
-    parsed[files to source]
-        ?: lastLive?.takeIf { it.first == files && it.second == source }?.third
+    parsed[files to source] ?: lastLive?.takeIf { it.first == files && it.second == source }?.third
 
 // 逐次表示から確定した直後は、解析が済むまで逐次表示の最後の解析を出す（回答が 1 フレーム消えない）。
 private fun initial(source: String, files: Boolean) =
@@ -63,16 +62,24 @@ private val LocalDocPics = compositionLocalOf<List<Pic>> { emptyList() }
 
 /** 回答の本文。長押しで OS の選択になり、範囲を広げてコピーできる（選択は 1 つの回答の中）。 解析は UI スレッドの外で行い、live（逐次表示）は前の表示を残したまま差し替える。 */
 @Composable
-internal fun Markdown(source: String, modifier: Modifier = Modifier, live: Boolean = false, answer: String? = null) {
+internal fun Markdown(
+    source: String,
+    modifier: Modifier = Modifier,
+    live: Boolean = false,
+    answer: String? = null,
+) {
     val files = LocalPics.current.files
     val shown by
         produceState(initial(source, files), source, files) {
             value = cached(source, files) ?: withContext(Dispatchers.Default) { doc(source, files) }
-            if (live) lastLive = Triple(files, source, value) else parsed.put(files to source, value)
+            if (live) lastLive = Triple(files, source, value)
+            else parsed.put(files to source, value)
         }
-    val gallery = remember(shown, answer) {
-        if (answer == null) shown.pics else shown.pics.map { if (it is Pic.Shared) it.forAnswer(answer) else it }
-    }
+    val gallery =
+        remember(shown, answer) {
+            if (answer == null) shown.pics
+            else shown.pics.map { if (it is Pic.Shared) it.forAnswer(answer) else it }
+        }
     CompositionLocalProvider(LocalDocPics provides gallery) {
         SelectionContainer(modifier) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -372,9 +379,13 @@ private fun TableBody(
     val total = widths.sum().dp
     // 収まる表は横送りにしない（表の上から右へ送っても一覧を開ける）。
     Column(
-        modifier.background(pi.surface, RoundedCornerShape(12.dp)).then(
-            if (scroll && total > available + .5.dp) Modifier.horizontalScroll(rememberScrollState()) else Modifier
-        )
+        modifier
+            .background(pi.surface, RoundedCornerShape(12.dp))
+            .then(
+                if (scroll && total > available + .5.dp)
+                    Modifier.horizontalScroll(rememberScrollState())
+                else Modifier
+            )
     ) {
         (listOf(table.header) + table.rows).forEachIndexed { index, row ->
             if (index > 0) Box(Modifier.width(total).height(1.dp).background(pi.background))

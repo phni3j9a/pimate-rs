@@ -104,8 +104,7 @@ internal data class Entry(
     val callId: String = "", // tool_result
     val name: String = "",
     val isError: Boolean = false,
-    val patch: String? = null,
-    val change: String = "", // edit / write の「+6 −2」
+    val change: Piece? = null,
     val time: Long? = null,
     /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
     val pics: ImageSlots = ImageSlots.Empty,
@@ -143,7 +142,12 @@ internal sealed interface ChatRow {
             get() = null
     }
 
-    data class Summary(override val key: String, val text: String, val reviewTurn: String? = null) : ChatRow {
+    data class Summary(
+        override val key: String,
+        val text: String,
+        val reviewTurn: String? = null,
+        val reviewLabel: String = "",
+    ) : ChatRow {
         override val fold: String?
             get() = null
     }
@@ -175,15 +179,12 @@ internal sealed interface ChatRow {
         val pics: ImageSlots = ImageSlots.Empty,
         /** 実行中のツールの開始時刻（epoch ms）。分からなければ秒数を出さない。 */
         val since: Long? = null,
+        val change: Piece? = null,
     ) : ChatRow
 
     /** 会話の切り替え（PC の /resume など）。履歴にはない行で、切り替えを見た位置に置く。 */
-    data class Switch(
-        val reason: String,
-        val byPhone: Boolean,
-        val from: String,
-        val to: String,
-    ) : ChatRow {
+    data class Switch(val reason: String, val byPhone: Boolean, val from: String, val to: String) :
+        ChatRow {
         override val key
             get() = "switched"
 
@@ -269,11 +270,13 @@ internal fun buildRows(
                 else -> ToolState.Done
             }
         val shownName = name.ifEmpty { now?.name ?: "tool" }
+        val piece = result?.change?.takeIf { state == ToolState.Done }
+        val diff = piece?.diff
         val meta =
             when {
                 state == ToolState.Failed -> "エラー"
                 state == ToolState.Running -> ""
-                result != null && result.change.isNotEmpty() -> result.change
+                diff != null -> "+${diff.add} −${diff.del}"
                 result != null && shownName == "read" -> "${lines(result.text)} 行"
                 now?.durationMs != null && now.durationMs >= 1000 -> seconds(now.durationMs)
                 else -> ""
@@ -283,9 +286,9 @@ internal fun buildRows(
             shownName,
             subject.ifEmpty { now?.subject.orEmpty() },
             state,
-            if (state == ToolState.Done && result != null && shownName in listOf("edit", "write"))
-                result.patch ?: "差分情報はありません" else result?.text ?: now?.output.orEmpty(),
+            result?.text ?: now?.output.orEmpty(),
             meta,
+            change = piece,
             pics = result?.pics ?: ImageSlots.Empty,
             since = now?.startedAt?.takeIf { state == ToolState.Running },
         )
@@ -309,12 +312,16 @@ internal fun buildRows(
                     }
                 if (folded != null && !summarized) {
                     summarized = true
+                    val changes = turn.filterIsInstance<ChatRow.Tool>().filter { it.change != null }
+                    val diffs = changes.mapNotNull { it.change?.diff }
                     out +=
                         ChatRow.Summary(
                             key,
                             listOfNotNull(took?.let { "${seconds(it)} 作業" }, "ツール $tools 回")
                                 .joinToString(" · "),
-                            id.takeIf { turn.any { it is ChatRow.Tool && it.state == ToolState.Done && it.name in listOf("edit", "write") } },
+                            id.takeIf { changes.isNotEmpty() },
+                            if (diffs.isEmpty()) "${changes.distinctBy { it.subject }.size} ファイル ›"
+                            else "+${diffs.sumOf { it.add }} −${diffs.sumOf { it.del }} ›",
                         )
                 }
                 out += folded ?: row
@@ -337,7 +344,12 @@ internal fun buildRows(
             "assistant" -> {
                 if (e.thinking.isNotBlank())
                     turn +=
-                        ChatRow.Thinking("${e.id}:thinking", e.thinking, false, ms = thinkingMs[e.id])
+                        ChatRow.Thinking(
+                            "${e.id}:thinking",
+                            e.thinking,
+                            false,
+                            ms = thinkingMs[e.id],
+                        )
                 if (e.text.isNotBlank()) {
                     turn += ChatRow.Text("${e.id}:text", e.text, if (e.final) e.meta else "")
                     if (e.final) finalKey = "${e.id}:text"
@@ -408,9 +420,9 @@ internal fun placeSwitch(
     val after = if (!known) entries.lastIndex else entries.indexOfFirst { it.id == anchor }
     val order = entries.withIndex().associate { it.value.id to it.index }
     val at =
-        rows.indexOfFirst { it is ChatRow.User && (order[it.key] ?: -1) > after }.let {
-            if (it < 0) rows.size else it
-        }
+        rows
+            .indexOfFirst { it is ChatRow.User && (order[it.key] ?: -1) > after }
+            .let { if (it < 0) rows.size else it }
     return rows.subList(0, at) + note + rows.subList(at, rows.size)
 }
 
@@ -488,9 +500,6 @@ internal fun subject(name: String, args: JSONObject?): String {
     }
 }
 
-private fun change(patch: String): String =
-    parsePatch(patch).run { if (del > 0) "+$add −$del" else "+$add" }
-
 internal fun count(n: Double): String =
     when {
         n < 1000 -> n.toLong().toString()
@@ -541,9 +550,13 @@ internal fun entry(o: JSONObject): Entry {
         }
         "tool_result" -> {
             val details = o.optJSONObject("details")
-            val patch =
-                (details?.opt("patch") as? String)
-                    ?: (details?.optJSONObject("pimate")?.opt("patch") as? String)
+            val name = o.str("toolName")
+            val write =
+                details?.optJSONObject("pimate")?.takeIf {
+                    name == "write" && it.str("kind") == "write_diff"
+                }
+            val patch = (if (name == "edit") details else write)?.opt("patch") as? String
+            val omitted = if (o.optBoolean("detailsOmitted")) "too_large" else write?.str("omitted")
             Entry(
                 id,
                 kind,
@@ -551,8 +564,17 @@ internal fun entry(o: JSONObject): Entry {
                 callId = o.str("toolCallId"),
                 name = o.str("toolName"),
                 isError = o.optBoolean("isError"),
-                patch = patch,
-                change = if (patch != null && !o.optBoolean("isError")) change(patch) else "",
+                change =
+                    if (name in listOf("write", "edit") && !o.optBoolean("isError"))
+                        Piece(
+                            o.str("toolCallId"),
+                            write?.opt("existed") == false,
+                            patch,
+                            patch?.let(::parsePatch),
+                            null,
+                            omitted,
+                        )
+                    else null,
                 time = time,
                 pics = pics(id, o),
             )
@@ -564,8 +586,8 @@ internal fun entry(o: JSONObject): Entry {
 }
 
 /**
- * プレビューの配列の位置は、元の画像の位置とは限らない（省かれた画像がある）。imageIndices で元の位置に置き、 省かれた位置は取りに行く画像にする（TS 版の
- * imageSlots と同じ）。
+ * プレビューの配列の位置は、元の画像の位置とは限らない（省かれた画像がある）。imageIndices で元の位置に置き、 省かれた位置は取りに行く画像にする（TS 版の imageSlots
+ * と同じ）。
  */
 private fun pics(entryId: String, o: JSONObject): ImageSlots {
     val images = o.optJSONArray("images")

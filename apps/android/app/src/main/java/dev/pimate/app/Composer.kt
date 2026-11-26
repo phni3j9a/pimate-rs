@@ -80,7 +80,9 @@ private fun Banner(
             )
         if (dismiss != null)
             Box(
-                Modifier.size(24.dp).clip(CircleShape).clickable(role = Role.Button, onClick = dismiss),
+                Modifier.size(24.dp)
+                    .clip(CircleShape)
+                    .clickable(role = Role.Button, onClick = dismiss),
                 Alignment.Center,
             ) {
                 Icon(Icons.Close, "案内を閉じる", Modifier.size(14.dp), pi.textSecondary)
@@ -223,8 +225,7 @@ internal fun Composer(
                         "PC の PiMate を更新して、Pi を起動し直してください。文字は送れます。",
                         false,
                     )
-            room <= 0 ->
-                ui.problem = Triple("添付できる画像は $limit 枚までです", "送る前に、どれかを外してください。", false)
+            room <= 0 -> ui.problem = Triple("添付できる画像は $limit 枚までです", "送る前に、どれかを外してください。", false)
             else -> {
                 ui.problem = null
                 ui.picking = key
@@ -491,42 +492,50 @@ internal fun Composer(
                 Modifier.padding(top = 6.dp).heightIn(min = 36.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-              // 左の 3 つ（添付・モデル・使用状況）。狭い画面では、モデルの名前だけを縮める。
-              Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.offset(x = (-6).dp)
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .clickable(key != null && !ui.encoding, role = Role.Button, onClick = attach)
-                        .semantics {
-                            contentDescription =
-                                if (ui.encoding) "画像を準備中"
-                                else "画像を添付（${body.images.size}/$limit 枚）"
-                        },
-                    Alignment.Center,
-                ) {
-                    if (ui.encoding) Spinner()
-                    else
-                        Icon(
-                            Icons.Plus,
-                            null,
-                            Modifier.size(20.dp),
-                            if (key != null && limit > 0) pi.textSecondary else pi.textTertiary,
+                // 左の 3 つ（添付・モデル・使用状況）。狭い画面では、モデルの名前だけを縮める。
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.offset(x = (-6).dp)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .clickable(
+                                key != null && !ui.encoding,
+                                role = Role.Button,
+                                onClick = attach,
+                            )
+                            .semantics {
+                                contentDescription =
+                                    if (ui.encoding) "画像を準備中"
+                                    else "画像を添付（${body.images.size}/$limit 枚）"
+                            },
+                        Alignment.Center,
+                    ) {
+                        if (ui.encoding) Spinner()
+                        else
+                            Icon(
+                                Icons.Plus,
+                                null,
+                                Modifier.size(20.dp),
+                                if (key != null && limit > 0) pi.textSecondary else pi.textTertiary,
+                            )
+                    }
+                    // 作業中は、送ると割り込みになることを示す。モデルは待機中に選ぶ（/model なら作業中も開ける）。
+                    if (active)
+                        Text(
+                            "割り込みで送信",
+                            Modifier.weight(1f, false).padding(end = 8.dp),
+                            pi.textSecondary,
+                            style = Type.body.copy(fontSize = 13.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
+                    else
+                        ModelLabel(groups, view, key != null, Modifier.weight(1f, false)) {
+                            show("model")
+                        }
+                    if (m.selected != null)
+                        UsageRings(m, groups, view, key != null) { show("usage") }
                 }
-                // 作業中は、送ると割り込みになることを示す。モデルは待機中に選ぶ（/model なら作業中も開ける）。
-                if (active)
-                    Text(
-                        "割り込みで送信",
-                        Modifier.weight(1f, false).padding(end = 8.dp),
-                        pi.textSecondary,
-                        style = Type.body.copy(fontSize = 13.sp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                else ModelLabel(groups, view, key != null, Modifier.weight(1f, false)) { show("model") }
-                if (m.selected != null) UsageRings(m, groups, view, key != null) { show("usage") }
-              }
                 if (active && target != null) {
                     val stop = m.can(Operation.Abort(target))
                     Box(
@@ -607,8 +616,7 @@ private fun ModelLabel(
     val label =
         remember(view["model"], view["thinking"], groups["model"]) {
             val ref = view["model"]?.takeIf { it != "null" }?.let(::JSONObject)
-            val info =
-                groups["model"].orEmpty().map { JSONObject(it.json) }.find { same(it, ref) }
+            val info = groups["model"].orEmpty().map { JSONObject(it.json) }.find { same(it, ref) }
             val level = view["thinking"]?.let { JSONTokener(it).nextValue() as? String }.orEmpty()
             ref?.let {
                 modelLabel(

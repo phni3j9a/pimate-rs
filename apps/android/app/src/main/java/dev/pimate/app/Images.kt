@@ -101,25 +101,31 @@ internal class Pics(
     /** 全画面で開く。 */
     val open: (List<Pic>, Int) -> Unit = { _, _ -> },
 ) {
-    private val originals = object : LruCache<Pic, ImageBitmap>(CACHE_BYTES) {
-        override fun sizeOf(key: Pic, value: ImageBitmap) = value.asAndroidBitmap().byteCount
-    }
+    private val originals =
+        object : LruCache<Pic, ImageBitmap>(CACHE_BYTES) {
+            override fun sizeOf(key: Pic, value: ImageBitmap) = value.asAndroidBitmap().byteCount
+        }
 
     fun cached(pic: Pic): ImageBitmap? = if (pic.id.isEmpty()) null else tiles["$scope|${pic.id}"]
 
     /** 読めなければ null。tile: 会話に置く縮小版（RC には thumbnail を頼む）。全画面は別に取りに行く。 */
     suspend fun load(pic: Pic, tile: Boolean): ImageBitmap? {
-        if (tile) cached(pic)?.let { return it }
+        if (tile)
+            cached(pic)?.let {
+                return it
+            }
         val original = !tile && (pic is Pic.Entry || pic is Pic.File && pic.answer != null)
-        if (original) originals[pic]?.let { return it }
+        if (original)
+            originals[pic]?.let {
+                return it
+            }
         val edge = if (tile) TILE_EDGE else FULL_EDGE
         val image =
             try {
                 when (pic) {
                     is Pic.Shared -> load(pic.resolve(), tile)
                     is Pic.Inline -> inline(pic.data, edge)
-                    is Pic.Web ->
-                        withContext(Dispatchers.IO) { decode(fetch(pic.url), edge) }
+                    is Pic.Web -> withContext(Dispatchers.IO) { decode(fetch(pic.url), edge) }
                     is Pic.Entry ->
                         remote(
                             RcMethod.ENTRY_IMAGE,
@@ -322,7 +328,13 @@ internal fun ImageViewer(all: List<Pic>, start: Int, close: () -> Unit) {
 }
 
 @Composable
-private fun ViewerPage(pic: Pic, label: String, active: Boolean, close: () -> Unit, onZoom: (Boolean) -> Unit) {
+private fun ViewerPage(
+    pic: Pic,
+    label: String,
+    active: Boolean,
+    close: () -> Unit,
+    onZoom: (Boolean) -> Unit,
+) {
     val pics = LocalPics.current
     val image by produceState<Any?>(null, pic, pics) { value = pics.load(pic, false) ?: Failed }
     var scale by remember { mutableFloatStateOf(1f) }
@@ -377,12 +389,22 @@ private fun ViewerPage(pic: Pic, label: String, active: Boolean, close: () -> Un
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
                         } else if (dismissible) {
                             val change = event.changes.single()
-                            if (change.isConsumed && change.position != change.previousPosition) dismissible = false
+                            if (change.isConsumed && change.position != change.previousPosition)
+                                dismissible = false
                             drag = change.position - start
-                            if (drag.y > viewConfiguration.touchSlop && drag.y > kotlin.math.abs(drag.x)) change.consume()
+                            if (
+                                drag.y > viewConfiguration.touchSlop &&
+                                    drag.y > kotlin.math.abs(drag.x)
+                            )
+                                change.consume()
                         }
                     } while (event.changes.any { it.pressed })
-                    if (dismissible && drag.y > size.height * .15f && drag.y > kotlin.math.abs(drag.x)) close()
+                    if (
+                        dismissible &&
+                            drag.y > size.height * .15f &&
+                            drag.y > kotlin.math.abs(drag.x)
+                    )
+                        close()
                     if (scale <= 1.01f) settle(1f, Offset.Zero)
                 }
             },

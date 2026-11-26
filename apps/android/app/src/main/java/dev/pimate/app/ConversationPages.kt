@@ -13,7 +13,12 @@ import kotlinx.coroutines.*
 import org.json.*
 
 @Composable
-internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit, initialTurn: String? = null) {
+internal fun ReviewPage(
+    m: SessionModel,
+    at: EditorKey,
+    close: () -> Unit,
+    initialTurn: String? = null,
+) {
     val items = m.rows.groups["entry"].orEmpty()
     val cwd =
         m.rows.groups["instance"]
@@ -58,7 +63,14 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit, initi
                 }
         }
         data?.let { r ->
-            val patch = remember(r) { r.files.flatMap { it.pieces }.mapNotNull { it.patch }.filter { it.isNotEmpty() }.joinToString("") { if (it.endsWith("\n")) it else "$it\n" } }
+            val patch =
+                remember(r) {
+                    r.files
+                        .flatMap { it.pieces }
+                        .mapNotNull { it.patch }
+                        .filter { it.isNotEmpty() }
+                        .joinToString("") { if (it.endsWith("\n")) it else "$it\n" }
+                }
             if (patch.isNotEmpty()) CopyAction(patch, "差分をコピー")
             if (r.files.isEmpty()) Hint("変更はありません")
             r.files.forEachIndexed { index, file ->
@@ -73,57 +85,7 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit, initi
                     ) {
                         expanded = !expanded
                     }
-                    if (expanded)
-                        file.pieces.forEach { piece ->
-                            SelectionContainer {
-                                Column(
-                                    Modifier.fillMaxWidth()
-                                        .background(pi.surface, RoundedCornerShape(12.dp))
-                                        .horizontalScroll(rememberScrollState())
-                                        .padding(10.dp)
-                                ) {
-                                    if (piece.diff?.hunks?.isNotEmpty() == true)
-                                        piece.diff.hunks.forEach { h ->
-                                            Text(
-                                                h.header,
-                                                style = Type.mono,
-                                                color = pi.textSecondary,
-                                            )
-                                            var limit by remember(h) { mutableIntStateOf(120) }
-                                            h.lines.take(limit).forEach { line ->
-                                                val add = line.old == null
-                                                val del = line.new == null
-                                                Text(
-                                                    "${line.old ?: " "}\t${line.new ?: " "}  ${if(add) "+" else if(del) "−" else " "} ${line.text}",
-                                                    style = Type.mono,
-                                                    color =
-                                                        if (add) pi.addText
-                                                        else if (del) pi.delText else pi.text,
-                                                )
-                                            }
-                                            if (h.lines.size > limit)
-                                                TextAction(
-                                                    "続きを表示（残り ${h.lines.size-limit} 行）",
-                                                    { limit += 120 },
-                                                )
-                                        }
-                                    else {
-                                        Hint(
-                                            when (piece.omitted) {
-                                                "binary" -> "バイナリファイル"
-                                                "too_large" -> "大きいため差分を省略しました"
-                                                "unknown_before" -> "変更前の内容は不明です"
-                                                "concurrent" -> "同時に変更されたため差分は不明です"
-                                                else -> "差分情報はありません"
-                                            }
-                                        )
-                                        (piece.content ?: piece.patch)?.let {
-                                            Text(it, style = Type.mono)
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    if (expanded) file.pieces.forEach { piece -> ChangeDiff(piece) }
                 }
             }
             if (r.files.isNotEmpty())
@@ -141,6 +103,47 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit, initi
                 )
         } ?: Hint("変更を集計しています…")
         SheetError(error)
+    }
+}
+
+@Composable
+internal fun ChangeDiff(piece: Piece) {
+    SelectionContainer {
+        Column(
+            Modifier.fillMaxWidth()
+                .background(pi.surface, RoundedCornerShape(12.dp))
+                .horizontalScroll(rememberScrollState())
+                .padding(10.dp)
+        ) {
+            if (piece.diff?.hunks?.isNotEmpty() == true)
+                piece.diff.hunks.forEach { h ->
+                    Text(h.header, style = Type.mono, color = pi.textSecondary)
+                    var limit by remember(h) { mutableIntStateOf(120) }
+                    h.lines.take(limit).forEach { line ->
+                        val add = line.old == null
+                        val del = line.new == null
+                        Text(
+                            "${line.old ?: " "}\t${line.new ?: " "}  ${if(add) "+" else if(del) "−" else " "} ${line.text}",
+                            style = Type.mono,
+                            color = if (add) pi.addText else if (del) pi.delText else pi.text,
+                        )
+                    }
+                    if (h.lines.size > limit)
+                        TextAction("続きを表示（残り ${h.lines.size-limit} 行）", { limit += 120 })
+                }
+            else {
+                Hint(
+                    when (piece.omitted) {
+                        "binary" -> "バイナリファイル"
+                        "too_large" -> "大きいため差分を省略しました"
+                        "unknown_before" -> "変更前の内容は不明です"
+                        "concurrent" -> "同時に変更されたため差分は不明です"
+                        else -> "差分情報はありません"
+                    }
+                )
+                (piece.content ?: piece.patch)?.let { Text(it, style = Type.mono) }
+            }
+        }
     }
 }
 
@@ -434,12 +437,16 @@ internal fun AgentsPage(
                     val question = child.str("question")
                     Hint(if (question.isEmpty()) "確認が必要です" else "親の Pi に質問しています")
                     if (question.isNotEmpty()) Text(question)
-                    TextAction(if (question.isEmpty()) "チャットで確認" else "チャットで回答", {
-                        if (at == m.edits.current && at.target == m.target) {
-                            m.edits.text(at, childAnswerDraft(child, m.edits.body.text))
-                            close()
-                        }
-                    }, enabled = at == m.edits.current && at.target == m.target)
+                    TextAction(
+                        if (question.isEmpty()) "チャットで確認" else "チャットで回答",
+                        {
+                            if (at == m.edits.current && at.target == m.target) {
+                                m.edits.text(at, childAnswerDraft(child, m.edits.body.text))
+                                close()
+                            }
+                        },
+                        enabled = at == m.edits.current && at.target == m.target,
+                    )
                 }
                 child.str("error").takeIf(String::isNotEmpty)?.let { SheetError(it) }
                 if (record.truncated) Hint("記録の一部を省略しています")
