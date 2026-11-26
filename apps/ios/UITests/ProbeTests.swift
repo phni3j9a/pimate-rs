@@ -213,12 +213,12 @@ final class ProbeTests: XCTestCase {
         for i in 0..<4 { photos.element(boundBy: i).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
         let fourth = app.buttons["画像 4 を取り消す"]
         // Depending on the runtime, reaching the limit dismisses the picker or enables Add.
-        let add = app.buttons.matching(NSPredicate(format: "identifier == 'Add' OR label BEGINSWITH[c] 'Add' OR label CONTAINS '追加' OR label == '完了' OR label == 'Done'")).firstMatch
+        let confirmPhotos = app.buttons.matching(NSPredicate(format: "identifier == 'Add' OR label BEGINSWITH[c] 'Add' OR label CONTAINS '追加' OR label == '完了' OR label == 'Done'")).firstMatch
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            fourth.exists || (photos.firstMatch.exists && add.isHittable && add.isEnabled)
+            fourth.exists || (photos.firstMatch.exists && confirmPhotos.isHittable && confirmPhotos.isEnabled)
         }, object: nil)
         XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 45), .completed)
-        if !fourth.exists && add.isHittable { add.tap() }
+        if !fourth.exists && confirmPhotos.isHittable { confirmPhotos.tap() }
         XCTAssertTrue(fourth.waitForExistence(timeout: 45)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
         app.buttons["添付画像 2 を開く"].tap()
         let draftPhoto = app.images["添付画像 2 / 4"]
