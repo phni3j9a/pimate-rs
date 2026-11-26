@@ -683,7 +683,12 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
             }
     }
     fun operate(action: suspend () -> Unit) {
-        if (busy || m.hosts.none { it.id == host.id && it.deviceId == host.deviceId }) return
+        if (
+            operating ||
+                m.removal(host) == Removal.REVOKING ||
+                m.hosts.none { it.id == host.id && it.deviceId == host.deviceId }
+        )
+            return
         operating = true
         note = ""
         error = ""
@@ -873,7 +878,8 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 )
             }
         }
-        SheetError(if (result == Removal.FAILED) "操作結果を確認できません。再実行の前に状態を確認してください。" else error)
+        if (result == Removal.FAILED) SheetError("操作結果を確認できません。再実行の前に状態を確認してください。")
+        SheetError(error)
         if (note.isNotEmpty()) Hint(note)
         Spacer(Modifier.height(28.dp))
         // 読み込みや操作に失敗したとき、公開版を照会できなかったときに出す。
