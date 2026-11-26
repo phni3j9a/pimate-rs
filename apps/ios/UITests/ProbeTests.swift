@@ -219,6 +219,9 @@ extension ProbeTests {
         XCTAssertTrue(main.waitForExistence(timeout: 15)); main.tap()
         func open(_ title: String) { app.buttons["chat-options"].tap(); app.buttons[title].tap() }
         open("モデル・Thinking")
+        // Before the catalog arrives the empty picker already selects “all”; tapping it then does nothing.
+        let favorite = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入りから外す")).firstMatch
+        XCTAssertTrue(favorite.waitForExistence(timeout: 12))
         app.buttons["すべて"].tap()
         let search = app.textFields["モデルを検索"]
         search.tap(); search.typeText("absent\n"); app.buttons["お気に入り"].tap()
