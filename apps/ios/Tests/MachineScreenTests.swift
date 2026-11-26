@@ -3,6 +3,10 @@ import XCTest
 @testable import PiMate
 
 final class MachineScreenTests: XCTestCase {
+    func testGitHubFailureGuidanceDistinguishesRepositoryFromMissingTarget() {
+        XCTAssertTrue(GithubText.guidance("not_github").contains("GitHub の remote があるフォルダ"))
+        XCTAssertTrue(GithubText.guidance("not_found").contains("アクセス権も確認"))
+    }
     func testGitHubUsesHostReviewAndCheckCounts() {
         XCTAssertEqual(GithubText.review(["reviewDecision": "CHANGES_REQUESTED"]), "変更の依頼あり")
         XCTAssertEqual(GithubText.review(["isDraft": true, "reviewDecision": "APPROVED"]), "ドラフト")

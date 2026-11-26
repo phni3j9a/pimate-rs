@@ -30,8 +30,7 @@ private func actionable(_ element: XCUIElement, timeout: TimeInterval = 15) -> B
 private func openOption(_ name: String, in app: XCUIApplication) throws {
     let menu = app.buttons["chat-options"], option = app.buttons[name]
     XCTAssertTrue(actionable(menu)); menu.tap()
-    if !actionable(option, timeout: 5), actionable(menu) { menu.tap() }
-    XCTAssertTrue(actionable(option)); option.tap()
+    XCTAssertTrue(actionable(option, timeout: 20)); option.tap()
 }
 
 final class ProbeTests: XCTestCase {
@@ -126,8 +125,7 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["4 / 5"].waitForExistence(timeout: 20))
         XCTAssertTrue(actionable(next)); next.tap()
         let last = app.staticTexts["5 / 5"]
-        if !last.waitForExistence(timeout: 5), app.staticTexts["4 / 5"].exists, actionable(next) { next.tap() }
-        XCTAssertTrue(last.waitForExistence(timeout: 15))
+        XCTAssertTrue(last.waitForExistence(timeout: 20))
         // Image fetch + decode on shared CI runners has exceeded 10 s; give image waits a longer budget.
         XCTAssertTrue(app.images["画像 5 / 5"].waitForExistence(timeout: 30)); shot("Viewer")
         app.buttons["画像を閉じる"].tap()
@@ -141,8 +139,7 @@ final class ProbeTests: XCTestCase {
         let field = app.textViews["message"]
         func typeMessage(_ text: String) {
             XCTAssertTrue(actionable(field)); field.tap()
-            if !app.keyboards.firstMatch.waitForExistence(timeout: 5) { field.tap() }
-            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 15)); field.typeText(text)
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 20)); field.typeText(text)
         }
         func openVisibleTable() {
             let tables = app.buttons.matching(identifier: "table-cell")

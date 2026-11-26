@@ -88,7 +88,7 @@ for variant in light dark large; do
   }
   # Retry only XCTest's simulator launch failure, before the journey has consumed its link.
   if journey 2>&1 | tee "$lab/journey.log"; then ok=1
-  elif grep -Fq 'testJourney] : Failed to get launch progress' "$lab/journey.log"; then
+  elif grep -Eq 'testJourney] : Failed to get launch progress.*reason: Busy .*is installing or uninstalling' "$lab/journey.log"; then
     result="${result%.xcresult}-retry.xcresult"
     if journey; then ok=1; else ok=0; fi
   else ok=0; fi

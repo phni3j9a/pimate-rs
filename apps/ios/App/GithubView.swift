@@ -73,16 +73,6 @@ struct GithubView: View {
                 let result = try await model.github(editor, query: q); try Task.checkCancellation()
                 if result["ok"] as? Bool == false { error = GithubText.guidance(result.str("code")); return }
                 guard let r = result["data"] as? Object, kind == "list" ? r["issues"] is [Object] && r["prs"] is [Object] : r.obj("item")["number"] as? Int == number else { throw CoreError.InvalidMessage }; data = r
-            } catch CoreError.Rejected {
-                guard !Task.isCancelled else { return }
-                let status = model.rows[editor.host]?.machineInfo["githubStatus"] as? Bool == true ? try? await model.machineRequest(editor.host, .githubStatus) : nil
-                guard !Task.isCancelled else { return }
-                switch GithubStatus(status?["status"] as? Object) {
-                case .notInstalled: error = GithubText.guidance("gh_missing")
-                case .loggedOut: error = GithubText.guidance("gh_auth")
-                case .loggedIn: error = "取得できませんでした。現在の Pi が GitHub のリポジトリで動いているか、閲覧権限があるかを確認してください。"
-                case .unknown: error = "GitHub から取得できませんでした。PC の gh の状態は未確認です。"
-                }
             } catch { if !Task.isCancelled { self.error = "PC から取得できませんでした。接続と Pi の状態を確認してください。" } }
         }
     }

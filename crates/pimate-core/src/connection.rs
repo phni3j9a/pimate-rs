@@ -562,7 +562,8 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     {
         st.auth_targets.insert(hold.clone(), instance.into());
     }
-    if result["ok"] == false {
+    // GitHub readers render the Host’s typed failure envelope (e.g. not_github vs not_found).
+    if result["ok"] == false && p.kind != "github" {
         if result["error"]["code"] == "no_such_request"
             && st.get("busy", "answer")["id"] == id
             && let Some(q) = st.get("busy", "answer")["requestId"]
@@ -844,6 +845,30 @@ mod regressions {
         reply.send(Ok("{}".into())).unwrap();
         assert!(wait.await.unwrap());
         assert!(commands.try_recv().is_err());
+    }
+    #[test]
+    fn github_failure_envelope_is_preserved_only_for_github_queries() {
+        let mut s = State::default();
+        let mut p = Pending {
+            reply: oneshot::channel().0,
+            deadline: Instant::now(),
+            kind: "github".into(),
+            instance: json!("pi"),
+            hold: None,
+            method: None,
+            session: Value::Null,
+            host_models: false,
+            thumbnail: false,
+        };
+        for code in ["gh_missing", "gh_auth", "not_github", "not_found", "failed"] {
+            let reply = json!({"ok":false,"code":code,"message":"failed"});
+            assert_eq!(resolve(&mut s, &p, "r", &reply), Ok(reply.to_string()));
+        }
+        p.kind = "github_status".into();
+        assert_eq!(
+            resolve(&mut s, &p, "r", &json!({"ok":false,"code":"failed"})),
+            Err(Error::Rejected)
+        );
     }
     #[test]
     fn host_models_reply_does_not_change_the_chat_catalog() {
