@@ -1667,14 +1667,15 @@ async fn agent_cli_contract() -> Result<()> {
                 json!([{"kind":"user","text":"hello"},{"kind":"assistant","text":"OK"}]),
             ),
             (
-                vec!["ui", "i", "R", "--answers", "[1]"],
-                json!({"requestId":"R","answers":[1]}),
+                vec!["ui", "i", "R", "--answers", r#"[{"selected":["x"]}]"#],
+                json!({}),
             ),
             (vec!["abort", "i"], json!({"accepted":true})),
             (vec!["shutdown", "i"], json!({"accepted":true})),
         ] {
             let l = UnixListener::bind(run.join("i.sock"))?;
             let raced = args == ["wait", "i", "--timeout", "2"];
+            let ui = args[0] == "ui";
             let pending = args == ["wait", "i"] || raced;
             let job = tokio::spawn(async move {
                 let (sock, _) = l.accept().await?;
@@ -1695,7 +1696,7 @@ async fn agent_cli_contract() -> Result<()> {
                                     io.send(json!({"type":"event","instanceId":"i","seq":n+1,"event":e}).to_string()).await?;
                                 }
                             }
-                            json!({"snapshot":{"protocol":1,"seq":0,"instanceId":"i","status":"running","pendingUI":if pending{json!([{"kind":"confirm","requestId":"R"}])}else{json!([])}}})
+                            json!({"snapshot":{"protocol":1,"seq":0,"instanceId":"i","status":"running","pendingUI":if ui { json!([{"kind":"questionnaire","requestId":"R","questions":[{"options":[{"label":"x"}]}]}]) } else if pending{json!([{"kind":"confirm","requestId":"R"}])}else{json!([])}}})
                         }
                         Some("prompt") => {
                             let mode = r["params"]["deliverAs"].as_str().unwrap_or("prompt");
@@ -1708,7 +1709,13 @@ async fn agent_cli_contract() -> Result<()> {
                         Some("history") => {
                             json!({"items":[{"kind":"assistant","text":"old"},{"kind":"user","text":"hello"},{"kind":"toolResult"},{"kind":"assistant","text":"OK"}]})
                         }
-                        Some("ui_respond") => r["params"].clone(),
+                        Some("ui_respond") => {
+                            assert_eq!(
+                                r["params"],
+                                json!({"requestId":"R","answers":[{"selected":["x"]}]})
+                            );
+                            json!({})
+                        }
                         Some("abort" | "shutdown") => json!({"accepted":true}),
                         _ => bail!("unknown call"),
                     };

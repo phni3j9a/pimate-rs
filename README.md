@@ -167,7 +167,7 @@ pimate wait "$id" --timeout 60      # timeout は送信失敗ではない。prom
 pimate history "$id" --last 4        # 直近の会話を古い順で返す
 ```
 
-`outcome` は `done` / `failed` / `aborted` / `waiting_input` / `timeout` / `idle` / `closed`。`waiting_input` の `pending` に対して `ui ID REQUEST <値|--confirm|--cancel|--answers JSON>` で回答します。`--wait` は既定300秒。結果に含まれる `failed`・`timeout` と、CLI 自体の失敗（終了コード1）は異なります。
+`outcome` は `done` / `failed` / `aborted` / `waiting_input` / `timeout` / `idle` / `closed`。`waiting_input` の `pending` に対して `ui ID REQUEST <値|--confirm|--cancel|--answers JSON>` で回答します。Webhook カードの選択肢は表示文字列のまま CLI に渡せます。CLI は同じ質問の原文と照合し、一致しない場合は Webhook と同じ伏せ字・ホームパス短縮後に一意に一致するときだけ原文で回答します。選択肢の原文は返しません。`--wait` は既定300秒。結果に含まれる `failed`・`timeout` と、CLI 自体の失敗（終了コード1）は異なります。
 
 Webhook は任意です。`webhook setup [--machine 表示名]` で URL とヘッダー（`Authorization: ...`）を端末の標準入力から渡します。`webhook test` は実際に送信します。`webhook watch ID` で明示した Pi の質問・解決・完了・失敗・子の待機などを送ります。`status` には資格情報を出しません。解除は `webhook unwatch ID`、設定ごとの削除は `webhook off` です。秘密の伏せ字は完全ではなく、送信先には質問や回答の一部が届きます。初回送信の100枠が埋まった場合、新規通知はログに記録して破棄します。配信済みまたは配信中の質問に対する解決通知だけは、質問の配信成功後に別タスクで枠を待ち、Pi の監視を止めません。再送キューはメモリ内のみ。アプリへの push 通知は実装しません。
 
