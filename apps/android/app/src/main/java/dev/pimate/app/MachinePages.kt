@@ -279,7 +279,8 @@ internal fun NewPage(
                         TextAction("完了", { modelPicker = false })
                     }
                     val favorites = models?.optJSONArray("scoped").objects()
-                    var query by remember { mutableStateOf("") }
+                    val searchable = catalog.size > 6
+                    var query by remember(searchable) { mutableStateOf("") }
                     var all by remember(favorites.isEmpty()) { mutableStateOf(favorites.isEmpty()) }
                     if (favorites.isNotEmpty())
                         Segment(
@@ -291,7 +292,7 @@ internal fun NewPage(
                         ) {
                             all = it == "all"
                         }
-                    if (catalog.size > 6)
+                    if (searchable)
                         SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
                     if (query.isBlank())
                         ListRow(
@@ -311,7 +312,7 @@ internal fun NewPage(
                     if (shown.isEmpty())
                         Hint(
                             if (loadingModels) "モデルを読み込み中…"
-                            else if (models == null) "モデル一覧を取得できません。Pi の既定で起動します。"
+                            else if (models == null) "モデル一覧を取得できません。起動時の設定: $value"
                             else "一致するモデルはありません"
                         )
                     shown
