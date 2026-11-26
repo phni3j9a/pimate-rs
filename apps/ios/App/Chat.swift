@@ -76,7 +76,10 @@ private struct Conversation: View {
                         LazyVStack(alignment: .leading, spacing: 22) {
                             if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
                             ForEach(turns) { turn in TurnView(turn: turn, active: turn.id == content.activeTurnID, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }, didToggle: didToggle) }
-                            if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true, didToggle: didToggle) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
+                            if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                let thought = WorkLine.streamThought(stream, hasAnswer: !text.isEmpty)
+                                ActiveDisclosure(automatic: thought.automatic, didToggle: didToggle) { Text(verbatim: thinking) } label: { Text(thought.title) }
+                            }
                             if !text.isEmpty {
                                 // A new streamed answer must not render with the previous answer's parsed blocks.
                                 let answer = "stream:" + (entries.last?.id ?? "begin")

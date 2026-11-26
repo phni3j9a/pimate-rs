@@ -6,6 +6,14 @@ struct WorkLine: Identifiable, Equatable {
     var images: HistoryImages?
     var callID: String?
     var isThought: Bool { state.isEmpty }
+    static func streamThought(_ stream: [Item], hasAnswer: Bool) -> (automatic: Bool, title: String) {
+        func timestamp(_ id: String) -> UInt64? { stream.first { $0.id == id }.flatMap { UInt64($0.json) } }
+        let end = timestamp("thinkingUntil")
+        guard end != nil || hasAnswer else { return (true, "Thinking…") }
+        // A snapshot can contain both thinking and answer text without a measured interval.
+        let ms = end.flatMap { stop in timestamp("thinkingSince").map { start in Int(clamping: stop - min(start, stop)) } }
+        return (false, thoughtTitle(ms))
+    }
     static func thoughtTitle(_ ms: Int?) -> String {
         guard let ms, ms >= 1000 else { return "Thought" }
         let sec = ms / 1000 + (ms % 1000 >= 500 ? 1 : 0)
