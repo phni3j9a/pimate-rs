@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>GitHub — Issue / PR</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout'})</script>
+<div class="main"><script>chat({on:'github'})</script></div>
+<aside class="insp">
+	<div class="head" style="padding:0 8px 0 16px"><span class="seg"><span>変更</span><span>サブエージェント</span><span class="on">GitHub</span></span><span class="grow"></span><span class="ib"><script>W(I('x'))</script></span></div>
+	<div class="row" style="padding:0 16px 8px"><span class="mono muted grow">example/demo</span><span class="seg"><span class="on">PR 3</span><span>Issue 1</span></span></div>
+	<div class="pi sel" style="margin:0 8px"><span class="dot done"></span><div class="col grow"><b class="trunc">#20 画面の実装</b><span class="cap">OPEN · demo · チェック 3/3 成功</span></div><span class="t">11/20</span></div>
+	<div class="pi" style="margin:0 8px"><span class="dot wait"></span><div class="col grow"><b class="trunc">#56 チェック未提供</b><span class="cap">OPEN · demo · チェックなし</span></div><span class="t">11/20</span></div>
+	<div class="pi" style="margin:0 8px"><span class="dot fail"></span><div class="col grow"><b class="trunc">#57 空のチェック一覧</b><span class="cap">OPEN · demo · チェック 1 件失敗</span></div><span class="t">11/20</span></div>
+	<div class="sep"></div>
+	<div style="padding:8px 16px" class="col grow">
+		<b>#20 画面の実装</b>
+		<div class="cap" style="margin-bottom:8px">feat/screens → main · <span class="add">+412</span> <span class="del">−38</span> · 12 ファイル</div>
+		<div>残りの画面を実装します。Closes #19</div>
+		<div class="lab" style="padding-left:0">チェック</div>
+		<div class="tool" style="margin:0"><span class="dot done"></span><b>build</b> <span class="r">成功 · 2分</span></div>
+		<div class="tool" style="margin:0"><span class="dot done"></span><b>test</b> <span class="r">成功 · 4分</span></div>
+		<div class="grow"></div>
+		<div class="row" style="justify-content:space-between"><span class="tbtn" style="padding-left:0">この PR について依頼</span><span class="tbtn plain">ブラウザで開く <script>W(I('ext',14))</script></span></div>
+	</div>
+</aside>
+</div></div>
+<script>notes('GitHub — インスペクターの3つめのタブ', [
+'<b>入口:</b> ヘッダーのアイコン、<kbd>Ctrl Shift G</kbd>、パレット。今はサイドバーの下に埋もれている導線を、Pi ごとの見えるものの並び（変更・サブエージェント・GitHub）に入れる。',
+'<b>対象:</b> 選択中の Pi のフォルダのリポジトリ。PC の <span class="mono">gh</span> にログインしていなければ、その場に理由とマシン詳細への導線を出す。',
+'<b>一覧と詳細:</b> 上が一覧、行を選ぶと下に詳細。チェックの状態は色の印と文字で示す。',
+'<b>依頼:</b> 「この PR について依頼」は入力欄に参照を入れるだけ（送信は利用者が押す）。',
+'<b>読み込み・失敗:</b> 一覧の位置に「取得しています…」／理由と「再試行」を出す。',
+'ペインが狭いときは一覧だけにし、行を選ぶと詳細に入れ替える（‹ で戻る）。'])</script>
+</body></html>

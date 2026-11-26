@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>サブエージェント — インスペクター</title></head><body>
+<div class="win"><script>titlebar('認証まわりのレビュー — PiMate')</script><div class="app">
+<script>sidebar({sel:'auth'})</script>
+<div class="main">
+<script>head({title:'認証まわりのレビュー', path:'~/work/api', status:'<span class="dot"></span>待機', on:'agents'})</script>
+<div class="scroll"><div class="column">
+	<div class="me">認証を並列にレビューしてください。</div>
+	<div class="sum">6秒 作業 · ツール 1 回 <script>W(I('down',12))</script></div>
+	<div>レビュアーをバックグラウンドで起動しました。終わったら結果をまとめます。</div>
+</div></div>
+<div class="banner"><script>W(I('agents'))</script><span class="grow">サブエージェント　<span class="muted">実行中 2 · 完了 1</span></span><span class="tbtn" style="padding:0">開いています</span></div>
+<script>composer()</script>
+</div>
+<aside class="insp">
+	<div class="head" style="padding:0 8px 0 16px"><span class="seg"><span>変更</span><span class="on">サブエージェント</span><span>GitHub</span></span><span class="grow"></span><span class="ib"><script>W(I('x'))</script></span></div>
+	<div class="lab" style="padding-left:16px">実行中 · pi-subagents · parallel</div>
+	<div class="pi sel" style="margin:0 8px"><span class="spin"></span><div class="col grow"><b>認証</b><span class="cap">reviewer · 1:12 · ツール 5 回</span></div><span class="t">実行中</span></div>
+	<div class="pi" style="margin:0 8px"><span class="spin"></span><div class="col grow"><b>セッション</b><span class="cap">reviewer · 0:48 · ツール 3 回</span></div><span class="t">実行中</span></div>
+	<div class="row" style="padding:2px 16px 8px;justify-content:flex-end"><span class="tbtn plain">一時停止</span><span class="tbtn danger">実行全体を停止…</span></div>
+	<div class="sep"></div>
+	<div style="padding:8px 16px" class="col grow">
+		<div class="cap">親の Pi からの依頼</div>
+		<div style="margin:4px 0 12px">認証の期限切れ判定と、エラー時の処理を調べてください。</div>
+		<div class="cap">子の作業記録</div>
+		<div class="tool" style="margin:0"><span class="dot done"></span><b>read</b> src/auth/token.ts</div>
+		<div class="tool" style="margin:0"><span class="spin"></span><b>grep</b> refreshToken</div>
+		<div style="margin-top:6px">期限切れ判定とトークン更新の呼び出しを確認しました。</div>
+		<div class="grow"></div>
+		<div class="field"><span class="muted grow">この子への指示…</span><kbd>Enter</kbd></div>
+		<div class="row" style="justify-content:space-between;margin-top:6px"><span class="tbtn danger" style="padding-left:0">この子を停止…</span><span class="lab" style="padding:0">以前の実行 1 件 ›</span></div>
+	</div>
+</aside>
+</div></div>
+<script>notes('サブエージェント — 一覧と子の詳細を1つのペインに', [
+'<b>入口:</b> 入力欄の上の要約1行（親が完了しても残る）、ヘッダーのアイコン、<kbd>Ctrl Shift S</kbd>。',
+'<b>一覧:</b> 実行単位ごとに子を並べる。行を選ぶと下に詳細（依頼・作業記録・指示の欄）。スマホの「一覧 → 詳細」の2画面を1つにまとめる。',
+'<b>停止:</b> 「実行全体を停止…」「この子を停止…」は赤い文字。押すと確認のダイアログ（Enter では確定しない。既定のフォーカスはキャンセル）。',
+'<b>見るだけの実行</b>（公式サンプルなど）は指示の欄を出さず、チェーンの進み具合だけを示す。',
+'<b>以前の実行</b>は下の1行から開く。',
+'親の会話と入力欄は左にそのまま残るので、子を見ながら親に指示できる。'])</script>
+</body></html>

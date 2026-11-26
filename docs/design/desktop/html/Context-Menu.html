@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>右クリックメニューとセッションのメニュー</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout', hover:'auth'})</script>
+<div class="main" style="position:relative"><script>chat({on:'more'})</script>
+<div class="pop" style="left:-60px;top:186px">
+	<div class="mi hover">開く<span class="k">Enter</span></div>
+	<div class="mi">名前を変更…<span class="k">F2</span></div>
+	<div class="mi">フォルダのパスをコピー</div>
+	<div class="mi"><span class="mono">pimate attach</span> をコピー</div>
+	<div class="sep"></div>
+	<div class="mi">同じフォルダで新しい Pi…</div>
+	<div class="mi">変更をレビュー</div>
+	<div class="sep"></div>
+	<div class="mi danger">この Pi を終了…</div>
+</div>
+<div class="pop" style="right:12px;top:48px;width:300px">
+	<div style="padding:8px 10px 2px"><b>--shout フラグを追加</b><div class="cap">メッセージ 24 · トークン 182k · コスト $1.84</div></div>
+	<div class="lab">会話</div>
+	<div class="mi">新しいセッション<span class="k">/new</span></div>
+	<div class="mi">過去のセッションを開く…<span class="k">/resume</span></div>
+	<div class="mi">セッションツリー…<span class="k">/tree</span></div>
+	<div class="mi">ここから分岐…<span class="k">/fork</span></div>
+	<div class="mi">コンテキストを圧縮<span class="k">/compact</span></div>
+	<div class="lab">この Pi</div>
+	<div class="mi">起動元<span class="k" style="font-family:inherit">スマホ · PC から未接続</span></div>
+	<div class="mi"><span class="mono">pimate attach pimate-de7f3a00</span><span class="k"><script>W(I('copy',14))</script></span></div>
+	<div class="sep"></div>
+	<div class="mi danger">この Pi を終了…</div>
+</div>
+</div>
+</div></div>
+<script>notes('右クリックメニュー（左）と ⋯ のセッションメニュー（右）', [
+'<b>サイドバーの行を右クリック</b>（または行にフォーカスして <kbd>Shift F10</kbd> / メニューキー）: 開く・名前を変更・コピー・同じフォルダで起動・終了。',
+'<b>ほかの右クリック:</b> メッセージ → コピー / 引用して返信 / ここから分岐。ツール行 → 出力をコピー / 差分を開く。コード・パス → コピー。画像 → 保存 / コピー。入力欄 → 切り取り・コピー・貼り付け。',
+'<b>⋯ のメニュー:</b> スマホの「セッション・Instance シート」と同じ内容。<span class="mono">/resume</span> <span class="mono">/tree</span> <span class="mono">/fork</span> はダイアログを開く（… が付く）。',
+'<b>終了・削除</b>は赤い文字。押すと確認のダイアログを出す（塗りの赤いボタンは使わない）。',
+'<b>メニューの作法:</b> <kbd>↑</kbd><kbd>↓</kbd> で移動、<kbd>Enter</kbd> で実行、<kbd>Esc</kbd> で閉じる。右端にショートカットかコマンド名。',
+'（モックは2つを同時に描いているが、実際に開くのは1つ）'])</script>
+</body></html>
