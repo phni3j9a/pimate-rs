@@ -177,6 +177,11 @@ final class ProbeTests: XCTestCase {
             }
         }
         XCTAssertTrue(fourth.waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
+        app.buttons["添付画像 2 を開く"].tap()
+        let draftPhoto = app.images["添付画像 2 / 4"]
+        XCTAssertTrue(draftPhoto.waitForExistence(timeout: 12)); draftPhoto.doubleTap(); shot("DraftZoom")
+        draftPhoto.doubleTap(); app.buttons["画像を閉じる"].tap()
+        XCTAssertTrue(fourth.exists)
         app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
         XCTAssertTrue(app.buttons["画像を添付"].isEnabled)
     }
