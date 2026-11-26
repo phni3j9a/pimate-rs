@@ -8,6 +8,13 @@ enum Choice {
 }
 impl Desktop {
     pub(super) fn open_palette(&mut self, shortcuts: bool, w: &mut Window, cx: &mut Context<Self>) {
+        self.palette_form_input = (self
+            .navigation
+            .as_ref()
+            .is_some_and(|n| n.read(cx).route != Route::Home)
+            && w.context_stack().iter().any(|c| c.contains("Input")))
+        .then(|| w.focused(cx).map(|f| f.downgrade()))
+        .flatten();
         self.palette_open = true;
         self.palette_index = 0;
         if let Some((s, _)) = &self.search {
@@ -37,7 +44,14 @@ impl Desktop {
     }
     pub(super) fn close_palette(&mut self, w: &mut Window, cx: &App) {
         self.palette_open = false;
-        self.restore_input(w, cx);
+        let previous = self.palette_form_input.take();
+        if self.front(w, cx) == Some(keys::Overlay::Route)
+            && let Some(input) = previous.and_then(|f| f.upgrade())
+        {
+            w.focus(&input);
+        } else {
+            self.restore_input(w, cx);
+        }
     }
     fn choose(&mut self, choice: &Choice, w: &mut Window, cx: &mut Context<Self>) {
         if self.front(w, cx) != Some(keys::Overlay::Palette) {
@@ -51,7 +65,12 @@ impl Desktop {
                 }
                 self.select(h.clone(), i.clone(), cx);
             }
-            Choice::App(c) => self.command(*c, w, cx),
+            Choice::App(c) => {
+                if !matches!(c, Command::Sidebar | Command::NextPane) {
+                    self.sidebar_open = false;
+                }
+                self.execute_command(*c, w, cx);
+            }
             Choice::Slash(pg, name) if pg.visible(self) => {
                 if self.sending {
                     return;

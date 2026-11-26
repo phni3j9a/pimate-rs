@@ -100,18 +100,74 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
         if w.window_handle().window_id() != window {
             return;
         }
-        if e.keystroke.key == "tab" && w.tooltip_visible() {
-            w.dismiss_tooltip();
-        }
-        if !matches!(
-            e.keystroke.key.as_str(),
-            "enter" | "space" | "escape" | "tab"
-        ) {
+        let key = e.keystroke.key.as_str();
+        // X11 can report repeats as fresh presses. Only the physical release re-arms a consumed key.
+        if let Some(text_target) = d.consumed_keys.get(key) {
+            if !text_target
+                .as_ref()
+                .and_then(|f| f.upgrade())
+                .is_some_and(|f| f.is_focused(w))
+            {
+                cx.stop_propagation();
+            }
             return;
         }
+        if !matches!(key, "enter" | "space" | "escape" | "tab") {
+            return;
+        }
+        let tip_tab = key == "tab" && w.tooltip_visible();
+        if tip_tab {
+            w.dismiss_tooltip();
+        }
         let top = d.front(w, cx);
-        match (e.keystroke.key.as_str(), top) {
-            ("escape", _) if e.is_held => cx.stop_propagation(),
+        let text_space = key == "space" && e.context_stack.iter().any(|c| c.contains("Input"));
+        let owns = match key {
+            "escape" => true,
+            "enter" => matches!(
+                top,
+                Some(
+                    Overlay::Menu
+                        | Overlay::Pair
+                        | Overlay::Palette
+                        | Overlay::Slash
+                        | Overlay::Tooltip
+                )
+            ),
+            "tab" => {
+                tip_tab
+                    || matches!(
+                        top,
+                        Some(
+                            Overlay::Menu
+                                | Overlay::Pair
+                                | Overlay::Palette
+                                | Overlay::Slash
+                                | Overlay::Sidebar
+                        )
+                    )
+            }
+            "space" => matches!(
+                top,
+                Some(
+                    Overlay::Menu
+                        | Overlay::Tooltip
+                        | Overlay::Palette
+                        | Overlay::Slash
+                        | Overlay::Pair
+                )
+            ),
+            _ => false,
+        };
+        if owns {
+            // Text may repeat in its original field, never in a field exposed after dismissal.
+            let repeat_in = if text_space {
+                w.focused(cx).map(|f| f.downgrade())
+            } else {
+                None
+            };
+            d.consumed_keys.insert(key.to_owned(), repeat_in);
+        }
+        match (key, top) {
             ("escape", Some(Overlay::Tooltip)) => {
                 w.dismiss_tooltip();
                 d.restore_input(w, cx);
@@ -137,25 +193,6 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
                 cx.stop_propagation();
             }
             (key @ ("enter" | "space"), layer) => {
-                let swallow = if key == "enter" {
-                    &mut d.swallow_enter_up
-                } else {
-                    &mut d.swallow_space_up
-                };
-                if e.is_held && *swallow {
-                    cx.stop_propagation();
-                    return;
-                }
-                *swallow = matches!(
-                    layer,
-                    Some(
-                        Overlay::Menu
-                            | Overlay::Pair
-                            | Overlay::Palette
-                            | Overlay::Slash
-                            | Overlay::Tooltip
-                    )
-                );
                 // Space edits the palette query; in a menu it activates the selected item.
                 if key == "space"
                     && layer == Some(Overlay::Menu)
@@ -174,7 +211,7 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
                     }
                     cx.stop_propagation();
                 }
-                if layer == Some(Overlay::Tooltip) {
+                if layer == Some(Overlay::Tooltip) && !text_space {
                     cx.stop_propagation();
                 }
             }
@@ -199,12 +236,11 @@ impl Desktop {
         matches!(e, ClickEvent::Keyboard(_)) || self.pointer_down_on_overlay
     }
     fn overlay_key_up(&mut self, e: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        let held = match e.keystroke.key.as_str() {
-            "enter" => &mut self.swallow_enter_up,
-            "space" => &mut self.swallow_space_up,
-            _ => return,
-        };
-        if std::mem::take(held) {
+        if self
+            .consumed_keys
+            .remove(e.keystroke.key.as_str())
+            .is_some()
+        {
             cx.stop_propagation();
         }
     }
@@ -314,9 +350,6 @@ impl Desktop {
     }
     pub(super) fn command(&mut self, c: Command, w: &mut Window, cx: &mut Context<Self>) {
         use Command::*;
-        let Some(nav) = self.navigation.clone() else {
-            return;
-        };
         let top = self.front(w, cx);
         if top == Some(Overlay::Prompt) {
             return;
@@ -327,6 +360,14 @@ impl Desktop {
         {
             return;
         }
+        self.execute_command(c, w, cx);
+    }
+    pub(super) fn execute_command(&mut self, c: Command, w: &mut Window, cx: &mut Context<Self>) {
+        use Command::*;
+        let Some(nav) = self.navigation.clone() else {
+            return;
+        };
+        let top = self.front(w, cx);
         let narrow = Layout::of(w.viewport_size().width) == Layout::Narrow;
         let home = nav.read(cx).route == Route::Home;
         match c {

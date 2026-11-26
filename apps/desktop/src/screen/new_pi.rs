@@ -530,6 +530,28 @@ fn known_trust(rows: &Value, path: &str) -> bool {
 mod tests {
     use super::known_trust;
     #[gpui::test]
+    fn palette_escape_returns_to_message_field(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable;
+        let (app, w, _) = super::super::tests::open_chat(cx);
+        w.update(|_, cx| super::super::keys::init(cx));
+        w.simulate_keystrokes("secondary-n");
+        let field = app.read_with(w, |d, cx| {
+            d.navigation
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .spawn
+                .as_ref()
+                .unwrap()
+                .message
+                .clone()
+        });
+        w.update(|w, cx| field.focus_handle(cx).focus(w));
+        w.simulate_keystrokes("a secondary-k escape b");
+        assert!(w.update(|w, cx| field.focus_handle(cx).is_focused(w)));
+        assert_eq!(field.read_with(w, |s, _| s.value().to_string()), "ab");
+    }
+    #[gpui::test]
     fn escape_retains_unsent_request_for_same_machine(cx: &mut gpui::TestAppContext) {
         let (app, w, _socket) = super::super::tests::open_chat(cx);
         w.update(|_, cx| super::super::keys::init(cx));

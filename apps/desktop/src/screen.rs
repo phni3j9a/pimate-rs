@@ -1349,6 +1349,57 @@ mod key_tests {
             release(w, key);
         }
     }
+    fn wait(w: &mut gpui::VisualTestContext, selector: &'static str) -> gpui::Point<gpui::Pixels> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            w.run_until_parked();
+            if let Some(b) = w.debug_bounds(selector) {
+                break b.center();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{selector} did not appear"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    #[gpui::test]
+    fn x11_enter_repeat_cannot_submit_completed_command(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l / m o d");
+        wait(w, "command-choice-0");
+        w.simulate_keystrokes("enter enter enter");
+        app.read_with(w, |d, cx| {
+            assert!(!d.sending && d.active_sheet().is_none());
+            assert_eq!(
+                d.input.as_ref().unwrap().1.read(cx).value().as_str(),
+                "/model "
+            );
+        });
+        release(w, "enter");
+        press(w, "enter");
+        assert!(app.read_with(w, |d, _| {
+            d.active_sheet()
+                .is_some_and(|s| s.kind == state::SheetPage::Model)
+        }));
+    }
+    #[gpui::test]
+    fn palette_preferences_over_narrow_sidebar(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        press(w, "secondary-b secondary-,");
+        assert!(app.read_with(w, |d, cx| d.sidebar_open
+            && d.navigation.as_ref().unwrap().read(cx).route == Route::Home));
+        press(w, "secondary-k");
+        w.simulate_input("設定");
+        press(w, "enter");
+        assert!(app.read_with(w, |d, cx| !d.sidebar_open
+            && !d.palette_open
+            && d.navigation.as_ref().unwrap().read(cx).route == Route::Settings));
+    }
     #[gpui::test]
     fn palette_selects_on_keydown_and_discards_release(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
@@ -1369,10 +1420,11 @@ mod key_tests {
         w.run_until_parked();
         w.simulate_keystrokes("enter");
         assert!(!app.read_with(w, |d, _| d.palette_open));
-        assert!(app.read_with(w, |d, _| d.size > before && d.swallow_enter_up));
+        assert!(app.read_with(w, |d, _| d.size > before
+            && d.consumed_keys.contains_key("enter")));
         press(w, "down");
         release(w, "enter");
-        assert!(!app.read_with(w, |d, _| d.swallow_enter_up));
+        assert!(!app.read_with(w, |d, _| d.consumed_keys.contains_key("enter")));
         app.read_with(w, |d, cx| {
             assert!(!d.palette_open && d.size > before && !d.sending && d.notice.is_empty());
             assert_eq!(d.input.as_ref().unwrap().1.read(cx).value().as_str(), "d");
@@ -1394,12 +1446,11 @@ mod key_tests {
                 .focus_handle(cx)
                 .is_focused(w)
         }));
-        assert!(app.read_with(w, |d, _| d.swallow_space_up));
+        w.simulate_keystrokes("space");
         release(w, "space");
         app.read_with(w, |d, cx| {
             assert!(
-                !d.swallow_space_up
-                    && !d.sending
+                !d.sending
                     && d.notice.is_empty()
                     && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
             )
@@ -1491,6 +1542,7 @@ mod key_tests {
         w.update(|_, cx| keys::init(cx));
         let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
         w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        w.simulate_keystrokes("secondary-l");
         let pos = w.debug_bounds("chat-status").unwrap().center();
         w.simulate_mouse_move(pos, None, Default::default());
         w.run_until_parked();
@@ -1498,11 +1550,28 @@ mod key_tests {
             .advance_clock(std::time::Duration::from_secs(1));
         w.run_until_parked();
         assert!(w.update(|w, _| w.tooltip_visible()));
+        w.simulate_keystrokes("a space space");
+        release(w, "space");
+        press(w, "b");
+        assert!(w.update(|w, _| w.tooltip_visible()));
+        assert_eq!(
+            app.read_with(w, |d, cx| d
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .to_string()),
+            "a  b"
+        );
         w.simulate_keystrokes("escape");
-        w.simulate_event(gpui::KeyDownEvent {
-            keystroke: gpui::Keystroke::parse("escape").unwrap(),
-            is_held: true,
-        });
+        for is_held in [false, true] {
+            w.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                is_held,
+            });
+        }
         release(w, "escape");
         assert!(!w.update(|w, _| w.tooltip_visible()));
         assert!(wire.try_recv().is_err());
@@ -1544,7 +1613,7 @@ mod key_tests {
                 })
             });
             w.run_until_parked();
-            w.simulate_keystrokes(key);
+            press(w, key);
             assert_eq!(*seen.borrow(), format!("pimate::{command:?}"), "{key}");
         }
         app.update(w, |d, cx| {
@@ -1564,10 +1633,10 @@ mod key_tests {
         assert!(app.read_with(w, |d, _| d.palette_open));
         w.simulate_keystrokes("down");
         assert_eq!(app.read_with(w, |d, _| d.palette_index), 1);
-        w.simulate_keystrokes("escape");
+        press(w, "escape");
         assert!(app.read_with(w, |d, cx| !d.palette_open
             && d.chat_keys.as_ref().unwrap().1.read(cx).review_open));
-        w.simulate_keystrokes("escape");
+        press(w, "escape");
         assert!(!app.read_with(w, |d, cx| {
             d.chat_keys.as_ref().unwrap().1.read(cx).review_open
         }));
@@ -1578,7 +1647,7 @@ mod key_tests {
         w.update(|_, cx| keys::init(cx));
         w.simulate_keystrokes("secondary-l secondary-shift-d f6");
         assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
-        w.simulate_keystrokes("escape");
+        press(w, "escape");
         assert!(!app.read_with(w, |d, cx| {
             d.chat_keys.as_ref().unwrap().1.read(cx).review_open
         }));
@@ -1747,10 +1816,10 @@ mod key_tests {
         let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
         w.simulate_keystrokes("secondary-l /");
         assert!(app.read_with(w, |d, _| d.slash_visible));
-        w.simulate_keystrokes("escape");
+        press(w, "escape");
         assert!(app.read_with(w, |d, cx| !d.slash_visible
             && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "/"));
-        w.simulate_keystrokes("escape");
+        press(w, "escape");
         rt.block_on(async {
             for method in ["commands", "abort"] {
                 assert_eq!(
@@ -1772,7 +1841,7 @@ mod key_tests {
         let (app, w, _socket) = tests::open_chat(cx);
         w.update(|_, cx| keys::init(cx));
         let (rt, mut wire, server) = attach_active(&app, w, "abort-test");
-        w.simulate_keystrokes("escape");
+        press(w, "escape");
         let first = rt.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
                 .await
@@ -1781,20 +1850,6 @@ mod key_tests {
         assert_eq!(first.as_deref(), Some("abort"));
         w.run_until_parked();
         assert!(wire.try_recv().is_err());
-        let wait = |w: &mut gpui::VisualTestContext, selector: &'static str| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            loop {
-                w.run_until_parked();
-                if let Some(b) = w.debug_bounds(selector) {
-                    break b.center();
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "{selector} did not appear"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        };
         // The button and Esc use the same guard and must each generate one request.
         let stop = wait(w, "abort-turn");
         w.simulate_click(stop, gpui::Modifiers::none());
