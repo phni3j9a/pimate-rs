@@ -92,6 +92,19 @@ class RemainingScreensTest {
     }
 
     @Test
+    fun onlyAGreaterPublishedVersionIsNewer() {
+        assertTrue(newer("0.2.1", "0.2.0"))
+        assertTrue(newer("0.10.0", "0.9.0"))
+        assertTrue(newer("1.0.0", "0.99.99"))
+        // 開発中の版が公開版より先、同じ版、接尾辞つき、空は案内しない。
+        assertFalse(newer("0.2.0", "0.2.1"))
+        assertFalse(newer("0.2.0", "0.2.0"))
+        assertFalse(newer("0.2.1-beta.1", "0.2.0"))
+        assertFalse(newer("0.2.1", "dev"))
+        assertFalse(newer("", "0.2.0"))
+    }
+
+    @Test
     fun spawnNeverReusesTrustForAnotherPath() {
         val form = SpawnForm("hostB", true)
         form.folder("/repo", true)

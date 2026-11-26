@@ -19,7 +19,11 @@ private final class MachineCore: Core, @unchecked Sendable {
     var listeners: [String: Listener] = [:], removed: String?
     override func hosts() throws -> [Host] { ["a", "b"].map { .init(id: $0, name: $0, address: "unused", deviceId: "d", needsPairing: false) } }
     override func connect(id: String, listener: Listener) throws -> Connection { listeners[id] = listener; return id == "a" ? a : b }
-    override func forget(id: String) throws { removed = id }
+    var revokeOK = true
+    override func revokeAndForget(connection: Connection, id: String, device: String) async throws -> Bool {
+        XCTAssertTrue(connection === b); XCTAssertEqual(device, "d"); if revokeOK { removed = id }; return revokeOK
+    }
+    override func forgetDevice(id: String, device: String) throws { removed = id }
 }
 
 @MainActor final class RemainingStateTests: XCTestCase {
@@ -46,6 +50,13 @@ private final class MachineCore: Core, @unchecked Sendable {
         model.text("本文", for: key); try model.askAbout(github); XCTAssertEqual(model.body(key).text, "本文\n#1「検査」")
         _ = try await model.confirm(model.confirmation(host: "b", .forget)); XCTAssertEqual(core.removed, "b"); XCTAssertEqual(model.editor, key)
         try model.select(host: "a", instance: nil); XCTAssertThrowsError(try model.askAbout(github))
+    }
+    func testFailedSelfRevokeKeepsRegistrationUntilLocalConfirmation() async throws {
+        let core = MachineCore(noHandle: .init()); core.revokeOK = false
+        let model = SessionModel(core: core)
+        do { _ = try await model.confirm(model.confirmation(host: "b", .forget)); XCTFail() } catch RemovalError.notRevoked {}
+        XCTAssertNil(core.removed); XCTAssertTrue(model.hosts.contains { $0.id == "b" })
+        _ = try await model.confirm(model.confirmation(host: "b", .forgetLocal)); XCTAssertEqual(core.removed, "b")
     }
     func testCancelledSpawnDoesNotSendOrNavigateOnLateReady() async throws {
         let core = MachineCore(noHandle: .init()); core.b.items.append(item("instance", "spawned", "{}"))

@@ -119,7 +119,7 @@ class RemainingJourney {
         shot("Machine-Detail")
         val fixture = File(inst.targetContext.cacheDir, "mock-maintenance").delete()
         if (fixture) {
-            tap("最新版に更新…")
+            tap("更新")
             find(hasText("実行時の最新版に更新します（確認時点の最新版: 0.1.20）", substring = true))
             tap("更新")
             find(hasText("0.1.20 に更新しました"))

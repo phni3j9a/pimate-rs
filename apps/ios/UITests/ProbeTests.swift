@@ -271,6 +271,9 @@ extension ProbeTests {
         let update = app.buttons["実行時の最新版に更新…"]
         XCTAssertTrue(update.waitForExistence(timeout: 12)); shot("Machine-Detail"); tap(update)
         XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "実行時の最新版に更新します")).firstMatch.exists); app.buttons["キャンセル"].tap()
+        tap(app.buttons["このマシンを削除…"])
+        XCTAssertTrue(app.alerts.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "PC 側の登録も取り消します")).firstMatch.exists); shot("Machine-Remove"); app.buttons["キャンセル"].tap()
+        for _ in 0..<4 where !app.buttons["プロバイダーのログイン"].isHittable { app.swipeDown() }
         tap(app.buttons["プロバイダーのログイン"]); XCTAssertTrue(app.buttons["API キーを設定"].waitForExistence(timeout: 15)); shot("Provider")
         // Synthetic input goes only to the loopback fixture. Never attach a prompt, code, link or QR.
         if variant == "light" {

@@ -9,6 +9,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.*
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import org.json.*
@@ -19,20 +24,31 @@ internal fun Page(
     title: String,
     close: () -> Unit,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
+    // 行の間。設定・マシン詳細は行が自分の高さを持つので 0。
+    gap: Dp = 4.dp,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding().imePadding()) {
-            Row(Modifier.heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.heightIn(min = 52.dp).padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 IconAction(Icons.Back, "戻る", close, tint = pi.text)
-                Text(title, Modifier.semantics { heading() }, style = Type.header)
+                Text(
+                    title,
+                    Modifier.weight(1f).offset(x = (-2).dp).semantics { heading() },
+                    style = Type.sheet,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             Column(
                 Modifier.fillMaxWidth()
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = gutter),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(gap),
             ) {
                 content()
                 Spacer(Modifier.height(24.dp))
@@ -61,11 +77,14 @@ internal fun ConfirmAction(
     enabled: Boolean = true,
     title: String = label,
     modifier: Modifier = Modifier,
+    color: Color = pi.failedText,
+    weight: FontWeight = FontWeight.SemiBold,
+    style: TextStyle = Type.body,
     onConfirm: () -> Unit,
 ) {
     var pending by
         remember(identity, label, detail, enabled) { mutableStateOf<(() -> Unit)?>(null) }
-    TextAction(button, { pending = onConfirm }, modifier, enabled = enabled, color = pi.failedText)
+    TextAction(button, { pending = onConfirm }, modifier, enabled, color, weight, style)
     pending?.let { approved ->
         AlertDialog(
             { pending = null },
@@ -78,7 +97,7 @@ internal fun ConfirmAction(
                         pending = null
                         approved()
                     },
-                    color = pi.failedText,
+                    color = color,
                 )
             },
             dismissButton = { TextAction("キャンセル", { pending = null }) },
@@ -97,20 +116,20 @@ internal suspend fun checked(error: (String) -> Unit, task: suspend () -> Unit) 
     }
 }
 
+/** リンクを外のアプリで開く。開けるアプリがなければ false。 */
+internal fun openLink(context: android.content.Context, url: String): Boolean =
+    try {
+        context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        true
+    } catch (_: android.content.ActivityNotFoundException) {
+        false
+    }
+
 @Composable
 internal fun External(label: String, url: String) {
     val context = LocalContext.current
     var unavailable by remember { mutableStateOf(false) }
-    TextAction(
-        label,
-        {
-            try {
-                context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
-            } catch (_: android.content.ActivityNotFoundException) {
-                unavailable = true
-            }
-        },
-    )
+    TextAction(label, { unavailable = !openLink(context, url) })
     if (unavailable) SheetError("リンクを開けるアプリがありません")
 }
 
@@ -120,8 +139,22 @@ internal fun Toggle(label: String, value: Boolean, set: (Boolean) -> Unit) {
         Modifier.fillMaxWidth().heightIn(min = 52.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, Modifier.weight(1f))
-        Switch(value, set, Modifier.semantics { contentDescription = label })
+        Text(label, Modifier.weight(1f), style = Type.lead)
+        Switch(
+            value,
+            set,
+            Modifier.semantics { contentDescription = label },
+            // 大きさのある中身を渡すと、オフでもつまみが 24dp になる（モックの形）。
+            thumbContent = { Spacer(Modifier.size(SwitchDefaults.IconSize)) },
+            colors =
+                SwitchDefaults.colors(
+                    checkedThumbColor = pi.onAccent,
+                    checkedTrackColor = pi.accent,
+                    uncheckedThumbColor = pi.onAccent,
+                    uncheckedTrackColor = pi.control,
+                    uncheckedBorderColor = Color.Transparent,
+                ),
+        )
     }
 }
 

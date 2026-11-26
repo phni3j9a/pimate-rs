@@ -62,6 +62,8 @@ fn delivery(listener: Arc<dyn Listener>) -> broadcast::Sender<(u64, Vec<crate::C
     tx
 }
 pub struct Connection {
+    pub(crate) registration: (String, String),
+    retry: Arc<tokio::sync::Notify>,
     shared: Arc<Shared>,
     selection: watch::Sender<Option<String>>,
     task: tokio::task::JoinHandle<()>,
@@ -86,6 +88,9 @@ impl Connection {
             holds: Default::default(),
         });
         let (selection, mut rx) = watch::channel(None);
+        let registration = (host.id.clone(), host.device_id.clone());
+        let retry = Arc::new(tokio::sync::Notify::new());
+        let wake = retry.clone();
         let s = shared.clone();
         let task = runtime().spawn(async move {
             let mut delay = 1;
@@ -146,16 +151,23 @@ impl Connection {
                     }
                     _ => s.status("offline"),
                 }
-                tokio::time::sleep(Duration::from_secs(delay)).await;
+                tokio::select! { _ = tokio::time::sleep(Duration::from_secs(delay)) => {}, _ = wake.notified() => {} }
                 delay = (delay * 2).min(30)
             }
         });
         Arc::new(Self {
+            registration,
+            retry,
             shared,
             selection,
             task,
             images: Default::default(),
         })
+    }
+    pub fn retry_now(&self) {
+        if self.shared.state.lock().unwrap().get("host", "connection") == "offline" {
+            self.retry.notify_one();
+        }
     }
     /// Preflight is advisory: the actor checks the exact target again before sending.
     pub fn check(&self, operation: Operation) -> Result<(), Error> {
@@ -746,6 +758,8 @@ mod regressions {
         let (tx, rx) = mpsc::channel(4);
         (
             Connection {
+                registration: Default::default(),
+                retry: Default::default(),
                 shared: Arc::new(Shared {
                     state: Default::default(),
                     notifications: broadcast::channel(8).0,
@@ -1043,6 +1057,8 @@ mod regressions {
         st.selected = Some("i".into());
         st.apply(&json!({"type":"subscribed","instanceId":"i","snapshot":{"seq":1,"session":{"id":"s"},"entryImages":true,"fileImages":true},"history":{"items":[]}}));
         let c = Connection {
+            registration: Default::default(),
+            retry: Default::default(),
             shared: Arc::new(Shared {
                 state: Mutex::new(st),
                 notifications: broadcast::channel(1).0,
