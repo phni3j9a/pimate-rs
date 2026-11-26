@@ -43,8 +43,62 @@ fn work_summary(start: Option<u64>, end: Option<u64>, calls: usize) -> String {
     }
     label
 }
-fn should_follow(changed: bool, at_end: bool, manual: bool, focused: bool) -> bool {
-    changed && at_end && !manual && !focused
+fn at_tail(list: &ListState) -> bool {
+    let n = list.item_count();
+    n == 0
+        || list
+            .bounds_for_item(n - 1)
+            .is_some_and(|last| last.bottom() <= list.viewport_bounds().bottom() + px(2.))
+}
+#[derive(Default)]
+struct Follow {
+    pinned: Option<(usize, Pixels)>,
+}
+impl Follow {
+    fn offset(list: &ListState) -> (usize, Pixels) {
+        let top = list.logical_scroll_top();
+        (top.item_ix, top.offset_in_item)
+    }
+    fn wants(
+        &self,
+        list: &ListState,
+        changed: bool,
+        at_end: bool,
+        manual: bool,
+        focused: bool,
+    ) -> bool {
+        !manual && !focused && ((changed && at_end) || self.pinned == Some(Self::offset(list)))
+    }
+    fn pin(&mut self, list: &ListState) {
+        list.scroll_to(ListOffset {
+            item_ix: list.item_count(),
+            offset_in_item: px(0.),
+        });
+        self.pinned = Some(Self::offset(list));
+    }
+    fn measured(&mut self, list: &ListState) {
+        // Top-aligned ListState resolves the end sentinel to a concrete item during prepaint.
+        // Save that position: a later Markdown publish isn't user scrolling.
+        if self.pinned.is_some() && at_tail(list) {
+            self.pinned = Some(Self::offset(list));
+        }
+    }
+}
+fn parent_tools(rows: &Rows, expanded: &HashSet<String>) -> (Vec<usize>, u64) {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut contents = DefaultHasher::new();
+    let mut live = Vec::new();
+    for (i, (id, v)) in rows.group("tool").iter().enumerate() {
+        if v["status"] != "running" || !v["parentToolCallId"].is_null() {
+            continue;
+        }
+        live.push(i);
+        id.hash(&mut contents);
+        if expanded.contains(&format!("live:{id}")) {
+            v["partial"]["content"].hash(&mut contents);
+        }
+    }
+    (live, contents.finish())
 }
 fn thought_label(active: bool, ms: Option<u64>) -> String {
     if active {
@@ -61,52 +115,49 @@ fn thought_label(active: bool, ms: Option<u64>) -> String {
 struct LayoutRows {
     indices: Vec<usize>,
     summaries: HashMap<usize, String>,
-    results: HashSet<String>,
+    pairs: state::review::ToolPairs,
     folded_answers: HashSet<usize>,
-    calls: HashMap<String, (usize, usize, usize)>,
 }
 impl LayoutRows {
     fn new(entries: &[(String, Value)], running: bool, expanded: &HashSet<String>) -> Self {
-        let mut layout = Self::default();
-        let mut begin = 0;
-        while begin < entries.len() {
-            let end = begin
-                + 1
-                + entries[begin + 1..]
-                    .iter()
-                    .take_while(|(_, v)| v["kind"] != "user")
-                    .count();
+        let mut layout = Self {
+            pairs: state::review::ToolPairs::read(entries),
+            ..Self::default()
+        };
+        let mut turns = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+        let mut current = 0;
+        for (i, (_, v)) in entries.iter().enumerate() {
+            if v["kind"] == "user" {
+                current = i;
+            }
+            let turn = layout.pairs.by_result.get(&i).map_or(current, |p| p.start);
+            turns.entry(turn).or_default().push(i);
+        }
+        for (begin, rows) in turns {
             let mut calls = 0;
             let mut work = false;
-            for (ix, (_, v)) in entries[begin..end].iter().enumerate() {
-                for (j, c) in v["toolCalls"].as_array().into_iter().flatten().enumerate() {
-                    calls += 1;
-                    if let Some(id) = c["id"].as_str() {
-                        layout.calls.insert(id.into(), (begin + ix, j, begin));
-                    }
-                }
-                if let Some(id) = v["toolCallId"].as_str() {
-                    layout.results.insert(id.into());
-                }
+            for &ix in &rows {
+                let v = &entries[ix].1;
+                calls += v["toolCalls"].as_array().map_or(0, Vec::len);
                 work |= v["kind"] == "tool_result"
                     || v["thinking"].as_str().is_some_and(|t| !t.is_empty());
             }
             let (id, first) = &entries[begin];
             let summary =
-                first["kind"] == "user" && (work || calls > 0) && (end < entries.len() || !running);
+                first["kind"] == "user" && (work || calls > 0) && (begin != current || !running);
             if summary {
                 layout.summaries.insert(
                     begin,
                     work_summary(
                         first["timestamp"].as_u64(),
-                        entries[end - 1].1["timestamp"].as_u64(),
+                        entries[*rows.last().unwrap()].1["timestamp"].as_u64(),
                         calls,
                     ),
                 );
             }
             let show = !summary || expanded.contains(id);
-            for (offset, (_, v)) in entries[begin..end].iter().enumerate() {
-                let idx = begin + offset;
+            for idx in rows {
+                let v = &entries[idx].1;
                 if !show {
                     if v["kind"] == "tool_result" {
                         continue;
@@ -123,7 +174,6 @@ impl LayoutRows {
                 }
                 layout.indices.push(idx);
             }
-            begin = end;
         }
         layout
     }
@@ -135,7 +185,8 @@ struct Conversation {
     turns: HashSet<String>,
     thought: HashMap<String, bool>,
     manual: bool,
-    last_content: Option<(u64, usize, usize, usize)>,
+    last_content: Option<(u64, usize, usize, u64)>,
+    follow: Follow,
     layout: LayoutRows,
     layout_version: Option<(u64, bool)>,
     // The append boundary from the last time we saw a live answer, even if its row was offscreen.
@@ -207,7 +258,7 @@ impl Conversation {
             if prefix == history
                 && list.item_count() == history + 1
                 && let Some(slot) = committed
-                    .and_then(|ix| next.indices.binary_search(&ix).ok())
+                    .and_then(|ix| next.indices.iter().position(|v| *v == ix))
                     .filter(|slot| *slot >= prefix)
             {
                 // Reuse the measured stream slot for message_end, inserting a steer *before* it.
@@ -237,13 +288,22 @@ struct ToolLine<'a> {
     state: &'static str,
     subject: String,
     duration: Option<u64>,
+    truncated: bool,
+}
+fn output_labels(text: &str, truncated: bool) -> (String, &'static str) {
+    let n = text.lines().count();
+    if truncated {
+        (format!("表示分 {n}行・一部省略"), "表示分をコピー")
+    } else {
+        (format!("{n}行"), "出力をコピー")
+    }
 }
 fn tool_result(
     conversation: &Entity<Conversation>,
     p: &Colors,
     id: String,
     line: ToolLine<'_>,
-    review: Option<(Entity<super::Inspector>, state::Page, Option<String>)>,
+    review: Option<(Entity<super::Inspector>, state::Page, state::review::Turn)>,
     w: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -253,15 +313,16 @@ fn tool_result(
         state,
         subject,
         duration,
+        truncated,
     } = line;
+    let (lines, copy_label) = output_labels(text, truncated);
     let open = conversation.clone();
     let tool = id.clone();
     let expanded = open.read(cx).expanded.contains(&tool);
     let summary = format!(
-        "{}　{name} {subject} · {} · {}行{}",
+        "{}　{name} {subject} · {} · {lines}{}",
         if expanded { "▾" } else { "▸" },
         state,
-        text.lines().count(),
         duration
             .map(|ms| format!(" · {:.1}秒", ms as f64 / 1000.))
             .unwrap_or_default()
@@ -303,7 +364,7 @@ fn tool_result(
                     Button::new(SharedString::from(format!("copy:{id}")))
                         .ghost()
                         .small()
-                        .label("コピー")
+                        .label(if truncated { copy_label } else { "コピー" })
                         .on_click(move |_, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
                         }),
@@ -316,7 +377,7 @@ fn tool_result(
                             .label("差分を開く")
                             .on_click(move |_, _, cx| {
                                 ins.update(cx, |s, cx| {
-                                    s.load(page.clone(), turn.clone(), false, cx)
+                                    s.load(page.clone(), Some(turn.clone()), false, cx)
                                 })
                             }),
                     )
@@ -329,16 +390,20 @@ fn tool_result(
         });
     let output = text.to_owned();
     context::on_right_click(panel, move |m| {
-        m.item(context::copy("出力をコピー", output.clone()))
-            .when_some(review.clone(), |m, (ins, page, turn)| {
+        m.item(context::copy(copy_label, output.clone())).when_some(
+            review.clone(),
+            |m, (ins, page, turn)| {
                 m.item(
                     gpui_component::menu::PopupMenuItem::new("変更をレビュー").on_click(
                         move |_, _, cx| {
-                            ins.update(cx, |s, cx| s.load(page.clone(), turn.clone(), false, cx))
+                            ins.update(cx, |s, cx| {
+                                s.load(page.clone(), Some(turn.clone()), false, cx)
+                            })
                         },
                     ),
                 )
-            })
+            },
+        )
     })
     .into_any_element()
 }
@@ -368,35 +433,31 @@ impl Desktop {
         let reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
         let stream_reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
         let old_count = self.scroll.item_count();
-        let at_end = old_count == 0
-            || self
-                .scroll
-                .bounds_for_item(old_count - 1)
-                .is_some_and(|last| {
-                    last.bottom() <= self.scroll.viewport_bounds().bottom() + px(2.)
-                });
-        let live: Vec<usize> = rows
-            .group("tool")
-            .iter()
-            .enumerate()
-            .filter_map(|(i, (_, v))| {
-                (v["status"] == "running" && v["parentToolCallId"].is_null()).then_some(i)
-            })
-            .collect();
+        let at_end = at_tail(&self.scroll);
+        let (live, tools) = parent_tools(rows, &conversation.read(cx).expanded);
         let content = (
             rows.entry_revision,
             rows.get("stream", "text").as_str().map_or(0, str::len),
             rows.get("stream", "thinking").as_str().map_or(0, str::len),
-            live.len(),
+            tools,
         );
         let new_content = old_count == 0 || conversation.read(cx).last_content != Some(content);
         let stream_focused = stream_reader.contains_focused(w, cx);
         let scroll_top = self.scroll.logical_scroll_top();
         let before = conversation.read(cx).stream_tail.as_ref().map(|p| p.0);
-        let running = rows.get("view", "status") == "running" || streaming || !live.is_empty();
-        let manual = conversation.read(cx).manual;
+        let running = rows.agent_active();
+        let follow = conversation.read(cx).follow.wants(
+            &self.scroll,
+            new_content,
+            at_end,
+            conversation.read(cx).manual,
+            reader.contains_focused(w, cx),
+        );
         conversation.update(cx, |c, _| {
             c.manual = false;
+            if !follow {
+                c.follow.pinned = None;
+            }
             c.last_content = Some(content);
             c.prepare(
                 entries,
@@ -428,8 +489,8 @@ impl Desktop {
                         .read(cx)
                         .layout
                         .indices
-                        .binary_search(&(before + i))
-                        .ok()
+                        .iter()
+                        .position(|v| *v == before + i)
                 })
                 .unwrap_or(n.saturating_sub(1));
             self.scroll.scroll_to(ListOffset {
@@ -440,11 +501,8 @@ impl Desktop {
                     px(0.)
                 },
             });
-        } else if should_follow(new_content, at_end, manual, reader.contains_focused(w, cx)) {
-            self.scroll.scroll_to(ListOffset {
-                item_ix: n,
-                offset_in_item: px(0.),
-            });
+        } else if follow {
+            conversation.update(cx, |c, _| c.follow.pin(&self.scroll));
         }
         if n == 0 {
             return div()
@@ -454,6 +512,9 @@ impl Desktop {
                 .into_any_element();
         }
         let latest = self.scroll.clone();
+        let after = latest.clone();
+        let measured = conversation.clone();
+        let resume = conversation.clone();
         let p = *p;
         let desktop = cx.entity();
         let k = key.clone();
@@ -479,6 +540,7 @@ impl Desktop {
                         format!("live:{id}"),
                         ToolLine {
                             name,
+                            truncated: false,
                             text: &text,
                             state: "実行中",
                             subject: tool_subject(name, &v["args"], &Value::Null),
@@ -536,23 +598,36 @@ impl Desktop {
                 };
                 if v["kind"] == "tool_result" {
                     let cid = v["toolCallId"].as_str().unwrap_or("");
-                    let call = conversation.read(cx).layout.calls.get(cid).copied();
-                    let live = data.get("tool", cid);
-                    let args =
-                        call.map_or(
-                            &live["args"],
-                            |(ix, j, _)| &entries[ix].1["toolCalls"][j]["args"],
-                        );
-                    let subject =
-                        tool_subject(v["toolName"].as_str().unwrap_or(""), args, &v["details"]);
-                    let run = open_run(cid);
+                    let pairs = &conversation.read(cx).layout.pairs;
+                    let call = pairs
+                        .by_result
+                        .get(&index)
+                        .map(|pos| &entries[pos.entry].1["toolCalls"][pos.slot]);
+                    let name = call
+                        .and_then(|c| c["name"].as_str())
+                        .or(v["toolName"].as_str())
+                        .unwrap_or("ツール");
+                    let subject = tool_subject(
+                        name,
+                        call.map_or(&Value::Null, |c| &c["args"]),
+                        &v["details"],
+                    );
+                    let unique = pairs.unique(cid) && call.is_some();
+                    let duration = unique
+                        .then(|| data.get("tool", cid)["durationMs"].as_u64())
+                        .flatten();
+                    let review = pairs
+                        .change_turn(entries, index)
+                        .map(|turn| (inspector.clone(), media.page.clone(), turn));
+                    let run = unique.then(|| open_run(cid)).flatten();
                     return div()
                         .child(tool_result(
                             &conversation,
                             &p,
                             id,
                             ToolLine {
-                                name: v["toolName"].as_str().unwrap_or("ツール"),
+                                name,
+                                truncated: v["truncated"] == true,
                                 text,
                                 state: if v["isError"] == true {
                                     "失敗"
@@ -560,15 +635,9 @@ impl Desktop {
                                     "完了"
                                 },
                                 subject,
-                                duration: live["durationMs"].as_u64(),
+                                duration,
                             },
-                            matches!(v["toolName"].as_str(), Some("edit" | "write")).then(|| {
-                                (
-                                    inspector.clone(),
-                                    media.page.clone(),
-                                    call.map(|(_, _, start)| entries[start].0.clone()),
-                                )
-                            }),
+                            review,
                             w,
                             cx,
                         ))
@@ -720,17 +789,19 @@ impl Desktop {
                             .as_array()
                             .into_iter()
                             .flatten()
-                            .filter(|c| {
+                            .enumerate()
+                            .filter(|(j, c)| {
+                                let id = c["id"].as_str().unwrap_or("");
+                                let pairs = &conversation.read(cx).layout.pairs;
                                 show_work
-                                    && data.get("tool", c["id"].as_str().unwrap_or(""))["status"]
-                                        != "running"
-                                    && !conversation
-                                        .read(cx)
-                                        .layout
-                                        .results
-                                        .contains(c["id"].as_str().unwrap_or(""))
+                                    && !pairs.by_call.contains_key(&(index, *j))
+                                    && !(pairs
+                                        .pending
+                                        .get(id)
+                                        .is_some_and(|pos| (pos.entry, pos.slot) == (index, *j))
+                                        && data.get("tool", id)["status"] == "running")
                             })
-                            .map(|c| {
+                            .map(|(_, c)| {
                                 div()
                                     .child(p.caption(format!(
                                         "{} {}",
@@ -741,7 +812,14 @@ impl Desktop {
                                             &Value::Null
                                         )
                                     )))
-                                    .children(c["id"].as_str().and_then(open_run))
+                                    .children(
+                                        c["id"]
+                                            .as_str()
+                                            .filter(|id| {
+                                                conversation.read(cx).layout.pairs.unique(id)
+                                            })
+                                            .and_then(open_run),
+                                    )
                             }),
                     )
                     .when(v["stopReason"] == "aborted", |d| {
@@ -843,21 +921,20 @@ impl Desktop {
             .flex_1()
             .min_h_0()
             .track_focus(&reader)
+            .on_children_prepainted(move |_, _, cx| {
+                measured.update(cx, |c, _| c.follow.measured(&after))
+            })
             .child(list)
             .vertical_scrollbar(&self.scroll)
             .when(!at_end, |d| {
                 d.child(
                     div().absolute().bottom_2().right_4().child(
-                        Button::new("latest")
-                            .small()
-                            .label("最新へ ↓")
-                            .on_click(move |_, w, _| {
-                                latest.scroll_to(ListOffset {
-                                    item_ix: latest.item_count(),
-                                    offset_in_item: px(0.),
-                                });
+                        Button::new("latest").small().label("最新へ ↓").on_click(
+                            move |_, w, cx| {
+                                resume.update(cx, |c, _| c.follow.pin(&latest));
                                 w.refresh()
-                            }),
+                            },
+                        ),
                     ),
                 )
             })
@@ -869,17 +946,111 @@ impl Desktop {
 mod tests {
     use super::transcript;
     use gpui::{Context, ListOffset, ListState, Window, div, list, point, prelude::*, px, size};
-    #[test]
-    fn follow_only_new_content_from_the_tail() {
-        assert!(super::should_follow(true, true, false, false));
-        for (changed, tail, manual, focused) in [
-            (true, false, false, false),
-            (false, true, false, false),
-            (true, true, true, false),
-            (true, true, false, true),
-        ] {
-            assert!(!super::should_follow(changed, tail, manual, focused));
+    #[gpui::test]
+    fn follows_through_delayed_height_but_not_reader_movement(cx: &mut gpui::TestAppContext) {
+        use std::{cell::Cell, rc::Rc};
+        struct Growing(ListState, Rc<Cell<f32>>);
+        impl Render for Growing {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let height = self.1.get();
+                list(self.0.clone(), move |_, _, _| {
+                    div().h(px(height)).into_any_element()
+                })
+                .size_full()
+            }
         }
+        let list = transcript();
+        list.splice(0..0, 1);
+        let h = Rc::new(Cell::new(600.));
+        let window = cx.add_empty_window();
+        let mut follow = super::Follow::default();
+        let mut draw = || {
+            window.draw(point(px(0.), px(0.)), size(px(400.), px(200.)), |_, cx| {
+                cx.new(|_| Growing(list.clone(), h.clone()))
+            })
+        };
+        follow.pin(&list);
+        draw();
+        follow.measured(&list);
+        assert!(super::at_tail(&list));
+        h.set(900.);
+        draw();
+        assert!(!super::at_tail(&list));
+        assert!(follow.wants(&list, false, false, false, false));
+        follow.pin(&list);
+        draw();
+        follow.measured(&list);
+        assert!(super::at_tail(&list));
+        assert!(!follow.wants(&list, true, true, true, false));
+        assert!(!follow.wants(&list, true, true, false, true));
+        list.scroll_by(px(-70.));
+        assert!(!follow.wants(&list, true, false, false, false));
+    }
+    #[gpui::test]
+    fn final_delta_stays_visible_after_markdown_publishes_without_another_event(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _) = super::super::tests::open_chat(cx);
+        w.simulate_resize(size(px(1000.), px(600.)));
+        let delta = |rev, lines, w: &mut gpui::VisualTestContext| {
+            let text = "改行する段落。\n\n".repeat(lines);
+            app.update(w, |d, cx| {
+                d.machines.get_mut("fixture").unwrap().rows.apply(
+                    (
+                        rev,
+                        vec![pimate_core::Change::Upsert(pimate_core::Item {
+                            collection: "stream".into(),
+                            id: "text".into(),
+                            position: 0,
+                            json: serde_json::json!(text).to_string(),
+                        })],
+                    ),
+                    || unreachable!(),
+                );
+                cx.notify();
+            });
+            w.run_until_parked();
+            w.executor()
+                .advance_clock(std::time::Duration::from_millis(160));
+            w.run_until_parked();
+        };
+        delta(2, 1, w);
+        delta(3, 50, w);
+        let list = app.read_with(w, |d, _| d.scroll.clone());
+        assert!(list.max_offset_for_scrollbar().height > px(150.));
+        assert!(super::at_tail(&list));
+        list.scroll_by(px(-90.));
+        let top = super::Follow::offset(&list);
+        delta(4, 80, w);
+        assert_eq!(super::Follow::offset(&list), top);
+        assert!(!super::at_tail(&list));
+    }
+    #[test]
+    fn parent_preview_changes_only_when_visible() {
+        use pimate_core::{Item, Snapshot};
+        use serde_json::json;
+        let rows = |parent, child| {
+            super::Rows::snapshot(Snapshot{revision:1,items:[("p",parent,None),("c",child,Some("p"))].into_iter().map(|(id,text,owner)|Item{collection:"tool".into(),id:id.into(),position:0,json:json!({"status":"running","parentToolCallId":owner,"partial":{"content":[{"text":text}]}}).to_string()}).collect()})
+        };
+        let expanded = ["live:p".into()].into();
+        let key = |p, c| super::parent_tools(&rows(p, c), &expanded);
+        assert_ne!(key("a", "a"), key("b", "a"));
+        assert_eq!(key("a", "a"), key("a", "b"));
+        assert_eq!(
+            super::parent_tools(&rows("a", "x"), &Default::default()),
+            super::parent_tools(&rows("b", "x"), &Default::default())
+        );
+    }
+    #[test]
+    fn truncated_preview_labels_both_count_and_copy() {
+        assert_eq!(
+            super::output_labels("a\nb", true),
+            ("表示分 2行・一部省略".into(), "表示分をコピー")
+        );
+        assert_eq!(
+            super::output_labels("a\nb", false),
+            ("2行".into(), "出力をコピー")
+        );
     }
     #[test]
     fn folding_keeps_mixed_replies_and_aborts_but_hides_their_work() {
@@ -900,11 +1071,51 @@ mod tests {
         let folded = super::LayoutRows::new(&entries, false, &opened);
         assert_eq!(folded.indices, [0, 1, 3]);
         assert!(folded.folded_answers.contains(&1));
-        assert_eq!(folded.calls["t"], (1, 0, 0));
+        assert_eq!(folded.pairs.by_call[&(1, 0)], 2);
         opened.insert("u".into());
         let expanded = super::LayoutRows::new(&entries, false, &opened);
         assert_eq!(expanded.indices, [0, 1, 2, 3]);
         assert!(expanded.folded_answers.is_empty());
+    }
+    #[test]
+    fn pending_question_uses_parent_activity_and_late_results_stay_in_call_turn() {
+        use serde_json::json;
+        let entries = vec![
+            ("u".into(), json!({"kind":"user"})),
+            (
+                "a".into(),
+                json!({"kind":"assistant","toolCalls":[{"id":"x"}]}),
+            ),
+            ("next".into(), json!({"kind":"user"})),
+            ("r".into(), json!({"kind":"tool_result","toolCallId":"x"})),
+            (
+                "thinking".into(),
+                json!({"kind":"assistant","thinking":"plan"}),
+            ),
+        ];
+        for active in [true, false] {
+            let rows = super::Rows::snapshot(pimate_core::Snapshot {
+                revision: 1,
+                items: [
+                    ("status", json!("waiting_input")),
+                    ("agentActive", json!(active)),
+                ]
+                .into_iter()
+                .map(|(id, v)| pimate_core::Item {
+                    collection: "view".into(),
+                    position: 0,
+                    id: id.into(),
+                    json: v.to_string(),
+                })
+                .collect(),
+            });
+            let layout = super::LayoutRows::new(&entries, rows.agent_active(), &Default::default());
+            assert_eq!(layout.indices.contains(&4), active);
+            assert!(!layout.indices.contains(&3));
+            let opened =
+                super::LayoutRows::new(&entries, rows.agent_active(), &["u".into()].into());
+            assert_eq!(&opened.indices[..4], &[0, 1, 3, 2]);
+        }
     }
     #[test]
     fn tool_subjects_and_turn_caption() {
@@ -1017,6 +1228,7 @@ mod tests {
                             i.to_string(),
                             super::ToolLine {
                                 name: "read",
+                                truncated: false,
                                 text: "complete output",
                                 state: "完了",
                                 subject: String::new(),

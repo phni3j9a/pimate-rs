@@ -150,12 +150,18 @@ time.sleep(.8)
 # Select only the first characters in the heading, while 50 ms deltas are arriving.
 # Read the beginning deliberately, even if wrapping tables have already pushed it out of view.
 move(x+550, y+190)
-pointer.NotifyPointerAxisDiscrete(0, -16)
-time.sleep(.3)
-image = snap('heading')
-image.crop((x+350,y+48,x+1050,y+280)).resize((1400,464)).save('heading-ocr.png')
-words = csv.DictReader(io.StringIO(subprocess.check_output(['tesseract','heading-ocr.png','stdout','-l','jpn','--psm','11','tsv'],text=True)),delimiter='\t')
-heading = next(w for w in words if '開発' in w['text'])
+deadline = time.monotonic() + 7
+while time.monotonic() < deadline:
+    pointer.NotifyPointerAxisDiscrete(0, -16)
+    time.sleep(.25)
+    image = snap('heading')
+    image.crop((x+350,y+48,x+1050,y+280)).resize((1400,464)).save('heading-ocr.png')
+    words = csv.DictReader(io.StringIO(subprocess.check_output(['tesseract','heading-ocr.png','stdout','-l','jpn','--psm','11','tsv'],text=True)),delimiter='\t')
+    heading = next((w for w in words if '開発' in w['text']), None)
+    if heading:
+        break
+else:
+    raise AssertionError('stream heading not visible after scrolling to the beginning')
 move(x+350+int(heading['left'])//2+2, y+48+(int(heading['top'])+int(heading['height'])//2)//2)
 pointer.NotifyPointerButton(272, True)
 pointer.NotifyPointerMotionRelative(56.,0.)

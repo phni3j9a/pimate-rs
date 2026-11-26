@@ -14,7 +14,7 @@ impl Inspector {
     pub(super) fn load(
         &mut self,
         pg: Page,
-        turn: Option<String>,
+        turn: Option<state::review::Turn>,
         latest: bool,
         cx: &mut Context<Self>,
     ) {
@@ -97,7 +97,7 @@ impl Desktop {
             .iter()
             .filter(|(_, e)| e["kind"] == "user");
         for (i, (id, v)) in turns.enumerate() {
-            let turn = v["entryId"].as_str().unwrap_or(id).to_owned();
+            let turn = state::review::Turn::User(v["entryId"].as_str().unwrap_or(id).to_owned());
             let pg = pg.clone();
             let ins = ins.clone();
             controls = controls.child(
