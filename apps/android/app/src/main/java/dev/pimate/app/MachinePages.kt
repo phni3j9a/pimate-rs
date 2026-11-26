@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -66,21 +67,40 @@ internal fun NewPage(
         val form = remember { SpawnForm(hostId, m.settings.askTool) }
         var folders by remember { mutableStateOf<JSONObject?>(null) }
         var models by remember { mutableStateOf<JSONObject?>(null) }
-        var dirs by remember(form.cwd) { mutableStateOf<List<String>?>(null) }
+        val rows = m.rowsFor(hostId)
+        val online = rows.hostValue("connection") == "\"connected\""
+        val split = remember(form.cwd) { splitFolderPath(form.cwd) }
+        val parent = split?.parent
+        var focused by remember { mutableStateOf(false) }
+        val canList = online && rows.info().optBoolean("dirs")
+        var dirs by remember(parent, canList) { mutableStateOf(emptyList<String>()) }
+        LaunchedEffect(parent, canList) {
+            if (parent != null && canList) {
+                delay(150)
+                checked({ /* Completion is optional; a manually typed path remains usable. */ }) {
+                    dirs = JSONObject(m.machineRequest(hostId, Operation.Dirs(parent))).optJSONArray("dirs").strings()
+                }
+            }
+        }
         var modelPicker by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         var outcome by remember { mutableStateOf("") }
         val scope = rememberCoroutineScope()
-        LaunchedEffect(hostId) {
+        LaunchedEffect(hostId, online) {
+            folders = null
+            if (!online) return@LaunchedEffect
             checked({ error = it }) {
                 folders = JSONObject(m.machineRequest(hostId, Operation.Folders))
             }
-            checked({ error = it }) { models = m.hostModels(hostId) }
+        }
+        LaunchedEffect(hostId, online, rows.hostValue("listKnown")) {
+            models = null
+            if (online && rows.hostValue("listKnown") == "true") checked({ error = it }) { models = m.hostModels(hostId) }
         }
         val recent = folders?.optJSONArray("folders").objects()
         fun folder(path: String) =
-            form.folder(path, recent.any { it.str("path") == path && it.optBoolean("trusted") })
+            form.folder(path, recent.any { sameFolder(path, it.str("path"), folders?.str("home").orEmpty()) && it.optBoolean("trusted") })
         Page(
             "新しい Pi",
             close,
@@ -143,61 +163,51 @@ internal fun NewPage(
                 )
             }
             Label("フォルダ")
-            SpawnInput(form.cwd, ::folder, "フォルダのパス", "~/code/project", !busy, path = true)
-            if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
+            SpawnInput(form.cwd, ::folder, "フォルダのパス", "~/code/project", !busy, path = true, modifier = Modifier.onFocusChanged { focused = it.isFocused })
+            if (focused && split != null) matchFolders(dirs, split.prefix).forEach { name ->
+                MenuRow("$name/", "", !busy) { folder("${split.parent}$name/") }
+            }
+            if (!online) Hint("このマシンに接続していません") else if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
             if (recent.isNotEmpty()) Hint("最近使ったフォルダ")
             recent.take(8).forEach {
                 val path = it.str("path")
                 MenuRow(tilde(path), it.optInt("running").takeIf { n -> n > 0 }?.let { n -> "Pi $n 件実行中" }.orEmpty(), !busy) { folder(path) }
             }
-            if (m.rowsFor(hostId).info().optBoolean("dirs")) {
-                TextAction(
-                    "子フォルダを表示",
-                    {
-                        val path = form.cwd
-                        scope.launch {
-                            checked({ error = it }) {
-                                val r = JSONObject(m.machineRequest(hostId, Operation.Dirs(path)))
-                                if (form.cwd == path) dirs = r.optJSONArray("dirs").strings()
-                            }
-                        }
-                    },
-                    enabled = !busy && form.cwd.isNotBlank(),
-                )
-                dirs?.let { names ->
-                    if (names.isEmpty()) Hint("子フォルダはありません")
-                    names.forEach {
-                        MenuRow(it, "", !busy, next = true) {
-                            folder(form.cwd.trimEnd('/') + "/" + it)
-                        }
-                    }
-                }
+            Toggle("このフォルダを信頼する", form.trust, "フォルダ内の設定と Extension を読み込みます。オンにすると PC の Pi にも記憶され、次回から確認されません。") { if (!busy) form.trust = it }
+            Toggle("質問ツールを使う", form.askTool, "迷ったときに Pi が選択式で質問します（pimate_ask）。スマホからも回答できます。") { if (!busy) { form.askTool = it; m.settings.chooseAskTool(it) } }
+            val catalog = models?.optJSONArray("models").objects()
+            val saved = models?.optJSONObject("default")
+            val ref = form.model ?: saved?.optJSONObject("model")
+            val label = ref?.let {
+                val entry = catalog.find { model -> same(it, model) }
+                modelLabel(it.str("id"), entry?.str("name")?.takeIf(String::isNotBlank),
+                    if (form.model == null) saved?.str("thinking").orEmpty() else form.thinking.orEmpty(), entry?.optJSONArray("thinkingLevels")?.length())
             }
-            Toggle("このフォルダを信頼する", form.trust, "フォルダ内の設定と Extension を読み込みます。") { if (!busy) form.trust = it }
-            Toggle("質問ツールを使う", form.askTool, "迷ったときに Pi が選択式で質問します（pimate_ask）。スマホからも回答できます。") { if (!busy) form.askTool = it }
-            MenuRow(
-                "モデル",
-                form.model?.str("id") ?: "Pi の既定",
-                !busy && models != null,
-                next = true,
-            ) {
-                modelPicker = !modelPicker
-            }
-            if (modelPicker) {
+            val value = if (form.model != null) label.orEmpty() else label?.let { "Pi の既定（$it）" } ?: "Pi の既定"
+            ListRow("モデル", enabled = online && !busy, onClick = { modelPicker = true }, trailing = {
+                Text(value, color = pi.textSecondary, style = Type.caption)
+                Icon(Icons.Right, null, Modifier.size(14.dp), pi.textSecondary)
+            })
+            if (modelPicker) PiSheet({ modelPicker = false }) {
+                SheetTitle("モデル")
                 val favorites = models?.optJSONArray("scoped").objects()
+                var query by remember { mutableStateOf("") }
+                var all by remember(favorites.isEmpty()) { mutableStateOf(favorites.isEmpty()) }
+                if (favorites.isNotEmpty()) Segment(listOf("favorites" to "お気に入り ${favorites.size}", "all" to "すべて ${catalog.size}"), if (all) "all" else "favorites") { all = it == "all" }
+                SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
                 TextAction(
-                    "PC の既定",
+                    "Pi の既定",
                     {
                         form.model = null
                         form.thinking = null
                         modelPicker = false
                     },
                 )
-                models
-                    ?.optJSONArray("models")
-                    .objects()
-                    .sortedByDescending { model -> favorites.any { same(it, model) } }
-                    .forEach { model ->
+                val shown = catalog.filter { model ->
+                    (all || favorites.any { same(it, model) }) && "${model.str("name")} ${model.str("id")} ${model.str("provider")}".contains(query.trim(), true)
+                }
+                if (shown.isEmpty()) Hint(if (catalog.isEmpty()) "モデル一覧を取得できません。Pi の既定で起動します。" else "一致するモデルはありません")
+                shown.forEach { model ->
                         MenuRow(
                             model.str("name").ifEmpty { model.str("id") },
                             (if (favorites.any { same(it, model) }) "★ " else "") +
@@ -230,6 +240,12 @@ internal fun NewPage(
             if (outcome.isNotEmpty()) Hint(outcome)
         }
     }
+}
+
+internal fun sameFolder(path: String, known: String, home: String): Boolean {
+    fun normalize(s: String) = s.trimEnd('/').ifEmpty { if (s.startsWith('/')) "/" else "" }
+    val short = if (home.isNotEmpty() && (known == home || known.startsWith("$home/"))) "~" + known.removePrefix(home) else known
+    return path.isNotBlank() && (normalize(path) == normalize(known) || normalize(path) == normalize(short))
 }
 
 @Composable
