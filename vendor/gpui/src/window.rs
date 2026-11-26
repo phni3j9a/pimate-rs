@@ -852,6 +852,7 @@ pub struct Window {
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
     pub(crate) focus_lost_listeners: SubscriberSet<(), AnyObserver>,
+    key_release_listener: Option<Rc<dyn Fn(&crate::KeyUpEvent, &mut Window, &mut App)>>,
     default_prevented: bool,
     mouse_position: Point<Pixels>,
     mouse_hit_test: HitTest,
@@ -1236,6 +1237,7 @@ impl Window {
             dirty_views: FxHashSet::default(),
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
+            key_release_listener: None,
             default_prevented: true,
             mouse_position,
             mouse_hit_test: HitTest::default(),
@@ -3784,7 +3786,23 @@ impl Window {
         }
     }
 
+    /// Observe physical key releases even when focus is outside the application's view.
+    pub fn set_key_release_listener(
+        &mut self,
+        listener: impl Fn(&crate::KeyUpEvent, &mut Window, &mut App) + 'static,
+    ) {
+        self.key_release_listener = Some(Rc::new(listener));
+    }
+
     fn dispatch_key_event(&mut self, event: &dyn Any, cx: &mut App) {
+        if let Some(up) = event.downcast_ref::<crate::KeyUpEvent>()
+            && let Some(listener) = self.key_release_listener.clone()
+        {
+            listener(up, self, cx);
+            if !cx.propagate_event {
+                return;
+            }
+        }
         if self.invalidator.is_dirty() {
             self.draw(cx).clear();
         }

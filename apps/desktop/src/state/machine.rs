@@ -225,6 +225,9 @@ impl Page {
     }
 }
 impl Confirmation {
+    pub fn destructive(&self) -> bool {
+        matches!(self.1, Maintenance::Revoke(_))
+    }
     pub fn warning(&self) -> &str {
         match self.1 {
             Maintenance::UpdateLatest => "このマシンを実行時の最新版に更新します。",

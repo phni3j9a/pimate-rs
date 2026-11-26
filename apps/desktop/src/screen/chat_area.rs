@@ -35,11 +35,10 @@ impl Desktop {
         if self.receive_editor_text(w, cx) {
             self.bind_editor(w, cx);
         }
-        if self.active_sheet().is_some() {
-            return main.child(self.sheet_panel(&key, p, w, cx));
-        }
         let held = w.use_keyed_state("chat-page", cx, |_, _| None::<state::Page>);
-        let page = if let Some(page) = held.read(cx).clone().filter(|p| p.visible(self)) {
+        let page = if let Some(sheet) = self.active_sheet() {
+            sheet.page.clone()
+        } else if let Some(page) = held.read(cx).clone().filter(|p| p.visible(self)) {
             page
         } else {
             let Ok(page) = self.open_chat() else {
@@ -470,7 +469,61 @@ impl Desktop {
             );
         }
         let chat = outer.child(theme::column(main).flex_shrink_0());
-        self.with_inspector(chat, &key, &page, &inspector, p, w, cx)
+        let chat = self.with_inspector(chat, &key, &page, &inspector, p, w, cx);
+        let Some(sheet) = self.active_sheet() else {
+            return chat;
+        };
+        use state::SheetPage::*;
+        let kind = sheet.kind;
+        let pop = matches!(kind, Model | Usage | Session);
+        let focus = w
+            .use_keyed_state("chat-sheet-focus", cx, |_, cx| cx.focus_handle())
+            .read(cx)
+            .clone();
+        if !focus.contains_focused(w, cx)
+            && !self.palette_open
+            && !self.dialog_open.get()
+            && self.context_menu.is_none()
+        {
+            w.focus(&focus);
+        }
+        let scrim = div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .when(!pop, |d| d.bg(black().opacity(0.24)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|app, _, w, cx| {
+                    app.state.close_page();
+                    app.restore_input(w, cx);
+                    cx.notify()
+                }),
+            );
+        let panel = self.sheet_panel(&key, p, w, cx);
+        chat.child(scrim).child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(pop, |d| d.items_end().justify_start().p_3())
+                .when(kind == Session, |d| d.items_start().justify_end())
+                .child(
+                    div()
+                        .id("chat-overlay")
+                        .occlude()
+                        .track_focus(&focus)
+                        .rounded(px(theme::R_CARD))
+                        .bg(p.surface)
+                        .shadow_lg()
+                        .max_w_full()
+                        .w(px(if pop { 390. } else { 540. }))
+                        .h(relative(0.72))
+                        .child(panel),
+                ),
+        )
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
         if self.overlay_open(w, cx) || !page.visible(self) {

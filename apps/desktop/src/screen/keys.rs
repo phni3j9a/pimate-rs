@@ -42,7 +42,7 @@ macro_rules! commands {
         }
         pub(super) fn listeners(root: Div, cx: &Context<Desktop>) -> Div {
             root.capture_any_mouse_down(cx.listener(Desktop::remember_pointer_layer))
-                .capture_key_up(cx.listener(Desktop::overlay_key_up))
+
                 .key_context("PiMate")$(.on_action(cx.listener(|app,_:&$name,w,cx| app.command(Command::$name,w,cx))))*
         }
     }
@@ -95,7 +95,8 @@ pub(super) enum Overlay {
 }
 
 // Intercept before GPUI resolves bindings, including Root tab navigation.
-pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
+pub(crate) fn intercept(w: &mut Window, cx: &mut Context<Desktop>) -> Subscription {
+    w.set_key_release_listener(cx.listener(Desktop::overlay_key_up));
     let window = w.window_handle().window_id();
     let listener = cx.listener(move |d, e: &KeystrokeEvent, w, cx| {
         if w.window_handle().window_id() != window {
@@ -131,7 +132,8 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
                     || matches!(
                         top,
                         Some(
-                            Overlay::Menu
+                            Overlay::Prompt
+                                | Overlay::Menu
                                 | Overlay::Pair
                                 | Overlay::Palette
                                 | Overlay::Slash
@@ -144,7 +146,8 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
                     || matches!(
                         top,
                         Some(
-                            Overlay::Menu
+                            Overlay::Prompt
+                                | Overlay::Menu
                                 | Overlay::Pair
                                 | Overlay::Palette
                                 | Overlay::Slash
@@ -270,7 +273,7 @@ impl Desktop {
     }
     pub(super) fn front(&self, w: &Window, cx: &App) -> Option<Overlay> {
         use Overlay::*;
-        if w.has_rendered_prompt() {
+        if self.dialog_open.get() {
             Some(Prompt)
         } else if w.tooltip_visible() {
             Some(Tooltip)
@@ -285,6 +288,8 @@ impl Desktop {
             && Layout::of(w.viewport_size().width) == Layout::Narrow
         {
             Some(Sidebar)
+        } else if self.active_sheet().is_some() {
+            Some(Sheet)
         } else if self.slash_visible {
             Some(Slash)
         } else if self
@@ -295,8 +300,6 @@ impl Desktop {
             Some(Route)
         } else if self.media_keys.is_some() {
             Some(Media)
-        } else if self.active_sheet().is_some() {
-            Some(Sheet)
         } else if self
             .chat_keys
             .as_ref()
@@ -308,7 +311,7 @@ impl Desktop {
         }
     }
     pub(super) fn overlay_open(&self, w: &Window, cx: &App) -> bool {
-        self.front(w, cx).is_some()
+        self.front(w, cx).is_some_and(|l| l != Overlay::Inspector)
     }
 
     pub(super) fn pi_order(&self) -> Vec<(String, String, bool)> {
@@ -326,7 +329,7 @@ impl Desktop {
         rows.sort_by_key(|r| !r.2);
         rows
     }
-    pub(super) fn stop_chat(&mut self, page: &state::Page, w: &Window, cx: &mut Context<Self>) {
+    pub(super) fn stop_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
         if self.overlay_open(w, cx)
             || self.stopping
             || !page.visible(self)
@@ -337,6 +340,28 @@ impl Desktop {
         {
             return;
         }
+        let page = page.clone();
+        self.confirm_action(
+            "このターンを停止しますか？".into(),
+            "進行中の処理を停止します。".into(),
+            "停止する",
+            true,
+            w,
+            cx,
+            move |app, _, cx| {
+                if page.visible(app)
+                    && !app.stopping
+                    && app
+                        .machines
+                        .get(page.host())
+                        .is_some_and(|m| m.rows.can_stop())
+                {
+                    app.abort_turn(&page, cx)
+                }
+            },
+        );
+    }
+    fn abort_turn(&mut self, page: &state::Page, cx: &mut Context<Self>) {
         self.stopping = true;
         let page = page.clone();
         cx.spawn(async move |app, cx| {

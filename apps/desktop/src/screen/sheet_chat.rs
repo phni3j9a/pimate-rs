@@ -120,28 +120,93 @@ impl Desktop {
             "処理が止まります。保存先が不明なため履歴が失われる可能性があります。"
         };
         self.restore_input(w, cx);
-        let confirm = w.prompt(
-            PromptLevel::Critical,
-            &format!("{title} を終了しますか？"),
-            Some(detail),
-            &[
-                PromptButton::cancel("キャンセル"),
-                PromptButton::new("終了する"),
-            ],
+        self.confirm_action(
+            format!("{title} を終了しますか？"),
+            detail.into(),
+            "終了する",
+            true,
+            w,
             cx,
+            move |app, _, cx| {
+                if !pg.visible(app) {
+                    return;
+                }
+                cx.spawn(async move |app, cx| {
+                    let result = stop.confirm().await;
+                    let _ = app.update(cx, |app, cx| {
+                        if pg.visible(app) {
+                            app.finish_send_notice(result.map(|_| String::new()));
+                            cx.notify()
+                        }
+                    });
+                })
+                .detach();
+            },
         );
-        cx.spawn(async move |this, cx| {
-            if confirm.await == Ok(1) {
-                let r = stop.confirm().await;
-                let _ = this.update(cx, |this, cx| {
-                    if pg.visible(this) {
-                        this.finish_send_notice(r.map(|_| String::new()));
-                        cx.notify()
-                    }
-                });
-            }
-        })
-        .detach();
+    }
+    pub(super) fn confirm_action(
+        &self,
+        title: String,
+        detail: String,
+        label: &'static str,
+        destructive: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+        run: impl FnOnce(&mut Desktop, &mut Window, &mut Context<Desktop>) + 'static,
+    ) {
+        if self.dialog_open.replace(true) {
+            return;
+        }
+        let run = std::rc::Rc::new(std::cell::RefCell::new(Some(run)));
+        let open = self.dialog_open.clone();
+        let app = cx.weak_entity();
+        w.open_dialog(cx, move |dialog, _, _| {
+            let fallback = open.clone();
+            let yes = open.clone();
+            let open = open.clone();
+            let run = run.clone();
+            let app = app.clone();
+            dialog
+                .title(title.clone())
+                .child(detail.clone())
+                .overlay_closable(false)
+                .close_button(false)
+                .on_ok(move |_, _, _| {
+                    fallback.set(false);
+                    true
+                })
+                .on_close(move |_, _, _| open.set(false))
+                .footer(move |_, cancel, w, cx| {
+                    let app = app.clone();
+                    let run = run.clone();
+                    let open = yes.clone();
+                    vec![
+                        cancel(w, cx),
+                        Button::new("confirm-destructive")
+                            .debug_selector(|| "confirm-destructive".into())
+                            .label(label)
+                            .when(destructive, |b| b.danger())
+                            .on_click(move |_, w, cx| {
+                                open.set(false);
+                                w.close_dialog(cx);
+                                if let Some(run) = run.borrow_mut().take() {
+                                    let _ = app.update(cx, |app, cx| run(app, w, cx));
+                                }
+                            })
+                            .into_any_element(),
+                    ]
+                })
+                .button_props(
+                    gpui_component::dialog::DialogButtonProps::default().cancel_text("キャンセル"),
+                )
+        });
+        if let Some(root) = w.focused(cx) {
+            w.on_next_frame(move |w, _| {
+                if root.is_focused(w) {
+                    w.cycle_focus_within(&root, false)
+                }
+            });
+        }
     }
     pub(super) fn sheet_nav(&self, page: &Page, cx: &Context<Self>) -> Div {
         // 狭いウィンドウでもヘッダーを1行に保つ（折り返さない）。
@@ -149,7 +214,7 @@ impl Desktop {
             .flex()
             .flex_none()
             .gap_1()
-            .children([S::Model, S::Usage, S::Session].map(|k| nav(k, page, cx)))
+            .child(nav(S::Session, page, cx).label("⋯").tooltip("セッション"))
     }
     pub(super) fn show_sheet(&mut self, kind: S, cx: &mut Context<Self>) {
         if self.open_sheet(kind).is_ok() {

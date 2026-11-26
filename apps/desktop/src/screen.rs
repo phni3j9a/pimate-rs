@@ -23,7 +23,7 @@ use super::*;
 pub(crate) use chat_review::Inspector;
 pub(crate) use conversation::History;
 use gpui_component::{
-    Disableable, Selectable, Sizable, TitleBar,
+    Disableable, Selectable, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     input::{Enter, Input},
     scroll::ScrollableElement,
@@ -880,6 +880,7 @@ impl Render for Desktop {
             .children(self.command_palette(&p, cx))
             .children(self.pair_dialog(&p, w, cx))
             .children(self.context_menu.as_ref().map(context::OpenMenu::layer))
+            .children(Root::render_dialog_layer(w, cx))
     }
 }
 
@@ -1476,11 +1477,10 @@ mod key_tests {
         }));
     }
     #[gpui::test]
-    fn shutdown_prompt_blocks_background_clicks(cx: &mut gpui::TestAppContext) {
+    fn shutdown_dialog_blocks_background_clicks(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| {
             keys::init(cx);
-            cx.set_prompt_builder(gpui::fallback_prompt_renderer);
         });
         let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
         w.simulate_keystrokes("secondary-l d");
@@ -1495,9 +1495,9 @@ mod key_tests {
             assert!(w.update(|w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Prompt)));
             w.simulate_click(button, Default::default());
         }
-        assert!(w.update(|w, _| w.has_rendered_prompt()));
+        assert!(w.update(|w, cx| gpui_component::WindowExt::has_active_dialog(w, cx)));
         press(w, "escape");
-        assert!(!w.update(|w, _| w.has_rendered_prompt()));
+        assert!(!w.update(|w, cx| gpui_component::WindowExt::has_active_dialog(w, cx)));
         assert!(wire.try_recv().is_err());
         app.read_with(w, |d, cx| {
             assert!(
@@ -1507,6 +1507,51 @@ mod key_tests {
                     && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
             )
         });
+    }
+    #[gpui::test]
+    fn release_in_shutdown_dialog_rearms_enter_and_default_is_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        for close in ["escape", "enter"] {
+            w.update(|w, cx| {
+                app.update(cx, |d, cx| {
+                    d.consumed_keys.insert("enter".into(), None);
+                    d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+                })
+            });
+            w.run_until_parked();
+            assert!(app.read_with(w, |d, _| d.dialog_open.get()));
+            release(w, "enter");
+            assert!(!app.read_with(w, |d, _| d.consumed_keys.contains_key("enter")));
+            press(w, close);
+            assert!(!app.read_with(w, |d, _| d.dialog_open.get()));
+            assert!(wire.try_recv().is_err());
+        }
+    }
+    #[gpui::test]
+    fn inspector_keeps_composer_and_marked_text(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler;
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_keystrokes("secondary-l d");
+        let input = app.read_with(w, |d, _| d.input.as_ref().unwrap().1.clone());
+        w.update(|w, cx| {
+            input.update(cx, |i, cx| {
+                i.replace_and_mark_text_in_range(Some(1..1), "に", None, w, cx)
+            })
+        });
+        for key in ["secondary-shift-d", "escape"] {
+            press(w, key);
+            assert!(w.debug_bounds("composer-input").is_some());
+            assert!(app.read_with(w, |d, _| d.input.as_ref().unwrap().1 == input
+                && d.drafts.values().any(|s| s == "d")));
+            w.update(|w, cx| {
+                input.update(cx, |i, cx| assert!(i.marked_text_range(w, cx).is_some()))
+            });
+        }
     }
     #[gpui::test]
     fn narrow_sidebar_owns_focus_and_enter(cx: &mut gpui::TestAppContext) {
@@ -1583,6 +1628,8 @@ mod key_tests {
         assert!(wire.try_recv().is_err());
         assert!(!app.read_with(w, |d, _| d.stopping));
         press(w, "escape");
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         assert_eq!(
             rt.block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv()).await
@@ -2005,6 +2052,8 @@ mod key_tests {
         assert!(app.read_with(w, |d, cx| !d.slash_visible
             && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "/"));
         press(w, "escape");
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         rt.block_on(async {
             for method in ["commands", "abort"] {
                 assert_eq!(
@@ -2027,6 +2076,8 @@ mod key_tests {
         w.update(|_, cx| keys::init(cx));
         let (rt, mut wire, server) = attach_active(&app, w, "abort-test");
         press(w, "escape");
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         let first = rt.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
                 .await
@@ -2038,6 +2089,8 @@ mod key_tests {
         // The button and Esc use the same guard and must each generate one request.
         let stop = wait(w, "abort-turn");
         w.simulate_click(stop, gpui::Modifiers::none());
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         let second = rt.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
                 .await
