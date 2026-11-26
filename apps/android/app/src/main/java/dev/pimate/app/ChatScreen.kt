@@ -24,6 +24,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.json.*
 import uniffi.pimate_ffi.*
@@ -322,12 +323,11 @@ internal fun ChatScreen(
                                 ui.switched?.first == switchId,
                             )
                     val list = rememberLazyListState()
-                    // 履歴を遡っている間に届いた質問は画面の外に足される。回答するまで入力できないので、カード（最下段）へ戻す。
-                    val newest = questions.lastOrNull()?.id
-                    LaunchedEffect(newest) { if (newest != null) list.animateScrollToItem(0) }
+                    val scope = rememberCoroutineScope()
+                    Box(Modifier.weight(1f)) {
                     // 逆順のリスト。先頭（最下段）の固定の項目が見えている間は、増えた行のぶん上へ伸びる。
                     LazyColumn(
-                        Modifier.weight(1f).testTag("chat"),
+                        Modifier.fillMaxSize().testTag("chat"),
                         list,
                         reverseLayout = true,
                         contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
@@ -381,6 +381,13 @@ internal fun ChatScreen(
                                 }
                             }
                         }
+                    }
+                    if (list.canScrollBackward) {
+                        FilledTonalButton(
+                            onClick = { scope.launch { list.animateScrollToItem(0) } },
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                        ) { Text("最新へ") }
+                    }
                     }
                 }
             }
