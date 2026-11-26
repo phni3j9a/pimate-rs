@@ -3,6 +3,19 @@ import XCTest
 @testable import PiMate
 
 final class MachineScreenTests: XCTestCase {
+    func testGitHubFailureGuidanceDistinguishesRepositoryFromMissingTarget() {
+        XCTAssertTrue(GithubText.guidance("not_github").contains("GitHub の remote があるフォルダ"))
+        XCTAssertTrue(GithubText.guidance("not_found").contains("アクセス権も確認"))
+    }
+    func testGitHubUsesHostReviewAndCheckCounts() {
+        XCTAssertEqual(GithubText.review([:]), "レビュー状態は未提供です")
+        XCTAssertEqual(GithubText.ci([:]), "CI 集計は未提供です")
+        XCTAssertEqual(GithubText.review(["reviewDecision": "CHANGES_REQUESTED"]), "変更の依頼あり")
+        XCTAssertEqual(GithubText.review(["isDraft": true, "reviewDecision": "APPROVED"]), "ドラフト")
+        XCTAssertEqual(GithubText.review(["reviewDecision": "APPROVED"]), "承認済み")
+        XCTAssertEqual(GithubText.ci(["ci": ["passed": 1, "failed": 2, "pending": 3]]), "CI 成功 1 · 失敗 2 · 待ち 3")
+        XCTAssertEqual(GithubText.ci(["ci": ["passed": 0, "failed": 0, "pending": 0]]), "CI チェックなし")
+    }
     func testSpawnCatalogBelongsOnlyToTheConnectedListedHostGeneration() {
         func hostRow(_ id: String, _ json: String) -> Item { Item(collection: "host", id: id, position: 0, json: json) }
         var rows = Rows(); rows.groups["host"] = [hostRow("connection", "\"connected\"")]

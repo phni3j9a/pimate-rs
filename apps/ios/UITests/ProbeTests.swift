@@ -22,8 +22,20 @@ func popSheetRoute(_ app: XCUIApplication, from title: String, to parent: String
     XCTAssertFalse(bar.exists, "Still on \(title)", file: file, line: line)
 }
 
+private func actionable(_ element: XCUIElement, timeout: TimeInterval = 15) -> Bool {
+    let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND hittable == true AND enabled == true"), object: element)
+    return XCTWaiter.wait(for: [ready], timeout: timeout) == .completed
+}
+
+private func openOption(_ name: String, in app: XCUIApplication) throws {
+    let menu = app.buttons["chat-options"], option = app.buttons[name]
+    XCTAssertTrue(actionable(menu)); menu.tap()
+    XCTAssertTrue(actionable(option, timeout: 20)); option.tap()
+}
+
 final class ProbeTests: XCTestCase {
     func testJourney() throws {
+        continueAfterFailure = false
         let app = XCUIApplication(), variant = ProcessInfo.processInfo.environment["PIMATE_VARIANT"] ?? "light"
         app.launchEnvironment["PIMATE_TEST_STORE"] = "1"
         app.launchArguments = ["-AppleLanguages", "(ja)", "-AppleLocale", "ja_JP"]
@@ -63,17 +75,17 @@ final class ProbeTests: XCTestCase {
             XCTAssertTrue(app.buttons["最新へ"].waitForExistence(timeout: 5)); XCTAssertTrue(read.isHittable)
             read.tap(); if app.buttons["最新へ"].isHittable { app.buttons["最新へ"].tap() }
         }
-        func openSheet(_ name: String) {
-            app.buttons["chat-options"].tap(); app.buttons[name].tap()
+        func openSheet(_ name: String) throws {
+            try openOption(name, in: app)
             XCTAssertTrue(app.buttons["sheet-close"].waitForExistence(timeout: 8))
         }
-        openSheet("モデル・Thinking")
+        try openSheet("モデル・Thinking")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入り")).firstMatch.waitForExistence(timeout: 12)); shot("Sheet-Model")
         app.buttons["sheet-close"].tap()
         app.buttons["usage-rings"].tap()
         XCTAssertTrue(app.buttons["コンテキストを圧縮"].waitForExistence(timeout: 8)); shot("Sheet-Usage")
         app.buttons["sheet-close"].tap()
-        openSheet("セッション")
+        try openSheet("セッション")
         XCTAssertTrue(app.buttons["新しいセッション"].waitForExistence(timeout: 8)); shot("Sheet-Session")
         let tree = app.buttons["session-tree"]
         for _ in 0..<4 where !tree.isHittable { app.swipeUp() }
@@ -106,11 +118,14 @@ final class ProbeTests: XCTestCase {
 
         try openPi("images")
         let tile = app.buttons["画像 4 / 5"]
-        XCTAssertTrue(tile.waitForExistence(timeout: 10))
+        XCTAssertTrue(tile.waitForExistence(timeout: 30))
         for _ in 0..<5 where !tile.isHittable { scroll.swipeUp() }
         shot("Images"); tile.tap()
         let next = app.buttons["次の画像"]
-        XCTAssertTrue(next.waitForExistence(timeout: 8)); next.tap()
+        XCTAssertTrue(app.staticTexts["4 / 5"].waitForExistence(timeout: 20))
+        XCTAssertTrue(actionable(next)); next.tap()
+        let last = app.staticTexts["5 / 5"]
+        XCTAssertTrue(last.waitForExistence(timeout: 20))
         // Image fetch + decode on shared CI runners has exceeded 10 s; give image waits a longer budget.
         XCTAssertTrue(app.images["画像 5 / 5"].waitForExistence(timeout: 30)); shot("Viewer")
         app.buttons["画像を閉じる"].tap()
@@ -122,6 +137,10 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 30)); app.buttons["画像を閉じる"].tap()
 
         let field = app.textViews["message"]
+        func typeMessage(_ text: String) {
+            XCTAssertTrue(actionable(field)); field.tap()
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 20)); field.typeText(text)
+        }
         func openVisibleTable() {
             let tables = app.buttons.matching(identifier: "table-cell")
             // Hittable includes partially obscured buttons. Keep the entire label between the header and the composer.
@@ -150,19 +169,19 @@ final class ProbeTests: XCTestCase {
         app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正前の画面"].waitForExistence(timeout: 30))
         app.buttons["画像を閉じる"].tap(); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8)); shot("Table")
         app.buttons["表を閉じる"].tap()
-        field.tap(); field.typeText("/fix")
+        typeMessage("/fix")
         let fix = app.buttons["command-fix-tests"]
         XCTAssertTrue(fix.waitForExistence(timeout: 8)); shot("Commands"); fix.tap()
         XCTAssertEqual(field.value as? String, "/fix-tests ")
         if variant == "light" {
-            openSheet("使用状況"); app.buttons["コンテキストを圧縮"].tap()
+            try openSheet("使用状況"); app.buttons["コンテキストを圧縮"].tap()
             XCTAssertTrue(app.staticTexts["操作が完了しました"].waitForExistence(timeout: 12))
             app.buttons["sheet-close"].tap()
         }
         try openPi("edge")
-        XCTAssertTrue(field.waitForExistence(timeout: 12)); field.tap(); field.typeText("draft")
+        XCTAssertTrue(field.waitForExistence(timeout: 12)); typeMessage("draft")
         let confirm = app.buttons["新しい送信先を確認"]
-        XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
+        XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); typeMessage("next")
         XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
         try openPi("demo")
         XCTAssertTrue(app.buttons.matching(identifier: "table-cell").firstMatch.waitForExistence(timeout: 20))
@@ -173,7 +192,7 @@ final class ProbeTests: XCTestCase {
         guard copy.waitForExistence(timeout: 8) else { XCTFail("Table viewer did not open"); return }; copy.tap()
         app.buttons["表を閉じる"].tap()
         do {
-            field.tap(); field.typeText("test")
+            typeMessage("test")
             let jump = app.buttons["最新へ"], transcript = app.scrollViews["transcript"]
             let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.12))
             for _ in 0..<4 where !jump.isHittable { start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 165))) }
@@ -190,17 +209,14 @@ final class ProbeTests: XCTestCase {
         guard photos.element(boundBy: 3).waitForExistence(timeout: 45) else { XCTFail("Four seeded photos did not appear in the system picker"); return }
         for i in 0..<4 { photos.element(boundBy: i).coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap() }
         let fourth = app.buttons["画像 4 を取り消す"]
-        // Ordered pickers can finish automatically at the selection limit.
-        if !fourth.waitForExistence(timeout: 3) {
-            let add = app.buttons.matching(NSPredicate(format: "identifier == %@ OR label CONTAINS[c] %@ OR label CONTAINS %@ OR label == %@ OR label == %@", "Add", "Add", "追加", "完了", "Done")).firstMatch
-            if add.waitForExistence(timeout: 4) { add.tap() }
-            else if photos.firstMatch.exists {
-                // Native picker's confirmation is in the trailing edge of its top bar.
-                let bar = app.navigationBars.allElementsBoundByIndex.last { $0.isHittable }
-                bar?.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
-            }
-        }
-        XCTAssertTrue(fourth.waitForExistence(timeout: 10)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
+        // Depending on the runtime, reaching the limit dismisses the picker or enables Add.
+        let confirmPhotos = app.buttons.matching(NSPredicate(format: "identifier == 'Add' OR label BEGINSWITH[c] 'Add' OR label CONTAINS '追加' OR label == '完了' OR label == 'Done'")).firstMatch
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            fourth.exists || (photos.firstMatch.exists && confirmPhotos.isHittable && confirmPhotos.isEnabled)
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 45), .completed)
+        if !fourth.exists && confirmPhotos.isHittable { confirmPhotos.tap() }
+        XCTAssertTrue(fourth.waitForExistence(timeout: 45)); XCTAssertFalse(app.buttons["画像を添付"].isEnabled); shot("Attachments")
         app.buttons["添付画像 2 を開く"].tap()
         let draftPhoto = app.images["添付画像 2 / 4"]
         XCTAssertTrue(draftPhoto.waitForExistence(timeout: 12)); draftPhoto.doubleTap(); shot("DraftZoom")
@@ -225,8 +241,8 @@ extension ProbeTests {
         XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let main = app.buttons["pi-main"]
         XCTAssertTrue(main.waitForExistence(timeout: 15)); main.tap()
-        func open(_ title: String) { app.buttons["chat-options"].tap(); app.buttons[title].tap() }
-        open("モデル・Thinking")
+        func open(_ title: String) throws { try openOption(title, in: app) }
+        try open("モデル・Thinking")
         // Before the catalog arrives the empty picker already selects “all”; tapping it then does nothing.
         let favorite = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入りから外す")).firstMatch
         XCTAssertTrue(favorite.waitForExistence(timeout: 12))
@@ -236,7 +252,7 @@ extension ProbeTests {
         XCTAssertTrue(search.exists); XCTAssertEqual(search.value as? String, "absent")
         search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入りから外す")).firstMatch.waitForExistence(timeout: 8))
-        app.buttons["sheet-close"].tap(); open("セッション")
+        app.buttons["sheet-close"].tap(); try open("セッション")
         XCTAssertFalse(app.buttons["新しいセッション"].isEnabled)
         app.buttons["過去のセッションを開く"].tap()
         let resume = app.buttons["resume-main-saved-0"]
@@ -340,7 +356,8 @@ extension ProbeTests {
         let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
         XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); try popSheetRoute(app, from: "Issue #20", to: "GitHub"); app.buttons["PR"].tap()
         if env["PIMATE_DEMO_GITHUB_TABLES"] == "1" {
-            for (title, note, route) in [("チェック未提供", "CI チェックの内訳は未提供です", "PR #56"), ("空のチェック一覧", "チェックはありません", "PR #57")] {
+            XCTAssertTrue(button("レビュー状態は未提供です").waitForExistence(timeout: 12)); shot("GitHub-PR-List")
+            for (title, note, route) in [("チェック未提供", "CI チェックの内訳は未提供です", "PR #56"), ("空のチェック一覧", "CI チェックの内訳は0件です", "PR #57")] {
                 tap(button(title)); XCTAssertTrue(app.staticTexts[note].waitForExistence(timeout: 10))
                 tap(app.buttons.matching(identifier: "table-cell").firstMatch); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8))
                 // Untrusted GitHub images stay text, not tiles that fetch from the web or the PC.

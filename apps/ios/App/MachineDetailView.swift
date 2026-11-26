@@ -41,11 +41,11 @@ struct MachineDetailView: View {
             Section("GitHub") {
                 switch github {
                 case .unknown: Text("ログイン状態は未確認です")
-                case .notInstalled: Text("PC に GitHub CLI（gh）がありません")
+                case .notInstalled: Text(GithubText.guidance("gh_missing"))
                 case .loggedOut:
-                    Text("PC で gh auth login を実行してください")
+                    Text(GithubText.guidance("gh_auth"))
                     Button("gh auth login をコピー") { UIPasteboard.general.string = "gh auth login" }
-                case .loggedIn(let login): Text("\(login) でログイン中")
+                case .loggedIn(let login): Text(login.isEmpty ? "ログイン中" : "\(login) でログイン中")
                 }
             }
             pairedDevices
