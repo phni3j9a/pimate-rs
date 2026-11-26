@@ -783,7 +783,8 @@ async def demo(lab, binary):
                     ),
                 ),
                 done(read, "line\n" * 42),
-                done(edit, "ok", details=dict(patch=PATCH)),
+                done(edit, "変更しました。".ljust(32_768, "。"), truncated=True, details=dict(patch=PATCH))
+                if chat_failure else done(edit, "ok", details=dict(patch=PATCH)),
                 done(
                     write,
                     "ok",

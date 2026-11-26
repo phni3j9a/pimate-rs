@@ -92,10 +92,13 @@ private struct ChangeBody: View {
     var truncated = false
     @State private var limit = 6000
     var body: some View {
-        if truncated { Text("出力の末尾は省略されています。").foregroundStyle(.secondary) }
+        if truncated {
+            Text("出力の末尾は省略されています。").foregroundStyle(.secondary)
+            CopyText(text: text, label: "取得済みの出力をコピー")
+        }
         Text(verbatim: String(text.prefix(limit))).modifier(PiFont(.caption)).fontDesign(.monospaced).textSelection(.enabled)
         if text.dropFirst(limit).first != nil { Button("続きを表示") { limit += 6000 } }
-        CopyText(text: text, label: truncated ? "取得済みの出力をコピー" : "全文をコピー")
+        if !truncated { CopyText(text: text, label: "全文をコピー") }
     }
 }
 private struct DiffHunk: View {

@@ -28,6 +28,13 @@ final class AgentReviewJourney: XCTestCase {
         let preview = app.buttons["接続先を確認"]; XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: preview)], timeout: 10), .completed)
         try tap(preview); try confirmFixtureAddress(app); try tap(app.buttons["このマシンに接続"])
         try tap(app.buttons["一覧を開く"]); try selectPi(real ? "real-chat" : "main")
+        if env["PIMATE_DEMO_CHAT_FAILURE"] == "1" && !real {
+            try tap(app.buttons["edit src/greet.ts"])
+            try tap(app.buttons["ツールの出力"])
+            XCTAssertTrue(app.staticTexts["出力の末尾は省略されています。"].waitForExistence(timeout: 8))
+            try tap(app.buttons["取得済みの出力をコピー"]); XCTAssertFalse(app.buttons["全文をコピー"].exists)
+            shot("Truncated-Output"); try tap(app.buttons["閉じる"])
+        }
         try tap(app.buttons["変更をレビュー"]); XCTAssertTrue(app.buttons["この変更について依頼"].waitForExistence(timeout: 15)); if !real { shot("Review") }
         try tap(app.buttons["セッション全体"])
         if real {
