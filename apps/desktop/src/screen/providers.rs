@@ -2,7 +2,7 @@ use super::*;
 use pimate_protocol::{
     AuthBeginParams, AuthCancelParams, AuthProviderId, AuthRespondParams, ProviderAuthType,
 };
-use settings::{group, line};
+use settings::{line, section};
 use state::{AuthAction, CredentialOutcome as Outcome, Login};
 #[derive(Default)]
 pub(super) struct ProviderData {
@@ -12,6 +12,15 @@ pub(super) struct ProviderData {
     following: Option<String>,
     logout: Option<(AuthProviderId, String)>,
     prompt: Option<(String, String, Entity<InputState>)>,
+}
+fn vendors(rows: &[Value]) -> std::collections::BTreeMap<&str, Vec<&Value>> {
+    let mut groups = std::collections::BTreeMap::new();
+    for row in rows {
+        if let Some(label) = row["vendor"].as_str().or(row["id"].as_str()) {
+            groups.entry(label).or_insert_with(Vec::new).push(row);
+        }
+    }
+    groups
 }
 fn device_code(flow: &str, code: &str, w: &mut Window, cx: &mut App) -> Div {
     let state = w.use_keyed_state(
@@ -49,7 +58,7 @@ impl settings::Nav {
             Ok(v) if v["refreshRequired"] == true => {
                 "削除済みです。PC の Pi を /reload してください。"
             }
-            Ok(_) => "ログアウトしました。",
+            Ok(_) => "ログアウトしました。起動中の Pi には /reload または再起動後に反映されます。",
             Err(_) => {
                 self.providers.pending = false;
                 self.providers.login = None;
@@ -171,7 +180,7 @@ impl Desktop {
                 n.update(cx, |s, _| s.providers.following = Some(fid.clone()));
                 self.page_task(n,w,cx,async move|_|{while l.follow_once().await?{}l.request(AuthAction::List).await},|_,n,r,_,cx|{if r.is_err(){n.update(cx,|s,_|s.note="ログインの進行状況は未確認です。再入力前に状態を再確認してください。".into());}});
             }
-            let mut form = group(
+            let mut form = section(
                 flow["provider"].as_str().unwrap_or("ログイン").to_string(),
                 p,
             )
@@ -285,9 +294,12 @@ impl Desktop {
                 s.providers.following = None;
             });
         }
-        if !flow.is_null() {
+        v = v.child(p.caption("認証情報は PC のログイン専用の Pi で保存します。作業中の Pi に反映するには /reload または再起動が必要です。"));
+        if !flow.is_null() && n.read(cx).note.is_empty() && !busy {
             v = v.child(p.caption(match Outcome::from_flow(flow) {
-                Outcome::Saved => "ログインしました。",
+                Outcome::Saved => {
+                    "ログインしました。起動中の Pi には /reload または再起動後に反映されます。"
+                }
                 Outcome::NeedsReload => {
                     "資格情報は保存済みです。PC の Pi を /reload してください。再入力は不要です。"
                 }
@@ -346,7 +358,7 @@ impl Desktop {
                     );
                 }));
             return v.child(
-                group("ログアウトの確認", p)
+                section("ログアウトの確認", p)
                     .child(format!(
                         "{label} の {name} に保存された資格情報を削除します。"
                     ))
@@ -357,62 +369,76 @@ impl Desktop {
             None => v = v.child("一覧は未確認です。"),
             Some(a) if a.is_empty() => v = v.child("プロバイダーはありません。"),
             Some(a) => {
-                for row in a {
-                    let Ok(provider) = serde_json::from_value::<AuthProviderId>(row["id"].clone())
-                    else {
-                        continue;
-                    };
-                    let name = row["id"].as_str().unwrap_or_default().to_string();
-                    let mut controls = line();
-                    for m in row["methods"].as_array().into_iter().flatten() {
-                        let Ok(method) = serde_json::from_value::<ProviderAuthType>(m.clone())
+                for (vendor, members) in vendors(a) {
+                    let mut section = section(vendor.to_owned(), p);
+                    for row in members {
+                        let Ok(provider) =
+                            serde_json::from_value::<AuthProviderId>(row["id"].clone())
                         else {
                             continue;
                         };
-                        let nav = n.clone();
-                        controls = controls.child(
-                            Button::new(SharedString::from(format!("{name}-{method:?}")))
-                                .label(if method == ProviderAuthType::ApiKey {
-                                    "API キーを設定"
+                        let name = row["id"].as_str().unwrap_or_default().to_string();
+                        let mut controls = line();
+                        for m in row["methods"].as_array().into_iter().flatten() {
+                            let Ok(method) = serde_json::from_value::<ProviderAuthType>(m.clone())
+                            else {
+                                continue;
+                            };
+                            let nav = n.clone();
+                            controls = controls.child(
+                                Button::new(SharedString::from(format!("{name}-{method:?}")))
+                                    .label(if method == ProviderAuthType::ApiKey {
+                                        "API キーを設定"
+                                    } else {
+                                        "ブラウザでログイン"
+                                    })
+                                    .disabled(busy)
+                                    .on_click(cx.listener(move |app, _, w, cx| {
+                                        app.auth_request(
+                                            &nav,
+                                            AuthAction::Begin(AuthBeginParams { provider, method }),
+                                            w,
+                                            cx,
+                                        )
+                                    })),
+                            );
+                        }
+                        if row["stored"].is_string() {
+                            let nav = n.clone();
+                            let shown = name.clone();
+                            controls = controls.child(
+                                Button::new(SharedString::from(format!("logout-{name}")))
+                                    .danger()
+                                    .label("ログアウト…")
+                                    .disabled(busy)
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        nav.update(cx, |s, _| {
+                                            s.providers.logout = Some((provider, shown.clone()))
+                                        });
+                                        cx.notify();
+                                    })),
+                            );
+                        }
+                        section = section.child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .children(
+                                    row["member"]
+                                        .as_str()
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_owned),
+                                )
+                                .child(if row["configured"] == true {
+                                    "設定済み"
                                 } else {
-                                    "ブラウザでログイン"
+                                    "未設定"
                                 })
-                                .disabled(busy)
-                                .on_click(cx.listener(move |app, _, w, cx| {
-                                    app.auth_request(
-                                        &nav,
-                                        AuthAction::Begin(AuthBeginParams { provider, method }),
-                                        w,
-                                        cx,
-                                    )
-                                })),
+                                .child(controls),
                         );
                     }
-                    if row["stored"].is_string() {
-                        let nav = n.clone();
-                        let shown = name.clone();
-                        controls = controls.child(
-                            Button::new(SharedString::from(format!("logout-{name}")))
-                                .danger()
-                                .label("ログアウト…")
-                                .disabled(busy)
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    nav.update(cx, |s, _| {
-                                        s.providers.logout = Some((provider, shown.clone()))
-                                    });
-                                    cx.notify();
-                                })),
-                        );
-                    }
-                    v = v.child(
-                        group(name, p)
-                            .child(if row["configured"] == true {
-                                "設定済み"
-                            } else {
-                                "未設定"
-                            })
-                            .child(controls),
-                    );
+                    v = v.child(section);
                 }
             }
         }
@@ -444,6 +470,17 @@ mod tests {
         );
         assert!(!nav.logout_ack(Err(Error::OutcomeUnknown)));
         assert!(nav.note.contains("削除結果は不明") && !nav.note.contains("削除済み"));
+    }
+    #[test]
+    fn vendors_keep_member_methods_and_ids_separate() {
+        let rows = serde_json::json!([{"vendor":"OpenAI","id":"openai","member":"API キー","methods":["api_key"]},{"vendor":"Anthropic","id":"anthropic"},{"vendor":"OpenAI","id":"openai-codex","member":"ChatGPT","methods":["oauth"]}]);
+        let groups = super::vendors(rows.as_array().unwrap());
+        assert_eq!(
+            groups.keys().copied().collect::<Vec<_>>(),
+            ["Anthropic", "OpenAI"]
+        );
+        assert_eq!(groups["OpenAI"][1]["member"], "ChatGPT");
+        assert_eq!(groups["OpenAI"][0]["methods"][0], "api_key");
     }
     #[gpui::test]
     fn device_code_requires_explicit_reveal(cx: &mut TestAppContext) {

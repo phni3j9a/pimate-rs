@@ -14,9 +14,92 @@ pub(super) enum Route {
     Machine(String),
     Providers(String),
 }
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum Section {
+    Add,
+    Defaults,
+    #[default]
+    Display,
+    Keyboard,
+    About,
+}
+#[derive(Default)]
+enum Release {
+    #[default]
+    Idle,
+    Checking,
+    Unknown,
+    Latest,
+    Available(String),
+}
+
+pub(super) fn version_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    fn parts(s: &str) -> Option<Vec<(usize, &str)>> {
+        let parts: Vec<_> = s
+            .split('.')
+            .map(|v| {
+                if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
+                    return None;
+                }
+                let n = v.trim_start_matches('0');
+                Some((n.len(), n))
+            })
+            .collect::<Option<_>>()?;
+        (parts.len() == 3).then_some(parts)
+    }
+    Some(parts(a)?.cmp(&parts(b)?))
+}
+fn desktop_release(rows: &Value) -> Release {
+    let version = rows
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|v| v["draft"] == false && v["prerelease"] == false)
+        .filter_map(|v| v["tag_name"].as_str()?.strip_prefix("desktop-v"))
+        .filter(|v| version_cmp(v, "0.0.0").is_some())
+        .max_by(|a, b| version_cmp(a, b).unwrap());
+    match version {
+        Some(v)
+            if version_cmp(v, env!("CARGO_PKG_VERSION")) == Some(std::cmp::Ordering::Greater) =>
+        {
+            Release::Available(v.into())
+        }
+        Some(_) => Release::Latest,
+        None => Release::Unknown,
+    }
+}
+fn query_release() -> Option<Release> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?
+        .block_on(async {
+            let mut response = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(10))
+                .user_agent("PiMate Desktop")
+                .build()
+                .ok()?
+                .get("https://api.github.com/repos/phni3j9a/pimate-rs/releases?per_page=100")
+                .send()
+                .await
+                .ok()?
+                .error_for_status()
+                .ok()?;
+            let mut bytes = Vec::new();
+            while let Some(part) = response.chunk().await.ok()? {
+                if bytes.len() + part.len() > 2_000_000 {
+                    return None;
+                }
+                bytes.extend_from_slice(&part);
+            }
+            Some(desktop_release(&serde_json::from_slice(&bytes).ok()?))
+        })
+}
 #[derive(Default)]
 pub(crate) struct Nav {
     pub(super) route: Route,
+    section: Section,
+    release: Release,
     pub(super) page: Option<Page>,
     pub(super) note: String,
     pub(super) pref_error: bool,
@@ -46,6 +129,14 @@ pub(super) fn group(title: impl Into<SharedString>, p: &Colors) -> Div {
                 .font_weight(FontWeight::BOLD)
                 .text_color(p.accent),
         )
+}
+pub(super) fn section(title: impl Into<SharedString>, p: &Colors) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .py_2()
+        .child(p.caption(title).font_weight(FontWeight::SEMIBOLD))
 }
 pub(super) fn line() -> Div {
     div().flex().flex_wrap().items_center().gap_2()
@@ -125,8 +216,8 @@ impl Desktop {
             | (Route::SetupPc, Route::Settings)
             | (Route::Tailscale, Route::Settings) => previous.clone(),
             (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
-            (Route::Providers(id), _) => Route::Machine(id.clone()),
-            (Route::Machine(_), _) => Route::Settings,
+            (Route::Providers(_), _) => Route::Home,
+            (Route::Machine(_), _) => Route::Home,
             (Route::SetupPc, _) => Route::Tailscale,
             _ => Route::Home,
         };
@@ -228,6 +319,7 @@ impl Desktop {
     ) -> Button {
         let n = n.clone();
         Button::new(id)
+            .debug_selector(move || format!("pref-{id}"))
             .label(if selected {
                 format!("✓ {label}")
             } else {
@@ -244,63 +336,149 @@ impl Desktop {
                 cx.notify();
             }))
     }
-    fn settings_view(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
-        let s = &self.state.settings;
-        let mut machines = group("マシン", p);
+    fn settings_nav(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
+        let nav = n.read(cx);
+        let mut left = div()
+            .id("settings-items")
+            .overflow_y_scroll()
+            .h_full()
+            .w(px(180.))
+            .flex_none()
+            .flex()
+            .flex_col()
+            .p_2()
+            .gap_1()
+            .border_r_1()
+            .border_color(p.border)
+            .child(
+                self.nav_button(n, "back", "‹　設定", Route::Home, cx)
+                    .ghost()
+                    .justify_start(),
+            )
+            .child(p.caption("マシン").mt_3().px_2());
         for h in &self.hosts {
-            machines = machines.child(
+            let on = matches!(&nav.route, Route::Machine(id) | Route::Providers(id) if id == &h.id);
+            left = left.child(
                 self.nav_button(
                     n,
                     SharedString::from(format!("settings-{}", h.id)),
-                    format!(
-                        "{}　·　{}　›",
-                        self.host_label(h),
-                        connection(h, self.machines.get(&h.id).map(|m| &m.rows))
-                    ),
+                    self.host_label(h),
                     Route::Machine(h.id.clone()),
                     cx,
                 )
+                .selected(on)
+                .ghost()
                 .justify_start(),
             );
         }
-        if self.hosts.is_empty() {
-            machines = machines.child(p.caption("登録済みのマシンはありません"));
+        for (section, id, title) in [
+            (Section::Add, "register-machine", "＋ マシンを追加"),
+            (Section::Defaults, "defaults", "新しい Pi の既定"),
+            (Section::Display, "display", "表示"),
+            (Section::Keyboard, "keyboard", "キーボード"),
+            (Section::About, "about", "情報"),
+        ] {
+            let n = n.clone();
+            left = left.child(
+                p.row(
+                    id,
+                    nav.route == Route::Settings && section == nav.section,
+                    cx,
+                )
+                .debug_selector(move || format!("settings-{id}"))
+                .label(title)
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    if n.read(cx).route != Route::Settings {
+                        app.navigate(&n, Route::Settings, cx);
+                    }
+                    n.update(cx, |s, _| {
+                        s.section = section;
+                        s.note.clear();
+                        s.scroll.scroll_to_top_of_item(0);
+                    });
+                    if section == Section::About && matches!(n.read(cx).release, Release::Idle) {
+                        app.check_release(&n, cx);
+                    }
+                    cx.notify();
+                })),
+            );
         }
         div()
-            .flex()
-            .flex_col()
-            .gap_3()
+            .h_full()
+            .flex_none()
+            .debug_selector(|| "settings-rail".into())
             .child(
-                machines
-                    .child(self.nav_button(
-                        n,
-                        "register-machine",
-                        "＋ マシンを追加（ペアリング）",
-                        Route::Tailscale,
-                        cx,
-                    ))
-                    // 接続できなかったマシンへ、再起動なしでつなぎ直す常設の入口。
-                    .child(
-                        line()
-                            .child(
-                                self.reload_button("settings-reload", "登録を読み直す", p, cx)
-                                    .debug_selector(|| "settings-reload".into()),
-                            )
-                            .child(p.caption(
-                                "一覧を読み直し、接続できなかったマシンにつなぎ直します。",
-                            )),
-                    ),
+                left.child(
+                    self.reload_button("settings-reload", "登録を読み直す", p, cx)
+                        .debug_selector(|| "settings-reload".into()),
+                ),
             )
-            .child(group("キーボード", p).child(p.text_button("shortcut-list",p.accent_ink,cx).label("ショートカット一覧").on_click(cx.listener(|app,_,w,cx|app.open_palette(true,w,cx)))).child({
-                let n = n.clone();
-                Button::new("send-key").label(if cfg!(target_os="macos") {"⌘+Enter で送信"} else {"Ctrl+Enter で送信"}).selected(self.ctrl_enter).on_click(cx.listener(move |this, _, _, cx| {
-                    this.ctrl_enter = !this.ctrl_enter;
-                    let failed = this.settings_path.as_ref().is_none_or(|p|state::save_send_key(p,this.ctrl_enter).is_err());
-                    n.update(cx, |s,_| s.pref_error = failed);
+    }
+    fn check_release(&self, n: &Navigation, cx: &mut Context<Self>) {
+        let nav = n.clone();
+        let generation = nav.read(cx).generation.clone();
+        nav.update(cx, |s, _| s.release = Release::Checking);
+        let query = cx
+            .background_executor()
+            .spawn(async { query_release().unwrap_or(Release::Unknown) });
+        let task = cx.spawn(async move |app, cx| {
+            let release = query.await;
+            let _ = app.update(cx, |_, cx| {
+                if Arc::ptr_eq(&generation, &nav.read(cx).generation) {
+                    nav.update(cx, |s, _| s.release = release);
                     cx.notify();
+                }
+            });
+        });
+        n.update(cx, |s, _| s.tasks.push(task));
+    }
+    fn settings_view(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
+        let s = &self.state.settings;
+        match n.read(cx).section {
+            Section::Add => {
+                section("マシンを追加", p)
+                    .child(p.caption(
+                        "PC の Pi で /pimate pair を実行し、ペアリングリンクをコピーします。",
+                    ))
+                    .child(
+                        p.primary("add-paste", cx)
+                            .label("リンクを貼り付ける")
+                            .disabled(self.pairing)
+                            .on_click(cx.listener(|app, _, _, cx| app.paste(cx))),
+                    )
+                    .child(self.nav_button(n, "setup", "接続方法", Route::Tailscale, cx))
+            }
+            Section::Keyboard => section("キーボード", p)
+                .child(p.caption(if self.ctrl_enter {
+                    "Enter で改行します。"
+                } else {
+                    "Enter で送信、Shift+Enter で改行します。"
                 }))
-            }))
-            .child(group("新しい Pi の既定", p).child(self.preference(
+                .child(
+                    p.text_button("shortcut-list", p.accent_ink, cx)
+                        .label("ショートカット一覧")
+                        .on_click(cx.listener(|app, _, w, cx| app.open_palette(true, w, cx))),
+                )
+                .child({
+                    let n = n.clone();
+                    Button::new("send-key")
+                        .label(if cfg!(target_os = "macos") {
+                            "⌘+Enter で送信"
+                        } else {
+                            "Ctrl+Enter で送信"
+                        })
+                        .selected(self.ctrl_enter)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.ctrl_enter = !this.ctrl_enter;
+                            let failed = this
+                                .settings_path
+                                .as_ref()
+                                .is_none_or(|p| state::save_send_key(p, this.ctrl_enter).is_err());
+                            n.update(cx, |s, _| s.pref_error = failed);
+                            cx.notify();
+                        }))
+                }),
+            Section::Defaults => section("新しい Pi の既定", p).child(self.preference(
                 n,
                 "ask",
                 if s.ask_tool {
@@ -311,88 +489,108 @@ impl Desktop {
                 s.ask_tool,
                 |s| s.ask_tool = !s.ask_tool,
                 cx,
-            )))
-            .child(
-                group("表示", p)
-                    .child(
-                        line()
-                            .child("テーマ　　")
-                            .child(self.preference(
-                                n,
-                                "system",
-                                "システム",
-                                s.appearance == Appearance::System,
-                                |s| s.appearance = Appearance::System,
-                                cx,
-                            ))
-                            .child(self.preference(
-                                n,
-                                "light",
-                                "ライト",
-                                s.appearance == Appearance::Light,
-                                |s| s.appearance = Appearance::Light,
-                                cx,
-                            ))
-                            .child(self.preference(
-                                n,
-                                "dark",
-                                "ダーク",
-                                s.appearance == Appearance::Dark,
-                                |s| s.appearance = Appearance::Dark,
-                                cx,
+            )),
+            Section::Display => section("表示", p)
+                .child(
+                    line()
+                        .child("テーマ　　")
+                        .child(self.preference(
+                            n,
+                            "system",
+                            "システム",
+                            s.appearance == Appearance::System,
+                            |s| s.appearance = Appearance::System,
+                            cx,
+                        ))
+                        .child(self.preference(
+                            n,
+                            "light",
+                            "ライト",
+                            s.appearance == Appearance::Light,
+                            |s| s.appearance = Appearance::Light,
+                            cx,
+                        ))
+                        .child(self.preference(
+                            n,
+                            "dark",
+                            "ダーク",
+                            s.appearance == Appearance::Dark,
+                            |s| s.appearance = Appearance::Dark,
+                            cx,
+                        )),
+                )
+                .child(
+                    line()
+                        .child("文字サイズ")
+                        .child(self.preference(
+                            n,
+                            "small",
+                            "小",
+                            s.font_size == FontSize::Small,
+                            |s| s.font_size = FontSize::Small,
+                            cx,
+                        ))
+                        .child(self.preference(
+                            n,
+                            "standard",
+                            "標準",
+                            s.font_size == FontSize::Standard,
+                            |s| s.font_size = FontSize::Standard,
+                            cx,
+                        ))
+                        .child(self.preference(
+                            n,
+                            "large",
+                            "大",
+                            s.font_size == FontSize::Large,
+                            |s| s.font_size = FontSize::Large,
+                            cx,
+                        )),
+                ),
+            Section::About => section("情報", p)
+                .child(
+                    line()
+                        .child(icon("pimate-mark", 24., p.ink))
+                        .child(format!("PiMate Desktop　{}", env!("CARGO_PKG_VERSION"))),
+                )
+                .child({
+                    let nav = n.clone();
+                    match &n.read(cx).release {
+                        Release::Available(v) => {
+                            let url = format!(
+                                "https://github.com/phni3j9a/pimate-rs/releases/tag/desktop-v{v}"
+                            );
+                            line().child(
+                                Button::new("release-page")
+                                    .label(format!("{v} に更新できます ↗"))
+                                    .on_click(move |_, _, cx| cx.open_url(&url)),
+                            )
+                        }
+                        Release::Checking => line().child(p.caption("公開版を確認中…")),
+                        Release::Latest => line().child(p.caption("最新です")),
+                        _ => line()
+                            .child(p.caption("公開版を確認できませんでした"))
+                            .child(Button::new("release-retry").label("再確認").on_click(
+                                cx.listener(move |app, _, _, cx| {
+                                    app.check_release(&nav, cx);
+                                    cx.notify();
+                                }),
                             )),
-                    )
-                    .child(
-                        line()
-                            .child("文字サイズ")
-                            .child(self.preference(
-                                n,
-                                "small",
-                                "小",
-                                s.font_size == FontSize::Small,
-                                |s| s.font_size = FontSize::Small,
-                                cx,
-                            ))
-                            .child(self.preference(
-                                n,
-                                "standard",
-                                "標準",
-                                s.font_size == FontSize::Standard,
-                                |s| s.font_size = FontSize::Standard,
-                                cx,
-                            ))
-                            .child(self.preference(
-                                n,
-                                "large",
-                                "大",
-                                s.font_size == FontSize::Large,
-                                |s| s.font_size = FontSize::Large,
-                                cx,
-                            )),
-                    ),
-            )
-            .child(
-                group("情報", p)
-                    .child(format!("PiMate Desktop　{}", env!("CARGO_PKG_VERSION")))
-                    .child(
-                        line()
-                            .child(link(
-                                "releases",
-                                "公開版を確認 ↗",
-                                "https://github.com/phni3j9a/pimate-rs/releases?q=tag%3Adesktop-v+prerelease%3Afalse+draft%3Afalse",
-                            ))
-                            .child(link(
-                                "repo",
-                                "GitHub ↗",
-                                "https://github.com/phni3j9a/pimate-rs",
-                            ))
-                            .child(link(
-                                "bug",
-                                "不具合を報告 ↗",
-                                "https://github.com/phni3j9a/pimate-rs/issues/new",
-                            )),
-                    ),
-            )
+                    }
+                })
+                .child(
+                    line()
+                        .child(
+                            link("repo", "GitHub ↗", "https://github.com/phni3j9a/pimate-rs")
+                                .child(icon("github-mark", 16., p.ink)),
+                        )
+                        .child(link(
+                            "bug",
+                            "不具合を報告 ↗",
+                            "https://github.com/phni3j9a/pimate-rs/issues/new",
+                        )),
+                ),
+        }
     }
     pub(super) fn other_panel(
         &mut self,
@@ -415,6 +613,7 @@ impl Desktop {
             Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
         };
+        let settings = matches!(r, Route::Settings | Route::Providers(_) | Route::Machine(_));
         let back = n.read(cx).back.clone();
         let is_new = matches!(r, Route::New(_));
         let header = div()
@@ -450,7 +649,8 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .when(!is_new, |d| {
+            .when(settings, |d| d.mx_0().max_w(px(684.)).px_6())
+            .when(!is_new && !settings, |d| {
                 d.child(
                     div()
                         .font_weight(FontWeight::BOLD)
@@ -483,16 +683,83 @@ impl Desktop {
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .child(header)
+                .when(!settings, |d| d.child(header))
                 .child(
                     div()
-                        .relative()
+                        .flex()
                         .flex_1()
                         .min_h_0()
-                        .child(content)
-                        .vertical_scrollbar(&scroll),
+                        .when(settings, |d| d.child(self.settings_nav(n, p, cx)))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .child(content)
+                                .vertical_scrollbar(&scroll),
+                        ),
                 )
                 .children(footer),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cmp::Ordering::*;
+    #[test]
+    fn release_numbers_compare_only_stable_triples() {
+        for (latest, current, expected) in [
+            ("1.10.0", "1.9.99", Some(Greater)),
+            ("1.02.0", "1.2.0", Some(Equal)),
+            ("0.2.0", "0.3.0", Some(Less)),
+            ("0.2.1-beta", "0.1.0", None),
+            ("", "1.0.0", None),
+            ("1.0.1", "dev", None),
+        ] {
+            assert_eq!(version_cmp(latest, current), expected);
+        }
+        let rows = serde_json::json!([{"tag_name":"app-v9.9.9","draft":false,"prerelease":false},{"tag_name":"desktop-v9.9.9","draft":true,"prerelease":false}]);
+        assert!(matches!(desktop_release(&rows), Release::Unknown));
+        for (v, newer) in [("0.0.1", false), ("999.1.0", true)] {
+            let rows = serde_json::json!([{"tag_name":format!("desktop-v{v}"),"draft":false,"prerelease":false}]);
+            assert_eq!(
+                matches!(desktop_release(&rows), Release::Available(_)),
+                newer
+            );
+        }
+    }
+    #[gpui::test]
+    fn settings_click_changes_text_not_layout(cx: &mut gpui::TestAppContext) {
+        let (desktop, w, _socket) = super::super::tests::open_chat(cx);
+        let click = |w: &mut gpui::VisualTestContext, id| {
+            let pos = w.debug_bounds(id).unwrap().center();
+            w.simulate_click(pos, Default::default());
+            w.run_until_parked();
+        };
+        click(w, "nav-settings");
+        click(w, "pref-small");
+        let metrics = |w: &mut gpui::VisualTestContext| {
+            (
+                w.debug_bounds("sidebar").unwrap().size.width,
+                w.debug_bounds("settings-rail").unwrap().size.width,
+                w.update(|w, _| {
+                    (
+                        w.rem_size(),
+                        w.text_style().font_size.to_pixels(w.rem_size()),
+                    )
+                }),
+            )
+        };
+        let small = metrics(w);
+        click(w, "pref-large");
+        let large = metrics(w);
+        assert_eq!((small.0, small.1, small.2.0), (large.0, large.1, large.2.0));
+        assert!(large.2.1 > small.2.1);
+        desktop.read_with(w, |d, _| {
+            assert!(d.state.settings.font_size == FontSize::Large)
+        });
     }
 }

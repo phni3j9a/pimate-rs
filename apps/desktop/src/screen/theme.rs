@@ -311,6 +311,19 @@ pub(super) fn icon(name: &'static str, size: f32, color: Hsla) -> Svg {
 pub(crate) struct Assets;
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> gpui::Result<Option<Cow<'static, [u8]>>> {
+        match path {
+            "icons/pimate-mark.svg" => {
+                return Ok(Some(Cow::Borrowed(include_bytes!(
+                    "../../../../docs/design/icon-kit/source/mark-black.svg"
+                ))));
+            }
+            "icons/github-mark.svg" => {
+                return Ok(Some(Cow::Borrowed(include_bytes!(
+                    "../../../ios/App/Assets.xcassets/github-mark.imageset/github-mark.svg"
+                ))));
+            }
+            _ => {}
+        }
         let name = path
             .strip_prefix("icons/")
             .and_then(|s| s.strip_suffix(".svg"));
@@ -326,6 +339,10 @@ impl AssetSource for Assets {
         Ok(ICONS
             .iter()
             .map(|(n, _)| format!("icons/{n}.svg").into())
+            .chain([
+                "icons/pimate-mark.svg".into(),
+                "icons/github-mark.svg".into(),
+            ])
             .collect())
     }
 }

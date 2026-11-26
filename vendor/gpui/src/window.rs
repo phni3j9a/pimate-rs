@@ -826,6 +826,7 @@ pub struct Window {
     sprite_atlas: Arc<dyn PlatformAtlas>,
     text_system: Arc<WindowTextSystem>,
     rem_size: Pixels,
+    text_scale: f32,
     /// The stack of override values for the window's rem size.
     ///
     /// This is used by `with_rem_size` to allow rendering an element tree with
@@ -1216,6 +1217,7 @@ impl Window {
             sprite_atlas,
             text_system,
             rem_size: px(16.),
+            text_scale: 1.,
             rem_size_override_stack: SmallVec::new(),
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
@@ -1476,7 +1478,15 @@ impl Window {
         for refinement in &self.text_style_stack {
             style.refine(refinement);
         }
+        if self.text_scale != 1. {
+            style.font_size = (style.font_size.to_pixels(self.rem_size()) * self.text_scale).into();
+        }
         style
+    }
+
+    /// Scale resolved text sizes without changing layout units.
+    pub fn set_text_scale(&mut self, scale: f32) {
+        self.text_scale = scale;
     }
 
     /// Check if the platform window is maximized
