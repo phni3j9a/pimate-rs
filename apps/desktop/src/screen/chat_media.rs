@@ -444,6 +444,17 @@ impl Desktop {
                     })),
             );
         }
+        if rows.get("view", "promptImages") != true {
+            row = row.child(
+                Button::new("unsupported-images")
+                    .ghost()
+                    .small()
+                    .label("画像添付不可")
+                    .tooltip(
+                        "この Pi の RC は画像添付に対応していません。PC で拡張を更新してください。",
+                    ),
+            );
+        }
         for i in 0..shown.len() {
             let imgs = shown.clone();
             let pg = page.clone();

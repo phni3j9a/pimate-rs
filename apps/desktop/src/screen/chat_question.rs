@@ -5,6 +5,7 @@ use state::Page;
 pub(super) struct Form {
     values: Vec<Entity<InputState>>,
     selected: Vec<Vec<String>>,
+    cursor: Vec<Option<usize>>,
     busy: bool,
     shown: Arc<Value>,
     life: std::sync::Weak<()>,
@@ -32,6 +33,7 @@ impl Form {
                 })
                 .collect(),
             selected: vec![vec![]; count],
+            cursor: vec![None; count],
             busy: false,
             life: Arc::downgrade(life),
             shown: Arc::new(q.clone()),
@@ -71,6 +73,22 @@ fn choose(values: &mut Vec<String>, multiple: bool, value: String) {
         values.push(value)
     }
 }
+fn choice_key(key: &str, at: Option<usize>, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    match key {
+        "up" => Some(at.map_or(count - 1, |i| i.saturating_sub(1))),
+        "down" => Some(at.map_or(0, |i| i.saturating_add(1).min(count - 1))),
+        "space" => at,
+        "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => key
+            .parse::<usize>()
+            .ok()
+            .filter(|&n| n <= count)
+            .map(|n| n - 1),
+        _ => None,
+    }
+}
 impl Desktop {
     pub(super) fn question_card(
         &self,
@@ -85,6 +103,7 @@ impl Desktop {
         let q = shown.as_ref();
         let mut card = div()
             .id("question-card")
+            .key_context("QuestionCard")
             .debug_selector(|| "question-card".into())
             .max_h(rems(18.))
             .overflow_y_scroll()
@@ -116,6 +135,12 @@ impl Desktop {
                     let multiple = part["multiSelect"] == true;
                     let (prompt, custom) =
                         questionnaire_fields(kind, parts.len(), part, &q["title"]);
+                    let focus = w
+                        .use_keyed_state(("answer-focus", i), cx, |_, cx| {
+                            cx.focus_handle().tab_stop(true)
+                        })
+                        .read(cx)
+                        .clone();
                     let field = form.read(cx).values[i].clone();
                     let selected = &form.read(cx).selected[i];
                     let text = field.read(cx).value();
@@ -126,42 +151,112 @@ impl Desktop {
                         card = card
                             .child(p.caption(part["question"].as_str().unwrap_or("").to_owned()));
                     }
-                    for (j, o) in part["options"].as_array().into_iter().flatten().enumerate() {
-                        let name = o.as_str().or(o["label"].as_str()).unwrap_or("").to_owned();
-                        let selected =
-                            selected.contains(&name) && (!custom || multiple || text.is_empty());
+                    let names: Arc<[String]> = part["options"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .map(|o| o.as_str().or(o["label"].as_str()).unwrap_or("").into())
+                        .collect();
+                    let choose_at = {
                         let f = form.clone();
                         let field = field.clone();
-                        let desc = o["description"].as_str().unwrap_or("");
-                        card = card.child(
+                        let pg = page.clone();
+                        let names = names.clone();
+                        move |app: &Desktop,
+                              j: usize,
+                              toggle: bool,
+                              w: &mut Window,
+                              cx: &mut App| {
+                            if !pg.visible(app)
+                                || app.overlay_open(w, cx)
+                                || f.read(cx).busy
+                                || f.read(cx).values.get(i) != Some(&field)
+                            {
+                                return;
+                            }
+                            if !multiple {
+                                field.update(cx, |s, cx| s.set_value("", w, cx));
+                            }
+                            f.update(cx, |s, cx| {
+                                s.cursor[i] = Some(j);
+                                if !multiple || toggle {
+                                    choose(&mut s.selected[i], multiple, names[j].clone());
+                                }
+                                cx.notify()
+                            });
+                        }
+                    };
+                    let by_key = choose_at.clone();
+                    let f = form.clone();
+                    let count = names.len();
+                    let mut options = div()
+                        .debug_selector(move || format!("question-options-{i}"))
+                        .track_focus(&focus)
+                        .capture_key_down(cx.listener(move |app, e: &KeyDownEvent, w, cx| {
+                            if e.keystroke.modifiers != Modifiers::none() || app.overlay_open(w, cx)
+                            {
+                                return;
+                            }
+                            let key = e.keystroke.key.as_str();
+                            if let Some(j) = choice_key(key, f.read(cx).cursor[i], count) {
+                                by_key(app, j, !matches!(key, "up" | "down"), w, cx);
+                                w.prevent_default();
+                                cx.stop_propagation();
+                            }
+                        }));
+                    for (j, o) in part["options"].as_array().into_iter().flatten().enumerate() {
+                        let name = &names[j];
+                        let checked =
+                            selected.contains(name) && (!custom || multiple || text.is_empty());
+                        let label = format!("{}  {name}", j + 1);
+                        let select = choose_at.clone();
+                        let target = focus.clone();
+                        let app = cx.weak_entity();
+                        let click = move |_: &bool, w: &mut Window, cx: &mut App| {
+                            let _ = app.update(cx, |app, cx| {
+                                select(app, j, true, w, cx);
+                                w.focus(&target);
+                            });
+                        };
+                        let id = SharedString::from(format!("answer:{i}:{j}"));
+                        let opt = if multiple {
+                            gpui_component::checkbox::Checkbox::new(id)
+                                .tab_stop(false)
+                                .checked(checked)
+                                .small()
+                                .label(label)
+                                .disabled(form.read(cx).busy)
+                                .on_click(click)
+                                .into_any_element()
+                        } else {
+                            gpui_component::radio::Radio::new(id)
+                                .checked(checked)
+                                .small()
+                                .tab_stop(false)
+                                .label(label)
+                                .disabled(form.read(cx).busy)
+                                .on_click(click)
+                                .into_any_element()
+                        };
+                        options = options.child(
                             div()
+                                .debug_selector(move || format!("choice-{i}-{j}-{checked}"))
                                 .py_1()
-                                .child(
-                                    Button::new(SharedString::from(format!("answer:{i}:{j}")))
-                                        .small()
-                                        .label(format!(
-                                            "{} {name}",
-                                            if selected { "✓" } else { "○" }
-                                        ))
-                                        .disabled(form.read(cx).busy)
-                                        .on_click(move |_, w, cx| {
-                                            if f.read(cx).busy
-                                                || f.read(cx).values.get(i) != Some(&field)
-                                            {
-                                                return;
-                                            }
-                                            if !multiple {
-                                                field.update(cx, |s, cx| s.set_value("", w, cx));
-                                            }
-                                            f.update(cx, |f, cx| {
-                                                choose(&mut f.selected[i], multiple, name.clone());
-                                                cx.notify()
-                                            })
-                                        }),
+                                .px_2()
+                                .when(
+                                    focus.contains_focused(w, cx)
+                                        && form.read(cx).cursor[i] == Some(j),
+                                    |d| d.bg(p.bubble),
                                 )
-                                .when(!desc.is_empty(), |b| b.child(p.caption(desc.to_owned()))),
+                                .child(opt)
+                                .children(
+                                    o["description"]
+                                        .as_str()
+                                        .map(|d| p.caption(d.to_owned()).pl_5()),
+                                ),
                         );
                     }
+                    card = card.child(options);
                     if custom {
                         card = card.child(context::field(&field, form.read(cx).busy));
                     }
@@ -184,92 +279,107 @@ impl Desktop {
             let id = id.to_owned();
             let shown = shown.clone();
             let kind = kind.to_owned();
+            let label_kind = kind.clone();
+            let respond = move |this: &mut Desktop, w: &mut Window, cx: &mut Context<Desktop>| {
+                if this.overlay_open(w, cx)
+                    || (yes && !valid)
+                    || !pg.visible(this)
+                    || f.read(cx).busy
+                    || !Arc::ptr_eq(&f.read(cx).shown, &shown)
+                {
+                    return;
+                }
+                let form = f.read(cx);
+                let Ok(mut answer) = pg.question(&id, &shown) else {
+                    return;
+                };
+                if kind == "confirm" {
+                    answer.fields.confirmed = Some(yes)
+                } else if !yes {
+                    answer.fields.cancelled = Some(true)
+                } else {
+                    let values = form.values.clone();
+                    let selected = form.selected.clone();
+                    let mut texts = vec![];
+                    for v in values {
+                        let text = v.read(cx).value().to_string();
+                        if !committed_input_matches(&v, &text, w, cx) {
+                            return;
+                        }
+                        texts.push(text)
+                    }
+                    match kind.as_str() {
+                        "select" => answer.fields.value = selected[0].first().cloned(),
+                        "questionnaire" => {
+                            answer.fields.answers = Some(
+                                selected
+                                    .into_iter()
+                                    .zip(texts)
+                                    .enumerate()
+                                    .map(|(i, (mut selected, t))| {
+                                        let custom = (!t.trim().is_empty()).then_some(t);
+                                        if custom.is_some()
+                                            && shown["questions"][i]["multiSelect"] != true
+                                        {
+                                            selected.clear()
+                                        }
+                                        UIQuestionAnswer { selected, custom }
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        _ => answer.fields.value = texts.pop(),
+                    }
+                }
+                f.update(cx, |f, cx| {
+                    f.busy = true;
+                    cx.notify()
+                });
+                let f = f.clone();
+                let pg = pg.clone();
+                let shown = shown.clone();
+                cx.spawn(async move |this, cx| {
+                    let r = answer.answer().await;
+                    let _ = this.update(cx, |this, cx| {
+                        f.update(cx, |f, cx| {
+                            if Arc::ptr_eq(&f.shown, &shown) {
+                                f.busy = false;
+                                cx.notify()
+                            }
+                        });
+                        if pg.visible(this) {
+                            this.finish_send_notice(r.map(|_| String::new()));
+                            cx.notify()
+                        }
+                    });
+                })
+                .detach();
+            };
+            if yes {
+                let send = respond.clone();
+                card = card.capture_action(cx.listener(move |this, e: &Enter, w, cx| {
+                    if e.secondary {
+                        send(this, w, cx);
+                        cx.stop_propagation();
+                    } else {
+                        cx.propagate();
+                    }
+                }));
+            }
             actions = actions.child(
                 (if yes {
                     p.primary("answer", cx)
                 } else {
                     Button::new("cancel-answer")
                 })
-                .label(match (yes, kind.as_str()) {
+                .label(match (yes, label_kind.as_str()) {
                     (true, "confirm") => "はい",
                     (false, "confirm") => "いいえ",
                     (true, _) => "回答する",
                     _ => "キャンセル",
                 })
                 .disabled(form.read(cx).busy || (yes && !valid))
-                .on_click(cx.listener(move |this, _, w, cx| {
-                    if !pg.visible(this)
-                        || f.read(cx).busy
-                        || !Arc::ptr_eq(&f.read(cx).shown, &shown)
-                    {
-                        return;
-                    }
-                    let form = f.read(cx);
-                    let Ok(mut answer) = pg.question(&id, &shown) else {
-                        return;
-                    };
-                    if kind == "confirm" {
-                        answer.fields.confirmed = Some(yes)
-                    } else if !yes {
-                        answer.fields.cancelled = Some(true)
-                    } else {
-                        let values = form.values.clone();
-                        let selected = form.selected.clone();
-                        let mut texts = vec![];
-                        for v in values {
-                            let text = v.read(cx).value().to_string();
-                            if !committed_input_matches(&v, &text, w, cx) {
-                                return;
-                            }
-                            texts.push(text)
-                        }
-                        match kind.as_str() {
-                            "select" => answer.fields.value = selected[0].first().cloned(),
-                            "questionnaire" => {
-                                answer.fields.answers = Some(
-                                    selected
-                                        .into_iter()
-                                        .zip(texts)
-                                        .enumerate()
-                                        .map(|(i, (mut selected, t))| {
-                                            let custom = (!t.trim().is_empty()).then_some(t);
-                                            if custom.is_some()
-                                                && shown["questions"][i]["multiSelect"] != true
-                                            {
-                                                selected.clear()
-                                            }
-                                            UIQuestionAnswer { selected, custom }
-                                        })
-                                        .collect(),
-                                )
-                            }
-                            _ => answer.fields.value = texts.pop(),
-                        }
-                    }
-                    f.update(cx, |f, cx| {
-                        f.busy = true;
-                        cx.notify()
-                    });
-                    let f = f.clone();
-                    let pg = pg.clone();
-                    let shown = shown.clone();
-                    cx.spawn(async move |this, cx| {
-                        let r = answer.answer().await;
-                        let _ = this.update(cx, |this, cx| {
-                            f.update(cx, |f, cx| {
-                                if Arc::ptr_eq(&f.shown, &shown) {
-                                    f.busy = false;
-                                    cx.notify()
-                                }
-                            });
-                            if pg.visible(this) {
-                                this.finish_send_notice(r.map(|_| String::new()));
-                                cx.notify()
-                            }
-                        });
-                    })
-                    .detach();
-                })),
+                .on_click(cx.listener(move |this, _, w, cx| respond(this, w, cx))),
             );
         }
         // Input edits must also refresh the completeness of a questionnaire.
@@ -287,12 +397,34 @@ impl Desktop {
                     .collect::<Vec<_>>()
             },
         );
-        card.child(actions).into_any_element()
+        let hint = if cfg!(target_os = "macos") {
+            "⌘+Enter で回答"
+        } else {
+            "Ctrl+Enter で回答"
+        };
+        card.child(p.caption(if matches!(kind, "select" | "questionnaire") {
+            format!("数字・↑↓ で選択　{hint}")
+        } else {
+            hint.into()
+        }))
+        .child(actions)
+        .into_any_element()
     }
 }
 #[cfg(test)]
 mod tests {
     use super::{choose, questionnaire_fields};
+    #[test]
+    fn option_keys_stay_in_the_current_question() {
+        use super::choice_key;
+        assert_eq!(choice_key("3", None, 3), Some(2));
+        assert_eq!(choice_key("4", None, 3), None);
+        assert_eq!(choice_key("up", Some(0), 3), Some(0));
+        assert_eq!(choice_key("down", None, 3), Some(0));
+        assert_eq!(choice_key("down", Some(2), 3), Some(2));
+        assert_eq!(choice_key("space", Some(1), 3), Some(1));
+        assert_eq!(choice_key("down", None, 0), None);
+    }
     #[test]
     fn duplicate_prompt_only_hides_its_label() {
         let q = serde_json::json!({"question":"Topic"});

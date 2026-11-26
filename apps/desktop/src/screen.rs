@@ -19,6 +19,7 @@ mod sheet_tree;
 mod theme;
 use super::*;
 pub(crate) use chat_review::Inspector;
+pub(crate) use conversation::History;
 use gpui_component::{
     Disableable, Selectable, Sizable, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
@@ -756,6 +757,9 @@ impl Render for Desktop {
             (side.is_some() && layout == Layout::Narrow).then(|| self.sidebar_toggle(&p, cx));
         // The answer belongs to the pending question, not to the visible workspace panel.
         let editor = self.editor();
+        if editor.as_ref() != self.history.as_ref().map(|h| &h.key) {
+            self.history = editor.clone().map(|k| History::new(k, cx));
+        }
         let question = editor.as_ref().and_then(|key| {
             let rows = &self.machines[&key.host].rows;
             rows.group("question").first().map(|(id, q)| {
@@ -1771,6 +1775,185 @@ mod key_tests {
         });
         w.run_until_parked();
         (rt, wire, server)
+    }
+    #[gpui::test]
+    fn review_return_keeps_the_readers_row_and_offset(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        app.update(w, |d, cx| {
+            let rows = (0..100)
+                .map(|i| {
+                    pimate_core::Change::Upsert(pimate_core::Item {
+                        collection: "entry".into(),
+                        id: format!("u{i}"),
+                        position: i,
+                        json: serde_json::json!({"kind":"user","text":format!("質問 {i}")})
+                            .to_string(),
+                    })
+                })
+                .collect();
+            d.machines
+                .get_mut("fixture")
+                .unwrap()
+                .rows
+                .apply((2, rows), || unreachable!());
+            cx.notify();
+        });
+        w.run_until_parked();
+        let list = app.read_with(w, |d, _| d.history.as_ref().unwrap().scroll.clone());
+        list.scroll_to(gpui::ListOffset {
+            item_ix: 23,
+            offset_in_item: gpui::px(5.),
+        });
+        app.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        let before = list.logical_scroll_top();
+        assert_eq!(before.item_ix, 23);
+        press(w, "secondary-shift-d");
+        assert!(app.read_with(w, |d, cx| {
+            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+        }));
+        press(w, "escape");
+        assert!(w.debug_bounds("composer-input").is_some());
+        let after = app.read_with(w, |d, _| {
+            d.history.as_ref().unwrap().scroll.logical_scroll_top()
+        });
+        assert_eq!(
+            (after.item_ix, after.offset_in_item),
+            (before.item_ix, before.offset_in_item)
+        );
+    }
+    #[gpui::test]
+    fn composer_sheet_buttons_accept_focused_enter_and_space(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        for (kind, tabs) in [(state::SheetPage::Model, 2), (state::SheetPage::Usage, 3)] {
+            for key in ["enter", "space"] {
+                press(w, "secondary-l");
+                // The dismissed palette still owns this release, even after focus moves.
+                w.simulate_keystrokes("secondary-k space");
+                press(w, "escape");
+                assert!(app.read_with(w, |d, _| !d.palette_open
+                    && d.consumed_keys.contains_key("space")));
+                for _ in 0..tabs {
+                    w.update(|w, _| w.focus_next());
+                    w.run_until_parked();
+                }
+                release(w, "space");
+                assert!(app.read_with(w, |d, _| d.active_sheet().is_none()));
+                press(w, key);
+                assert!(
+                    app.read_with(w, |d, _| d.active_sheet().map(|s| s.kind)) == Some(kind),
+                    "{key}"
+                );
+                press(w, "escape");
+            }
+        }
+    }
+    #[gpui::test]
+    fn multi_choice_tab_stops_on_group_and_space_toggles_only_cursor(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let question = serde_json::json!({"kind":"questionnaire","questions":[{"multiSelect":true,"options":["A","B"]}]});
+        app.update(w, |d, cx| {
+            let row = pimate_core::Item {
+                collection: "question".into(),
+                id: "q".into(),
+                position: 0,
+                json: question.to_string(),
+            };
+            d.machines.get_mut("fixture").unwrap().rows.apply(
+                (2, vec![pimate_core::Change::Upsert(row)]),
+                || unreachable!(),
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        let pos = w.debug_bounds("choice-0-0-false").unwrap().center();
+        w.simulate_click(pos, Default::default());
+        press(w, "tab");
+        assert!(w.update(|w, _| w.context_stack().iter().any(|c| c.contains("Input"))));
+        press(w, "shift-tab down space");
+        assert!(w.debug_bounds("choice-0-0-true").is_some());
+        assert!(w.debug_bounds("choice-0-1-true").is_some());
+        press(w, "space");
+        assert!(w.debug_bounds("choice-0-0-true").is_some());
+        assert!(w.debug_bounds("choice-0-1-false").is_some());
+    }
+    #[gpui::test]
+    fn question_keys_send_the_selected_option_once(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, server) = attach_active(&app, w, "question-keys");
+        let pos = w.debug_bounds("choice-0-0-false").unwrap().center();
+        w.simulate_click(pos, Default::default());
+        press(w, "3 up down 2");
+        assert!(w.debug_bounds("choice-0-1-true").is_some());
+        w.simulate_keystrokes("secondary-enter secondary-enter");
+        w.run_until_parked();
+        assert_eq!(
+            rt.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), wire.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            }),
+            "ui_respond"
+        );
+        assert!(wire.try_recv().is_err());
+        server.abort();
+    }
+    #[gpui::test]
+    fn queued_steer_has_no_undo_and_only_unconfirmed_text_returns_to_input(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use pimate_core::Operation;
+        let (app, w, _) = tests::open_chat(cx);
+        let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
+        let (conn, target) = app.read_with(w, |app, _| {
+            (
+                app.machines["key-menu"].conn.clone(),
+                app.editor().unwrap().target(),
+            )
+        });
+        let refresh = |app: &mut super::Desktop, cx: &mut gpui::Context<super::Desktop>| {
+            app.machines.get_mut("key-menu").unwrap().rows = super::Rows::snapshot(conn.snapshot());
+            cx.notify()
+        };
+        rt.block_on(conn.perform(Operation::Send {
+            target: target.clone(),
+            text: "保持した指示".into(),
+            images: vec![],
+        }))
+        .unwrap();
+        app.update(w, refresh);
+        w.run_until_parked();
+        assert_eq!(wire.try_recv().unwrap(), "prompt");
+        assert_eq!(
+            app.read_with(w, |app, _| app.machines["key-menu"].rows.group("draft")[0]
+                .1["status"]
+                .clone()),
+            "queued"
+        );
+        assert!(w.debug_bounds("restore-draft").is_none());
+        // Simulate a separately requested stop, not a cancel button on the draft.
+        rt.block_on(conn.perform(Operation::Abort { target }))
+            .unwrap();
+        app.update(w, refresh);
+        w.run_until_parked();
+        assert_eq!(wire.try_recv().unwrap(), "abort");
+        let pos = w.debug_bounds("restore-draft").unwrap().center();
+        w.simulate_click(pos, Default::default());
+        w.run_until_parked();
+        assert_eq!(
+            app.read_with(w, |app, cx| app.input.as_ref().unwrap().1.read(cx).value()),
+            "保持した指示"
+        );
+        assert!(wire.try_recv().is_err());
+        server.abort();
     }
     #[gpui::test]
     fn pairing_confirmation_keeps_enter_off_the_composer(cx: &mut gpui::TestAppContext) {

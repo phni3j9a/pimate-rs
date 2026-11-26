@@ -62,7 +62,7 @@ struct Desktop {
     palette_index: usize,
     epoch: u64,
     size: f32,
-    scroll: ListState,
+    history: Option<screen::History>,
     /// 760px 未満で重ねて出すサイドバーの開閉。
     sidebar_open: bool,
     /// ドラッグで変えたサイドバーの幅（px）。未設定なら既定の幅。
@@ -139,7 +139,7 @@ impl Desktop {
             palette_index: 0,
             epoch: 0,
             size: 16.,
-            scroll: screen::transcript(),
+            history: None,
             sidebar_open: false,
             sidebar_width: None,
             pref_error: false,
@@ -352,7 +352,7 @@ impl Desktop {
             }
             self.epoch += 1;
             self.state.close_page();
-            self.scroll = screen::transcript();
+            self.history = None;
             self.input = None;
             self.row_action = None;
             self.selected = Some((h, i));

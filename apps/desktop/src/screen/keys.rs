@@ -16,6 +16,7 @@ macro_rules! commands {
             // documented app shortcuts in the composer without changing other inputs.
             cx.bind_keys([$(KeyBinding::new($key,$name,Some("Composer > Input")),)*]);
             cx.bind_keys([
+                KeyBinding::new("secondary-enter", Enter {secondary:true},Some("QuestionCard")),
                 KeyBinding::new("enter", PairEnter, Some("PairDialog")),
                 KeyBinding::new("tab", PairTab, Some("PairDialog")),
                 KeyBinding::new("shift-tab", PairTab, Some("PairDialog")),
@@ -123,16 +124,21 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
         let text_space = key == "space" && e.context_stack.iter().any(|c| c.contains("Input"));
         let owns = match key {
             "escape" => true,
-            "enter" => matches!(
-                top,
-                Some(
-                    Overlay::Menu
-                        | Overlay::Pair
-                        | Overlay::Palette
-                        | Overlay::Slash
-                        | Overlay::Tooltip
-                )
-            ),
+            "enter" => {
+                (top.is_none()
+                    && e.keystroke.modifiers.secondary()
+                    && e.context_stack.iter().any(|c| c.contains("QuestionCard")))
+                    || matches!(
+                        top,
+                        Some(
+                            Overlay::Menu
+                                | Overlay::Pair
+                                | Overlay::Palette
+                                | Overlay::Slash
+                                | Overlay::Tooltip
+                        )
+                    )
+            }
             "tab" => {
                 tip_tab
                     || matches!(
@@ -337,10 +343,11 @@ impl Desktop {
             let result = page.abort().await;
             let _ = app.update(cx, |app, cx| {
                 app.stopping = false;
-                if let Err(e) = result
-                    && page.visible(app)
-                {
-                    app.notice = format!("停止できません: {e}");
+                if page.visible(app) {
+                    app.notice = match result {
+                        Ok(_) => "停止を要求しました。履歴と差分で結果を確認してください。".into(),
+                        Err(e) => format!("停止できません: {e}"),
+                    };
                 }
                 cx.notify();
             });
@@ -469,11 +476,11 @@ impl Desktop {
                     self.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
                 }
             }
-            PageUp | PageDown if home => self
+            PageUp | PageDown if home && let Some(h) = &self.history => h
                 .scroll
                 .scroll_by(w.viewport_size().height * if c == PageUp { -0.75 } else { 0.75 }),
-            End if home => self.scroll.scroll_to(ListOffset {
-                item_ix: self.scroll.item_count(),
+            End if home && let Some(h) = &self.history => h.scroll.scroll_to(ListOffset {
+                item_ix: h.scroll.item_count(),
                 offset_in_item: px(0.),
             }),
             Larger | Smaller | ResetSize => {

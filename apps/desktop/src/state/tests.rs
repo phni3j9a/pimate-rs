@@ -301,7 +301,10 @@ pub(crate) async fn fixture(
                     if id == "key-menu" {
                         snapshot["pendingUI"] = json!([]);
                     }
-                    if matches!(id, "abort-test" | "key-menu") {
+                    if id == "question-keys" {
+                        snapshot["pendingUI"] = json!([{"kind":"select","title":"選択","requestId":"q","options":["A","B","C"]}]);
+                    }
+                    if matches!(id, "abort-test" | "key-menu" | "question-keys") {
                         snapshot["agentActive"] = json!(true);
                     }
                     json!({"type":"subscribed","instanceId":"pi","snapshot":snapshot,"history":{"session":{"id":"same"},"items":[]}})
@@ -323,6 +326,11 @@ pub(crate) async fn fixture(
                     }
                     let mut flow = json!({"id":"flow","provider":"openai","method":"api_key","revision":1,"expiresAt":9999999999999_u64,"status":"input","prompt":{"kind":"api_key","id":"prompt"}});
                     let result = match m {
+                        "ui_respond" if id == "question-keys" => {
+                            assert_eq!(req["params"]["value"], "B");
+                            assert_eq!(req["params"]["requestId"], "q");
+                            json!({})
+                        }
                         "ui_respond" => {
                             assert!(
                                 req["params"]["confirmed"] == true
@@ -338,6 +346,10 @@ pub(crate) async fn fixture(
                         "abort" if matches!(id, "abort-test" | "key-menu") => json!({}),
                         "models" if id == "key-menu" => {
                             json!({"models":[],"current":null,"default":{"model":null,"thinking":null}})
+                        }
+                        "prompt" if id == "key-menu" => {
+                            assert_eq!(req["params"]["deliverAs"], "steer");
+                            json!({"deliveredAs":"steer"})
                         }
                         "commands" => json!({"commands":[]}),
                         "file_image" => {

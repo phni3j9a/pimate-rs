@@ -14,6 +14,8 @@ import dbus
 from PIL import Image, ImageChops
 
 assert Path.cwd() == Path.home() and os.environ['XDG_RUNTIME_DIR'] == str(Path.home()/'run')
+# Small OCR crops are faster single-threaded, especially alongside other isolated clients.
+os.environ['OMP_THREAD_LIMIT'] = '1'
 mode = sys.argv[1]
 bus = dbus.SessionBus()
 remote = 'org.gnome.Mutter.RemoteDesktop'
@@ -146,8 +148,21 @@ if mode == 'package':
 click(int(word['left'])+8, int(word['top'])+6)
 time.sleep(.8)
 # Select only the first characters in the heading, while 50 ms deltas are arriving.
-# The 752 px column is centred right of the 264 px sidebar; the heading follows the author label.
-move(x+414, y+98)
+# Read the beginning deliberately, even if wrapping tables have already pushed it out of view.
+move(x+550, y+190)
+deadline = time.monotonic() + 7
+while time.monotonic() < deadline:
+    pointer.NotifyPointerAxisDiscrete(0, -16)
+    time.sleep(.25)
+    image = snap('heading')
+    image.crop((x+350,y+48,x+1050,y+280)).resize((1400,464)).save('heading-ocr.png')
+    words = csv.DictReader(io.StringIO(subprocess.check_output(['tesseract','heading-ocr.png','stdout','-l','jpn','--psm','11','tsv'],text=True)),delimiter='\t')
+    heading = next((w for w in words if '開発' in w['text']), None)
+    if heading:
+        break
+else:
+    raise AssertionError('stream heading not visible after scrolling to the beginning')
+move(x+350+int(heading['left'])//2+2, y+48+(int(heading['top'])+int(heading['height'])//2)//2)
 pointer.NotifyPointerButton(272, True)
 pointer.NotifyPointerMotionRelative(56.,0.)
 time.sleep(.12)
