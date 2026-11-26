@@ -10,6 +10,7 @@ cd "$(dirname "$0")/../.."
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$PWD/target"
 apps/ios/prepare.sh
 lab=$(mktemp -d /tmp/pimate-ios.XXXXXX)
+export PIMATE_RUN_DIR="$lab/run" PIMATE_CONFIG_DIR="$lab/config" PI_CODING_AGENT_DIR="$lab/agent" XDG_CONFIG_HOME="$lab/xdg"
 fixtures=(); links=(); booted=
 cleanup() {
   for pid in ${fixtures[@]+"${fixtures[@]}"}; do kill -TERM "$pid" 2>/dev/null || :; wait "$pid" || :; done
@@ -69,7 +70,9 @@ TEST_RUNNER_PIMATE_CHAT_FIXTURE=1 TEST_RUNNER_PIMATE_DEMO_CHAT_FAILURE=1 "${xcb[
 printf 'AgentReviewJourney (#52; fixture + UI): %d s\n' "$((SECONDS-agent_start))" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
 NODE_PATH="$lab/ws/node_modules" PIMATE_DEMO_SCREENS=list PIMATE_DEMO_GITHUB_TABLES=1 PIMATE_DEMO_DRAWER_BOT=1 start_fixture "$((${#fixtures[@]} + 1))"
 xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
-TEST_RUNNER_PIMATE_SCREEN_FIXTURE=list TEST_RUNNER_PIMATE_DEMO_GITHUB_TABLES=1 TEST_RUNNER_PIMATE_DEMO_DRAWER_BOT=1 "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testMachineScreens test-without-building
+machine_result="$build/Machine-$(date +%s).xcresult"
+TEST_RUNNER_PIMATE_SCREEN_FIXTURE=list TEST_RUNNER_PIMATE_DEMO_GITHUB_TABLES=1 TEST_RUNNER_PIMATE_DEMO_DRAWER_BOT=1 "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testMachineScreens -resultBundlePath "$machine_result" test-without-building
+xcrun xcresulttool export attachments --path "$machine_result" --output-path "$build/attachments/machine"
 failed=0
 for variant in light dark large; do
   mode=light; size=large
@@ -80,7 +83,16 @@ for variant in light dark large; do
   start_fixture "$((${#fixtures[@]} + 1))"
   xcrun simctl pbcopy "$id" <"$file"; rm -f "$file"
   result="$build/$variant-$(date +%s).xcresult"
-  if TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testJourney -resultBundlePath "$result" test-without-building; then
+  journey() {
+    TEST_RUNNER_PIMATE_REQUIRE_DEMO=1 TEST_RUNNER_PIMATE_VARIANT="$variant" "${xcb[@]}" -only-testing:PiMateUITests/ProbeTests/testJourney -resultBundlePath "$result" test-without-building
+  }
+  # Retry only XCTest's simulator launch failure, before the journey has consumed its link.
+  if journey 2>&1 | tee "$lab/journey.log"; then ok=1
+  elif grep -Fq 'testJourney] : Failed to get launch progress' "$lab/journey.log"; then
+    result="${result%.xcresult}-retry.xcresult"
+    if journey; then ok=1; else ok=0; fi
+  else ok=0; fi
+  if (( ok )); then
     # The last copy is a table from the demo, not just its visible cells. Never log the clipboard.
     xcrun simctl pbpaste "$id" >"$lab/copied"
     python3 - "$lab/copied" <<'TABLE' || failed=1
