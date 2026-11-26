@@ -142,9 +142,10 @@ private struct ZoomPhoto: UIViewRepresentable {
         if view.picture.image !== image { view.picture.image = image; view.setNeedsLayout() }
         view.picture.isAccessibilityElement = image != nil; view.picture.accessibilityLabel = label; view.swipe = swipe
     }
-    final class Canvas: UIScrollView, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+    final class Canvas: UIScrollView, UIScrollViewDelegate {
         let picture = UIImageView()
         var swipe: ((UISwipeGestureRecognizer.Direction) -> Void)?
+        private var pageSwipes: [UISwipeGestureRecognizer] = []
         private var viewport = CGSize.zero
         override init(frame: CGRect) {
             super.init(frame: frame)
@@ -155,7 +156,7 @@ private struct ZoomPhoto: UIViewRepresentable {
             tap.numberOfTapsRequired = 2; addGestureRecognizer(tap)
             for direction: UISwipeGestureRecognizer.Direction in [.left, .right, .down] {
                 let gesture = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
-                gesture.direction = direction; gesture.delegate = self; addGestureRecognizer(gesture)
+                gesture.direction = direction; addGestureRecognizer(gesture); pageSwipes.append(gesture)
                 panGestureRecognizer.require(toFail: gesture)
             }
         }
@@ -171,9 +172,8 @@ private struct ZoomPhoto: UIViewRepresentable {
             picture.center = CGPoint(x: max(bounds.width, contentSize.width) / 2, y: max(bounds.height, contentSize.height) / 2)
         }
         func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
-        override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            if gestureRecognizer is UISwipeGestureRecognizer { return zoomScale == minimumZoomScale }
-            return super.gestureRecognizerShouldBegin(gestureRecognizer)
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            for swipe in pageSwipes { swipe.isEnabled = zoomScale == minimumZoomScale }
         }
         @objc private func swiped(_ gesture: UISwipeGestureRecognizer) { swipe?(gesture.direction) }
         @objc private func toggleZoom(_ tap: UITapGestureRecognizer) {

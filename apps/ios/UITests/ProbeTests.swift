@@ -196,6 +196,7 @@ final class ProbeTests: XCTestCase {
         app.buttons["添付画像 2 を開く"].tap()
         let draftPhoto = app.images["添付画像 2 / 4"]
         XCTAssertTrue(draftPhoto.waitForExistence(timeout: 12)); draftPhoto.doubleTap(); shot("DraftZoom")
+        draftPhoto.swipeLeft(velocity: .slow); XCTAssertTrue(draftPhoto.isHittable)
         draftPhoto.doubleTap(); draftPhoto.swipeDown()
         XCTAssertTrue(fourth.exists)
         app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
