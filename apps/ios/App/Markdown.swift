@@ -115,6 +115,12 @@ struct MarkdownTable: View {
     @State private var width: CGFloat = 300
     @ScaledMetric(relativeTo: .body) private var ratio: CGFloat = 1
     @AppStorage("typeSize") private var size = TypeSize.standard
+    private func showTable() { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
+    private func interactive(_ cell: [Inline]) -> Bool {
+        cell.contains { span in
+            switch span { case .image: true; case .text(_, let style): style.href != nil }
+        }
+    }
     private func grid(full: Bool) -> some View {
         let rows = [table.header] + table.rows
         let natural = (0..<(rows.map(\.count).max() ?? 0)).map { c in rows.compactMap { c < $0.count ? cellWidth(cell: $0[c]) : nil }.max() ?? 0 }
@@ -123,22 +129,21 @@ struct MarkdownTable: View {
             VStack(alignment: .leading, spacing: 0) { ForEach(rows.indices, id: \.self) { i in
                 HStack(alignment: .top, spacing: 0) { ForEach(rows[i].indices, id: \.self) { j in
                     VStack(alignment: .leading, spacing: 6) {
-                        if full { PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0) }
-                        else { Selectable(spans: rows[i][j], heading: i == 0, links: false).allowsHitTesting(false) }
+                        if full || interactive(rows[i][j]) {
+                            PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0)
+                        } else {
+                            Button(action: showTable) {
+                                Selectable(spans: rows[i][j], heading: i == 0).allowsHitTesting(false)
+                                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain).accessibilityHint("表を開く").accessibilityIdentifier("table-cell")
+                        }
                     }.padding(8).frame(width: widths[j], alignment: .leading)
                 } }.background(i == 0 ? PiTheme.surface : PiTheme.background); Divider()
             } }
         }.background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
     }
     var body: some View {
-        if full { grid(full: true) }
-        else { VStack(alignment: .trailing, spacing: 0) {
-            grid(full: false).contentShape(Rectangle()).onTapGesture { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
-            Button { open(OpenTable(table: table, answer: answer, gallery: gallery)) } label: {
-                Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right")
-                    .font(.caption).frame(minHeight: 44).contentShape(Rectangle())
-            }
-        } }
+        grid(full: full).accessibilityAction(named: "表を開く") { if !full { showTable() } }
     }
 }
 
