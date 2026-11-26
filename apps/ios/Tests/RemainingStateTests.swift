@@ -84,6 +84,19 @@ private final class MachineCore: Core, @unchecked Sendable {
         XCTAssertEqual(UsageSheet.timeLeft(1), "あと1分"); XCTAssertEqual(UsageSheet.timeLeft(3_600_001), "あと1時間1分")
         XCTAssertEqual(UsageSheet.timeLeft(90_060_000), "あと1日1時間")
     }
+    func testBeginningReviewRetainsOmittedResultWithoutIncludingLaterCalls() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
+        func change(_ path: String) -> [Object] { [
+            ["kind":"assistant", "toolCalls":[["id":"edit", "name":"edit", "args":["path":path]]]],
+            ["kind":"tool_result", "toolCallId":"edit", "text":"updated " + path, "detailsOmitted":true]] }
+        let history = change("before") + [["kind":"user", "entryId":"user"]] + change("after")
+        let items = try history.enumerated().map { item("entry", String($0.offset), try jsonString($0.element)) }
+        let all = ChangeReview(key: key, entries: items, cwd: "", turn: nil)
+        XCTAssertEqual(all.files.map(\.path), ["before", "after"])
+        let first = ChangeReview(key: key, entries: items, cwd: "", turn: ChatTurn.beginning)
+        XCTAssertEqual(first.files.map(\.path), ["before"]); XCTAssertTrue(first.reference.hasPrefix("このターン"))
+        XCTAssertEqual(first.files.first?.pieces.first?.output, "updated before")
+    }
     func testReviewMatchesReusedCallIDByOccurrence() throws {
         let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
         let entries: [Object] = [

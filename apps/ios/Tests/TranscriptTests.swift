@@ -26,6 +26,14 @@ final class TranscriptTests: XCTestCase {
         guard case .reply(let reply) = turn.first?.lines.first else { return XCTFail("回答がありません") }
         XCTAssertEqual(reply.text, md); XCTAssertEqual(reply.notice, "中断しました")
     }
+    func testAbortRequiresNormalizedReasonOrKnownWholeMessage() throws {
+        let timeout = "Request was aborted because the connection timed out"
+        for (stop, error, expected) in [("error", timeout, timeout), ("error", "AbortError: The user aborted a request.", "中断しました"), ("aborted", "", "中断しました")] {
+            let turns = try ChatTurn.read([item("r", ["kind":"assistant", "stopReason":stop, "errorMessage":error])], live: [])
+            guard case .reply(let reply) = turns.first?.lines.first else { return XCTFail("通知がありません") }
+            XCTAssertEqual(reply.notice, expected)
+        }
+    }
     func testImageOnlyTurnSurvivesBeforeReply() throws {
         for (o, count): (Object, Int) in [(["imageCount": 4], 4), (["images": [["mimeType": "image/png"]]], 1)] {
             let result = try ChatTurn.read([item("user", o.merging(["kind": "user", "text": ""]) { a, _ in a })], live: [])

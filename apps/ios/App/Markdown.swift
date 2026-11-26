@@ -125,11 +125,12 @@ struct MarkdownTable: View {
     @ScaledMetric(relativeTo: .body) private var ratio: CGFloat = 1
     @AppStorage("typeSize") private var size = TypeSize.standard
     private func showTable() { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
-    private func interactive(_ cell: [Inline]) -> Bool {
+    private static func interactive(_ cell: [Inline]) -> Bool {
         cell.contains { span in
             switch span { case .image: true; case .text(_, let style): style.href != nil }
         }
     }
+    static func needsOpenButton(_ table: Table) -> Bool { ([table.header] + table.rows).allSatisfy { $0.allSatisfy(interactive) } }
     private func grid(full: Bool) -> some View {
         let rows = [table.header] + table.rows
         let natural = (0..<(rows.map(\.count).max() ?? 0)).map { c in rows.compactMap { c < $0.count ? cellWidth(cell: $0[c]) : nil }.max() ?? 0 }
@@ -138,7 +139,7 @@ struct MarkdownTable: View {
             VStack(alignment: .leading, spacing: 0) { ForEach(rows.indices, id: \.self) { i in
                 HStack(alignment: .top, spacing: 0) { ForEach(rows[i].indices, id: \.self) { j in
                     VStack(alignment: .leading, spacing: 6) {
-                        if full || interactive(rows[i][j]) {
+                        if full || Self.interactive(rows[i][j]) {
                             PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0)
                         } else {
                             Button(action: showTable) {
@@ -153,7 +154,12 @@ struct MarkdownTable: View {
     }
     var body: some View {
         if full { grid(full: true) }
-        else { grid(full: false).keepsHorizontalDrag().accessibilityAction(named: "表を開く", showTable) }
+        else {
+            grid(full: false).keepsHorizontalDrag().accessibilityAction(named: "表を開く", showTable)
+            if Self.needsOpenButton(table) {
+                Button(action: showTable) { Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right").frame(minHeight: 44) }
+            }
+        }
     }
 }
 

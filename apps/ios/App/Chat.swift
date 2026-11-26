@@ -132,7 +132,7 @@ private struct Conversation: View {
             .sheet(item: $agents) { AgentsView(model: model, key: key, sheet: $0) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("変更をレビュー", systemImage: "doc.text.magnifyingglass") { review = ReviewRoute() } } }
-            .sheet(item: $review) { route in ReviewView(model: model, key: key, turns: turns.filter { $0.id != "begin" }, turn: route.turn, line: route.line) }
+            .sheet(item: $review) { route in ReviewView(model: model, key: key, turns: turns, turn: route.turn, line: route.line) }
             .modifier(PiSheetMenu(model: model, key: key))
             .environment(\.photoContext, photos)
             .fullScreenCover(item: $photo) { shown in

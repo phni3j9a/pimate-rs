@@ -23,6 +23,7 @@ struct WorkLine: Identifiable, Equatable {
     }
 }
 struct ChatTurn: Identifiable, Equatable {
+    static let beginning = "begin"
     let id: String
     var prompt = ""
     var images: HistoryImages?
@@ -47,7 +48,7 @@ struct ChatTurn: Identifiable, Equatable {
     }
     static func read(_ entries: [Item], live: [Item], timing: [Item] = []) -> [Self] {
         let thinkingMs = Dictionary(uniqueKeysWithValues: timing.map { ($0.id, Int($0.json)) })
-        var turns = [Self(id: "begin")], pending: [String: (Int, Int)] = [:]
+        var turns = [Self(id: Self.beginning)], pending: [String: (Int, Int)] = [:]
         func line(_ id: String, _ o: Object, _ name: String, callID: String, changeCall: Bool = false) -> WorkLine {
             let args = o.obj("args"); return WorkLine(id: id, name: name, subject: args.str("path").isEmpty ? args.str("command") : args.str("path"), output: "", state: "未完了", callID: callID, changeCall: changeCall)
         }
@@ -67,7 +68,10 @@ struct ChatTurn: Identifiable, Equatable {
             } else {
                 if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: WorkLine.thoughtTitle(thinkingMs[item.id] ?? nil), subject: "", output: o.str("thinking"), state: ""))) }
                 let error = o.str("errorMessage")
-                let aborted = o.str("stopReason") == "aborted" || ["operation was aborted", "request was aborted"].contains { error.localizedCaseInsensitiveContains($0) }
+                let stop = o.str("stopReason")
+                // Older RCs may not have normalized the abort error yet. Match the RC's whole-message rule.
+                let aborted = stop == "aborted" || ((stop.isEmpty || stop == "error") && !error.isEmpty &&
+                    error.trimmingCharacters(in: .whitespacesAndNewlines).range(of: #"\A(?:AbortError:\s*)?(?:This operation was aborted|The operation was aborted|The user aborted a request|Request (?:was )?aborted|Aborted)[.!]?\z"#, options: [.regularExpression, .caseInsensitive]) != nil)
                 let notice = aborted ? "中断しました" : error
                 if !text.isEmpty || !notice.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: text, notice: notice))) }
                 for (n, c) in o.list("toolCalls").enumerated() {

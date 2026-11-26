@@ -19,7 +19,7 @@ struct ReviewView: View {
                     if !session && !turns.isEmpty {
                         Picker("ターン", selection: $turn) {
                             Text("直近の変更").tag(String?.none)
-                            ForEach(turns.reversed()) { t in Text(t.prompt.isEmpty ? "画像の依頼" : String(t.prompt.prefix(80))).tag(Optional(t.id)) }
+                            ForEach(turns.reversed()) { t in Text(t.id == ChatTurn.beginning ? "最初の入力より前" : t.prompt.isEmpty ? "画像の依頼" : String(t.prompt.prefix(80))).tag(Optional(t.id)) }
                         }
                     }
                 }
@@ -33,7 +33,7 @@ struct ReviewView: View {
                     Section("\(files.count) ファイル · 読み込み済みの履歴") {
                         if files.isEmpty { Text("変更はありません").foregroundStyle(.secondary) }
                         ForEach(files.indices, id: \.self) { n in
-                            DiffFile(file: files[n], expanded: n == 0).id(Data(files[n].path.utf8))
+                            DiffFile(file: files[n], showOutput: line != nil, expanded: n == 0).id(Data(files[n].path.utf8))
                         }
                     }
                 } else if error.isEmpty { ProgressView("変更を集計しています…") }
@@ -51,7 +51,7 @@ struct ReviewView: View {
                     review = nil; error = ""
                     do {
                         let all = try await model.review(key, turn: nil)
-                        if !session, let id = turn ?? all.latestChangedTurn, id != "begin" { review = try await model.review(key, turn: id) }
+                        if !session, let id = turn ?? all.latestChangedTurn { review = try await model.review(key, turn: id) }
                         else { review = all }
                     } catch { if !Task.isCancelled { self.error = "変更を読み込めません。会話を確認してください。" } }
                 }
@@ -61,12 +61,15 @@ struct ReviewView: View {
 }
 
 private struct DiffFile: View {
-    let file: ChangeFile
+    let file: ChangeFile, showOutput: Bool
     @State var expanded: Bool
     var body: some View {
         let diffs = file.pieces.compactMap(\.diff)
         DisclosureGroup(isExpanded: $expanded) {
             ForEach(file.pieces, id: \.lineID) { piece in
+                if showOutput && !piece.output.isEmpty {
+                    DisclosureGroup("ツールの出力") { ChangeBody(text: piece.output) }
+                }
                 if let hunks = piece.diff?.hunks, !hunks.isEmpty {
                     ForEach(hunks.indices, id: \.self) { n in DiffHunk(hunk: hunks[n]) }
                 } else {

@@ -39,7 +39,7 @@ struct ChangePatch {
         }
     }
 }
-struct ChangePiece { let call: String, lineID: String, created: Bool, patch: String?, diff: ChangePatch?, content: String?, omitted: String? }
+struct ChangePiece { let call: String, lineID: String, output: String, created: Bool, patch: String?, diff: ChangePatch?, content: String?, omitted: String? }
 struct ChangeFile { let path: String; var pieces: [ChangePiece] }
 struct ChangeReview {
     let key: EditorKey, turn: String?
@@ -51,7 +51,7 @@ struct ChangeReview {
     }
     init(key: EditorKey, entries: [Item], cwd: String, turn: String?) {
         self.key = key; self.turn = turn
-        let history = entries.map(\.object); var results: [String: Object] = [:], pending: [String: String] = [:], indices: [Data: Int] = [:], current: String?
+        let history = entries.map(\.object); var results: [String: Object] = [:], pending: [String: String] = [:], indices: [Data: Int] = [:], current = ChatTurn.beginning
         for (i, entry) in history.enumerated() {
             if entry.str("kind") == "assistant" {
                 for (j, call) in entry.list("toolCalls").enumerated() { pending[call.str("id")] = "\(i):\(j)" }
@@ -82,7 +82,7 @@ struct ChangeReview {
                 if index == files.count { indices[pathBytes] = index; files.append(.init(path: !cwd.isEmpty && path.hasPrefix(root) ? String(path.dropFirst(root.count)) : path, pieces: [])) }
                 let reason = r["detailsOmitted"] as? Bool == true ? "too_large" : write.str("omitted")
                 let content = name == "write" && patch == nil && !["too_large", "binary"].contains(reason) ? args["content"] as? String : nil
-                files[index].pieces.append(.init(call: id, lineID: "\(entries[i].id):\(j)", created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,
+                files[index].pieces.append(.init(call: id, lineID: "\(entries[i].id):\(j)", output: r.str("text"), created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,
                     content: content, omitted: patch != nil ? nil : !reason.isEmpty ? reason : content == nil ? "no_diff" : "unknown_before"))
             }
         }

@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct BranchRow: Identifiable {
-    let id: String, depth: Int, node: Object
+    let id: String, depth: Int
+    var node: Object
     // RC sends preorder. Only a fork, not every consecutive message, increases the indent.
     static func read(_ nodes: [Object]) -> [BranchRow] {
         var children: [String: Int] = [:], depths: [String: Int] = [:]
@@ -13,6 +14,17 @@ struct BranchRow: Identifiable {
             depths[id] = depth
             return BranchRow(id: id, depth: depth, node: node)
         }
+    }
+    static func userRows(_ rows: [Self]) -> [Self] {
+        var visible: [Self] = [], nearest: [String: Int] = [:]
+        for row in rows {
+            if row.node.str("kind") == "user" { nearest[row.id] = visible.count; visible.append(row) }
+            else if let parent = nearest[row.node.str("parentId")] {
+                nearest[row.id] = parent
+                if row.node["isCurrent"] as? Bool == true { visible[parent].node["isCurrent"] = true }
+            }
+        }
+        return visible
     }
     var preview: String { node.str("preview").isEmpty ? "（本文なし）" : node.str("preview") }
     var detail: String {
@@ -36,7 +48,7 @@ struct TreeSheet: View {
                 Picker("表示", selection: $usersOnly) { Text("ユーザーのみ").tag(true); Text("すべて").tag(false) }.pickerStyle(.segmented)
                 if truncated { Text("大きなツリーのため一部を省略しています。全体は PC の /tree で確認できます。").modifier(PiFont(.caption)) }
                 if loaded && nodes.isEmpty { Text("まだ会話がありません").foregroundStyle(.secondary) }
-                ForEach(usersOnly ? nodes.filter { $0.node.str("kind") == "user" } : nodes) { row in
+                ForEach(usersOnly ? BranchRow.userRows(nodes) : nodes) { row in
                     NavigationLink { TreeDestination(panel: panel, row: row) } label: {
                         HStack(spacing: 10) {
                             Capsule().fill(row.node["onBranch"] as? Bool == true ? PiTheme.accent : Color.secondary).frame(width: 3).accessibilityHidden(true)
