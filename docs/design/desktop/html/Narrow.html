@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>ウィンドウを狭めたとき</title></head><body>
+<div class="row" style="align-items:flex-start;gap:20px">
+<div class="win narrow"><script>titlebar('PiMate')</script><div class="app">
+<div class="main"><script>chat({narrow:true, noQueue:true})</script></div>
+</div></div>
+<div class="win narrow"><script>titlebar('PiMate')</script><div class="app">
+<div class="main"><script>chat({narrow:true, noQueue:true})</script></div>
+<div class="scrim" style="justify-content:flex-start;align-items:stretch"><script>sidebar({sel:'shout', style:'box-shadow:var(--shadow)'})</script></div>
+</div></div>
+</div>
+<script>notes('ウィンドウを狭めたとき — 3段階で畳む', [
+'<b>1080px 以上:</b> サイドバー ＋ 会話 ＋ インスペクター（開いているとき）を並べる。',
+'<b>760〜1079px:</b> サイドバー ＋ 会話。インスペクターは会話の上に重ねて出す（<kbd>Esc</kbd> で閉じる）。',
+'<b>760px 未満（左の図）:</b> サイドバーを隠し、ヘッダー左にボタン。インスペクターのアイコンは ⋯ のメニューに入れる。入力欄の下の案内は省く。',
+'<b>サイドバーを出す（右の図）:</b> ボタンか <kbd>Ctrl B</kbd> で会話の上に重ねる。Pi を選ぶか外側のクリックで閉じる。スマホのドロワーと同じ。',
+'<b>最小の大きさ:</b> 480×480px。これ以上は小さくできない。ヘッダーの文字は省略記号で切り、ボタンは折り返さない。',
+'<b>広い側:</b> サイドバーは 220〜360px、インスペクターは 320〜640px にドラッグで変えられ、大きさは次回も覚える。<kbd>Ctrl B</kbd> で広い画面でもサイドバーを隠せる。'])</script>
+</body></html>

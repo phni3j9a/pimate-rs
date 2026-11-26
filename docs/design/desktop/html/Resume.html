@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>過去のセッションを開く（/resume）— ダイアログ</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout'})</script>
+<div class="main"><script>chat()</script></div>
+<div class="scrim top" style="padding-top:72px"><div class="dlg" style="width:640px;padding:8px">
+	<div class="row" style="padding:10px 12px 12px"><script>W(I('search',18))</script><span class="grow muted" style="font-size:15px">セッションを検索</span><span class="seg"><span class="on">このフォルダ</span><span>すべて</span></span></div>
+	<div class="sep" style="margin:0 0 4px"></div>
+	<div class="mi sel" style="height:48px"><div class="col grow"><span>--shout フラグを追加</span><span class="cap">現在のセッション · メッセージ 24</span></div><span class="k">今</span></div>
+	<div class="mi hover" style="height:48px"><div class="col grow"><span>CLI の引数の整理</span><span class="cap">「--help の文言を直して」· メッセージ 41</span></div><span class="k">昨日</span></div>
+	<div class="mi" style="height:48px"><div class="col grow"><span>テストの追加</span><span class="cap">「vitest を入れて」· メッセージ 12</span></div><span class="k">11/22</span></div>
+	<div class="mi" style="height:48px"><div class="col grow"><span>（名前なし）</span><span class="cap">「README を書いて」· メッセージ 6</span></div><span class="k">11/20</span></div>
+	<div class="row cap" style="padding:10px 12px 6px;gap:14px"><span><kbd>↑</kbd> <kbd>↓</kbd> 選ぶ</span><span><kbd>Enter</kbd> このセッションを開く</span><span><kbd>Tab</kbd> 範囲を切り替え</span><span class="grow"></span><span>ツリーで見る <kbd>/tree</kbd></span></div>
+</div></div>
+</div></div>
+<script>notes('過去のセッションを開く — 選ぶだけのダイアログ', [
+'<b>開く:</b> ⋯ のメニュー、パレット、入力欄で <span class="mono">/resume</span>。<span class="mono">/tree</span>（ツリー）と <span class="mono">/fork</span>（分岐元の選択）も同じ形のダイアログ。',
+'<b>一覧:</b> セッション名・最初のメッセージ・件数・日付。打つと絞り込む。',
+'<b>選ぶ:</b> <kbd>↑</kbd><kbd>↓</kbd> と <kbd>Enter</kbd>、またはクリック。開くとダイアログを閉じ、会話がそのセッションに切り替わる。',
+'<b>作業中の Pi:</b> 切り替えられない理由を一覧の上に1行で出し、行は選べない見た目にする。',
+'<b>読み込み・失敗:</b> 一覧の位置に「取得しています…」／理由と「再試行」。',
+'パレットと同じ部品（検索欄 ＋ 一覧 ＋ 下の操作の案内）を使い回す。'])</script>
+</body></html>

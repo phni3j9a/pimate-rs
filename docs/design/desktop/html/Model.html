@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>モデル・Thinking と使用状況 — ポップオーバー</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout'})</script>
+<div class="main" style="position:relative"><script>chat({on:'model', noQueue:true})</script>
+<div class="pop" style="left:150px;bottom:92px;width:330px">
+	<div class="field" style="height:32px;min-height:32px;margin:4px 4px 6px"><script>W(I('search',14))</script><span class="muted">モデルを検索</span></div>
+	<div class="lab">お気に入り</div>
+	<div class="mi sel"><script>W(I('check'))</script>Opus 5.5<span class="cap">anthropic</span><span class="k"><script>W(I('star',14))</script></span></div>
+	<div class="mi"><span style="width:16px"></span>Sonnet 5.5<span class="cap">anthropic</span><span class="k"><script>W(I('star',14))</script></span></div>
+	<div class="mi hover"><span style="width:16px"></span>GPT-5 Codex<span class="cap">openai</span><span class="k"><script>W(I('star',14))</script></span></div>
+	<div class="mi"><span style="width:16px"></span>すべてのモデル（8）<span class="k">›</span></div>
+	<div class="sep"></div>
+	<div class="lab">Thinking</div>
+	<div style="padding:2px 6px 8px"><span class="seg" style="display:flex"><span>off</span><span>min</span><span>low</span><span>med</span><span class="on">high</span><span>xhigh</span></span></div>
+</div>
+<div class="pop" style="right:92px;bottom:92px;width:300px;padding:14px 16px">
+	<div class="row"><span class="ring" style="--v:41%"></span><b class="grow">コンテキスト</b><span class="cap">82k / 200k</span></div>
+	<div class="row" style="margin:6px 0 12px"><span class="cap grow">41% 使用 · このセッション $0.04</span><span class="tbtn" style="padding:0">圧縮</span></div>
+	<div class="row"><span class="ring" style="--v:67%"></span><b class="grow">Claude</b><span class="cap">週 67% · 5時間 12%</span></div>
+	<div class="cap" style="margin:4px 0 12px 28px">2時間14分でリセット</div>
+	<div class="row"><span class="ring" style="--v:21%"></span><b class="grow">Codex</b><span class="cap">週 21% · 5時間 3%</span></div>
+</div>
+</div>
+</div></div>
+<script>notes('モデル・Thinking / 使用状況 — 入力欄から開くポップオーバー', [
+'<b>スマホのシート → デスクトップではポップオーバー。</b> 押した場所のすぐ上に出し、会話は隠さない。外側のクリックか <kbd>Esc</kbd> で閉じる。（モックは2つを同時に描いているが、実際に開くのは1つ）',
+'<b>モデル:</b> 入力欄の「Opus 5.5 · high」か <kbd>Ctrl Shift M</kbd>。開くと検索欄にフォーカス、<kbd>↑</kbd><kbd>↓</kbd><kbd>Enter</kbd> で選ぶ。星でお気に入り（PC の Pi にも反映）。',
+'<b>Thinking:</b> 同じポップオーバーの下段。<kbd>←</kbd><kbd>→</kbd> で変える。',
+'<b>使用状況:</b> 入力欄の3つのリング（コンテキスト・Claude・Codex）。ホバーで数値のツールチップ、クリックで内訳と「圧縮」。',
+'<b>割り込む ▾:</b> 作業中だけ出る。「割り込む / 完了後に送信」を選ぶ小さなメニュー。',
+'選んだ項目はチェックと選択色、ホバーは一段濃い面。'])</script>
+</body></html>

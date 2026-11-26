@@ -73,21 +73,37 @@ struct Drawer: View {
     }
     private func rows(_ host: Host, _ section: String) -> some View {
         ForEach(items(host, section), id: \.id) { item in
-            let o = item.object, waiting = section == "waiting", failed = !o.str("failureText").isEmpty
             Button { select(host.id, item.id) } label: {
-                HStack(alignment: .top, spacing: 12) {
-                    Circle().fill(failed ? PiTheme.failure : waiting ? Color.orange : o.str("status") == "running" ? PiTheme.accent : PiTheme.secondary).frame(width: 7, height: 7).padding(.top, 8)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
-                        if waiting {
-                            Label(host.displayName(in: model.hosts), systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
-                        }
-                        if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
-                        Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)
-                        Text([failed ? "失敗" : waiting ? "入力待ち" : o.str("status") == "running" ? "作業中" : "待機", o.str("origin") == "mobile" ? "スマホで起動" : o.str("origin") == "grok-bot" ? "Grok Bot" : "PC で起動"].joined(separator: " · ")).modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
-                    }; Spacer(); SwiftUI.Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
-                }.padding(.vertical, 5).frame(minHeight: 52).contentShape(Rectangle())
+                InstanceRowLabel(item: item, machine: host.displayName(in: model.hosts))
             }.accessibilityIdentifier("pi-\(item.id)").listRowSeparator(.hidden).listRowBackground(PiTheme.background)
         }
+    }
+}
+
+struct InstanceRowLabel: View {
+    let item: Item
+    var machine: String? = nil
+    var body: some View {
+        let o = item.object, waiting = o.str("section") == "waiting", failed = !o.str("failureText").isEmpty
+        let working = o["working"] as? Bool == true
+        let origin = o.str("origin") == "mobile" ? "スマホで起動" : o.str("origin") == "grok-bot" ? "Grok Bot" : "PC で起動"
+        let state = failed ? "失敗" : waiting ? "入力待ち" : "待機"
+        HStack(alignment: .top, spacing: 12) {
+            if working { ProgressView().controlSize(.small).accessibilityHidden(true) } else {
+                Circle().fill(failed ? PiTheme.failure : waiting ? Color.orange : PiTheme.secondary).frame(width: 7, height: 7).padding(.top, 8)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
+                if waiting, let machine {
+                    Label(machine, systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
+                }
+                if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
+                Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)
+                Text(working ? origin : "\(state) · \(origin)").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
+            }
+            Spacer()
+            if working { Text("作業中").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary) }
+            SwiftUI.Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
+        }.padding(.vertical, 5).frame(minHeight: 52).contentShape(Rectangle())
     }
 }

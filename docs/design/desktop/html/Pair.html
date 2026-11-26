@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>はじめての起動 — ペアリング</title></head><body>
+<div class="win"><script>titlebar('PiMate')</script><div class="app">
+<div class="main" style="align-items:center;justify-content:center">
+<div style="width:560px">
+	<div class="row" style="gap:14px;margin-bottom:6px"><img src="../../icon-kit/source/mark-light.svg" width="34" height="34" alt=""><span style="font-size:22px;font-weight:600">PC の Pi とつなぐ</span></div>
+	<div class="muted" style="margin-bottom:22px">Pi を動かしている PC（この PC でも別の PC でも）と、このアプリをペアリングします。</div>
+	<div class="row" style="align-items:flex-start;margin-bottom:16px"><span class="num">01</span><div class="col grow"><span>別の PC とつなぐときは、両方を同じアカウントの Tailscale に入れる</span><span class="cap">この PC の Pi とつなぐだけなら不要です。<span class="ink">Tailscale の入れ方</span></span></div></div>
+	<div class="row" style="align-items:flex-start;margin-bottom:16px"><span class="num">02</span><div class="col grow" style="gap:6px"><span>Pi を動かす PC のターミナルで実行する</span>
+		<div class="cmd"><span class="muted">$</span><span class="grow">pi install npm:@phni3j9a/pimate</span><script>W(I('copy',14))</script></div>
+		<div class="cmd" style="border-radius:0;box-shadow:0 -1px 0 var(--muted),0 1px 0 var(--muted);background:none"><span class="muted">&gt;</span><span class="grow">/pimate setup</span><script>W(I('copy',14))</script></div></div></div>
+	<div class="row" style="align-items:flex-start"><span class="num">03</span><div class="col grow" style="gap:8px"><span>表示されたリンクをコピーして、ここに貼り付ける</span>
+		<div class="row"><div class="field grow focus"><span class="mono muted" style="font-size:12.5px">pimate://pair?…　<kbd>Ctrl V</kbd></span></div><span class="btn off">つなぐ</span></div>
+		<span class="cap">クリップボードにリンクがあれば、ウィンドウに戻ったとき自動で入ります。</span></div></div>
+</div>
+</div>
+<div class="scrim" style="background:none;align-items:flex-end;justify-content:flex-end;padding:24px;pointer-events:none"><div class="dlg" style="width:380px;padding:18px 20px">
+	<div class="cap">接続先を確認（リンクを貼り付けた直後）</div>
+	<div style="font-weight:600;margin:6px 0 2px">MacBook</div><div class="mono muted">100.64.0.12:47800</div>
+	<div class="acts" style="margin-top:14px"><span class="tbtn plain">キャンセル</span><span class="btn">この接続先を登録</span></div>
+</div></div>
+</div></div>
+<script>notes('はじめての起動 — マシンが1台もないとき', [
+'<b>サイドバーは出さない。</b> 並べる Pi がまだないので、案内を中央に1つだけ置く。マシンを1台登録すると通常の画面になる。',
+'<b>3手順:</b> スマホと同じ流れ。デスクトップは QR の代わりにリンクを貼り付ける。コマンドはシェル（<span class="mono">$</span>）と Pi の中（上下の線）で見た目を分け、右端のアイコンでコピー。',
+'<b>貼り付け:</b> 欄は最初からフォーカス。<kbd>Ctrl V</kbd> だけで進む。有効なリンクなら「つなぐ」が塗りになり、右下のような確認（実際は中央のダイアログ）を出す。',
+'<b>確認ダイアログ:</b> マシン名とアドレスを見せてから登録する。<kbd>Enter</kbd> で登録、<kbd>Esc</kbd> でキャンセル。',
+'<b>登録の直後:</b> 起動中の Pi があればサイドバーに並び、最初の Pi を選んだ状態にする。なければ「新しい Pi」のダイアログを開く。',
+'<b>うまくいかないとき:</b> 期限切れ・接続できない・保存できないは、欄のすぐ下に赤い文字で理由と次の手を書く。'])</script>
+</body></html>

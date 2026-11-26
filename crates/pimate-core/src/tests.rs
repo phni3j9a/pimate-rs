@@ -68,6 +68,23 @@ fn attention_includes_waiting_children_then_normal_then_bot() {
     );
 }
 #[test]
+fn instance_working_is_display_only_and_attention_wins() {
+    let mut s = State::default();
+    for (status, children, working, section) in [
+        ("idle", json!({"active":2,"waiting":0}), true, "normal"),
+        ("idle", json!({"active":2,"waiting":1}), false, "waiting"),
+        ("waiting_input", json!({"active":1}), false, "waiting"),
+        ("running", Value::Null, true, "normal"),
+        ("idle", Value::Null, false, "normal"),
+    ] {
+        s.apply(&json!({"type":"instances","instances":[{"instanceId":"i","status":status,"subagents":children}]}));
+        let row = s.get("instance", "i");
+        assert_eq!(row["working"], working);
+        assert_eq!(row["section"], section);
+        assert_eq!(row["status"], status);
+    }
+}
+#[test]
 fn mirrored_questions_block_send_and_cannot_be_answered_twice() {
     let mut s = view();
     event(
@@ -1104,7 +1121,7 @@ fn rc_time_and_session_move_are_not_lost_in_resync() {
 #[test]
 fn past_child_failure_is_not_attention_and_new_questions_supersede_observed_errors() {
     let mut s = view();
-    let mut list = json!({"type":"instances","instances":[{"instanceId":"i","session":{"id":"s"},"status":"idle","subagents":{"failed":1}}]});
+    let mut list = json!({"type":"instances","instances":[{"instanceId":"i","session":{"id":"s"},"status":"idle","subagents":{"failed":1,"active":1}}]});
     s.apply(&list);
     assert_eq!(s.get("instance", "i")["section"], "normal");
     sync(
@@ -1126,6 +1143,7 @@ fn past_child_failure_is_not_attention_and_new_questions_supersede_observed_erro
         );
         s.apply(&list);
         assert_eq!(s.get("instance", "i")["failureText"], expected);
+        assert_eq!(s.get("instance", "i")["working"], false);
         assert_eq!(s.get("instance", "i")["section"], "waiting");
     }
     list["instances"][0]["status"] = json!("waiting_input");

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>コマンドパレット（Ctrl / ⌘ + K）</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout'})</script>
+<div class="main"><script>chat()</script></div>
+<div class="scrim top"><div class="dlg" style="width:600px;padding:8px">
+	<div class="row" style="padding:10px 12px 12px"><script>W(I('search',18))</script><span class="grow" style="font-size:15px">re<span class="caret"></span></span><kbd>Esc</kbd></div>
+	<div class="sep" style="margin:0 0 4px"></div>
+	<div class="lab">Pi</div>
+	<div class="mi sel"><span class="dot" style="margin:0"></span><span>認証まわりの<b>レ</b>ビュー</span><span class="cap">~/work/api · MacBook</span><span class="k">Enter で開く</span></div>
+	<div class="mi"><span class="dot" style="margin:0"></span><span>API クライアントの<b>リ</b>ファクタ</span><span class="cap">~/work/api · MacBook</span><span class="k">Ctrl 3</span></div>
+	<div class="mi"><span class="dot" style="margin:0"></span><span><b>RE</b>ADME の整理</span><span class="cap">~/code/website · MacBook</span><span class="k">Ctrl 4</span></div>
+	<div class="lab">この Pi のコマンド</div>
+	<div class="mi"><script>W(I('right'))</script>過去のセッションを開く<span class="k">/resume</span></div>
+	<div class="mi"><script>W(I('right'))</script>変更をレビュー<span class="k">Ctrl Shift D</span></div>
+	<div class="mi"><script>W(I('right'))</script>Extension を読み直す<span class="k">/reload</span></div>
+	<div class="lab">アプリ</div>
+	<div class="mi"><script>W(I('plus'))</script>新しい Pi を起動<span class="k">Ctrl N</span></div>
+	<div class="row cap" style="padding:10px 12px 6px;gap:14px"><span><kbd>↑</kbd> <kbd>↓</kbd> 選ぶ</span><span><kbd>Enter</kbd> 実行</span><span><kbd>Ctrl Enter</kbd> 別の Pi を開いたまま実行</span></div>
+</div></div>
+</div></div>
+<script>notes('コマンドパレット — キーボードだけで切り替えと操作', [
+'<b>開く:</b> <kbd>Ctrl K</kbd>（macOS は <kbd>⌘K</kbd>）か、サイドバーの検索欄をクリック。<kbd>Esc</kbd> か外側のクリックで閉じ、フォーカスは元の場所に戻る。',
+'<b>中身:</b> ① Pi（名前・フォルダ・マシンで絞り込み）② 選択中の Pi のコマンド（<span class="mono">/new /resume /tree /fork /compact</span>、Extension のコマンド）③ アプリ（新しい Pi・設定・テーマ）。',
+'<b>何も打たないとき:</b> 要対応の Pi → 最近開いた Pi の順に並べる。',
+'<b>右端:</b> その操作のショートカットかコマンド名。パレットがショートカットの一覧も兼ねる。',
+'<b>入力欄の <span class="mono">/</span>:</b> パレットとは別に、入力欄の上に同じコマンドの候補を出す（<kbd>↑</kbd><kbd>↓</kbd><kbd>Tab</kbd> で補完）。',
+'ダイアログなので背景は薄く暗くする。影は浮く面（パレット・メニュー・ダイアログ）だけに使う。'])</script>
+</body></html>
