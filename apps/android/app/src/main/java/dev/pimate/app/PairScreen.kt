@@ -128,7 +128,7 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                     style = Type.lead.copy(lineBreak = Type.phrase),
                 )
             }
-            PiTerminal(Modifier.padding(top = if (onBack == null) 24.dp else 8.dp))
+            if (onBack == null) PiTerminal(Modifier.padding(top = 24.dp)) else Label("PC の準備")
             Column(Modifier.padding(top = 20.dp)) {
                 Step(1, "スマホと PC を Tailscale でつなぐ", AnnotatedString("両方で同じアカウントにログイン")) {
                     guide = 1

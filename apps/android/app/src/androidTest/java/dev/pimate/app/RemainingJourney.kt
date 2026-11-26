@@ -95,7 +95,7 @@ class RemainingJourney {
         find(hasText("まだ起動中", substring = true))
         shot("First-Step-Empty")
         tap("新しい Pi を起動")
-        find(hasText("フォルダのパス"))
+        find(hasContentDescription("フォルダのパス"))
     }
 
     @Test
@@ -146,7 +146,7 @@ class RemainingJourney {
         icon("戻る")
         icon("Instance 一覧を開く")
         icon("新しい Pi を起動")
-        find(hasText("PC の既定"))
+        find(hasText("モデル"))
         shot("New-Pi")
         back()
         icon("Instance 一覧を開く")
@@ -216,16 +216,11 @@ class RemainingJourney {
         find(hasText("Hello from the PiMate faux model.", substring = true))
         icon("Instance 一覧を開く")
         icon("新しい Pi を起動")
-        val folder = find(hasText("フォルダのパス") and hasSetTextAction())
-        ui.waitUntil(25000) {
-            folder
-                .fetchSemanticsNode()
-                .config[androidx.compose.ui.semantics.SemanticsProperties.EditableText]
-                .text
-                .isNotBlank()
-        }
+        val folder = find(hasContentDescription("フォルダのパス") and hasSetTextAction())
+        folder.performTextInput("~/")
+        ui.runOnIdle { ui.activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(ui.activity.window.decorView.windowToken, 0) }
         tap("起動")
-        ui.waitUntil(30000) { ui.onAllNodes(hasText("フォルダのパス")).fetchSemanticsNodes().isEmpty() }
+        ui.waitUntil(30000) { ui.onAllNodes(hasContentDescription("フォルダのパス")).fetchSemanticsNodes().isEmpty() }
         find(hasContentDescription("セッションのメニュー"))
         icon("Instance 一覧を開く")
         icon("設定")

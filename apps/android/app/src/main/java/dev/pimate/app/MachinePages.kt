@@ -1,5 +1,6 @@
 package dev.pimate.app
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -74,7 +75,6 @@ internal fun NewPage(
         LaunchedEffect(hostId) {
             checked({ error = it }) {
                 folders = JSONObject(m.machineRequest(hostId, Operation.Folders))
-                if (form.cwd.isEmpty()) form.folder(folders!!.str("home"))
             }
             checked({ error = it }) { models = m.hostModels(hostId) }
         }
@@ -84,7 +84,10 @@ internal fun NewPage(
         Page(
             "新しい Pi",
             close,
+            centered = true,
             footer = {
+                Hint("起動後は PC の pimate attach で同じ Pi に接続できます")
+                Spacer(Modifier.height(6.dp))
                 PrimaryButton(
                     if (busy) "起動を確認しています…" else "起動",
                     {
@@ -111,7 +114,7 @@ internal fun NewPage(
                         }
                     },
                     Modifier.fillMaxWidth(),
-                    enabled = h != null && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
+                    enabled = h != null && m.rowsFor(hostId).hostValue("connection") == "\"connected\"" && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
                 )
             },
         ) {
@@ -140,19 +143,12 @@ internal fun NewPage(
                 )
             }
             Label("フォルダ")
-            OutlinedTextField(
-                form.cwd,
-                { folder(it) },
-                Modifier.fillMaxWidth(),
-                label = { Text("フォルダのパス") },
-                singleLine = true,
-                shape = CircleShape,
-                enabled = !busy,
-            )
+            SpawnInput(form.cwd, ::folder, "フォルダのパス", "~/code/project", !busy, path = true)
             if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
+            if (recent.isNotEmpty()) Hint("最近使ったフォルダ")
             recent.take(8).forEach {
                 val path = it.str("path")
-                MenuRow(tilde(path), if (form.cwd == path) "選択中" else "", !busy) { folder(path) }
+                MenuRow(tilde(path), it.optInt("running").takeIf { n -> n > 0 }?.let { n -> "Pi $n 件実行中" }.orEmpty(), !busy) { folder(path) }
             }
             if (m.rowsFor(hostId).info().optBoolean("dirs")) {
                 TextAction(
@@ -177,16 +173,11 @@ internal fun NewPage(
                     }
                 }
             }
-            Toggle("このフォルダを信頼する", form.trust) { if (!busy) form.trust = it }
-            Hint("信頼すると、このフォルダの設定と Extension を読み込みます。")
-            Label("モデル")
+            Toggle("このフォルダを信頼する", form.trust, "フォルダ内の設定と Extension を読み込みます。") { if (!busy) form.trust = it }
+            Toggle("質問ツールを使う", form.askTool, "迷ったときに Pi が選択式で質問します（pimate_ask）。スマホからも回答できます。") { if (!busy) form.askTool = it }
             MenuRow(
-                form.model?.str("id") ?: "PC の既定",
-                form.thinking
-                    ?: (if (form.model == null)
-                            models?.optJSONObject("default")?.optJSONObject("model")?.str("id")
-                        else null)
-                        .orEmpty(),
+                "モデル",
+                form.model?.str("id") ?: "Pi の既定",
                 !busy && models != null,
                 next = true,
             ) {
@@ -233,18 +224,27 @@ internal fun NewPage(
                         form.thinking = level
                     }
                 }
-            Toggle("質問ツール（pimate_ask）", form.askTool) { if (!busy) form.askTool = it }
-            OutlinedTextField(
-                form.message,
-                { form.message = it },
-                Modifier.fillMaxWidth(),
-                label = { Text("最初のメッセージ（任意）") },
-                enabled = !busy,
-            )
+            Label("最初のメッセージ（任意）")
+            SpawnInput(form.message, { form.message = it }, "最初のメッセージ", "起動したらすぐに送るメッセージ", !busy)
             SheetError(error)
             if (outcome.isNotEmpty()) Hint(outcome)
         }
     }
+}
+
+@Composable
+private fun SpawnInput(value: String, change: (String) -> Unit, label: String, hint: String, enabled: Boolean, path: Boolean = false, modifier: Modifier = Modifier) {
+    androidx.compose.foundation.text.BasicTextField(value, change,
+        modifier.fillMaxWidth().semantics { contentDescription = label }
+            .background(pi.surface, if (path) CircleShape else RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 12.dp),
+        enabled = enabled, singleLine = path,
+        textStyle = Type.body.copy(color = pi.text, fontFamily = if (path) Mono else Type.body.fontFamily),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(pi.accent),
+        decorationBox = { inner -> Box(Modifier.heightIn(min = if (path) 20.dp else 48.dp)) {
+            if (value.isEmpty()) Text(hint, color = pi.textSecondary, style = if (path) Type.mono else Type.body)
+            inner()
+        } },
+    )
 }
 
 /** マシンの状態の印（12dp の列）。色だけに頼らず、隣の文字でも状態を示す。 */
@@ -393,7 +393,7 @@ internal fun SettingsPage(
             )
         }
         Label("新しい Pi の既定", bottom = 0.dp)
-        Toggle("質問ツール（pimate_ask）", s.askTool, s::chooseAskTool)
+        Toggle("質問ツール（pimate_ask）", s.askTool, set = s::chooseAskTool)
         Label("表示", bottom = 0.dp)
         SegmentRow(
             "テーマ",

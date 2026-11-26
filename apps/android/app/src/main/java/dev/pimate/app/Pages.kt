@@ -26,11 +26,15 @@ internal fun Page(
     footer: (@Composable ColumnScope.() -> Unit)? = null,
     // 行の間。設定・マシン詳細は行が自分の高さを持つので 0。
     gap: Dp = 4.dp,
+    centered: Boolean = false,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding().imePadding()) {
-            Row(
+            if (centered) Box(Modifier.fillMaxWidth().heightIn(min = 52.dp), Alignment.Center) {
+                IconAction(Icons.Close, "閉じる", close, Modifier.align(Alignment.CenterStart), tint = pi.text)
+                Text(title, Modifier.semantics { heading() }, style = Type.sheet)
+            } else if (title.isNotEmpty()) Row(
                 Modifier.heightIn(min = 52.dp).padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -134,12 +138,15 @@ internal fun External(label: String, url: String) {
 }
 
 @Composable
-internal fun Toggle(label: String, value: Boolean, set: (Boolean) -> Unit) {
+internal fun Toggle(label: String, value: Boolean, detail: String? = null, set: (Boolean) -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 52.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, Modifier.weight(1f), style = Type.lead)
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(label, style = Type.lead)
+            if (detail != null) Hint(detail)
+        }
         Switch(
             value,
             set,
@@ -182,7 +189,7 @@ private fun DeviceLink(connected: Boolean) {
             Alignment.CenterVertically,
         ) {
             repeat(3) { Dot(pi.textTertiary, 3.dp) }
-            if (connected) Icon(Icons.Check, null, Modifier.size(18.dp), pi.accentText)
+            if (connected) Dot(pi.done, 8.dp)
             repeat(3) { Dot(pi.textTertiary, 3.dp) }
         }
         Box(
@@ -262,44 +269,48 @@ internal fun FirstPage(
 ) {
     val rows = m.rowsFor(host.id)
     Page(
-        host.name,
+        "",
         close,
         footer = {
-            if (rows.firstStep() in listOf(FirstStep.EMPTY, FirstStep.LIST))
+            if (rows.firstStep() == FirstStep.LIST) Hint("一覧は、チャットで右へスワイプするといつでも開けます")
+            if (rows.firstStep() == FirstStep.EMPTY)
                 PrimaryButton("新しい Pi を起動", spawn, Modifier.fillMaxWidth())
-            TextAction("一覧を開く", close, Modifier.fillMaxWidth())
+            if (rows.firstStep() != FirstStep.LIST) TextAction("一覧を開く", close, Modifier.fillMaxWidth())
         },
     ) {
+        Spacer(Modifier.height(20.dp))
+        DeviceLink(rows.firstStep() in listOf(FirstStep.EMPTY, FirstStep.LIST))
         when (rows.firstStep()) {
             FirstStep.LOADING -> Text("PC の Pi を確認しています…")
             FirstStep.OFFLINE -> Text("PC に接続していません")
             else -> {
                 Text("${host.name} とつながりました", style = Type.title)
                 if (rows.firstStep() == FirstStep.EMPTY) {
-                    DeviceLink(true)
                     Text("まだ起動中の Pi はありません。このスマホから PC のフォルダを選んで、新しい Pi を起動できます。")
                     CommandPill("pi")
                     Hint("PC のターミナルで起動した Pi も、ここに表示されます")
                 } else {
-                    Hint("選ぶとチャットを開きます。")
+                    Text("選ぶとチャットを開きます。", color = pi.textSecondary, style = Type.body)
                     Label("起動中の Pi")
-                    rows.groups["instance"].orEmpty().forEach {
+                    rows.groups["instance"].orEmpty().sortedBy { when (JSONObject(it.json).str("section")) { "waiting" -> 0; "bot" -> 2; else -> 1 } }.forEach {
                         val o = JSONObject(it.json)
                         InstanceRow(
                             o,
                             false,
                             when {
                                 o.has("failureText") -> "失敗: ${o.str("failureText")}"
-                                o.str("status") == "waiting_input" -> "入力待ち"
+                                o.str("status") == "waiting_input" -> "入力待ち: ${o.str("questionTitle").ifEmpty { "Pi が回答を待っています" }}"
                                 o.str("section") == "waiting" -> "サブエージェントの確認が必要です"
                                 else -> null
                             },
                             ago(o.optLong("updatedAt"), System.currentTimeMillis()),
+                            inset = 0.dp,
                         ) {
                             select(it.id)
                         }
                     }
-                    Hint("一覧は、チャットで右へスワイプするといつでも開けます")
+                    TextAction("新しい Pi を起動", spawn)
+                    TextAction("一覧を開く", close)
                 }
             }
         }

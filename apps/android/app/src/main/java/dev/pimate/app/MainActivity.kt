@@ -161,12 +161,12 @@ private fun Screen(m: SessionModel, chat: ChatUi) {
     }
 }
 
-/** ドロワーの面。幅は画面の 85%、広い画面でも 330dp まで。 */
+/** ドロワーの面。幅は画面の 84.6%、広い画面でも 360dp まで。 */
 @Composable
 internal fun DrawerSheet(content: @Composable ColumnScope.() -> Unit) {
     BoxWithConstraints {
         ModalDrawerSheet(
-            Modifier.width(min(maxWidth * .85f, 330.dp)),
+            Modifier.width(min(maxWidth * .846f, 360.dp)),
             drawerShape = RectangleShape,
             drawerContainerColor = pi.background,
             drawerTonalElevation = 0.dp,
@@ -232,7 +232,7 @@ private fun DrawerContent(
         Row(
             Modifier.padding(start = 2.dp, top = 6.dp, end = 2.dp)
                 .fillMaxWidth()
-                .heightIn(min = tap)
+                .heightIn(min = 40.dp)
                 .background(pi.surface, CircleShape)
                 .padding(horizontal = 14.dp),
             Arrangement.spacedBy(8.dp),
@@ -253,7 +253,7 @@ private fun DrawerContent(
                 },
             )
         }
-        LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
+        LazyColumn(Modifier.weight(1f).padding(top = 10.dp)) {
             val (waiting, rest) = shown.partition { it.third.str("section") == "waiting" }
             if (waiting.isNotEmpty()) {
                 item("attention") { GroupHeader(Icons.Bell, "要対応", pi.waitingText) }
@@ -276,7 +276,7 @@ private fun DrawerContent(
                             else -> "入力待ち: Pi が回答を待っています"
                         },
                         ago(o.optLong("updatedAt"), now),
-                        machine = h.name,
+                        machine = h.name.takeIf { m.hosts.size > 1 },
                     ) {
                         select(h, id)
                     }
@@ -483,6 +483,7 @@ internal fun InstanceRow(
     attention: String?,
     right: String,
     machine: String? = null,
+    inset: androidx.compose.ui.unit.Dp = 12.dp,
     onClick: () -> Unit,
 ) {
     val agents = o.optJSONObject("subagents")
@@ -495,7 +496,7 @@ internal fun InstanceRow(
             .background(if (selected) pi.selected else pi.background)
             .selectable(selected, role = Role.Button, onClick = onClick)
             .heightIn(min = 60.dp)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = inset, vertical = 10.dp),
         Arrangement.spacedBy(10.dp),
     ) {
         MarkColumn(21.dp) {
