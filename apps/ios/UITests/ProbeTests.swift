@@ -287,7 +287,7 @@ extension ProbeTests {
             app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["新しい Pi"].tap(); tap(app.buttons["起動"])
             XCTAssertTrue(field.waitForExistence(timeout: 30)); return
         }
-        shot("First-Step"); app.buttons["一覧を開く"].tap(); app.buttons["設定"].tap()
+        shot("First-Step"); app.buttons["一覧を開く"].tap(); XCTAssertTrue(app.buttons["新しい Pi"].waitForExistence(timeout: 8)); shot("Drawer"); app.buttons["設定"].tap()
         let machine = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'machine-'")).firstMatch
         XCTAssertTrue(machine.waitForExistence(timeout: 8)); shot("Settings"); machine.tap()
         let update = app.buttons["実行時の最新版に更新…"]
@@ -307,7 +307,16 @@ extension ProbeTests {
         }
         try popSheetRoute(app, from: "プロバイダーのログイン", to: "デモ PC"); try popSheetRoute(app, from: "デモ PC", to: "設定"); app.buttons["完了"].tap()
         app.buttons["新しい Pi"].tap(); let recent = app.buttons["/home/demo/code/demo"]; XCTAssertTrue(recent.waitForExistence(timeout: 12)); shot("New-Pi"); tap(recent)
-        XCTAssertEqual(app.textFields["フォルダのパス"].value as? String, "/home/demo/code/demo"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
+        let path = app.textFields["フォルダのパス"]
+        XCTAssertEqual(path.value as? String, "/home/demo/code/demo")
+        path.tap(); path.typeText("/s"); let suggestion = app.buttons["src/"]
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 8)); tap(suggestion)
+        XCTAssertEqual(path.value as? String, "/home/demo/code/demo/src/")
+        tap(app.buttons["spawn-model"])
+        XCTAssertTrue(button("Claude Opus 5.5 · medium").waitForExistence(timeout: 10)); shot("Spawn-Models")
+        app.buttons["すべて"].tap(); let search = app.textFields["モデルを検索"]; search.tap(); search.typeText("gemini")
+        XCTAssertTrue(button("google/gemini-3-pro").exists); XCTAssertFalse(button("anthropic/claude-opus").exists)
+        try popSheetRoute(app, from: "モデル", to: "新しい Pi"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
         XCTAssertTrue(app.buttons["GitHub"].waitForExistence(timeout: 12)); app.buttons["GitHub"].tap()
         let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
         XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); try popSheetRoute(app, from: "Issue #20", to: "GitHub"); app.buttons["PR"].tap()

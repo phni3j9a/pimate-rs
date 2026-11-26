@@ -28,7 +28,7 @@ struct Drawer: View {
             ForEach(model.hosts, id: \.id) { host in
                 Section {
                     rows(host, "normal")
-                    if !items(host, "bot").isEmpty { Label { Text("Grok Bot") } icon: { mark("grok-bot", 14) }.modifier(PiFont(.caption)).accessibilityLabel(host.name + ": Grok Bot").accessibilityAddTraits(.isHeader); rows(host, "bot") }
+                    if !items(host, "bot").isEmpty { Label { Text("Grok Bot") } icon: { mark("grok-bot", 14).foregroundStyle(PiTheme.text) }.modifier(PiFont(.caption)).accessibilityLabel(host.name + ": Grok Bot").accessibilityAddTraits(.isHeader); rows(host, "bot") }
                     if (model.rows[host.id]?.groups["instance"] ?? []).isEmpty {
                         Text(Self.emptyMessage(connection: connection(host), rows: model.rows[host.id])).foregroundStyle(PiTheme.secondary)
                     }
@@ -88,7 +88,7 @@ struct InstanceRowLabel: View {
         let o = item.object, waiting = o.str("section") == "waiting", failed = !o.str("failureText").isEmpty
         let children = o.obj("subagents"), pending = children["waiting"] as? Int ?? 0
         let running = max(0, (children["active"] as? Int ?? 0) - pending)
-        let working = !waiting && (o["working"] as? Bool == true || running > 0)
+        let working = o["working"] as? Bool == true
         let origin = o.str("origin") == "mobile" ? "スマホで起動" : o.str("origin") == "grok-bot" ? "Grok Bot" : "PC で起動"
         let state = failed ? "失敗" : waiting ? "入力待ち" : "待機"
         HStack(alignment: .top, spacing: 12) {

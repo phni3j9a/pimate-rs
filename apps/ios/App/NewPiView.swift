@@ -58,8 +58,10 @@ private struct SpawnFields<HostPicker: View>: View {
                 TextField("フォルダのパス", text: Binding(get: { form.cwd }, set: choose)).focused($editingPath).autocorrectionDisabled().textInputAutocapitalization(.never)
                 if loading { ProgressView("候補を取得中…") }
                 ForEach(folders.prefix(8).indices, id: \.self) { i in Button(folders[i].str("path")) { choose(folders[i].str("path")) } }
-                if let split, fetchedParent == split.parent {
-                    ForEach(matchFolders(names: dirs, prefix: split.prefix), id: \.self) { name in
+                if let split, fetchedParent.utf8.elementsEqual(split.parent.utf8) {
+                    let matches = matchFolders(names: dirs, prefix: split.prefix)
+                    ForEach(matches.indices, id: \.self) { i in
+                        let name = matches[i]
                         Button(name + "/") { choose(split.parent + name + "/") }
                     }
                 }
@@ -86,7 +88,7 @@ private struct SpawnFields<HostPicker: View>: View {
                         }
                         if shown.isEmpty { Text("一致するモデルはありません").foregroundStyle(.secondary) }
                     }.navigationTitle("モデル")
-                } label: { LabeledContent("モデル", value: form.model?.str("id") ?? defaultLabel) }
+                } label: { LabeledContent("モデル", value: form.model?.str("id") ?? defaultLabel) }.accessibilityIdentifier("spawn-model")
                 if let levels = models.first(where: { $0.str("id") == form.model?.str("id") && $0.str("provider") == form.model?.str("provider") })?["thinkingLevels"] as? [String], levels.count > 1 {
                     Picker("Thinking", selection: $form.thinking) { Text("既定").tag(String?.none); ForEach(levels, id: \.self) { Text($0).tag(Optional($0)) } }
                 }
@@ -120,7 +122,7 @@ private struct SpawnFields<HostPicker: View>: View {
             } catch { if !Task.isCancelled { note = "最近のフォルダを取得できません。パスを直接入力できます。" } }
             do { let catalog = try await model.hostModels(form.host); try Task.checkCancellation(); self.catalog = catalog ?? [:] }
             catch { if !Task.isCancelled { note += " モデル一覧を取得できません。PC の既定を利用できます。" } }
-        }.task(id: split?.parent) {
+        }.task(id: split.map { Data($0.parent.utf8) }) {
             guard let parent = split?.parent else { fetchedParent = ""; return }
             do {
                 try await Task.sleep(for: .milliseconds(150))
