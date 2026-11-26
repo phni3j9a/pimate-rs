@@ -23,6 +23,47 @@ class ChatReviewContract {
         "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAFCAIAAADzBuo/AAAAEklEQVR4nGP8z4APMOGVpa00AJ0IAQl63qFDAAAAAElFTkSuQmCC"
 
     @Test
+    fun copyAnswerKeepsMarkdownAndWhitespace() {
+        val source = "**太字**\n\n```kt\n\tval n = 1\n```\n"
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) { RowView(ChatRow.Text("answer", source), false) {} }
+            }
+        }
+        ui.onNodeWithContentDescription("回答全文をコピー（Markdown）").performClick()
+        ui.runOnIdle {
+            val clip =
+                ui.activity
+                    .getSystemService(android.content.ClipboardManager::class.java)
+                    .primaryClip
+            assertEquals(source, clip?.getItemAt(0)?.text.toString())
+        }
+    }
+
+    @Test
+    fun swipeDownOnlyClosesAtFitScale() {
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    var open by remember { mutableStateOf(true) }
+                    if (open)
+                        ImageViewer(listOf(Pic.Inline("1", "image/png", png)), 0) { open = false }
+                }
+            }
+        }
+        ui.waitUntil(5000) {
+            ui.onAllNodesWithContentDescription("画像").fetchSemanticsNodes().isNotEmpty()
+        }
+        val image = ui.onNodeWithContentDescription("画像")
+        image.performTouchInput { doubleClick() }
+        image.performTouchInput { swipeDown() }
+        image.assertIsDisplayed()
+        image.performTouchInput { doubleClick() }
+        image.performTouchInput { swipeDown() }
+        image.assertDoesNotExist()
+    }
+
+    @Test
     fun sharedTextIsReadOnlyForVisibleTiles() {
         val reads = AtomicInteger()
         val shared =

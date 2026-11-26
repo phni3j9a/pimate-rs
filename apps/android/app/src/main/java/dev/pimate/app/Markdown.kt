@@ -313,21 +313,34 @@ private fun TaskMark(checked: Boolean) {
 }
 
 @Composable
-internal fun CopyAction(source: String, label: String) {
+internal fun CopyAction(
+    source: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 16.dp,
+) {
     val clipboard = LocalClipboardManager.current
-    IconAction(Icons.Copy, label, { clipboard.setText(AnnotatedString(source)) }, size = 16.dp)
-}
-
-@Composable
-private fun CodeBlock(code: String) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
+    var copied by remember(source) { mutableStateOf(false) }
     LaunchedEffect(copied) {
         if (copied) {
             delay(1500)
             copied = false
         }
     }
+    IconAction(
+        if (copied) Icons.Check else Icons.Copy,
+        if (copied) "コピーしました" else label,
+        {
+            clipboard.setText(AnnotatedString(source))
+            copied = true
+        },
+        modifier,
+        size = size,
+    )
+}
+
+@Composable
+private fun CodeBlock(code: String) {
     Box(Modifier.fillMaxWidth().background(pi.surface, RoundedCornerShape(10.dp))) {
         // タブは半角 2 つで表示する。元のタブが要るときは右上のコピーを使う。
         Text(
@@ -338,13 +351,9 @@ private fun CodeBlock(code: String) {
             style = Type.mono,
             softWrap = false,
         )
-        IconAction(
-            if (copied) Icons.Check else Icons.Copy,
-            if (copied) "コピーしました" else "コードをコピー",
-            {
-                clipboard.setText(AnnotatedString(code))
-                copied = true
-            },
+        CopyAction(
+            code,
+            "コードをコピー",
             Modifier.align(Alignment.TopEnd).background(pi.surface, RoundedCornerShape(10.dp)),
             size = 16.dp,
         )
@@ -420,8 +429,6 @@ private fun TableView(table: Table, modifier: Modifier = Modifier) {
 /** 表の全画面。セルの文字は OS の選択で部分コピーでき、右上で表全体を Markdown としてコピーする。 */
 @Composable
 private fun TableViewer(table: Table, close: () -> Unit) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
     FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
             Row(
@@ -430,15 +437,7 @@ private fun TableViewer(table: Table, close: () -> Unit) {
             ) {
                 IconAction(Icons.Close, "閉じる", close, tint = pi.text)
                 Text("表", Modifier.weight(1f).semantics { heading() }, style = Type.header)
-                IconAction(
-                    if (copied) Icons.Check else Icons.Copy,
-                    if (copied) "コピーしました" else "表を Markdown でコピー",
-                    {
-                        clipboard.setText(AnnotatedString(table.markdown))
-                        copied = true
-                    },
-                    size = 20.dp,
-                )
+                CopyAction(table.markdown, "表を Markdown でコピー", size = 20.dp)
             }
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                 val available = maxWidth - gutter * 2
