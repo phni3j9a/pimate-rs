@@ -356,8 +356,8 @@ extension ProbeTests {
         let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
         XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); try popSheetRoute(app, from: "Issue #20", to: "GitHub"); app.buttons["PR"].tap()
         if env["PIMATE_DEMO_GITHUB_TABLES"] == "1" {
-            XCTAssertTrue(button("レビュー待ち").waitForExistence(timeout: 12)); shot("GitHub-PR-List")
-            for (title, note, route) in [("チェック未提供", "CI チェックの内訳は未提供です", "PR #56"), ("空のチェック一覧", "チェックはありません", "PR #57")] {
+            XCTAssertTrue(button("レビュー状態は未提供です").waitForExistence(timeout: 12)); shot("GitHub-PR-List")
+            for (title, note, route) in [("チェック未提供", "CI チェックの内訳は未提供です", "PR #56"), ("空のチェック一覧", "CI チェックの内訳は0件です", "PR #57")] {
                 tap(button(title)); XCTAssertTrue(app.staticTexts[note].waitForExistence(timeout: 10))
                 tap(app.buttons.matching(identifier: "table-cell").firstMatch); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8))
                 // Untrusted GitHub images stay text, not tiles that fetch from the web or the PC.

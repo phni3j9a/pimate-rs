@@ -562,8 +562,16 @@ fn resolve(st: &mut State, p: &Pending, id: &str, result: &Value) -> Result<Stri
     {
         st.auth_targets.insert(hold.clone(), instance.into());
     }
-    // GitHub readers render the Host’s typed failure envelope (e.g. not_github vs not_found).
-    if result["ok"] == false && p.kind != "github" {
+    if result["ok"] == false {
+        if p.kind == "github" {
+            st.release(id);
+            // Neither stderr nor an arbitrary future code may cross the app boundary.
+            let code =
+                serde_json::from_value::<pimate_protocol::GitHubErrorCode>(result["code"].clone());
+            return Ok(
+                json!({"ok":false,"code":code.map_or(json!("unknown"), |c| json!(c))}).to_string(),
+            );
+        }
         if result["error"]["code"] == "no_such_request"
             && st.get("busy", "answer")["id"] == id
             && let Some(q) = st.get("busy", "answer")["requestId"]
@@ -847,7 +855,7 @@ mod regressions {
         assert!(commands.try_recv().is_err());
     }
     #[test]
-    fn github_failure_envelope_is_preserved_only_for_github_queries() {
+    fn github_failures_expose_only_known_codes() {
         let mut s = State::default();
         let mut p = Pending {
             reply: oneshot::channel().0,
@@ -861,9 +869,18 @@ mod regressions {
             thumbnail: false,
         };
         for code in ["gh_missing", "gh_auth", "not_github", "not_found", "failed"] {
-            let reply = json!({"ok":false,"code":code,"message":"failed"});
-            assert_eq!(resolve(&mut s, &p, "r", &reply), Ok(reply.to_string()));
+            let reply =
+                json!({"ok":false,"code":code,"message":"secret stderr", "requestId":"secret-id"});
+            assert_eq!(
+                resolve(&mut s, &p, "r", &reply),
+                Ok(json!({"ok":false,"code":code}).to_string())
+            );
         }
+        let unknown = json!({"ok":false,"code":"secret-code","message":"secret stderr"});
+        assert_eq!(
+            resolve(&mut s, &p, "r", &unknown),
+            Ok(json!({"ok":false,"code":"unknown"}).to_string())
+        );
         p.kind = "github_status".into();
         assert_eq!(
             resolve(&mut s, &p, "r", &json!({"ok":false,"code":"failed"})),

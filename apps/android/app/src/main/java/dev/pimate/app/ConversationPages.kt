@@ -11,8 +11,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import org.json.*
-import uniffi.pimate_ffi.CoreException
-import uniffi.pimate_ffi.Operation
 
 @Composable
 internal fun ReviewPage(
@@ -208,19 +206,22 @@ internal fun githubMetadata(item: JSONObject, pr: Boolean): String =
                         "APPROVED" -> add("承認済み")
                         "CHANGES_REQUESTED" -> add("変更の依頼あり")
                         "REVIEW_REQUIRED" -> add("レビュー待ち")
-                        "" -> if (item.has("reviewDecision")) add("レビュー待ち")
+                        "" -> add(if (item.isNull("reviewDecision")) "レビュー状態は未提供です" else "レビュー待ち")
                         else -> add(decision)
                     }
-                item
-                    .optJSONObject("ci")
-                    ?.takeIf { ci ->
-                        listOf("passed", "failed", "pending").all { ci.opt(it) is Number }
+                val ci = item.optJSONObject("ci")
+                add(
+                    when {
+                        ci == null ||
+                            listOf("passed", "failed", "pending").any { ci.opt(it) !is Number } ->
+                            "CI 集計は未提供です"
+                        ci.getLong("passed") == 0L &&
+                            ci.getLong("failed") == 0L &&
+                            ci.getLong("pending") == 0L -> "CI チェックなし"
+                        else ->
+                            "CI 成功 ${ci.getLong("passed")} · 失敗 ${ci.getLong("failed")} · 待ち ${ci.getLong("pending")}"
                     }
-                    ?.let {
-                        add(
-                            "CI 成功 ${it.getLong("passed")}・失敗 ${it.getLong("failed")}・待機 ${it.getLong("pending")}"
-                        )
-                    }
+                )
             }
             item
                 .optJSONArray("labels")
@@ -231,14 +232,17 @@ internal fun githubMetadata(item: JSONObject, pr: Boolean): String =
         .filter { it.isNotEmpty() }
         .joinToString(" · ")
 
-internal fun githubRejected(status: JSONObject?) =
-    when {
-        status?.opt("installed") == false -> "PC に GitHub CLI（gh）をインストールし、gh auth login を実行してください。"
-        status?.opt("loggedIn") == false -> "PC で gh auth login を実行してください。"
-        status?.opt("loggedIn") == true ->
-            "作業中の Pi が GitHub のリポジトリで動いているか、対象の Issue / PR と閲覧権限を確認してください。"
-        else -> "取得できませんでした。PC の gh の状態を確認してください。"
-    }
+internal fun githubFailure(reply: JSONObject): String? =
+    if (reply.opt("ok") != false) null
+    else
+        when (reply.str("code")) {
+            "gh_missing" -> "PC に GitHub CLI（gh）をインストールし、gh auth login を実行してください。"
+            "gh_auth" -> "PC のターミナルで gh auth login を実行してください。"
+            "not_github" ->
+                "この Pi のフォルダは GitHub のリポジトリではありません。GitHub の remote があるフォルダで Pi を開いてください。"
+            "not_found" -> "対象の Pi、Issue または PR が見つかりません。アクセス権も確認してください。"
+            else -> "接続を確認して、もう一度お試しください。"
+        }
 
 @Composable
 internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
@@ -251,18 +255,9 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
         checked({ error = it }) {
             val q = JSONObject().put("kind", if (number == 0L) "list" else tab)
             if (number != 0L) q.put("number", number)
-            try {
-                data = m.github(at, q).getJSONObject("data")
-            } catch (_: CoreException.Rejected) {
-                var status: JSONObject? = null
-                if (m.rowsFor(at.host).info().optBoolean("githubStatus"))
-                    checked({}) {
-                        status =
-                            JSONObject(m.machineRequest(at.host, Operation.GithubStatus))
-                                .optJSONObject("status")
-                    }
-                error = githubRejected(status)
-            }
+            val reply = m.github(at, q)
+            val failure = githubFailure(reply)
+            if (failure != null) error = failure else data = reply.getJSONObject("data")
         }
     }
     Page(
@@ -313,7 +308,7 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                                 !v.optBoolean("checksTruncated") &&
                                     v.optJSONArray("checks").objects().isEmpty()
                             )
-                                Hint(if (v.has("checks")) "チェックはありません" else "CI チェックの内訳は未提供です")
+                                Hint(if (v.has("checks")) "CI チェックの内訳は0件です" else "CI チェックの内訳は未提供です")
                         }
                         v.optJSONArray("checks").objects().forEach {
                             val state =

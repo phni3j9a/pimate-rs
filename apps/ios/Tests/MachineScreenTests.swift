@@ -8,6 +8,8 @@ final class MachineScreenTests: XCTestCase {
         XCTAssertTrue(GithubText.guidance("not_found").contains("アクセス権も確認"))
     }
     func testGitHubUsesHostReviewAndCheckCounts() {
+        XCTAssertEqual(GithubText.review([:]), "レビュー状態は未提供です")
+        XCTAssertEqual(GithubText.ci([:]), "CI 集計は未提供です")
         XCTAssertEqual(GithubText.review(["reviewDecision": "CHANGES_REQUESTED"]), "変更の依頼あり")
         XCTAssertEqual(GithubText.review(["isDraft": true, "reviewDecision": "APPROVED"]), "ドラフト")
         XCTAssertEqual(GithubText.review(["reviewDecision": "APPROVED"]), "承認済み")

@@ -3,16 +3,18 @@ import SwiftUI
 enum GithubText {
     static func review(_ item: Object) -> String {
         if item["isDraft"] as? Bool == true { return "ドラフト" }
-        switch item.str("reviewDecision") {
+        guard let decision = item["reviewDecision"] as? String else { return "レビュー状態は未提供です" }
+        switch decision {
         case "APPROVED": return "承認済み"
         case "CHANGES_REQUESTED": return "変更の依頼あり"
-        default: return "レビュー待ち"
+        case "", "REVIEW_REQUIRED": return "レビュー待ち"
+        default: return decision
         }
     }
     static func ci(_ item: Object) -> String {
         let ci = item.obj("ci")
-        guard let passed = ci["passed"] as? Int, let failed = ci["failed"] as? Int, let pending = ci["pending"] as? Int,
-              passed > 0 || failed > 0 || pending > 0 else { return "CI チェックなし" }
+        guard let passed = ci["passed"] as? Int, let failed = ci["failed"] as? Int, let pending = ci["pending"] as? Int else { return "CI 集計は未提供です" }
+        if passed == 0 && failed == 0 && pending == 0 { return "CI チェックなし" }
         return "CI 成功 \(passed) · 失敗 \(failed) · 待ち \(pending)"
     }
     static func state(_ item: Object) -> String {
@@ -95,7 +97,7 @@ struct GithubView: View {
                 ForEach(checks.indices, id: \.self) { i in LabeledContent(checks[i].str("name"), value: ["passed": "成功", "failed": "失敗", "pending": "待ち"][checks[i].str("state")] ?? checks[i].str("state")) }
                 if value["checksTruncated"] as? Bool == true { Text("CI チェックの一部を省略しています。続きは GitHub で確認してください。") }
                 else if !(value["checks"] is [Object]) { Text("CI チェックの内訳は未提供です") }
-                else if checks.isEmpty { Text("チェックはありません") }
+                else if checks.isEmpty { Text("CI チェックの内訳は0件です") }
             }
         }
         Section("コメント") {

@@ -59,18 +59,33 @@ class RemainingReviewTest {
             JSONObject(
                 """{"state":"OPEN","reviewDecision":"APPROVED","ci":{"passed":3,"failed":1,"pending":2},"labels":["UI","Android"]}"""
             )
-        assertEquals("オープン · 承認済み · CI 成功 3・失敗 1・待機 2 · ラベル: UI・Android", githubMetadata(pr, true))
+        assertEquals(
+            "オープン · 承認済み · CI 成功 3 · 失敗 1 · 待ち 2 · ラベル: UI・Android",
+            githubMetadata(pr, true),
+        )
         assertEquals("オープン · ラベル: UI・Android", githubMetadata(pr, false))
-        assertEquals("オープン", githubMetadata(JSONObject("""{"state":"OPEN"}"""), true))
-        assertTrue(githubRejected(JSONObject("""{"installed":false}""")).contains("インストール"))
-        assertTrue(
-            githubRejected(JSONObject("""{"installed":true,"loggedIn":false}"""))
-                .contains("gh auth login")
+        assertEquals(
+            "オープン · レビュー状態は未提供です · CI 集計は未提供です",
+            githubMetadata(JSONObject("""{"state":"OPEN"}"""), true),
         )
         assertTrue(
-            githubRejected(JSONObject("""{"installed":true,"loggedIn":true}""")).contains("閲覧権限")
+            githubMetadata(JSONObject("""{"ci":{"passed":0,"failed":0,"pending":0}}"""), true)
+                .contains("CI チェックなし")
         )
-        assertTrue(githubRejected(null).contains("gh の状態"))
+    }
+
+    @Test
+    fun githubFailureDoesNotNeedDataOrExposeHostMessages() {
+        fun failure(code: String) =
+            githubFailure(
+                JSONObject().put("ok", false).put("code", code).put("message", "secret stderr")
+            )
+        assertEquals(null, githubFailure(JSONObject("""{"ok":true,"data":{}}""")))
+        assertTrue(failure("gh_missing")!!.contains("インストール"))
+        assertTrue(failure("gh_auth")!!.contains("PC のターミナルで gh auth login"))
+        assertTrue(failure("not_github")!!.contains("GitHub の remote があるフォルダ"))
+        assertTrue(failure("not_found")!!.contains("アクセス権も確認"))
+        assertEquals("接続を確認して、もう一度お試しください。", failure("unknown"))
     }
 
     @Test
