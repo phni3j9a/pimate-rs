@@ -193,19 +193,24 @@ internal fun ChatEdits.insertGithub(
 
 internal fun githubMetadata(item: JSONObject, pr: Boolean): String =
     buildList {
-            add(item.str("state"))
-            if (pr) {
-                when {
-                    item.optBoolean("isDraft") -> add("ドラフト")
-                    else ->
-                        when (val decision = item.str("reviewDecision")) {
-                            "APPROVED" -> add("承認済み")
-                            "CHANGES_REQUESTED" -> add("変更の依頼あり")
-                            "REVIEW_REQUIRED" -> add("レビュー待ち")
-                            "" -> Unit
-                            else -> add(decision)
-                        }
+            add(
+                when (val state = item.str("state")) {
+                    "OPEN" -> "オープン"
+                    "MERGED" -> "マージ済み"
+                    "CLOSED" -> "クローズ済み"
+                    else -> state
                 }
+            )
+            if (pr) {
+                if (item.optBoolean("isDraft")) add("ドラフト")
+                else
+                    when (val decision = item.str("reviewDecision")) {
+                        "APPROVED" -> add("承認済み")
+                        "CHANGES_REQUESTED" -> add("変更の依頼あり")
+                        "REVIEW_REQUIRED" -> add("レビュー待ち")
+                        "" -> if (item.has("reviewDecision")) add("レビュー待ち")
+                        else -> add(decision)
+                    }
                 item
                     .optJSONObject("ci")
                     ?.takeIf { ci ->
@@ -213,11 +218,15 @@ internal fun githubMetadata(item: JSONObject, pr: Boolean): String =
                     }
                     ?.let {
                         add(
-                            "CI 成功 ${it.getInt("passed")}・失敗 ${it.getInt("failed")}・待機 ${it.getInt("pending")}"
+                            "CI 成功 ${it.getLong("passed")}・失敗 ${it.getLong("failed")}・待機 ${it.getLong("pending")}"
                         )
                     }
             }
-            addAll(item.optJSONArray("labels").strings())
+            item
+                .optJSONArray("labels")
+                .strings()
+                .takeIf { it.isNotEmpty() }
+                ?.let { add("ラベル: ${it.joinToString("・")}") }
         }
         .filter { it.isNotEmpty() }
         .joinToString(" · ")
@@ -234,14 +243,14 @@ internal fun githubRejected(status: JSONObject?) =
 @Composable
 internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf("issue") }
-    var number by rememberSaveable { mutableIntStateOf(0) }
+    var number by rememberSaveable { mutableLongStateOf(0L) }
     var retry by remember { mutableIntStateOf(0) }
     var data by remember(number, retry) { mutableStateOf<JSONObject?>(null) }
     var error by remember(number, retry) { mutableStateOf("") }
     LaunchedEffect(at, number, retry) {
         checked({ error = it }) {
-            val q = JSONObject().put("kind", if (number == 0) "list" else tab)
-            if (number != 0) q.put("number", number)
+            val q = JSONObject().put("kind", if (number == 0L) "list" else tab)
+            if (number != 0L) q.put("number", number)
             try {
                 data = m.github(at, q).getJSONObject("data")
             } catch (_: CoreException.Rejected) {
@@ -257,27 +266,28 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
         }
     }
     Page(
-        if (number == 0) "GitHub" else "${if(tab=="issue") "Issue" else "PR"} #$number",
-        { if (number == 0) close() else number = 0 },
+        if (number == 0L) "GitHub" else "${if(tab=="issue") "Issue" else "PR"} #$number",
+        { if (number == 0L) close() else number = 0 },
     ) {
         if (error.isNotEmpty()) {
             SheetError(error)
             TextAction("再読み込み", { retry++ })
         } else if (data == null) Hint("PC から読み込み中…")
         data?.let { r ->
-            if (number == 0) {
+            if (number == 0L) {
                 Text(r.optJSONObject("repo")?.str("name").orEmpty(), style = Type.sheet)
                 Segment(listOf("issue" to "Issue", "pr" to "PR"), tab) { tab = it }
                 val list = r.optJSONArray(if (tab == "issue") "issues" else "prs").objects()
                 if (list.isEmpty()) Hint("該当する項目はありません")
                 list.forEach { v ->
                     ListRow(
-                        "#${v.optInt("number")}　${v.str("title")}",
+                        "#${v.optLong("number")}　${v.str("title")}",
                         githubMetadata(v, tab == "pr"),
-                        true,
-                    ) {
-                        number = v.getInt("number")
-                    }
+                        onClick = { number = v.getLong("number") },
+                        trailing = {
+                            Icon(Icons.Right, null, Modifier.size(16.dp), pi.textTertiary)
+                        },
+                    )
                 }
             } else
                 r.optJSONObject("item")?.let { v ->
@@ -296,7 +306,7 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                                 }
                             )
                                 Hint(
-                                    "変更 ${v.optInt("changedFiles")} ファイル · +${v.optInt("additions")} / −${v.optInt("deletions")}"
+                                    "変更 ${v.optLong("changedFiles")} ファイル · +${v.optLong("additions")} / −${v.optLong("deletions")}"
                                 )
                             Label("CI チェック")
                             if (
@@ -306,7 +316,14 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                                 Hint(if (v.has("checks")) "チェックはありません" else "CI チェックの内訳は未提供です")
                         }
                         v.optJSONArray("checks").objects().forEach {
-                            Hint("${it.str("name")} · ${it.str("state")}")
+                            val state =
+                                when (val value = it.str("state")) {
+                                    "passed" -> "成功"
+                                    "failed" -> "失敗"
+                                    "pending" -> "待機"
+                                    else -> value
+                                }
+                            Hint("${it.str("name")} · $state")
                         }
                         if (v.optBoolean("checksTruncated"))
                             Hint("CI チェックの一部を省略しています。続きは GitHub で確認してください。")

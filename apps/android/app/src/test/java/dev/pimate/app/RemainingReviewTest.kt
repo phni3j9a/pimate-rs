@@ -59,9 +59,9 @@ class RemainingReviewTest {
             JSONObject(
                 """{"state":"OPEN","reviewDecision":"APPROVED","ci":{"passed":3,"failed":1,"pending":2},"labels":["UI","Android"]}"""
             )
-        assertEquals("OPEN · 承認済み · CI 成功 3・失敗 1・待機 2 · UI · Android", githubMetadata(pr, true))
-        assertEquals("OPEN · UI · Android", githubMetadata(pr, false))
-        assertEquals("OPEN", githubMetadata(JSONObject("""{"state":"OPEN"}"""), true))
+        assertEquals("オープン · 承認済み · CI 成功 3・失敗 1・待機 2 · ラベル: UI・Android", githubMetadata(pr, true))
+        assertEquals("オープン · ラベル: UI・Android", githubMetadata(pr, false))
+        assertEquals("オープン", githubMetadata(JSONObject("""{"state":"OPEN"}"""), true))
         assertTrue(githubRejected(JSONObject("""{"installed":false}""")).contains("インストール"))
         assertTrue(
             githubRejected(JSONObject("""{"installed":true,"loggedIn":false}"""))

@@ -436,7 +436,7 @@ private fun HostMark(connection: String?, failed: Boolean) {
 
 /** 設定・マシン詳細の行。1行は 52dp、補足つきは 60dp（TS 版 0.1.23 の settings.tsx / machine.tsx と同じ寸法）。 */
 @Composable
-private fun ListRow(
+internal fun ListRow(
     title: String,
     sub: String = "",
     subColor: Color = pi.textSecondary,
