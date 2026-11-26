@@ -3,6 +3,12 @@ import XCTest
 
 final class ChatStateTests: XCTestCase {
     func row(_ group: String, _ id: String, _ json: String) -> Item { Item(collection: group, id: id, position: 0, json: json) }
+    @MainActor func testStopDependsOnParentActivityAndConnectionNotInputStatus() {
+        for (active, phase, connection, expected) in [(true, "ready", "connected", true), (false, "ready", "connected", false), (true, "syncing", "connected", false), (true, "ready", "offline", false)] {
+            let rows = Rows(Snapshot(revision: 1, items: [row("view", "status", #""waiting_input""#), row("view", "phase", "\"\(phase)\""), row("view", "agentActive", String(active)), row("host", "connection", "\"\(connection)\"")]))
+            XCTAssertEqual(Composer.canStop(rows), expected)
+        }
+    }
     func testReceiptsSurviveSceneAndSnapshotButNeverChangeOwner() {
         let busy = row("busy", "operation", #"{"id":"r","method":"session_op","op":"fork","sessionId":"source"}"#)
         let done = row("operationResult", "latest", #"{"id":"r","sessionId":"dest","outcome":"done","forkText":"original"}"#)

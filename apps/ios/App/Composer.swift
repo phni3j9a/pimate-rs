@@ -63,6 +63,16 @@ struct Composer: View {
         }
         try await model.send(key, sent); return ""
     }
+    static func canStop(_ rows: Rows) -> Bool {
+        rows.field("agentActive") == "true" && rows.field("phase") == "\"ready\"" && rows.machineOnline
+    }
+    @ViewBuilder private var stop: some View {
+        if Self.canStop(rows) {
+            Button { Task { try? await model.abort(key) } } label: {
+                SwiftUI.Image(systemName: "stop.fill").frame(minWidth: 44, minHeight: 44)
+            }.accessibilityLabel("停止").disabled(model.busy)
+        }
+    }
     var body: some View {
         let draft = model.body(key)
         VStack(alignment: .leading, spacing: 4) {
@@ -76,7 +86,7 @@ struct Composer: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(PiTheme.waiting.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             }
             if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).font(.caption).foregroundStyle(PiTheme.failure) }
-            if blocked { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10) }
+            if blocked { HStack { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10); Spacer(); stop } }
             else {
                 if rows.field("slashCommands") == "true", !input.marked, draft.text.hasPrefix("/"), !draft.text.contains(where: { $0.isWhitespace }) {
                     CommandPalette(model: model, key: key, text: draft.text, commands: rows.groups["command"] ?? [])
@@ -100,7 +110,7 @@ struct Composer: View {
                         }
                         if !selection.isEmpty { ProgressView().accessibilityLabel("画像を準備中") }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
-                        if running { Button("停止", systemImage: "stop.fill") { Task { try? await model.abort(key) } }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44).disabled(model.busy) }
+                        stop
                         Button { guard let sent = input.submission(draft) else { return }; Task {
                             sendError = ""
                             do {
