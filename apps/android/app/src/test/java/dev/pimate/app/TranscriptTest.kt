@@ -33,7 +33,7 @@ class TranscriptTest {
             ),
             Entry("3", "tool_result", "a\nb\n", callId = "c1", name = "read"),
             Entry("4", "tool_result", "失敗", callId = "c2", name = "bash", isError = true),
-            Entry("5", "assistant", "まとめ", meta = "model", time = 19_000),
+            Entry("5", "assistant", "まとめ", time = 19_000),
         )
 
     @Test
@@ -75,7 +75,7 @@ class TranscriptTest {
         val (first, second) = rows.filterIsInstance<ChatRow.Tool>()
         assertEquals(ToolState.Done to "2 行", first.state to first.meta)
         assertEquals(ToolState.Failed to "エラー", second.state to second.meta)
-        assertEquals("model", (rows.last() as ChatRow.Text).meta)
+        assertEquals("まとめ", (rows.last() as ChatRow.Text).text)
     }
 
     @Test

@@ -173,7 +173,7 @@ class DemoJourney {
         assertTrue(ui.onNode(sent).isNotDisplayed())
         waitFor("上の質問に回答すると入力できます")
         assertTrue(ui.onNodeWithText("はい").isNotDisplayed())
-        ui.onNodeWithText("最新へ").performClick()
+        ui.onNodeWithContentDescription("最新の位置へ").performClick()
         waitFor("作業ディレクトリの差分を確認します。")
         ui.onNodeWithText("はい").assertIsDisplayed()
         shot("question")

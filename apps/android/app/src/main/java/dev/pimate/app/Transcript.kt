@@ -100,7 +100,6 @@ internal data class Entry(
     val final: Boolean = true, // assistant: この発言でターンが終わった（stopReason が toolUse 以外）
     val error: String = "",
     val aborted: Boolean = false,
-    val meta: String = "", // モデル・トークン・費用
     val callId: String = "", // tool_result
     val name: String = "",
     val isError: Boolean = false,
@@ -161,12 +160,8 @@ internal sealed interface ChatRow {
         val ms: Long? = null,
     ) : ChatRow
 
-    data class Text(
-        override val key: String,
-        val text: String,
-        val meta: String = "",
-        override val fold: String? = null,
-    ) : ChatRow
+    data class Text(override val key: String, val text: String, override val fold: String? = null) :
+        ChatRow
 
     data class Tool(
         override val key: String,
@@ -351,7 +346,7 @@ internal fun buildRows(
                             ms = thinkingMs[e.id],
                         )
                 if (e.text.isNotBlank()) {
-                    turn += ChatRow.Text("${e.id}:text", e.text, if (e.final) e.meta else "")
+                    turn += ChatRow.Text("${e.id}:text", e.text)
                     if (e.final) finalKey = "${e.id}:text"
                 }
                 e.calls.forEach {
@@ -514,7 +509,6 @@ internal fun entry(o: JSONObject): Entry {
     return when (val kind = o.str("kind")) {
         "assistant" -> {
             val calls = o.optJSONArray("toolCalls")
-            val usage = o.optJSONObject("usage")
             val stop = o.str("stopReason")
             val error = o.str("errorMessage")
             Entry(
@@ -537,14 +531,6 @@ internal fun entry(o: JSONObject): Entry {
                     stop == "aborted" ||
                         Regex("(operation|request) was aborted", RegexOption.IGNORE_CASE)
                             .containsMatchIn(error),
-                meta =
-                    listOfNotNull(
-                            o.optJSONObject("model")?.str("id")?.ifEmpty { null },
-                            usage?.let { "${count(it.optDouble("input", 0.0))} in" },
-                            usage?.let { "${count(it.optDouble("output", 0.0))} out" },
-                            usage?.optDouble("cost")?.takeIf { it > 0 }?.let { "$%.2f".format(it) },
-                        )
-                        .joinToString(" · "),
                 time = time,
             )
         }

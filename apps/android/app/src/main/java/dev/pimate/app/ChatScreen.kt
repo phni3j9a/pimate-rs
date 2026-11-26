@@ -326,9 +326,9 @@ internal fun ChatScreen(
                                 ui.switched?.second,
                                 ui.switched?.first == switchId,
                             )
-                    val list = rememberLazyListState()
+                    val list = key(editor) { rememberLazyListState() }
                     val scope = rememberCoroutineScope()
-                    var follow by rememberSaveable(m.selected) { mutableStateOf(true) }
+                    var follow by rememberSaveable(editor) { mutableStateOf(true) }
                     val drag =
                         remember(list) {
                             object : NestedScrollConnection {
@@ -345,10 +345,9 @@ internal fun ChatScreen(
                     LaunchedEffect(list) {
                         snapshotFlow { list.layoutInfo }
                             .collect { info ->
+                                if (info.totalItemsCount == 0) return@collect
                                 if (!list.canScrollForward) follow = true
-                                else if (
-                                    follow && !list.isScrollInProgress && info.totalItemsCount > 0
-                                )
+                                else if (follow && !list.isScrollInProgress)
                                     list.requestScrollToItem(info.totalItemsCount - 1)
                             }
                     }
@@ -356,6 +355,7 @@ internal fun ChatScreen(
                         LazyColumn(
                             Modifier.fillMaxSize().nestedScroll(drag).testTag("chat"),
                             list,
+                            verticalArrangement = Arrangement.Bottom,
                             contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
                         ) {
                             items(
@@ -424,7 +424,7 @@ internal fun ChatScreen(
                             item("bottom") { Spacer(Modifier.height(10.dp)) }
                         }
                         if (list.canScrollForward) {
-                            FilledTonalButton(
+                            IconButton(
                                 onClick = {
                                     scope.launch {
                                         list.animateScrollToItem(
@@ -433,9 +433,16 @@ internal fun ChatScreen(
                                     }
                                 },
                                 modifier =
-                                    Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
+                                    Modifier.align(Alignment.BottomEnd)
+                                        .padding(end = 16.dp, bottom = 8.dp),
                             ) {
-                                Text("最新へ")
+                                Box(
+                                    Modifier.size(36.dp)
+                                        .background(pi.surfaceStrong, RoundedCornerShape(50)),
+                                    Alignment.Center,
+                                ) {
+                                    Icon(Icons.Down, "最新の位置へ", Modifier.size(16.dp), pi.text)
+                                }
                             }
                         }
                     }
