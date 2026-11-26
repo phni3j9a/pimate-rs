@@ -149,11 +149,13 @@ impl Desktop {
         id: &str,
         v: &Value,
         nav: &Navigation,
-        (now, width): (u64, f32),
         p: &Colors,
         cx: &Context<Self>,
     ) -> Button {
         let (host, pi) = (h.id.clone(), id.to_owned());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
         let waiting = v["section"] == "waiting";
         let nav = nav.clone();
         let working = v["working"] == true;
@@ -200,8 +202,9 @@ impl Desktop {
                     .flex()
                     .items_start()
                     .gap_2()
-                    // Button は中身を幅いっぱいに広げないので、行の内側の幅を渡す。
-                    .w(px(width))
+                    // Button は中身を幅いっぱいに広げないので、行の内側の幅を決める
+                    // （サイドバーの左右 8px と行の左右 12px を引く）。
+                    .w(px(self.sidebar_width() - 40.))
                     .child(mark)
                     .child(
                         div()
@@ -251,11 +254,6 @@ impl Desktop {
                     .to_lowercase()
                     .contains(&query)
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        // サイドバーの左右 8px と行の左右 12px を引いた幅。
-        let inner = self.sidebar_width() - 40.;
         let group = || {
             div()
                 .flex()
@@ -295,7 +293,7 @@ impl Desktop {
                     .debug_selector(|| "sidebar-waiting".into()),
             );
             for (h, id, v) in waiting {
-                rows = rows.child(self.pi_row(h, id, v, n, (now, inner), p, cx));
+                rows = rows.child(self.pi_row(h, id, v, n, p, cx));
             }
         }
         for h in &self.hosts {
@@ -341,7 +339,7 @@ impl Desktop {
                     .iter()
                     .filter(|(id, v)| v["section"] != "waiting" && shown(id, v))
                 {
-                    rows = rows.child(self.pi_row(h, id, v, n, (now, inner), p, cx));
+                    rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
         }
@@ -661,7 +659,7 @@ impl Render for Desktop {
         } else if first {
             main = main.child(self.first_screen(&nav, &p, cx));
         } else if let Some(key) = editor {
-            main = self.chat_area(main, key, question, toggle, &nav, &p, w, cx);
+            main = self.chat_area(main, key, question, &p, w, cx);
         } else if let Some(hint) = self.reconnect_hint() {
             main = main.children(bar(toggle)).child(hint);
         } else {

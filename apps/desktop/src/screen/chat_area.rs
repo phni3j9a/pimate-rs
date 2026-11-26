@@ -24,12 +24,14 @@ impl Desktop {
         mut main: Div,
         key: EditorKey,
         question: Option<(String, Entity<super::chat_question::Form>)>,
-        toggle: Option<Button>,
-        nav: &Navigation,
         p: &Colors,
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        // 760px 未満ではサイドバーを隠すので、ヘッダーの左に一覧を出すボタンを置く。
+        let toggle = (Layout::of(w.viewport_size().width) == Layout::Narrow)
+            .then(|| self.sidebar_toggle(p, cx));
+        let nav = self.init_navigation(w, cx);
         if self.receive_editor_text(w, cx) {
             self.bind_editor(w, cx);
         }
