@@ -12,6 +12,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
@@ -24,6 +26,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import org.json.*
@@ -324,18 +327,57 @@ internal fun ChatScreen(
                             )
                     val list = rememberLazyListState()
                     val scope = rememberCoroutineScope()
+                    var follow by remember(list) { mutableStateOf(true) }
+                    val drag = remember(list) { object : NestedScrollConnection {
+                        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                            if (available.y != 0f && source == NestedScrollSource.UserInput) follow = false
+                            return Offset.Zero
+                        }
+                    } }
+                    LaunchedEffect(list) {
+                        snapshotFlow { list.layoutInfo }.collect { info ->
+                            if (!list.canScrollForward) follow = true
+                            else if (follow && !list.isScrollInProgress && info.totalItemsCount > 0)
+                                list.requestScrollToItem(info.totalItemsCount - 1)
+                        }
+                    }
                     Box(Modifier.weight(1f)) {
-                    // 逆順のリスト。先頭（最下段）の固定の項目が見えている間は、増えた行のぶん上へ伸びる。
                     LazyColumn(
-                        Modifier.fillMaxSize().testTag("chat"),
+                        Modifier.fillMaxSize().nestedScroll(drag).testTag("chat"),
                         list,
-                        reverseLayout = true,
                         contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
                     ) {
-                        item("bottom") { Spacer(Modifier.height(10.dp)) }
+                        items(
+                            visible.size,
+                            key = {
+                                val id = visible[it].key
+                                // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
+                                if (id == "live:text") "live:${entries.lastOrNull()?.id}"
+                                else "row:$id"
+                            },
+                        ) { index ->
+                            val row = visible[index]
+                            Box(Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)) {
+                                RowView(
+                                    row,
+                                    if (row is ChatRow.Summary) "+${row.key}" in open
+                                    else isOpen(row),
+                                    review = { id: String -> show("review:$id") }.takeIf { key != null },
+                                ) {
+                                    // 手で行を開閉したレイアウトだけは末尾へ寄せない。
+                                    follow = false
+                                    list.requestScrollToItem(list.firstVisibleItemIndex, list.firstVisibleItemScrollOffset)
+                                    if (row is ChatRow.Summary) {
+                                        if (!open.remove("+${row.key}")) open.add("+${row.key}")
+                                    } else if (runLinks.containsKey(row.key) && key != null)
+                                        show("agents:" + runLinks.getValue(row.key))
+                                    else toggle(row)
+                                }
+                            }
+                        }
                         if (pcPrompt != null && questions.isEmpty())
                             item("pcPrompt") { PcCard(pcPrompt.str("title"), m.attachCommand()) }
-                        items(questions.asReversed(), key = { "question:${it.id}" }) { item ->
+                        items(questions, key = { "question:${it.id}" }) { item ->
                             val edit = editor?.let { m.answers[it, item.id] }
                             if (edit != null && target != null)
                                 Box(Modifier.padding(top = 24.dp)) {
@@ -356,36 +398,11 @@ internal fun ChatScreen(
                                     }
                                 }
                         }
-                        items(
-                            visible.size,
-                            key = {
-                                val id = visible[visible.size - 1 - it].key
-                                // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
-                                if (id == "live:text") "live:${entries.lastOrNull()?.id}"
-                                else "row:$id"
-                            },
-                        ) { n ->
-                            val index = visible.size - 1 - n
-                            val row = visible[index]
-                            Box(Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)) {
-                                RowView(
-                                    row,
-                                    if (row is ChatRow.Summary) "+${row.key}" in open
-                                    else isOpen(row),
-                                    review = { id: String -> show("review:$id") }.takeIf { key != null },
-                                ) {
-                                    if (row is ChatRow.Summary) {
-                                        if (!open.remove("+${row.key}")) open.add("+${row.key}")
-                                    } else if (runLinks.containsKey(row.key) && key != null)
-                                        show("agents:" + runLinks.getValue(row.key))
-                                    else toggle(row)
-                                }
-                            }
-                        }
+                        item("bottom") { Spacer(Modifier.height(10.dp)) }
                     }
-                    if (list.canScrollBackward) {
+                    if (list.canScrollForward) {
                         FilledTonalButton(
-                            onClick = { scope.launch { list.animateScrollToItem(0) } },
+                            onClick = { scope.launch { list.animateScrollToItem(list.layoutInfo.totalItemsCount - 1) } },
                             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 8.dp),
                         ) { Text("最新へ") }
                     }
