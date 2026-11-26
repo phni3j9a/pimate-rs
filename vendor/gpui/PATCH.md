@@ -11,3 +11,7 @@ Wayland の XDG portal の `WindowAppearance` を配送するとき、対象ウ�
 独自の修正。[確認した上流の Wayland client](https://github.com/zed-industries/zed/blob/2664a0aa1eae5dabf8f8273c03f88d53061ca7dc/crates/gpui_linux/src/linux/wayland/client.rs#L1162-L1184) でも appearance を借用中に配送しており、同じ修正の PR は見つからなかった。
 
 既知の同種の危険: 上流の隣接する `ButtonLayout` も借用中にウィンドウへ通知する（この vendor にはそのイベントなし）。この版の同じ portal の他の通知はカーソルのテーマ・サイズだけで、ウィンドウへのコールバックは発火しない。keyboard のフォーカス・レイアウト変更、pointer の enter/leave は配送前に既に借用を解放する。今回はこれらを変更していない。
+
+## ツールチップと Esc（#73）
+
+`Window::tooltip_visible` はそのフレームで描画したものだけを返す。`dismiss_tooltip` は現在のツールチップの view を次の描画から除外し、同じ場所にポインターを置いたまま Esc を押しても再表示しない。依存を更新・vendor を外すときは、`tooltip_owns_escape_before_turn_stop` で実際のホバー・閉じる操作・次の Esc を確認する。

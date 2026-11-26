@@ -642,6 +642,7 @@ impl TooltipId {
 }
 
 pub(crate) struct TooltipBounds {
+    view: EntityId,
     id: TooltipId,
     bounds: Bounds<Pixels>,
 }
@@ -846,6 +847,7 @@ pub struct Window {
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
+    dismissed_tooltip: Option<EntityId>,
     next_frame_callbacks: Rc<RefCell<Vec<FrameCallback>>>,
     pub(crate) dirty_views: FxHashSet<EntityId>,
     focus_listeners: SubscriberSet<(), AnyWindowFocusListener>,
@@ -1230,6 +1232,7 @@ impl Window {
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
             tooltip_bounds: None,
+            dismissed_tooltip: None,
             dirty_views: FxHashSet::default(),
             focus_listeners: SubscriberSet::new(),
             focus_lost_listeners: SubscriberSet::new(),
@@ -2085,6 +2088,19 @@ impl Window {
         self.paint_inspector_hitbox(cx);
     }
 
+    /// Whether the current frame actually painted a tooltip.
+    pub fn tooltip_visible(&self) -> bool {
+        self.tooltip_bounds.is_some()
+    }
+
+    /// Hide this hover instance without suppressing the next hover's tooltip.
+    pub fn dismiss_tooltip(&mut self) {
+        if let Some(tip) = self.tooltip_bounds.take() {
+            self.dismissed_tooltip = Some(tip.view);
+            self.refresh();
+        }
+    }
+
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
         // Use indexing instead of iteration to avoid borrowing self for the duration of the loop.
         for tooltip_request_index in (0..self.next_frame.tooltip_requests.len()).rev() {
@@ -2097,6 +2113,10 @@ impl Window {
                 log::error!("Unexpectedly absent TooltipRequest");
                 continue;
             };
+            let view = tooltip_request.tooltip.view.entity_id();
+            if self.dismissed_tooltip == Some(view) {
+                continue;
+            }
             let mut element = tooltip_request.tooltip.view.clone().into_any();
             let mouse_position = tooltip_request.tooltip.mouse_position;
             let tooltip_size = element.layout_as_root(AvailableSpace::min_size(), self, cx);
@@ -2146,6 +2166,7 @@ impl Window {
             });
 
             self.tooltip_bounds = Some(TooltipBounds {
+                view,
                 id: tooltip_request.id,
                 bounds: tooltip_bounds,
             });

@@ -53,6 +53,9 @@ struct Desktop {
     slash_visible: bool,
     context_menu: Option<screen::context::OpenMenu>,
     palette_return: Option<FocusHandle>,
+    overlay_enter: Option<screen::keys::OverlayEnter>,
+    pointer_down_on_overlay: bool,
+    _overlay_keys: Subscription,
     media_keys: Option<Entity<screen::chat_media::Viewer>>,
     palette_scroll: ScrollHandle,
     palette_open: bool,
@@ -89,6 +92,13 @@ impl Desktop {
             }
         })
         .detach();
+        cx.observe_window_activation(w, |d, w, _| {
+            if !w.is_window_active() {
+                d.overlay_enter = None;
+            }
+        })
+        .detach();
+        let overlay_keys = screen::keys::intercept(w, cx);
         let mut app = Self {
             core,
             state: Default::default(),
@@ -120,6 +130,9 @@ impl Desktop {
             slash_visible: false,
             context_menu: None,
             palette_return: None,
+            overlay_enter: None,
+            pointer_down_on_overlay: false,
+            _overlay_keys: overlay_keys,
             media_keys: None,
             palette_scroll: ScrollHandle::new(),
             palette_open: false,

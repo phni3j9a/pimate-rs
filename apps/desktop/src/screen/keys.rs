@@ -25,8 +25,6 @@ macro_rules! commands {
                 KeyBinding::new("up", PickUp, Some("Picker > Input")),
                 KeyBinding::new("down", PickDown, Some("Picker > Input")),
                 KeyBinding::new("tab", PickTab, Some("Picker > Input")),
-                KeyBinding::new("tab", PickDown, Some("Palette > Input")),
-                KeyBinding::new("shift-tab", PickUp, Some("Palette > Input")),
                 KeyBinding::new("enter", PickEnter, Some("Picker > Input")),
             ]);
             #[cfg(target_os="macos")]
@@ -42,7 +40,9 @@ macro_rules! commands {
             }
         }
         pub(super) fn listeners(root: Div, cx: &Context<Desktop>) -> Div {
-            root.key_context("PiMate")$(.on_action(cx.listener(|app,_:&$name,w,cx| app.command(Command::$name,w,cx))))*
+            root.capture_any_mouse_down(cx.listener(Desktop::remember_pointer_layer))
+                .capture_key_up(cx.listener(Desktop::overlay_key_up))
+                .key_context("PiMate")$(.on_action(cx.listener(|app,_:&$name,w,cx| app.command(Command::$name,w,cx))))*
         }
     }
 }
@@ -78,7 +78,163 @@ commands! {
     Smaller=>("secondary--","文字を小さく"),
     ResetSize=>("secondary-0","標準の文字サイズ"),
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overlay {
+    Tooltip,
+    Menu,
+    Pair,
+    Palette,
+    Sidebar,
+    Slash,
+    Route,
+    Media,
+    Sheet,
+    Inspector,
+}
+
+pub(crate) struct OverlayEnter {
+    layer: Overlay,
+    focus: Option<FocusHandle>,
+    action: Option<Box<dyn Action>>,
+}
+// Intercept before GPUI resolves bindings (including Root's global Tab navigation).
+// A confirmation belongs to the original layer and focus until the physical key is released.
+pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
+    let window = w.window_handle().window_id();
+    let listener = cx.listener(move |d, e: &KeystrokeEvent, w, cx| {
+        if w.window_handle().window_id() != window {
+            return;
+        }
+        if e.keystroke.key == "tab" && w.tooltip_visible() {
+            w.dismiss_tooltip();
+        }
+        if !matches!(e.keystroke.key.as_str(), "enter" | "escape" | "tab") {
+            return;
+        }
+        let top = d.front(w, cx);
+        match (e.keystroke.key.as_str(), top) {
+            ("escape", Some(Overlay::Tooltip)) => {
+                w.dismiss_tooltip();
+                cx.stop_propagation();
+            }
+            ("tab", Some(Overlay::Sidebar | Overlay::Menu)) => cx.stop_propagation(),
+            ("tab", Some(Overlay::Palette)) => {
+                if let Some((input, _)) = &d.search {
+                    input.focus_handle(cx).focus(w);
+                }
+                w.dispatch_action(
+                    if e.keystroke.modifiers.shift {
+                        Box::new(PickUp)
+                    } else {
+                        Box::new(PickDown)
+                    },
+                    cx,
+                );
+                cx.stop_propagation();
+            }
+            ("enter", _) if d.overlay_enter.is_some() => cx.stop_propagation(),
+            ("enter", Some(layer)) => {
+                let action = if matches!(
+                    layer,
+                    Overlay::Menu | Overlay::Palette | Overlay::Pair | Overlay::Slash
+                ) && e.keystroke.modifiers == Modifiers::none()
+                {
+                    cx.key_bindings()
+                        .borrow()
+                        .bindings_for_input(std::slice::from_ref(&e.keystroke), &e.context_stack)
+                        .0
+                        .first()
+                        .map(|b| b.action().boxed_clone())
+                } else {
+                    None
+                };
+                if action.is_some() || layer == Overlay::Tooltip {
+                    cx.stop_propagation();
+                }
+                d.overlay_enter = Some(OverlayEnter {
+                    layer,
+                    focus: w.focused(cx),
+                    action,
+                });
+            }
+            _ => {}
+        }
+    });
+    cx.intercept_keystrokes(listener)
+}
 impl Desktop {
+    fn remember_pointer_layer(
+        &mut self,
+        e: &MouseDownEvent,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A tooltip or scrim can disappear between mouse-down and the button click.
+        if e.button == MouseButton::Left {
+            self.pointer_down_on_overlay = self.overlay_open(w, cx);
+        }
+    }
+    pub(super) fn background_click(&self, e: &ClickEvent) -> bool {
+        self.pointer_down_on_overlay && matches!(e, ClickEvent::Mouse(_))
+    }
+    fn overlay_key_up(&mut self, e: &KeyUpEvent, w: &mut Window, cx: &mut Context<Self>) {
+        if e.keystroke.key != "enter" {
+            return;
+        }
+        let Some(held) = self.overlay_enter.take() else {
+            return;
+        };
+        if self.front(w, cx) != Some(held.layer)
+            || w.focused(cx) != held.focus
+            || held.layer == Overlay::Tooltip
+        {
+            cx.stop_propagation();
+        } else if let Some(action) = held.action {
+            cx.stop_propagation();
+            w.dispatch_action(action, cx);
+        }
+    }
+    fn front(&self, w: &Window, cx: &App) -> Option<Overlay> {
+        use Overlay::*;
+        if w.tooltip_visible() {
+            Some(Tooltip)
+        } else if self.context_menu.is_some() {
+            Some(Menu)
+        } else if self.confirmation.is_some() {
+            Some(Pair)
+        } else if self.palette_open {
+            Some(Palette)
+        } else if self.sidebar_open
+            && !self.hosts.is_empty()
+            && Layout::of(w.viewport_size().width) == Layout::Narrow
+        {
+            Some(Sidebar)
+        } else if self.slash_visible {
+            Some(Slash)
+        } else if self
+            .navigation
+            .as_ref()
+            .is_some_and(|n| n.read(cx).route != super::Route::Home)
+        {
+            Some(Route)
+        } else if self.media_keys.is_some() {
+            Some(Media)
+        } else if self.active_sheet().is_some() {
+            Some(Sheet)
+        } else if self
+            .chat_keys
+            .as_ref()
+            .is_some_and(|(_, i)| i.read(cx).agents || i.read(cx).review_open)
+        {
+            Some(Inspector)
+        } else {
+            None
+        }
+    }
+    pub(super) fn overlay_open(&self, w: &Window, cx: &App) -> bool {
+        self.front(w, cx).is_some()
+    }
+
     pub(super) fn pi_order(&self) -> Vec<(String, String, bool)> {
         let mut rows: Vec<_> = self
             .hosts
@@ -94,8 +250,9 @@ impl Desktop {
         rows.sort_by_key(|r| !r.2);
         rows
     }
-    pub(super) fn stop_chat(&mut self, page: &state::Page, cx: &mut Context<Self>) {
-        if self.stopping
+    pub(super) fn stop_chat(&mut self, page: &state::Page, w: &Window, cx: &mut Context<Self>) {
+        if self.overlay_open(w, cx)
+            || self.stopping
             || !page.visible(self)
             || !self
                 .machines
@@ -126,47 +283,53 @@ impl Desktop {
         let Some(nav) = self.navigation.clone() else {
             return;
         };
-        if (self.confirmation.is_some() || self.palette_open || self.context_menu.is_some())
-            && c != EscapeTop
+        let top = self.front(w, cx);
+        if (matches!(top, Some(Overlay::Menu | Overlay::Palette | Overlay::Pair)) && c != EscapeTop)
+            || (top == Some(Overlay::Sidebar)
+                && !matches!(c, EscapeTop | NextPane | Sidebar | Search | Keys))
         {
             return;
         }
         let narrow = Layout::of(w.viewport_size().width) == Layout::Narrow;
         let home = nav.read(cx).route == Route::Home;
         match c {
-            EscapeTop => {
-                if self.context_menu.take().is_some() {
+            EscapeTop => match top {
+                Some(Overlay::Tooltip) => w.dismiss_tooltip(),
+                Some(Overlay::Menu) => {
+                    self.context_menu = None;
                     w.focus(&self.root_focus);
-                } else if self.palette_open {
-                    self.close_palette(w);
-                } else if self.confirmation.take().is_some() {
-                } else if self.sidebar_open {
+                }
+                Some(Overlay::Palette) => self.close_palette(w),
+                Some(Overlay::Pair) => self.confirmation = None,
+                Some(Overlay::Sidebar) => {
                     self.sidebar_open = false;
-                } else if self.slash_visible {
-                    self.slash_hidden = true;
-                } else if !home {
+                    w.focus(&self.main_focus);
+                }
+                Some(Overlay::Slash) => self.slash_hidden = true,
+                Some(Overlay::Route) => {
                     let back = nav.read(cx).back.clone();
                     self.navigate(&nav, back, cx);
-                } else if let Some(viewer) = self.media_keys.take() {
-                    viewer.update(cx, |s, cx| {
-                        s.close();
-                        cx.notify();
-                    });
-                } else if self.active_sheet().is_some() {
-                    self.state.close_page();
-                } else if let Some((page, ins)) = self.chat_keys.clone()
-                    && page.visible(self)
-                {
-                    if ins.read(cx).agents || ins.read(cx).review_open {
-                        ins.update(cx, |s, cx| {
-                            *s = Default::default();
-                            cx.notify()
-                        });
-                    } else if !self.composing {
-                        self.stop_chat(&page, cx)
-                    }
                 }
-            }
+                Some(Overlay::Media) => self.media_keys.take().unwrap().update(cx, |s, cx| {
+                    s.close();
+                    cx.notify();
+                }),
+                Some(Overlay::Sheet) => {
+                    self.state.close_page();
+                }
+                Some(Overlay::Inspector) => {
+                    self.chat_keys.as_ref().unwrap().1.update(cx, |s, cx| {
+                        *s = Default::default();
+                        cx.notify();
+                    })
+                }
+                None if !self.composing
+                    && let Some((page, _)) = self.chat_keys.clone() =>
+                {
+                    self.stop_chat(&page, w, cx)
+                }
+                None => {}
+            },
             Search | Keys => {
                 self.open_palette(c == Keys, w, cx);
             }
@@ -174,7 +337,12 @@ impl Desktop {
             NewPi => self.navigate(&nav, self.new_route(), cx),
             Sidebar => {
                 if narrow {
-                    self.sidebar_open = !self.sidebar_open
+                    self.sidebar_open = !self.sidebar_open;
+                    w.focus(if self.sidebar_open {
+                        &self.side_focus
+                    } else {
+                        &self.main_focus
+                    });
                 } else {
                     self.sidebar_hidden = !self.sidebar_hidden
                 }

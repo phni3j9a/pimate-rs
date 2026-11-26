@@ -486,10 +486,7 @@ impl Desktop {
     fn sidebar_toggle(&self, p: &Colors, cx: &Context<Self>) -> Button {
         p.icon_button("sidebar-toggle", "side", "Pi の一覧", cx)
             .debug_selector(|| "sidebar-toggle".into())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sidebar_open = !this.sidebar_open;
-                cx.notify()
-            }))
+            .on_click(cx.listener(|this, _, w, cx| this.command(keys::Command::Sidebar, w, cx)))
     }
     /// 登録の進み具合・結果・失敗。読み出せないときは、ここから読み直せる。
     fn registration_notice(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
@@ -1333,6 +1330,108 @@ mod tests {
 #[cfg(test)]
 mod key_tests {
     use super::{Route, keys, state, tests};
+    fn release(w: &mut gpui::VisualTestContext, key: &str) {
+        w.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+        });
+        w.run_until_parked();
+    }
+    fn press(w: &mut gpui::VisualTestContext, keys: &str) {
+        for key in keys.split_whitespace() {
+            w.simulate_keystrokes(key);
+            release(w, key);
+        }
+    }
+    #[gpui::test]
+    fn palette_owns_enter_through_release(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d");
+        for _ in 0..60 {
+            if w.update(|w, _| w.context_stack().iter().any(|c| c.contains("SendButton"))) {
+                break;
+            }
+            w.update(|w, _| w.focus_next());
+            w.run_until_parked();
+        }
+        let send = w.update(|w, cx| {
+            assert!(w.context_stack().iter().any(|c| c.contains("SendButton")));
+            w.focused(cx).unwrap()
+        });
+        let before = app.read_with(w, |d, _| d.size);
+        w.simulate_keystrokes("secondary-k");
+        w.update(|w, cx| {
+            app.read(cx)
+                .search
+                .as_ref()
+                .unwrap()
+                .0
+                .clone()
+                .update(cx, |s, cx| s.set_value("文字を大きく", w, cx));
+        });
+        w.run_until_parked();
+        w.simulate_keystrokes("enter");
+        assert!(app.read_with(w, |d, _| d.palette_open));
+        assert!(!w.update(|w, _| send.is_focused(w)));
+        release(w, "enter");
+        assert!(w.update(|w, _| send.is_focused(w)));
+        app.read_with(w, |d, cx| {
+            assert!(!d.palette_open && d.size > before && !d.sending && d.notice.is_empty());
+            assert_eq!(d.input.as_ref().unwrap().1.read(cx).value().as_str(), "d");
+        });
+    }
+    #[gpui::test]
+    fn narrow_sidebar_owns_focus_and_enter(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        w.simulate_keystrokes("secondary-l d secondary-b");
+        for key in ["tab", "shift-tab", "enter"] {
+            assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
+            press(w, key);
+        }
+        assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
+        app.read_with(w, |d, cx| {
+            assert!(
+                d.sidebar_open
+                    && !d.sending
+                    && d.notice.is_empty()
+                    && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
+            )
+        });
+        press(w, "escape");
+        assert!(!app.read_with(w, |d, _| d.sidebar_open));
+    }
+    #[gpui::test]
+    fn tooltip_owns_escape_before_turn_stop(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
+        w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        let pos = w.debug_bounds("chat-status").unwrap().center();
+        w.simulate_mouse_move(pos, None, Default::default());
+        w.run_until_parked();
+        w.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        w.run_until_parked();
+        assert!(w.update(|w, _| w.tooltip_visible()));
+        press(w, "escape");
+        assert!(!w.update(|w, _| w.tooltip_visible()));
+        assert!(wire.try_recv().is_err());
+        assert!(!app.read_with(w, |d, _| d.stopping));
+        press(w, "escape");
+        assert_eq!(
+            rt.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv()).await
+            })
+            .unwrap()
+            .as_deref(),
+            Some("abort")
+        );
+        server.abort();
+    }
     #[gpui::test]
     fn shortcuts_dispatch_and_palette_stacks_over_inspector(cx: &mut gpui::TestAppContext) {
         let (app, w, _socket) = tests::open_chat(cx);
@@ -1425,7 +1524,7 @@ mod key_tests {
         let pos = w.debug_bounds("context-pi-second").unwrap().center();
         w.simulate_mouse_down(pos, gpui::MouseButton::Right, gpui::Modifiers::none());
         w.run_until_parked();
-        w.simulate_keystrokes("down down enter");
+        press(w, "down down enter");
         assert_eq!(
             app.read_with(w, |d, _| d.selected.clone()).unwrap().1,
             "second"
@@ -1479,7 +1578,7 @@ mod key_tests {
         );
         w.run_until_parked();
         assert!(app.read_with(w, |app, _| app.context_menu.is_some()));
-        w.simulate_keystrokes("down enter");
+        press(w, "down enter");
         assert!(app.read_with(w, |app, _| app.context_menu.is_none()));
         assert_eq!(
             w.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
@@ -1527,7 +1626,7 @@ mod key_tests {
             cx.notify();
         });
         w.run_until_parked();
-        w.simulate_keystrokes("tab shift-tab enter");
+        press(w, "tab shift-tab enter");
         assert!(app.read_with(w, |d, cx| d.confirmation.is_none()
             && !d.pairing
             && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"));
@@ -1542,7 +1641,12 @@ mod key_tests {
         w.simulate_mouse_down(pos, gpui::MouseButton::Right, gpui::Modifiers::none());
         w.run_until_parked();
         assert!(app.read_with(w, |d, _| d.context_menu.is_some()));
-        w.simulate_keystrokes("enter escape");
+        let menu = w.update(|w, cx| w.focused(cx).unwrap());
+        for key in ["shift-tab", "tab", "shift-tab"] {
+            press(w, key);
+            assert!(w.update(|w, _| menu.is_focused(w)));
+        }
+        press(w, "enter escape");
         assert!(app.read_with(w, |d, cx| d.context_menu.is_none()
             && d.notice.is_empty()
             && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "draft"));

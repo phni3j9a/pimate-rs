@@ -56,7 +56,7 @@ impl Desktop {
             }
             Choice::App(c) => self.command(*c, w, cx),
             Choice::Slash(pg, name) if pg.visible(self) => {
-                if self.sending {
+                if self.sending || self.overlay_open(w, cx) {
                     return;
                 }
                 let t = match pg.command_ticket(name) {

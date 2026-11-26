@@ -362,12 +362,7 @@ impl Desktop {
                         }))
                         .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
                             if e.secondary == this.ctrl_enter {
-                                if !disabled
-                                    && !this.slash_visible
-                                    && this.confirmation.is_none()
-                                    && this.context_menu.is_none()
-                                    && !this.palette_open
-                                {
+                                if !disabled {
                                     this.submit_chat(&key_page, w, cx);
                                 }
                                 cx.stop_propagation();
@@ -398,16 +393,23 @@ impl Desktop {
                                         .label("停止")
                                         .debug_selector(|| "abort-turn".into())
                                         .disabled(self.stopping)
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.stop_chat(&stop_page, cx)
+                                        .on_click(cx.listener(move |this, e, w, cx| {
+                                            if this.background_click(e) {
+                                                return;
+                                            }
+                                            this.stop_chat(&stop_page, w, cx)
                                         })),
                                 )
                             })
                             .child(
                                 p.primary("send", cx)
+                                    .key_context("SendButton")
                                     .label(action)
                                     .disabled(disabled)
-                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                    .on_click(cx.listener(move |this, e, w, cx| {
+                                        if this.background_click(e) {
+                                            return;
+                                        }
                                         this.submit_chat(&send_page, w, cx)
                                     })),
                             ),
@@ -417,7 +419,7 @@ impl Desktop {
         outer.child(theme::column(main).flex_shrink_0())
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
-        if !page.visible(self) {
+        if self.overlay_open(w, cx) || !page.visible(self) {
             return;
         }
         let t = match self.prepare_submission(page, w, cx) {
