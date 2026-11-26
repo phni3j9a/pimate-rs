@@ -286,8 +286,14 @@ private fun ListRow(
         Alignment.CenterVertically,
     ) {
         leading?.invoke()
-        // 名前と補足はひとまとまりで読み上げる（右の操作は別）。
-        Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
+        // 押せない行は、名前と補足をひとまとまりで読み上げる（右の操作は別）。押せる行は行全体がまとまる。
+        Column(
+            Modifier.weight(1f)
+                .then(
+                    if (onClick == null) Modifier.semantics(mergeDescendants = true) {}
+                    else Modifier
+                )
+        ) {
             Text(title, color = if (enabled) pi.text else pi.textSecondary, style = Type.lead)
             if (sub.isNotEmpty()) Text(sub, color = subColor, style = Type.caption)
         }
