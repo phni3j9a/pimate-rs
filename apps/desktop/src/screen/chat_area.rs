@@ -385,8 +385,40 @@ impl Desktop {
                 .to_owned();
             let pg = page.clone();
             let usage_page = page.clone();
+            let drop_page = page.clone();
+            let paste_page = page.clone();
             main = main.child(
                 div()
+                    .on_drop(cx.listener(move |app, paths: &ExternalPaths, w, cx| {
+                        app.add_images(
+                            &drop_page,
+                            chat_media::ImageInput::Files(paths.paths().to_vec()),
+                            w,
+                            cx,
+                        )
+                    }))
+                    .capture_action(cx.listener(
+                        move |app, _: &gpui_component::input::Paste, w, cx| {
+                            if let Some(item) = cx.read_from_clipboard() {
+                                let images: Vec<_> = item
+                                    .into_entries()
+                                    .filter_map(|e| match e {
+                                        ClipboardEntry::Image(im) => Some(im.bytes),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                if !images.is_empty() {
+                                    cx.stop_propagation();
+                                    app.add_images(
+                                        &paste_page,
+                                        chat_media::ImageInput::Clipboard(images),
+                                        w,
+                                        cx,
+                                    );
+                                }
+                            }
+                        },
+                    ))
                     .mx_4()
                     .mb_3()
                     .p_3()

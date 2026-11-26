@@ -320,6 +320,53 @@ impl Desktop {
                         body = body.child(text.to_owned())
                     }
                 }
+                if c["state"] == "waiting" {
+                    let agent = c["agent"].as_str().unwrap_or("");
+                    let title = c["title"]
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or(agent);
+                    let prefix = format!("{title}（{agent}）の質問への回答: ");
+                    let key = key.clone();
+                    let pg = page.clone();
+                    let inspector = ins.clone();
+                    body = body.child(
+                        Button::new("answer-child")
+                            .debug_selector(|| "answer-child".into())
+                            .label(if c["question"].as_str().unwrap_or("").is_empty() {
+                                "チャットで確認"
+                            } else {
+                                "チャットで回答"
+                            })
+                            .on_click(cx.listener(move |app, _, w, cx| {
+                                let draft =
+                                    app.drafts.get(&key).map(String::as_str).unwrap_or_default();
+                                if !pg.visible(app)
+                                    || app.composing
+                                    || app.sending
+                                    || (app.input.is_some()
+                                        && !app.live_matches(&key, draft, w, cx))
+                                {
+                                    app.notice =
+                                        "現在の入力を確定してからもう一度操作してください".into();
+                                } else {
+                                    app.drafts
+                                        .entry(key.clone())
+                                        .or_default()
+                                        .insert_str(0, &prefix);
+                                    app.input = None;
+                                    app.bind_editor(w, cx);
+                                    inspector.update(cx, |i, cx| {
+                                        *i = Inspector::default();
+                                        cx.notify()
+                                    });
+                                    app.restore_input(w, cx);
+                                }
+                                cx.notify();
+                            })),
+                    );
+                }
                 for sent in self.state.instructions.for_child(page, unit) {
                     body = body.child(p.caption(format!("あなた · {}", sent.text)))
                 }

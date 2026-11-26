@@ -31,7 +31,37 @@ use gpui_component::{
 use serde_json::Value;
 pub(crate) use settings::Navigation;
 use settings::Route;
-pub(crate) use theme::Assets;
+pub(crate) struct Assets;
+macro_rules! mobile_mark {
+    ($name:literal) => {
+        include_bytes!(concat!(
+            "../../ios/App/Assets.xcassets/",
+            $name,
+            ".imageset/",
+            $name,
+            ".svg"
+        ))
+    };
+}
+const MARKS: &[(&str, &[u8])] = &[
+    ("icons/grok-bot.svg", mobile_mark!("grok-bot")),
+    ("icons/laptop.svg", mobile_mark!("lucide-monitor")),
+    ("icons/gear.svg", mobile_mark!("lucide-settings")),
+    ("icons/plus.svg", mobile_mark!("lucide-plus")),
+];
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> gpui::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some((_, bytes)) = MARKS.iter().find(|m| m.0 == path) {
+            return Ok(Some((*bytes).into()));
+        }
+        theme::Assets.load(path)
+    }
+    fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
+        let mut paths = theme::Assets.list(path)?;
+        paths.push("icons/grok-bot.svg".into());
+        Ok(paths)
+    }
+}
 use theme::{Colors, Layout, icon};
 
 pub fn transcript() -> ListState {
@@ -175,9 +205,6 @@ impl Desktop {
             ("入力待ち".to_owned(), p.waiting)
         } else {
             let mut detail = cwd.to_owned();
-            if let Some(n) = v["subagents"]["active"].as_u64().filter(|n| *n > 0) {
-                detail += &format!(" · サブエージェント {n} 実行中");
-            }
             match v["origin"].as_str() {
                 Some("mobile") => detail += " · スマホで起動",
                 Some("grok-bot") => detail += " · Grok Bot",
@@ -185,6 +212,17 @@ impl Desktop {
             }
             (detail, p.secondary)
         };
+        let pending = v["subagents"]["waiting"].as_u64().unwrap_or(0);
+        let running = v["subagents"]["active"]
+            .as_u64()
+            .unwrap_or(0)
+            .saturating_sub(pending);
+        let counts = [(running, "実行中"), (pending, "入力待ち")]
+            .into_iter()
+            .filter(|(n, _)| *n > 0)
+            .map(|(n, state)| format!("{state} {n}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
         let selected = self
             .selected
             .as_ref()
@@ -221,7 +259,7 @@ impl Desktop {
                 selected,
                 cx,
             )
-            .h(px(theme::ROW))
+            .h(px(theme::ROW + if counts.is_empty() { 0. } else { 18. }))
             .px_3()
             .tooltip(format!("{} · {cwd}", self.host_label(h)))
             .child(
@@ -233,6 +271,9 @@ impl Desktop {
                     // （サイドバーの左右 8px と行の左右 12px を引く）。
                     .w(px(self.sidebar_width() - 40.))
                     .child(mark)
+                    .when(v["origin"] == "grok-bot", |row| {
+                        row.child(icon("grok-bot", 14., p.ink))
+                    })
                     .child(
                         div()
                             .flex()
@@ -245,6 +286,16 @@ impl Desktop {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(pi_title(v, id).to_owned()),
                             )
+                            .when(!counts.is_empty(), |row| {
+                                row.child(
+                                    p.caption(format!("子: {counts}"))
+                                        .text_color(if pending > 0 {
+                                            p.waiting
+                                        } else {
+                                            p.secondary
+                                        }),
+                                )
+                            })
                             .child(p.caption(detail).text_color(color).truncate()),
                     )
                     .child(
@@ -431,8 +482,26 @@ impl Desktop {
                         .py_2(),
                     );
                 }
-                for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
+                for (id, v) in entries
+                    .iter()
+                    .filter(|(_, v)| v["section"] != "waiting" && v["section"] != "bot")
+                {
                     rows = rows.child(self.pi_row(h, id, v, n, p, cx));
+                }
+                let mut bots = entries
+                    .iter()
+                    .filter(|(_, v)| v["section"] == "bot")
+                    .peekable();
+                if bots.peek().is_some() {
+                    rows = rows.child(
+                        group()
+                            .debug_selector(|| "sidebar-bots".into())
+                            .child(icon("grok-bot", 14., p.ink))
+                            .child("Grok Bot"),
+                    );
+                    for (id, v) in bots {
+                        rows = rows.child(self.pi_row(h, id, v, n, p, cx));
+                    }
                 }
             }
         }
@@ -1398,6 +1467,64 @@ mod key_tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+    #[gpui::test]
+    fn stage5_external_image_and_image_paste_both_attach(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        let path = std::env::temp_dir().join(format!("{}.png", uuid::Uuid::new_v4()));
+        image::RgbImage::new(3, 4).save(&path).unwrap();
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                let pg = d.chat_keys.as_ref().unwrap().0.clone();
+                d.add_images(
+                    &pg,
+                    super::chat_media::ImageInput::Files(vec![path.clone()]),
+                    w,
+                    cx,
+                );
+            })
+        });
+        wait(w, "remove-image-0");
+        w.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_image(&gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                std::fs::read(&path).unwrap(),
+            )))
+        });
+        std::fs::remove_file(path).unwrap();
+        press(w, "secondary-l secondary-v");
+        wait(w, "remove-image-1");
+        assert!(wire.try_recv().is_err());
+    }
+    #[gpui::test]
+    fn stage5_bot_group_excludes_waiting_and_answer_keeps_parent_draft(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use pimate_core::{Change, Item};
+        use serde_json::json;
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        press(w, "secondary-l d");
+        app.update(w,|d,cx|{let m=d.machines.get_mut("key-menu").unwrap();m.rows.apply((m.conn.snapshot().revision+1,[
+            ("instance","bot",json!({"origin":"grok-bot","section":"bot"})),("instance","ask",json!({"origin":"grok-bot","section":"waiting"})),("run","run",json!({"children":[{"id":"unit","agent":"reader","state":"waiting","question":"OK?"}]}))
+        ].map(|(c,id,v)|Change::Upsert(Item{collection:c.into(),id:id.into(),position:0,json:v.to_string()})).into()),||panic!());
+        d.chat_keys.as_ref().unwrap().1.update(cx,|i,cx|{i.tab=Some(super::Tab::Agents);i.child=Some(state::Child{run:"run".into(),child:"unit".into()});cx.notify()});cx.notify();});
+        let waiting = wait(w, "context-pi-ask");
+        let group = wait(w, "sidebar-bots");
+        let bot = wait(w, "context-pi-bot");
+        assert!(waiting.y < group.y && group.y < bot.y);
+        let pos = wait(w, "answer-child");
+        w.simulate_click(pos, Default::default());
+        w.run_until_parked();
+        assert_eq!(
+            app.read_with(w, |d, cx| d.input.as_ref().unwrap().1.read(cx).value()),
+            "reader（reader）の質問への回答: d"
+        );
+        assert!(wire.try_recv().is_err());
     }
     #[gpui::test]
     fn x11_enter_repeat_cannot_submit_completed_command(cx: &mut gpui::TestAppContext) {

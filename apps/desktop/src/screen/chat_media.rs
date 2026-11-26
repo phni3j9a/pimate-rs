@@ -129,6 +129,123 @@ fn decode(bytes: &[u8], thumb: bool) -> Result<Arc<RenderImage>, Error> {
     }
     Ok(Arc::new(RenderImage::new([image::Frame::new(data)])))
 }
+#[derive(Default)]
+struct Zoom {
+    scale: Option<f32>,
+    offset: Point<Pixels>,
+    drag: Option<Point<Pixels>>,
+}
+impl Zoom {
+    fn geometry(
+        &self,
+        view: Size<Pixels>,
+        native: Size<Pixels>,
+    ) -> (f32, Point<Pixels>, Size<Pixels>) {
+        let scale = self.scale.unwrap_or_else(|| {
+            (view.width / native.width)
+                .min(view.height / native.height)
+                .min(1.)
+        });
+        let scaled = size(native.width * scale, native.height * scale);
+        let axis = |available: Pixels, length: Pixels, offset: Pixels| {
+            let center = (available - length) * 0.5;
+            if center >= px(0.) {
+                center
+            } else {
+                (center + offset).clamp(center * 2., px(0.))
+            }
+        };
+        (
+            scale,
+            point(
+                axis(view.width, scaled.width, self.offset.x),
+                axis(view.height, scaled.height, self.offset.y),
+            ),
+            scaled,
+        )
+    }
+}
+fn zoomed(id: SharedString, im: Arc<RenderImage>, w: &mut Window, cx: &mut App) -> AnyElement {
+    let state = w.use_keyed_state(SharedString::from(format!("zoom:{id}")), cx, |_, _| {
+        Zoom::default()
+    });
+    let viewport = std::rc::Rc::new(std::cell::Cell::new(Size::<Pixels>::default()));
+    let dimensions = viewport.clone();
+    let native = im
+        .size(0)
+        .map(|d| px(u32::from(d) as f32 / w.scale_factor()));
+    let view = state.clone();
+    let scroll = state.clone();
+    let press = state.clone();
+    let drag = state.clone();
+    let area = viewport.clone();
+    div()
+        .relative()
+        .size_full()
+        .overflow_hidden()
+        .on_scroll_wheel(move |e, _, cx| {
+            let dy = f32::from(e.delta.pixel_delta(px(36.)).y);
+            scroll.update(cx, |z, cx| {
+                let (old, _, _) = z.geometry(viewport.get(), native);
+                z.scale = Some((old * (dy / 240.).exp()).clamp(0.02, 16.));
+                cx.notify()
+            });
+            cx.stop_propagation();
+        })
+        .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+            press.update(cx, |z, _| z.drag = Some(e.position))
+        })
+        .on_mouse_move(move |e, _, cx| {
+            drag.update(cx, |z, cx| {
+                if e.pressed_button != Some(MouseButton::Left) {
+                    z.drag = None;
+                    return;
+                }
+                if let Some(previous) = z.drag {
+                    z.drag = Some(e.position);
+                    let (_, origin, scaled) = z.geometry(area.get(), native);
+                    let center = point(
+                        (area.get().width - scaled.width) * 0.5,
+                        (area.get().height - scaled.height) * 0.5,
+                    );
+                    z.offset = origin - center + (e.position - previous);
+                    cx.notify();
+                }
+            })
+        })
+        .child(
+            canvas(
+                move |bounds, _, _| dimensions.set(bounds.size),
+                move |bounds, _, w, cx| {
+                    let (_, origin, size) = view.read(cx).geometry(bounds.size, native);
+                    let _ = w.paint_image(
+                        Bounds::new(bounds.origin + origin, size),
+                        Default::default(),
+                        im,
+                        0,
+                        false,
+                    );
+                },
+            )
+            .size_full(),
+        )
+        .child(
+            div().absolute().right_2().bottom_2().child(
+                Button::new("reset-zoom")
+                    .label("等倍に戻す")
+                    .on_click(move |_, _, cx| {
+                        state.update(cx, |z, cx| {
+                            *z = Zoom {
+                                scale: Some(1.),
+                                ..Zoom::default()
+                            };
+                            cx.notify()
+                        })
+                    }),
+            ),
+        )
+        .into_any_element()
+}
 fn photo(
     id: SharedString,
     gallery: Gallery,
@@ -137,7 +254,7 @@ fn photo(
     w: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    let tile = w.use_keyed_state(id, cx, |_, cx| {
+    let tile = w.use_keyed_state(id.clone(), cx, |_, cx| {
         cx.on_release(|t: &mut Tile, cx| {
             if let Some(Ok(im)) = t.image.take() {
                 cx.drop_image(im, None)
@@ -147,6 +264,7 @@ fn photo(
         Tile::default()
     });
     let content = match &tile.read(cx).image {
+        Some(Ok(im)) if !thumb => zoomed(id, im.clone(), w, cx),
         Some(Ok(im)) => img(im.clone())
             .object_fit(ObjectFit::Contain)
             .size_full()
@@ -380,7 +498,53 @@ impl Viewer {
         )
     }
 }
+pub(super) enum ImageInput {
+    Files(Vec<std::path::PathBuf>),
+    Clipboard(Vec<Vec<u8>>),
+}
 impl Desktop {
+    pub(super) fn add_images(
+        &mut self,
+        page: &Page,
+        source: ImageInput,
+        w: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlay_open(w, cx) || !page.visible(self) {
+            return;
+        }
+        let ticket = match self.start_picker(page) {
+            Ok(t) => t,
+            Err(e) => {
+                self.notice = format!("画像を追加できません: {e}");
+                cx.notify();
+                return;
+            }
+        };
+        let page = page.clone();
+        cx.spawn(async move |app, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let encoded = match source {
+                        ImageInput::Files(paths) => ticket.encode(&paths),
+                        ImageInput::Clipboard(bytes) => ticket.clipboard(&bytes),
+                    };
+                    encoded.map(|v| (ticket, v))
+                })
+                .await;
+            let _ = app.update(cx, |app, cx| {
+                if page.visible(app)
+                    && let Err(e) = result.and_then(|(t, v)| app.finish_picker(t, v))
+                {
+                    app.notice = format!("画像を追加できません: {e}");
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
     pub(super) fn attachments(
         &self,
         key: &EditorKey,
@@ -496,6 +660,7 @@ impl Desktop {
             row = row.child(
                 div().flex().items_center().children(preview).child(
                     Button::new(("remove-image", i))
+                        .debug_selector(move || format!("remove-image-{i}"))
                         .small()
                         .label(format!("画像 {} を外す", i + 1))
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -515,6 +680,24 @@ impl Desktop {
 #[cfg(test)]
 mod tests {
     use super::decode;
+    #[test]
+    fn fitted_zoom_and_pan_stay_inside_the_image() {
+        use super::*;
+        let view = size(px(200.), px(120.));
+        let native = size(px(400.), px(100.));
+        assert_eq!(
+            Zoom::default().geometry(view, native),
+            (0.5, point(px(0.), px(35.)), size(px(200.), px(50.)))
+        );
+        let mut z = Zoom {
+            scale: Some(1.),
+            offset: point(px(45.), px(0.)),
+            drag: None,
+        };
+        assert_eq!(z.geometry(view, native).1, point(px(-55.), px(10.)));
+        z.offset = point(px(-500.), px(500.));
+        assert_eq!(z.geometry(view, native).1, point(px(-200.), px(10.)));
+    }
     #[test]
     fn invalid_image_fails_without_rendering() {
         assert!(decode(b"not an image", false).is_err())
