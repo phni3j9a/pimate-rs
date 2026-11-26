@@ -2,7 +2,7 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** TS 版の通知以外の機能を、Android（Compose）・iOS（SwiftUI、シミュレーター）・macOS と Linux のデスクトップ（GPUI）で実装しました。Host は Rust の単一バイナリで、端末の保持（abduco の役割）を内蔵し、Linux の systemd と macOS の launchd で常駐します。RC Extension もこのリポジトリにあります。配布の準備（npm の `@phni3j9a/pimate`、TS 版の上書き更新になる Android の APK、デスクトップの .app.zip と tar.gz）まで終わり、公開は [#67](https://github.com/phni3j9a/pimate-rs/issues/67) で直前に確認してから行います。iOS の TestFlight は Apple の組織アカウントへの移行のあとです（[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** TS 版の通知以外の機能を、Android（Compose）・iOS（SwiftUI、シミュレーター）・macOS と Linux のデスクトップ（GPUI）で実装しました。Host は Rust の単一バイナリで、端末の保持（abduco の役割）を内蔵し、Linux の systemd と macOS の launchd で常駐します。RC Extension もこのリポジトリにあります。0.2.0 を公開しました（2026-11-26）: npm の `@phni3j9a/pimate`（TS 版 0.1.20 の後継）、TS 版の上書き更新になる Android の APK（[app-v0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/app-v0.2.0)）、Linux のデスクトップ（[desktop-v0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/desktop-v0.2.0)）。iOS の TestFlight と macOS のデスクトップの署名・公証は、Apple の組織アカウントへの移行のあとです（[#70](https://github.com/phni3j9a/pimate-rs/issues/70)、[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
 
 ## 目的
 
