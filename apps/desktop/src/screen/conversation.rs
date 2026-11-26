@@ -252,6 +252,7 @@ impl Desktop {
                 }
                 let user = role == "あなた";
                 let message = div()
+                    .debug_selector(|| format!("message-{id}"))
                     .w_full()
                     .when(stream, |d| d.track_focus(&stream_reader))
                     .px_4()

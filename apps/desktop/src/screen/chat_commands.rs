@@ -149,19 +149,18 @@ impl Desktop {
         for (i, name) in candidates.names.iter().enumerate() {
             let shared = shared.clone();
             let value = self.machines[&key.host].rows.get("command", name);
-            let description =
-                value["description"]
-                    .as_str()
-                    .unwrap_or_else(|| match name.as_str() {
-                        "model" => "モデルを変更",
-                        "resume" => "過去のセッションを開く",
-                        "tree" => "セッションツリー",
-                        "fork" => "会話を分岐",
-                        "new" => "新しいセッション",
-                        "compact" => "会話を圧縮",
-                        "reload" => "拡張機能を読み直す",
-                        _ => "この Pi のコマンド",
-                    });
+            let description = value["description"]
+                .as_str()
+                .unwrap_or(match name.as_str() {
+                    "model" => "モデルを変更",
+                    "resume" => "過去のセッションを開く",
+                    "tree" => "セッションツリー",
+                    "fork" => "会話を分岐",
+                    "new" => "新しいセッション",
+                    "compact" => "会話を圧縮",
+                    "reload" => "拡張機能を読み直す",
+                    _ => "この Pi のコマンド",
+                });
             list = list.child(
                 p.row(("candidate", i), ix == i, cx)
                     .debug_selector(|| format!("command-choice-{i}"))

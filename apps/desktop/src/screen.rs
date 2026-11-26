@@ -1345,6 +1345,43 @@ mod key_tests {
         }));
     }
     #[gpui::test]
+    fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let raw = "**太字** と [リンク](https://example.org)\n\n2 行目";
+        app.update(w, |d, cx| {
+            d.machines.get_mut("fixture").unwrap().rows.apply(
+                (
+                    2,
+                    vec![pimate_core::Change::Upsert(pimate_core::Item {
+                        collection: "entry".into(),
+                        id: "msg".into(),
+                        position: 0,
+                        json: serde_json::json!({"kind":"assistant","text":raw}).to_string(),
+                    })],
+                ),
+                || panic!(),
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        let bounds = w.debug_bounds("message-entry:msg").unwrap();
+        w.simulate_mouse_down(
+            bounds.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::none(),
+        );
+        w.run_until_parked();
+        assert!(app.read_with(w, |app, _| app.context_menu.is_some()));
+        w.simulate_keystrokes("down enter");
+        assert!(app.read_with(w, |app, _| app.context_menu.is_none()));
+        assert_eq!(
+            w.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+                .as_deref(),
+            Some(raw)
+        );
+    }
+    #[gpui::test]
     fn active_turn_stops_once_and_commands_retry_into_keyboard_picker(
         cx: &mut gpui::TestAppContext,
     ) {

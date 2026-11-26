@@ -175,13 +175,13 @@ with socket.socket(socket.AF_UNIX) as peer:
         assert reply['ok'] and reply['result']['deliveredAs'] == 'steer'
 # Only switch the isolated GNOME settings. The test namespace and temporary HOME own dconf.
 # Switch twice while updates and cursor/selection rendering can re-enter the platform.
-for n in range(2):
-    subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','prefer-dark'],check=True)
-    time.sleep(.65)
-    assert snap('dark').getpixel((x+12,y+600)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
-    subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
-    time.sleep(.65)
-    assert snap('light').getpixel((x+12,y+600)) == (241,243,244), 'desktop did not return to light appearance'
+for _ in range(2):
+    for scheme, name, rgb in [('prefer-dark', 'dark', (30,35,38)), ('default', 'light', (241,243,244))]:
+        subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme',scheme],check=True)
+        deadline = time.monotonic() + 5
+        while snap(name).getpixel((x+12,y+600)) != rgb:
+            assert time.monotonic() < deadline, f'desktop did not follow GNOME {name} appearance'
+            time.sleep(.2)
 # message_end precedes the idle status. Wait for the actual rendered header
 # and answer (not mock time or a fixed delay); never scroll the selection away.
 deadline = time.monotonic() + 25
