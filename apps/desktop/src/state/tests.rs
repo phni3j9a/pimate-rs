@@ -336,6 +336,9 @@ pub(crate) async fn fixture(
                             json!({})
                         }
                         "abort" if matches!(id, "abort-test" | "key-menu") => json!({}),
+                        "models" if id == "key-menu" => {
+                            json!({"models":[],"current":null,"default":{"model":null,"thinking":null}})
+                        }
                         "commands" => json!({"commands":[]}),
                         "file_image" => {
                             files += 1;

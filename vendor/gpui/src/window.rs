@@ -1423,6 +1423,35 @@ impl Window {
         }
     }
 
+    /// Cycle through the tab stops in a subtree without briefly focusing another pane.
+    pub fn cycle_focus_within(&mut self, root: &FocusHandle, backwards: bool) {
+        let stops = &self.rendered_frame.tab_stops;
+        let step = |id: Option<FocusId>| {
+            if backwards {
+                stops.prev(id.as_ref())
+            } else {
+                stops.next(id.as_ref())
+            }
+        };
+        let Some(first) = step(self.focus) else {
+            return;
+        };
+        let mut item = first.clone();
+        loop {
+            if root.contains(&item, self) {
+                self.focus(&item);
+                break;
+            }
+            let Some(next) = step(Some(item.id)) else {
+                break;
+            };
+            if next == first {
+                break;
+            }
+            item = next;
+        }
+    }
+
     /// Move focus to previous tab stop.
     pub fn focus_prev(&mut self) {
         if !self.focus_enabled {
@@ -1504,6 +1533,7 @@ impl Window {
         cx.keystroke_observers.clone().retain(&(), move |callback| {
             (callback)(
                 &KeystrokeEvent {
+                    is_held: key_down_event.is_held,
                     keystroke: key_down_event.keystroke.clone(),
                     action: action.as_ref().map(|action| action.boxed_clone()),
                     context_stack: context_stack.clone(),
@@ -1529,6 +1559,7 @@ impl Window {
             .retain(&(), move |callback| {
                 (callback)(
                     &KeystrokeEvent {
+                        is_held: key_down_event.is_held,
                         keystroke: key_down_event.keystroke.clone(),
                         action: None,
                         context_stack: context_stack.clone(),
@@ -2086,6 +2117,11 @@ impl Window {
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
+    }
+
+    /// Whether a modal prompt is being rendered in this window.
+    pub fn has_rendered_prompt(&self) -> bool {
+        self.prompt.is_some()
     }
 
     /// Whether the current frame actually painted a tooltip.

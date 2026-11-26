@@ -15,3 +15,7 @@ Wayland の XDG portal の `WindowAppearance` を配送するとき、対象ウ�
 ## ツールチップと Esc（#73）
 
 `Window::tooltip_visible` はそのフレームで描画したものだけを返す。`dismiss_tooltip` は現在のツールチップの view を次の描画から除外し、同じ場所にポインターを置いたまま Esc を押しても再表示しない。依存を更新・vendor を外すときは、`tooltip_owns_escape_before_turn_stop` で実際のホバー・閉じる操作・次の Esc を確認する。
+
+## モーダルとキーボード（#73）
+
+`KeystrokeEvent` に元の `KeyDownEvent::is_held` を渡し、アクション解決前に Esc のリピートを判別できるようにした。`Window::cycle_focus_within` は既存のタブ順から指定ペイン内の移動先だけを選ぶ。Linux のフォールバック確認は背景を occlude し、明示したキャンセルを Esc で選べる。`has_rendered_prompt` はこのウィンドウ内確認の表示をアプリに知らせる（OS が表示するネイティブ確認は含まない）。更新時は desktop の `key_tests` を実行する。

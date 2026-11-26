@@ -52,8 +52,8 @@ struct Desktop {
     slash_hidden: bool,
     slash_visible: bool,
     context_menu: Option<screen::context::OpenMenu>,
-    palette_return: Option<FocusHandle>,
-    overlay_enter: Option<screen::keys::OverlayEnter>,
+    swallow_enter_up: bool,
+    swallow_space_up: bool,
     pointer_down_on_overlay: bool,
     _overlay_keys: Subscription,
     media_keys: Option<Entity<screen::chat_media::Viewer>>,
@@ -94,7 +94,8 @@ impl Desktop {
         .detach();
         cx.observe_window_activation(w, |d, w, _| {
             if !w.is_window_active() {
-                d.overlay_enter = None;
+                d.swallow_enter_up = false;
+                d.swallow_space_up = false;
             }
         })
         .detach();
@@ -129,8 +130,8 @@ impl Desktop {
             slash_hidden: false,
             slash_visible: false,
             context_menu: None,
-            palette_return: None,
-            overlay_enter: None,
+            swallow_enter_up: false,
+            swallow_space_up: false,
             pointer_down_on_overlay: false,
             _overlay_keys: overlay_keys,
             media_keys: None,

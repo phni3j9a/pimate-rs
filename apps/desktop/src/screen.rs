@@ -571,9 +571,11 @@ impl Desktop {
             })
             .on_action(cx.listener(move |d, _: &keys::PairEnter, w, cx| {
                 if confirm.is_focused(w) {
-                    d.pair(cx)
+                    d.pair(cx);
+                    d.restore_input(w, cx);
                 } else {
                     d.confirmation = None;
+                    d.restore_input(w, cx);
                     cx.notify()
                 }
             }))
@@ -607,8 +609,9 @@ impl Desktop {
                         ring(&cancel).child(
                             p.text_button("cancel", p.secondary, cx)
                                 .label("キャンセル")
-                                .on_click(cx.listener(|this, _, _, cx| {
+                                .on_click(cx.listener(|this, _, w, cx| {
                                     this.confirmation = None;
+                                    this.restore_input(w, cx);
                                     cx.notify()
                                 })),
                         ),
@@ -618,7 +621,10 @@ impl Desktop {
                             p.primary("pair", cx)
                                 .label("この接続先を登録")
                                 .disabled(self.pairing)
-                                .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
+                                .on_click(cx.listener(|this, _, w, cx| {
+                                    this.pair(cx);
+                                    this.restore_input(w, cx);
+                                })),
                         ),
                     ),
             );
@@ -692,8 +698,9 @@ impl Desktop {
                 p.scrim()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
+                        cx.listener(|this, _, w, cx| {
                             this.sidebar_open = false;
+                            this.restore_input(w, cx);
                             cx.notify()
                         }),
                     )
@@ -1343,22 +1350,11 @@ mod key_tests {
         }
     }
     #[gpui::test]
-    fn palette_owns_enter_through_release(cx: &mut gpui::TestAppContext) {
+    fn palette_selects_on_keydown_and_discards_release(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| keys::init(cx));
         let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
         w.simulate_keystrokes("secondary-l d");
-        for _ in 0..60 {
-            if w.update(|w, _| w.context_stack().iter().any(|c| c.contains("SendButton"))) {
-                break;
-            }
-            w.update(|w, _| w.focus_next());
-            w.run_until_parked();
-        }
-        let send = w.update(|w, cx| {
-            assert!(w.context_stack().iter().any(|c| c.contains("SendButton")));
-            w.focused(cx).unwrap()
-        });
         let before = app.read_with(w, |d, _| d.size);
         w.simulate_keystrokes("secondary-k");
         w.update(|w, cx| {
@@ -1372,13 +1368,87 @@ mod key_tests {
         });
         w.run_until_parked();
         w.simulate_keystrokes("enter");
-        assert!(app.read_with(w, |d, _| d.palette_open));
-        assert!(!w.update(|w, _| send.is_focused(w)));
+        assert!(!app.read_with(w, |d, _| d.palette_open));
+        assert!(app.read_with(w, |d, _| d.size > before && d.swallow_enter_up));
+        press(w, "down");
         release(w, "enter");
-        assert!(w.update(|w, _| send.is_focused(w)));
+        assert!(!app.read_with(w, |d, _| d.swallow_enter_up));
         app.read_with(w, |d, cx| {
             assert!(!d.palette_open && d.size > before && !d.sending && d.notice.is_empty());
             assert_eq!(d.input.as_ref().unwrap().1.read(cx).value().as_str(), "d");
+        });
+    }
+    #[gpui::test]
+    fn close_palette_with_space_held_returns_to_composer(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable;
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d f6 secondary-k space escape");
+        assert!(w.update(|w, cx| {
+            app.read(cx)
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .focus_handle(cx)
+                .is_focused(w)
+        }));
+        assert!(app.read_with(w, |d, _| d.swallow_space_up));
+        release(w, "space");
+        app.read_with(w, |d, cx| {
+            assert!(
+                !d.swallow_space_up
+                    && !d.sending
+                    && d.notice.is_empty()
+                    && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
+            )
+        });
+    }
+    #[gpui::test]
+    fn palette_model_over_slash_picker_opens_model_sheet(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l / secondary-k / m o d e l");
+        assert!(app.read_with(w, |d, _| d.palette_open && d.slash_visible));
+        press(w, "enter");
+        assert!(app.read_with(w, |d, _| {
+            d.active_sheet()
+                .is_some_and(|s| s.kind == state::SheetPage::Model)
+        }));
+    }
+    #[gpui::test]
+    fn shutdown_prompt_blocks_background_clicks(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| {
+            keys::init(cx);
+            cx.set_prompt_builder(gpui::fallback_prompt_renderer);
+        });
+        let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d");
+        let buttons = ["send-message", "abort-turn"].map(|s| w.debug_bounds(s).unwrap().center());
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+            })
+        });
+        w.run_until_parked();
+        for button in buttons {
+            assert!(w.update(|w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Prompt)));
+            w.simulate_click(button, Default::default());
+        }
+        assert!(w.update(|w, _| w.has_rendered_prompt()));
+        press(w, "escape");
+        assert!(!w.update(|w, _| w.has_rendered_prompt()));
+        assert!(wire.try_recv().is_err());
+        app.read_with(w, |d, cx| {
+            assert!(
+                !d.stopping
+                    && !d.sending
+                    && d.notice.is_empty()
+                    && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
+            )
         });
     }
     #[gpui::test]
@@ -1388,11 +1458,22 @@ mod key_tests {
         let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
         w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
         w.simulate_keystrokes("secondary-l d secondary-b");
-        for key in ["tab", "shift-tab", "enter"] {
-            assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
-            press(w, key);
+        press(w, "enter");
+        let mut stops = Vec::new();
+        for _ in 0..64 {
+            press(w, "tab");
+            let f = w.update(|w, cx| {
+                assert!(app.read(cx).side_focus.contains_focused(w, cx));
+                w.focused(cx).unwrap()
+            });
+            if stops.first() == Some(&f) {
+                break;
+            }
+            stops.push(f);
         }
-        assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
+        assert!((2..64).contains(&stops.len()));
+        press(w, "shift-tab");
+        assert!(w.update(|w, _| stops.last().unwrap().is_focused(w)));
         app.read_with(w, |d, cx| {
             assert!(
                 d.sidebar_open
@@ -1417,7 +1498,12 @@ mod key_tests {
             .advance_clock(std::time::Duration::from_secs(1));
         w.run_until_parked();
         assert!(w.update(|w, _| w.tooltip_visible()));
-        press(w, "escape");
+        w.simulate_keystrokes("escape");
+        w.simulate_event(gpui::KeyDownEvent {
+            keystroke: gpui::Keystroke::parse("escape").unwrap(),
+            is_held: true,
+        });
+        release(w, "escape");
         assert!(!w.update(|w, _| w.tooltip_visible()));
         assert!(wire.try_recv().is_err());
         assert!(!app.read_with(w, |d, _| d.stopping));
@@ -1578,8 +1664,9 @@ mod key_tests {
         );
         w.run_until_parked();
         assert!(app.read_with(w, |app, _| app.context_menu.is_some()));
-        press(w, "down enter");
+        w.simulate_keystrokes("down space");
         assert!(app.read_with(w, |app, _| app.context_menu.is_none()));
+        release(w, "space");
         assert_eq!(
             w.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
                 .as_deref(),

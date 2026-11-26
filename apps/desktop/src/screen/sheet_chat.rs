@@ -119,6 +119,7 @@ impl Desktop {
         } else {
             "処理が止まります。保存先が不明なため履歴が失われる可能性があります。"
         };
+        self.restore_input(w, cx);
         let confirm = w.prompt(
             PromptLevel::Critical,
             &format!("{title} を終了しますか？"),

@@ -79,7 +79,8 @@ commands! {
     ResetSize=>("secondary-0","標準の文字サイズ"),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Overlay {
+pub(super) enum Overlay {
+    Prompt,
     Tooltip,
     Menu,
     Pair,
@@ -92,13 +93,7 @@ enum Overlay {
     Inspector,
 }
 
-pub(crate) struct OverlayEnter {
-    layer: Overlay,
-    focus: Option<FocusHandle>,
-    action: Option<Box<dyn Action>>,
-}
-// Intercept before GPUI resolves bindings (including Root's global Tab navigation).
-// A confirmation belongs to the original layer and focus until the physical key is released.
+// Intercept before GPUI resolves bindings, including Root tab navigation.
 pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
     let window = w.window_handle().window_id();
     let listener = cx.listener(move |d, e: &KeystrokeEvent, w, cx| {
@@ -108,16 +103,25 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
         if e.keystroke.key == "tab" && w.tooltip_visible() {
             w.dismiss_tooltip();
         }
-        if !matches!(e.keystroke.key.as_str(), "enter" | "escape" | "tab") {
+        if !matches!(
+            e.keystroke.key.as_str(),
+            "enter" | "space" | "escape" | "tab"
+        ) {
             return;
         }
         let top = d.front(w, cx);
         match (e.keystroke.key.as_str(), top) {
+            ("escape", _) if e.is_held => cx.stop_propagation(),
             ("escape", Some(Overlay::Tooltip)) => {
                 w.dismiss_tooltip();
+                d.restore_input(w, cx);
                 cx.stop_propagation();
             }
-            ("tab", Some(Overlay::Sidebar | Overlay::Menu)) => cx.stop_propagation(),
+            ("tab", Some(Overlay::Sidebar)) => {
+                w.cycle_focus_within(&d.side_focus, e.keystroke.modifiers.shift);
+                cx.stop_propagation();
+            }
+            ("tab", Some(Overlay::Menu)) => cx.stop_propagation(),
             ("tab", Some(Overlay::Palette)) => {
                 if let Some((input, _)) = &d.search {
                     input.focus_handle(cx).focus(w);
@@ -132,30 +136,47 @@ pub(crate) fn intercept(w: &Window, cx: &mut Context<Desktop>) -> Subscription {
                 );
                 cx.stop_propagation();
             }
-            ("enter", _) if d.overlay_enter.is_some() => cx.stop_propagation(),
-            ("enter", Some(layer)) => {
-                let action = if matches!(
+            (key @ ("enter" | "space"), layer) => {
+                let swallow = if key == "enter" {
+                    &mut d.swallow_enter_up
+                } else {
+                    &mut d.swallow_space_up
+                };
+                if e.is_held && *swallow {
+                    cx.stop_propagation();
+                    return;
+                }
+                *swallow = matches!(
                     layer,
-                    Overlay::Menu | Overlay::Palette | Overlay::Pair | Overlay::Slash
-                ) && e.keystroke.modifiers == Modifiers::none()
+                    Some(
+                        Overlay::Menu
+                            | Overlay::Pair
+                            | Overlay::Palette
+                            | Overlay::Slash
+                            | Overlay::Tooltip
+                    )
+                );
+                // Space edits the palette query; in a menu it activates the selected item.
+                if key == "space"
+                    && layer == Some(Overlay::Menu)
+                    && e.keystroke.modifiers == Modifiers::none()
                 {
-                    cx.key_bindings()
+                    let enter = Keystroke::parse("enter").unwrap();
+                    let action = cx
+                        .key_bindings()
                         .borrow()
-                        .bindings_for_input(std::slice::from_ref(&e.keystroke), &e.context_stack)
+                        .bindings_for_input(&[enter], &e.context_stack)
                         .0
                         .first()
-                        .map(|b| b.action().boxed_clone())
-                } else {
-                    None
-                };
-                if action.is_some() || layer == Overlay::Tooltip {
+                        .map(|b| b.action().boxed_clone());
+                    if let Some(action) = action {
+                        w.dispatch_action(action, cx);
+                    }
                     cx.stop_propagation();
                 }
-                d.overlay_enter = Some(OverlayEnter {
-                    layer,
-                    focus: w.focused(cx),
-                    action,
-                });
+                if layer == Some(Overlay::Tooltip) {
+                    cx.stop_propagation();
+                }
             }
             _ => {}
         }
@@ -175,28 +196,41 @@ impl Desktop {
         }
     }
     pub(super) fn background_click(&self, e: &ClickEvent) -> bool {
-        self.pointer_down_on_overlay && matches!(e, ClickEvent::Mouse(_))
+        matches!(e, ClickEvent::Keyboard(_)) || self.pointer_down_on_overlay
     }
-    fn overlay_key_up(&mut self, e: &KeyUpEvent, w: &mut Window, cx: &mut Context<Self>) {
-        if e.keystroke.key != "enter" {
-            return;
-        }
-        let Some(held) = self.overlay_enter.take() else {
-            return;
+    fn overlay_key_up(&mut self, e: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let held = match e.keystroke.key.as_str() {
+            "enter" => &mut self.swallow_enter_up,
+            "space" => &mut self.swallow_space_up,
+            _ => return,
         };
-        if self.front(w, cx) != Some(held.layer)
-            || w.focused(cx) != held.focus
-            || held.layer == Overlay::Tooltip
-        {
+        if std::mem::take(held) {
             cx.stop_propagation();
-        } else if let Some(action) = held.action {
-            cx.stop_propagation();
-            w.dispatch_action(action, cx);
         }
     }
-    fn front(&self, w: &Window, cx: &App) -> Option<Overlay> {
+    pub(super) fn restore_input(&self, w: &mut Window, cx: &App) {
+        match self.front(w, cx) {
+            Some(Overlay::Palette) => {
+                if let Some((s, _)) = &self.search {
+                    w.focus(&s.focus_handle(cx));
+                }
+            }
+            Some(Overlay::Sidebar) => w.focus(&self.side_focus),
+            None | Some(Overlay::Slash | Overlay::Tooltip) => w.focus(
+                &self
+                    .input
+                    .as_ref()
+                    .map(|(_, s, _)| s.focus_handle(cx))
+                    .unwrap_or_else(|| self.main_focus.clone()),
+            ),
+            _ => {}
+        }
+    }
+    pub(super) fn front(&self, w: &Window, cx: &App) -> Option<Overlay> {
         use Overlay::*;
-        if w.tooltip_visible() {
+        if w.has_rendered_prompt() {
+            Some(Prompt)
+        } else if w.tooltip_visible() {
             Some(Tooltip)
         } else if self.context_menu.is_some() {
             Some(Menu)
@@ -284,6 +318,9 @@ impl Desktop {
             return;
         };
         let top = self.front(w, cx);
+        if top == Some(Overlay::Prompt) {
+            return;
+        }
         if (matches!(top, Some(Overlay::Menu | Overlay::Palette | Overlay::Pair)) && c != EscapeTop)
             || (top == Some(Overlay::Sidebar)
                 && !matches!(c, EscapeTop | NextPane | Sidebar | Search | Keys))
@@ -294,16 +331,15 @@ impl Desktop {
         let home = nav.read(cx).route == Route::Home;
         match c {
             EscapeTop => match top {
+                Some(Overlay::Prompt) => {}
                 Some(Overlay::Tooltip) => w.dismiss_tooltip(),
                 Some(Overlay::Menu) => {
                     self.context_menu = None;
-                    w.focus(&self.root_focus);
                 }
-                Some(Overlay::Palette) => self.close_palette(w),
+                Some(Overlay::Palette) => self.close_palette(w, cx),
                 Some(Overlay::Pair) => self.confirmation = None,
                 Some(Overlay::Sidebar) => {
                     self.sidebar_open = false;
-                    w.focus(&self.main_focus);
                 }
                 Some(Overlay::Slash) => self.slash_hidden = true,
                 Some(Overlay::Route) => {
@@ -452,6 +488,9 @@ impl Desktop {
                 }
             }
             _ => {}
+        }
+        if (c == EscapeTop && top.is_some()) || (c == Sidebar && narrow && !self.sidebar_open) {
+            self.restore_input(w, cx);
         }
         cx.notify();
     }

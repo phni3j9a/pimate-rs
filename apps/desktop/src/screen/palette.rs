@@ -8,7 +8,6 @@ enum Choice {
 }
 impl Desktop {
     pub(super) fn open_palette(&mut self, shortcuts: bool, w: &mut Window, cx: &mut Context<Self>) {
-        self.palette_return = w.focused(cx);
         self.palette_open = true;
         self.palette_index = 0;
         if let Some((s, _)) = &self.search {
@@ -36,17 +35,15 @@ impl Desktop {
         }
         cx.notify();
     }
-    pub(super) fn close_palette(&mut self, w: &mut Window) {
+    pub(super) fn close_palette(&mut self, w: &mut Window, cx: &App) {
         self.palette_open = false;
-        w.focus(
-            self.palette_return
-                .take()
-                .as_ref()
-                .unwrap_or(&self.root_focus),
-        );
+        self.restore_input(w, cx);
     }
     fn choose(&mut self, choice: &Choice, w: &mut Window, cx: &mut Context<Self>) {
-        self.close_palette(w);
+        if self.front(w, cx) != Some(keys::Overlay::Palette) {
+            return;
+        }
+        self.close_palette(w, cx);
         match choice {
             Choice::Pi(h, i) => {
                 if let Some(nav) = self.navigation.clone() {
@@ -56,7 +53,7 @@ impl Desktop {
             }
             Choice::App(c) => self.command(*c, w, cx),
             Choice::Slash(pg, name) if pg.visible(self) => {
-                if self.sending || self.overlay_open(w, cx) {
+                if self.sending {
                     return;
                 }
                 let t = match pg.command_ticket(name) {
@@ -157,7 +154,7 @@ impl Desktop {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|app, _, w, cx| {
-                        app.close_palette(w);
+                        app.close_palette(w, cx);
                         cx.notify();
                     }),
                 )

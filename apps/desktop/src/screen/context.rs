@@ -48,11 +48,15 @@ impl Desktop {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dismiss = cx.subscribe(&menu, |app, menu, _: &DismissEvent, cx| {
-            if app.context_menu.as_ref().is_some_and(|v| v.menu == menu) {
-                app.context_menu = None;
-                cx.notify();
-            }
+        let app = cx.weak_entity();
+        let dismiss = w.subscribe(&menu, cx, move |menu, _: &DismissEvent, w, cx| {
+            let _ = app.update(cx, |app, cx| {
+                if app.context_menu.as_ref().is_some_and(|v| v.menu == menu) {
+                    app.context_menu = None;
+                    app.restore_input(w, cx);
+                    cx.notify();
+                }
+            });
         });
         menu.focus_handle(cx).focus(w);
         self.context_menu = Some(OpenMenu {

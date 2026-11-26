@@ -390,6 +390,7 @@ impl Desktop {
                             .when(can_stop, |row| {
                                 row.child(
                                     p.text_button("abort", p.fail_ink, cx)
+                                        .tab_stop(false)
                                         .label("停止")
                                         .debug_selector(|| "abort-turn".into())
                                         .disabled(self.stopping)
@@ -403,7 +404,8 @@ impl Desktop {
                             })
                             .child(
                                 p.primary("send", cx)
-                                    .key_context("SendButton")
+                                    .tab_stop(false)
+                                    .debug_selector(|| "send-message".into())
                                     .label(action)
                                     .disabled(disabled)
                                     .on_click(cx.listener(move |this, e, w, cx| {
