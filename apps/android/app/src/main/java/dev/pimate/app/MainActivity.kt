@@ -480,8 +480,7 @@ internal fun InstanceRow(
 ) {
     val agents = o.optJSONObject("subagents")
     val active = (agents?.optLong("active") ?: 0) - (agents?.optLong("waiting") ?: 0)
-    // 印と右端は親の状態。子（サブエージェント）が動いていることは、パスの後ろの補足で示す。
-    val working = o.str("status") == "running"
+    val working = o.optBoolean("working")
     Row(
         Modifier.padding(top = 2.dp)
             .fillMaxWidth()

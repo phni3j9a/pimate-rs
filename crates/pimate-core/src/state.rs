@@ -503,7 +503,16 @@ impl State {
         let next: IndexMap<_, _> = list
             .into_iter()
             .filter_map(|mut v| {
-                v["section"] = json!(if attention(&v) {
+                let waiting = attention(&v);
+                let children = &v["subagents"];
+                v["working"] = json!(
+                    !waiting
+                        && (v["status"] == "running"
+                            || (v["status"] == "idle"
+                                && children["active"].as_u64().unwrap_or(0)
+                                    > children["waiting"].as_u64().unwrap_or(0)))
+                );
+                v["section"] = json!(if waiting {
                     "waiting"
                 } else if v["origin"] == "grok-bot" {
                     "bot"

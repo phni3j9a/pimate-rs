@@ -99,6 +99,44 @@ fn github_available(rows: &Rows, host: &str, pi: &str) -> bool {
     rows.get("host", "info")["github"] == true && rows.editor(host, pi).is_some()
 }
 impl Desktop {
+    fn update_spinner(&mut self, cx: &mut Context<Self>) {
+        let working = self.machines.values().any(|m| {
+            m.rows
+                .group("instance")
+                .iter()
+                .any(|(_, row)| row["working"] == true)
+        });
+        if !working {
+            self.spinner_tick = None;
+            self.spinner_phase = 0;
+        } else if self.spinner_tick.is_none() {
+            // All rows share one tick; the rest of the window needn't redraw between phases.
+            self.spinner_tick = Some(cx.spawn(async |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(200))
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.spinner_tick = None;
+                    this.spinner_phase = (this.spinner_phase + 1) % 4;
+                    cx.notify();
+                });
+            }));
+        }
+    }
+    fn working_spinner(&self, color: Hsla) -> Div {
+        let ring = div()
+            .size(px(12.))
+            .flex_none()
+            .rounded_full()
+            .border_2()
+            .border_color(color);
+        match self.spinner_phase {
+            0 => ring.border_t_0(),
+            1 => ring.border_r_0(),
+            2 => ring.border_b_0(),
+            _ => ring.border_l_0(),
+        }
+    }
     fn pi_row(
         &self,
         h: &Host,
@@ -111,13 +149,12 @@ impl Desktop {
         let (host, pi) = (h.id.clone(), id.to_owned());
         let waiting = v["section"] == "waiting";
         let nav = nav.clone();
+        let working = v["working"] == true;
         let failed = v["failureText"].as_str().is_some_and(|s| !s.is_empty());
         let state = if failed {
             "失敗"
         } else if waiting {
             "入力待ち"
-        } else if v["status"] == "running" {
-            "作業中"
         } else {
             "待機"
         };
@@ -128,6 +165,8 @@ impl Desktop {
         };
         let detail = if waiting {
             format!("{state} · {} · {origin}", self.host_label(h))
+        } else if working {
+            format!("{origin} で起動")
         } else {
             format!("{state} · {origin} で起動")
         };
@@ -149,18 +188,25 @@ impl Desktop {
                     .items_center()
                     .gap_2()
                     .min_w_0()
-                    .max_w(rems(13.))
-                    .child(div().size(px(7.)).rounded_full().bg(if waiting {
-                        p.waiting
-                    } else if selected || v["status"] == "running" {
-                        p.accent
-                    } else {
-                        p.secondary
-                    }))
+                    .w_full()
+                    .when_else(
+                        working,
+                        |row| row.child(self.working_spinner(p.accent)),
+                        |row| {
+                            row.child(div().size(px(7.)).rounded_full().bg(if waiting {
+                                p.waiting
+                            } else if selected {
+                                p.accent
+                            } else {
+                                p.secondary
+                            }))
+                        },
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(
                                 div()
@@ -169,7 +215,8 @@ impl Desktop {
                                     .child(pi_title(v, id).to_owned()),
                             )
                             .child(p.caption(detail).truncate()),
-                    ),
+                    )
+                    .when(working, |row| row.child(p.caption("作業中").flex_none())),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if nav.read(cx).route != Route::Home {
@@ -401,6 +448,7 @@ impl Desktop {
 }
 impl Render for Desktop {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.update_spinner(cx);
         self.bind_editor(w, cx);
         let nav = self.init_navigation(w, cx);
         if let Some(host) = self.state.registration.paired_host.take() {
@@ -526,6 +574,56 @@ mod tests {
         };
         let core = Arc::new(Core::new(Arc::new(Store(h.clone()))));
         (socket, h, core)
+    }
+    #[gpui::test]
+    fn spinner_ticks_only_at_phase_changes_while_working(cx: &mut gpui::TestAppContext) {
+        use super::{Desktop, Machine, Rows};
+        use pimate_core::{Item, Snapshot};
+        use std::{sync::Arc, time::Duration};
+
+        let (_socket, h, core) = test_host();
+        let (tx, _rx) = crate::Delivery::channel();
+        let conn = core.connect(h.id.clone(), Arc::new(tx)).unwrap();
+        cx.update(gpui_component::init);
+        let (desktop, w) = cx.add_window_view(|w, cx| Desktop::new(core, w, cx));
+        w.run_until_parked();
+        desktop.update(w, |d, cx| {
+            d.hosts = vec![h.clone()];
+            d.machines.insert(
+                h.id.clone(),
+                Machine {
+                    conn,
+                    registration: h,
+                    rows: Rows::snapshot(Snapshot {
+                        revision: 1,
+                        items: ["a", "b"]
+                            .map(|id| Item {
+                                collection: "instance".into(),
+                                id: id.into(),
+                                json: r#"{"working":true}"#.into(),
+                                position: 0,
+                            })
+                            .into(),
+                    }),
+                },
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        for (ms, phase) in [(199, 0), (1, 1), (200, 2)] {
+            w.executor().advance_clock(Duration::from_millis(ms));
+            assert_eq!(desktop.read_with(w, |d, _| d.spinner_phase), phase);
+        }
+        desktop.update(w, |d, cx| {
+            d.machines.clear();
+            cx.notify();
+        });
+        w.run_until_parked();
+        w.executor().advance_clock(Duration::from_millis(400));
+        desktop.read_with(w, |d, _| {
+            assert!(d.spinner_tick.is_none());
+            assert_eq!(d.spinner_phase, 0);
+        });
     }
     #[gpui::test]
     fn unanswered_input_survives_sidebar_routes(cx: &mut gpui::TestAppContext) {
