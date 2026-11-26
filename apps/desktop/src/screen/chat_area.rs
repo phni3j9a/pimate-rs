@@ -413,40 +413,70 @@ impl Desktop {
                                 b.child(self.attachments(&key, &page, w, cx))
                             })
                             .child(
-                                p.text_button("composer-model", p.secondary, cx)
-                                    .max_w(rems(10.))
-                                    .child(div().truncate().child(model))
-                                    .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
-                                        if pg.visible(app)
-                                            && (e.is_keyboard() || !app.pointer_down_on_overlay)
-                                            && !app.overlay_open(w, cx)
-                                        {
-                                            app.show_sheet(state::SheetPage::Model, cx)
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .on_children_prepainted({
+                                        let anchors = self.popover_anchors.clone();
+                                        move |b, _, _| {
+                                            if let [model, usage] = b.as_slice() {
+                                                anchors.set([model.origin, usage.origin])
+                                            }
                                         }
-                                    })),
-                            )
-                            .child(
-                                p.text_button("composer-usage", p.secondary, cx)
-                                    .tooltip(usage_hint)
-                                    .children(gauges.into_iter().map(|(_, v)| {
-                                        let used = v.unwrap_or_default().clamp(0., 100.) as f32;
-                                        let data = [(used, p.accent), (100. - used, p.track)];
-                                        div().size(px(15.)).child(
-                                            gpui_component::chart::PieChart::new(data)
-                                                .value(|d| d.0)
-                                                .color(|d| d.1)
-                                                .inner_radius(4.5)
-                                                .outer_radius(7.),
-                                        )
-                                    }))
-                                    .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
-                                        if usage_page.visible(app)
-                                            && (e.is_keyboard() || !app.pointer_down_on_overlay)
-                                            && !app.overlay_open(w, cx)
-                                        {
-                                            app.show_sheet(state::SheetPage::Usage, cx)
-                                        }
-                                    })),
+                                    })
+                                    .child(
+                                        p.text_button("composer-model", p.secondary, cx)
+                                            .max_w(rems(10.))
+                                            .child(div().truncate().child(model))
+                                            .on_click(cx.listener(
+                                                move |app, e: &ClickEvent, w, cx| {
+                                                    if pg.visible(app)
+                                                        && (e.is_keyboard()
+                                                            || !app.pointer_down_on_overlay)
+                                                        && !app.overlay_open(w, cx)
+                                                    {
+                                                        app.show_sheet(
+                                                            state::SheetPage::Model,
+                                                            w,
+                                                            cx,
+                                                        )
+                                                    }
+                                                },
+                                            )),
+                                    )
+                                    .child(
+                                        p.text_button("composer-usage", p.secondary, cx)
+                                            .tooltip(usage_hint)
+                                            .children(gauges.into_iter().map(|(_, v)| {
+                                                let used =
+                                                    v.unwrap_or_default().clamp(0., 100.) as f32;
+                                                let data =
+                                                    [(used, p.accent), (100. - used, p.track)];
+                                                div().size(px(15.)).child(
+                                                    gpui_component::chart::PieChart::new(data)
+                                                        .value(|d| d.0)
+                                                        .color(|d| d.1)
+                                                        .inner_radius(4.5)
+                                                        .outer_radius(7.),
+                                                )
+                                            }))
+                                            .on_click(cx.listener(
+                                                move |app, e: &ClickEvent, w, cx| {
+                                                    if usage_page.visible(app)
+                                                        && (e.is_keyboard()
+                                                            || !app.pointer_down_on_overlay)
+                                                        && !app.overlay_open(w, cx)
+                                                    {
+                                                        app.show_sheet(
+                                                            state::SheetPage::Usage,
+                                                            w,
+                                                            cx,
+                                                        )
+                                                    }
+                                                },
+                                            )),
+                                    ),
                             )
                             .child(div().flex_1())
                             .when(can_stop, |row| {
@@ -519,29 +549,30 @@ impl Desktop {
                     cx.notify()
                 }),
             );
-        let panel = self.sheet_panel(key, p, w, cx);
-        div().absolute().inset_0().child(scrim).child(
-            div()
-                .absolute()
-                .inset_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(pop, |d| d.items_end().justify_start().p_3().pb(rems(3.2)))
-                .child(
-                    div()
-                        .id("chat-overlay")
-                        .occlude()
-                        .track_focus(&focus)
-                        .rounded(px(theme::R_CARD))
-                        .bg(p.surface)
-                        .shadow_lg()
-                        .max_w_full()
-                        .w(px(if pop { 390. } else { 540. }))
-                        .h(relative(0.72))
-                        .child(panel),
-                ),
-        )
+        let panel = div()
+            .id("chat-overlay")
+            .occlude()
+            .track_focus(&focus)
+            .rounded(px(theme::R_CARD))
+            .bg(p.surface)
+            .shadow_lg()
+            .max_w_full()
+            .w(px(if pop { 390. } else { 540. }))
+            .h(w.viewport_size().height * if pop { 0.62 } else { 0.72 })
+            .child(self.sheet_panel(key, p, w, cx));
+        let overlay = div().absolute().inset_0().child(scrim);
+        if pop {
+            let at = self.popover_anchors.get()[usize::from(kind == state::SheetPage::Usage)];
+            overlay.child(
+                anchored()
+                    .anchor(Corner::BottomLeft)
+                    .position(at - point(px(0.), px(6.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(panel),
+            )
+        } else {
+            overlay.flex().items_center().justify_center().child(panel)
+        }
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
         if self.overlay_open(w, cx) || !page.visible(self) {
@@ -590,6 +621,7 @@ impl Desktop {
                                     "fork" => Fork,
                                     _ => Tree,
                                 },
+                                w,
                                 cx,
                             );
                         } else if page.visible(this) {

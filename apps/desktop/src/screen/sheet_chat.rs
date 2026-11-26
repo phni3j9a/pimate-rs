@@ -85,9 +85,9 @@ pub(super) fn action(
     Button::new(id.into())
         .label(title)
         .disabled(disabled)
-        .on_click(cx.listener(move |this, _, _, cx| {
+        .on_click(cx.listener(move |this, _, w, cx| {
             if pg.visible(this) {
-                this.sheet_action(make(), cx)
+                this.sheet_action(make(), w, cx)
             }
         }))
 }
@@ -232,9 +232,9 @@ impl Desktop {
                 }
                 let choose = |s| {
                     let page = page.clone();
-                    PopupMenuItem::new(label(s)).on_click(cx.listener(move |app, _, _, cx| {
+                    PopupMenuItem::new(label(s)).on_click(cx.listener(move |app, _, w, cx| {
                         if page.visible(app) {
-                            app.show_sheet(s, cx)
+                            app.show_sheet(s, w, cx)
                         }
                     }))
                 };
@@ -283,34 +283,40 @@ impl Desktop {
                 app.show_context(menu, e.position(), w, cx);
             }))
     }
-    pub(super) fn show_sheet(&mut self, kind: S, cx: &mut Context<Self>) {
+    pub(super) fn show_sheet(&mut self, kind: S, w: &mut Window, cx: &mut Context<Self>) {
         if self.open_sheet(kind).is_ok() {
             if let Some(a) = load(kind) {
-                self.sheet_action(a, cx)
+                self.sheet_action(a, w, cx)
             }
             cx.notify()
         }
     }
-    pub(super) fn sheet_action(&mut self, action: A, cx: &mut Context<Self>) {
+    pub(super) fn sheet_action(&mut self, action: A, w: &mut Window, cx: &mut Context<Self>) {
         let Some(sheet) = self.state.sheet.as_mut() else {
             return;
         };
         let reload = match action {
             A::Label(_) => Some(A::Tree),
-            A::Select(_) | A::Thinking(_) | A::Default(_) => Some(A::Models),
+            A::Default(_) => Some(A::Models),
             _ => None,
         };
+        let dismiss = matches!(
+            action,
+            A::Select(_) | A::Thinking(_) | A::Resume(_) | A::Fork(_) | A::Move(_, _)
+        );
         let page = sheet.page.clone();
         let Ok(req) = sheet.begin(action) else { return };
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(w, async move |this, cx| {
             let reply = req.run().await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, w, cx| {
                 reply.finish(this);
-                if let Some(refresh) = reload
-                    && page.visible(this)
-                    && this.active_sheet().is_some_and(|s| s.error.is_none())
-                {
-                    this.sheet_action(refresh, cx)
+                if page.visible(this) && this.active_sheet().is_some_and(|s| s.error.is_none()) {
+                    if dismiss {
+                        this.state.sheet = None;
+                        this.restore_input(w, cx)
+                    } else if let Some(refresh) = reload {
+                        this.sheet_action(refresh, w, cx)
+                    }
                 }
                 cx.notify()
             });
@@ -502,7 +508,7 @@ impl Desktop {
                                     Button::new(SharedString::from(format!("fav:{id}")))
                                         .label(if fav { "★ 解除" } else { "☆ 追加" })
                                         .disabled(busy || favorites.is_none())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                        .on_click(cx.listener(move |this, _, w, cx| {
                                             if page.visible(this)
                                                 && let Some(a) = toggle_favorite(
                                                     this.active_sheet()
@@ -511,7 +517,7 @@ impl Desktop {
                                                     fav,
                                                 )
                                             {
-                                                this.sheet_action(a, cx)
+                                                this.sheet_action(a, w, cx)
                                             }
                                         })),
                                 ),

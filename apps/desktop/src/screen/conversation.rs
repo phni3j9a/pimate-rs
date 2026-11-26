@@ -914,13 +914,14 @@ impl Desktop {
                         .when_some(fork.clone(), |m, id| {
                             m.item(
                                 gpui_component::menu::PopupMenuItem::new("ここから分岐").on_click(
-                                    move |_, _, cx| {
+                                    move |_, w, cx| {
                                         let _ = owner.update(cx, |app, cx| {
                                             if source.visible(app)
                                                 && app.open_sheet(state::SheetPage::Fork).is_ok()
                                             {
                                                 app.sheet_action(
                                                     state::SheetAction::Fork(id.clone()),
+                                                    w,
                                                     cx,
                                                 );
                                             }

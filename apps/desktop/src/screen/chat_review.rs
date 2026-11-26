@@ -54,9 +54,17 @@ impl Desktop {
         let pg = pg.clone();
         let ins = ins.clone();
         p.icon_button("review", "diff", "変更をレビュー", cx)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if pg.visible(this) {
-                    ins.update(cx, |s, cx| s.load(pg.clone(), None, true, cx))
+            .on_click(cx.listener(move |app, _, w, cx| {
+                if pg.visible(app) {
+                    ins.update(cx, |s, cx| {
+                        if s.tab == Some(Tab::Review) {
+                            s.tab = None;
+                            cx.notify()
+                        } else {
+                            s.load(pg.clone(), None, true, cx)
+                        }
+                    });
+                    app.restore_input(w, cx)
                 }
             }))
     }

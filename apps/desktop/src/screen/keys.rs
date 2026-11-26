@@ -511,7 +511,7 @@ impl Desktop {
                 }
             }
             Model if home && self.editor().is_some() => {
-                self.show_sheet(state::SheetPage::Model, cx)
+                self.show_sheet(state::SheetPage::Model, w, cx)
             }
             Review | Agents if home => {
                 if let Some((page, ins)) = &self.chat_keys
