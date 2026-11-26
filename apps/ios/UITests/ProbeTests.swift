@@ -43,6 +43,12 @@ final class ProbeTests: XCTestCase {
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
         main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
+        if variant == "light" {
+            let read = app.staticTexts["read"].firstMatch
+            XCTAssertTrue(read.isHittable); read.tap()
+            XCTAssertTrue(app.buttons["最新へ"].waitForExistence(timeout: 5)); XCTAssertTrue(read.isHittable)
+            read.tap(); if app.buttons["最新へ"].isHittable { app.buttons["最新へ"].tap() }
+        }
         func openSheet(_ name: String) {
             app.buttons["chat-options"].tap(); app.buttons[name].tap()
             XCTAssertTrue(app.buttons["sheet-close"].waitForExistence(timeout: 8))

@@ -48,6 +48,8 @@ private struct Conversation: View {
     }
     @State private var loaded = false
     @State private var metrics: TailMetrics?
+    @State private var holdFollowUntil = ContinuousClock.Instant.now
+    private func didToggle() { holdFollowUntil = .now + .milliseconds(500) }
     @GestureState private var dragging = false
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
@@ -66,8 +68,8 @@ private struct Conversation: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 22) {
                             if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
-                            ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }) }
-                            if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
+                            ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }, didToggle: didToggle) }
+                            if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true, didToggle: didToggle) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
                             if !text.isEmpty {
                                 // A new streamed answer must not render with the previous answer's parsed blocks.
                                 let answer = "stream:" + (entries.last?.id ?? "begin")
@@ -83,7 +85,7 @@ private struct Conversation: View {
                             let top = geometry.frame(in: .named("transcript")).minY
                             return TailMetrics(height: geometry.size.height, viewport: CGRect(x: 0, y: -top, width: outer.size.width, height: outer.size.height))
                         } action: { next in
-                            let follow = next.shouldFollow(after: metrics, dragging: dragging)
+                            let follow = ContinuousClock.now >= holdFollowUntil && next.shouldFollow(after: metrics, dragging: dragging)
                             metrics = next
                             if follow { reader.scrollTo("tail", anchor: .bottom) }
                         }
@@ -127,6 +129,7 @@ private struct Conversation: View {
 struct TurnView: View {
     let turn: ChatTurn, active: Bool
     let runForCall: (String) -> String?, openRun: (String) -> Void
+    var didToggle: () -> Void = {}
     var caption: String? = nil
     @State private var expanded = false
     var body: some View {
@@ -146,7 +149,7 @@ struct TurnView: View {
                     MarkdownBody(source: reply.text, answer: reply.id)
                 case .work(let w):
                     if folds && w.id == firstWork {
-                        Button { expanded.toggle() } label: {
+                        Button { didToggle(); expanded.toggle() } label: {
                             HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                     }
@@ -161,7 +164,7 @@ struct TurnView: View {
         }
     }
     private func work(_ line: WorkLine) -> some View {
-            ActiveDisclosure(automatic: line.state == "実行中") {
+            ActiveDisclosure(automatic: line.state == "実行中", didToggle: didToggle) {
                 Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
             } label: {
                 HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.isThought ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)
@@ -170,11 +173,11 @@ struct TurnView: View {
 }
 
 private struct ActiveDisclosure<Content: View, Label: View>: View {
-    let automatic: Bool
+    let automatic: Bool, didToggle: () -> Void
     @ViewBuilder let content: () -> Content
     @ViewBuilder let label: () -> Label
     @State private var manual: Bool?
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(get: { manual ?? automatic }, set: { manual = $0 }), content: content, label: label)
+        DisclosureGroup(isExpanded: Binding(get: { manual ?? automatic }, set: { didToggle(); manual = $0 }), content: content, label: label)
     }
 }
