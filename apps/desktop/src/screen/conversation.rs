@@ -43,6 +43,9 @@ fn work_summary(start: Option<u64>, end: Option<u64>, calls: usize) -> String {
     }
     label
 }
+fn should_follow(changed: bool, at_end: bool, manual: bool, focused: bool) -> bool {
+    changed && at_end && !manual && !focused
+}
 fn thought_label(active: bool, ms: Option<u64>) -> String {
     if active {
         "Thinking…".into()
@@ -120,6 +123,7 @@ struct Conversation {
     turns: HashSet<String>,
     thought: HashMap<String, bool>,
     manual: bool,
+    last_content: Option<(u64, usize, usize)>,
     layout: LayoutRows,
     layout_version: Option<(u64, bool)>,
     // The append boundary from the last time we saw a live answer, even if its row was offscreen.
@@ -330,13 +334,27 @@ impl Desktop {
         );
         let reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
         let stream_reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
-        let at_end = self.scroll.max_offset_for_scrollbar().height
-            + self.scroll.scroll_px_offset_for_scrollbar().y
-            < px(2.);
+        let old_count = self.scroll.item_count();
+        let at_end = old_count == 0
+            || self
+                .scroll
+                .bounds_for_item(old_count - 1)
+                .is_some_and(|last| {
+                    last.bottom() <= self.scroll.viewport_bounds().bottom() + px(2.)
+                });
+        let content = (
+            rows.entry_revision,
+            rows.get("stream", "text").as_str().map_or(0, str::len),
+            rows.get("stream", "thinking").as_str().map_or(0, str::len),
+        );
+        let new_content = conversation.read(cx).last_content != Some(content);
+        let stream_focused = stream_reader.contains_focused(w, cx);
+        let before = conversation.read(cx).stream_tail.as_ref().map(|p| p.0);
         let running = rows.get("view", "status") != "idle";
         let manual = conversation.read(cx).manual;
         conversation.update(cx, |c, _| {
             c.manual = false;
+            c.last_content = Some(content);
             c.prepare(
                 entries,
                 streaming,
@@ -351,7 +369,17 @@ impl Desktop {
             conversation.read(cx).stream_generation
         );
         let n = self.scroll.item_count();
-        if !manual && at_end && !reader.contains_focused(w, cx) {
+        if stream_focused
+            && let Some(before) = before
+            && before < entries.len()
+            && entries[before].1["kind"] == "user"
+        {
+            // A steer is inserted before the focused stream. Keep its text selection mounted.
+            self.scroll.scroll_to(ListOffset {
+                item_ix: n.saturating_sub(1),
+                offset_in_item: px(0.),
+            });
+        } else if should_follow(new_content, at_end, manual, reader.contains_focused(w, cx)) {
             self.scroll.scroll_to(ListOffset {
                 item_ix: n,
                 offset_in_item: px(0.),
@@ -364,6 +392,7 @@ impl Desktop {
                 .child(p.caption("まだメッセージはありません"))
                 .into_any_element();
         }
+        let latest = self.scroll.clone();
         let p = *p;
         let desktop = cx.entity();
         let k = key.clone();
@@ -709,6 +738,22 @@ impl Desktop {
             .track_focus(&reader)
             .child(list)
             .vertical_scrollbar(&self.scroll)
+            .when(!at_end, |d| {
+                d.child(
+                    div().absolute().bottom_2().right_4().child(
+                        Button::new("latest")
+                            .small()
+                            .label("最新へ ↓")
+                            .on_click(move |_, w, _| {
+                                latest.scroll_to(ListOffset {
+                                    item_ix: latest.item_count(),
+                                    offset_in_item: px(0.),
+                                });
+                                w.refresh()
+                            }),
+                    ),
+                )
+            })
             .into_any_element()
     }
 }
@@ -717,6 +762,18 @@ impl Desktop {
 mod tests {
     use super::transcript;
     use gpui::{Context, ListOffset, ListState, Window, div, list, point, prelude::*, px, size};
+    #[test]
+    fn follow_only_new_content_from_the_tail() {
+        assert!(super::should_follow(true, true, false, false));
+        for (changed, tail, manual, focused) in [
+            (true, false, false, false),
+            (false, true, false, false),
+            (true, true, true, false),
+            (true, true, false, true),
+        ] {
+            assert!(!super::should_follow(changed, tail, manual, focused));
+        }
+    }
     #[test]
     fn tool_subjects_and_turn_caption() {
         use serde_json::json;

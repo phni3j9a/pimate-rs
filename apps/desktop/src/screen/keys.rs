@@ -337,10 +337,11 @@ impl Desktop {
             let result = page.abort().await;
             let _ = app.update(cx, |app, cx| {
                 app.stopping = false;
-                if let Err(e) = result
-                    && page.visible(app)
-                {
-                    app.notice = format!("停止できません: {e}");
+                if page.visible(app) {
+                    app.notice = match result {
+                        Ok(_) => "停止を要求しました。履歴と差分で結果を確認してください。".into(),
+                        Err(e) => format!("停止できません: {e}"),
+                    };
                 }
                 cx.notify();
             });

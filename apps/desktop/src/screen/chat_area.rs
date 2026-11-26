@@ -244,7 +244,7 @@ impl Desktop {
                 chat = chat.child(format!(
                     "{}: {}",
                     match d["status"].as_str() {
-                        Some("queued") => "割り込み待ち",
+                        Some("queued") => "送信待ち（受理済み・個別取消不可）",
                         Some("sending") => "送信中",
                         _ => "未確認（自動再送しません）",
                     },
@@ -331,7 +331,39 @@ impl Desktop {
                 || self.composing
                 || (self.state.attachments.images(&key).is_empty()
                     && self.drafts.get(&key).is_none_or(|s| s.trim().is_empty()));
-            let action = if running { "割り込む" } else { "送信" };
+            let now = chrono::Utc::now().timestamp_millis() as u64;
+            let allowances = self.machines[&key.host].conn.allowances(now);
+            let gauges = std::iter::once((
+                "コンテキスト",
+                rows.get("view", "context")["percent"].as_f64(),
+            ))
+            .chain(allowances.iter().map(|a| {
+                (
+                    if a.source == "claude" {
+                        "Claude"
+                    } else {
+                        "Codex"
+                    },
+                    a.gauge,
+                )
+            }))
+            .collect::<Vec<_>>();
+            let usage_hint = gauges
+                .iter()
+                .map(|(label, v)| {
+                    format!(
+                        "{label}: {}",
+                        v.map_or_else(|| "未確認".into(), |n| format!("{n:.0}%"))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let model = rows.get("view", "model")["id"]
+                .as_str()
+                .unwrap_or("モデル")
+                .to_owned();
+            let pg = page.clone();
+            let usage_page = page.clone();
             main = main.child(
                 div()
                     .mx_4()
@@ -374,19 +406,47 @@ impl Desktop {
                         div()
                             .flex()
                             .items_center()
-                            .justify_between()
+                            .gap_1()
                             .when(!has_photos, |b| {
                                 b.child(self.attachments(&key, &page, w, cx))
                             })
-                            .child(p.caption(if blocked {
-                                "入力待ちのため送信できません"
-                            } else if !self.ctrl_enter {
-                                "Enter で送信　Shift+Enter で改行"
-                            } else if cfg!(target_os = "macos") {
-                                "↩ 改行　⌘↩ 送信"
-                            } else {
-                                "Enter で改行　Ctrl+Enter で送信"
-                            }))
+                            .child(
+                                p.text_button("composer-model", p.secondary, cx)
+                                    .max_w(rems(10.))
+                                    .child(div().truncate().child(model))
+                                    .on_click(cx.listener(move |app, e, w, cx| {
+                                        if pg.visible(app)
+                                            && !app.background_click(e)
+                                            && !app.overlay_open(w, cx)
+                                        {
+                                            app.show_sheet(state::SheetPage::Model, cx)
+                                        }
+                                    })),
+                            )
+                            .child(
+                                p.text_button("composer-usage", p.secondary, cx)
+                                    .tooltip(usage_hint)
+                                    .children(gauges.into_iter().map(|(_, v)| {
+                                        let used = v.unwrap_or_default().clamp(0., 100.) as f32;
+                                        let data = [(used, p.accent), (100. - used, p.track)];
+                                        div().size(px(15.)).child(
+                                            gpui_component::chart::PieChart::new(data)
+                                                .value(|d| d.0)
+                                                .color(|d| d.1)
+                                                .inner_radius(4.5)
+                                                .outer_radius(7.),
+                                        )
+                                    }))
+                                    .on_click(cx.listener(move |app, e, w, cx| {
+                                        if usage_page.visible(app)
+                                            && !app.background_click(e)
+                                            && !app.overlay_open(w, cx)
+                                        {
+                                            app.show_sheet(state::SheetPage::Usage, cx)
+                                        }
+                                    })),
+                            )
+                            .child(div().flex_1())
                             .when(can_stop, |row| {
                                 row.child(
                                     p.text_button("abort", p.fail_ink, cx)
@@ -406,7 +466,7 @@ impl Desktop {
                                 p.primary("send", cx)
                                     .tab_stop(false)
                                     .debug_selector(|| "send-message".into())
-                                    .label(action)
+                                    .label("送信")
                                     .disabled(disabled)
                                     .on_click(cx.listener(move |this, e, w, cx| {
                                         if this.background_click(e) {
