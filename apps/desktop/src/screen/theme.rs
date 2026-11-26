@@ -272,7 +272,11 @@ const ICONS: &[(&str, &str)] = &[
         "bell",
         r#"<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 21h4"/>"#,
     ),
-    // gpui-component の TitleBar が使う名前。
+    // gpui-component が使う名前: 入力欄の消去ボタンと TitleBar。
+    (
+        "circle-x",
+        r#"<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>"#,
+    ),
     ("window-close", r#"<path d="M6 6l12 12M18 6 6 18"/>"#),
     ("window-minimize", r#"<path d="M5 12h14"/>"#),
     (

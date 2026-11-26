@@ -260,13 +260,27 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .child(machines.child(self.nav_button(
-                n,
-                "register-machine",
-                "＋ マシンを追加（ペアリング）",
-                Route::Tailscale,
-                cx,
-            )))
+            .child(
+                machines
+                    .child(self.nav_button(
+                        n,
+                        "register-machine",
+                        "＋ マシンを追加（ペアリング）",
+                        Route::Tailscale,
+                        cx,
+                    ))
+                    // 接続できなかったマシンへ、再起動なしでつなぎ直す常設の入口。
+                    .child(
+                        line()
+                            .child(
+                                self.reload_button("settings-reload", "登録を読み直す", p, cx)
+                                    .debug_selector(|| "settings-reload".into()),
+                            )
+                            .child(p.caption(
+                                "一覧を読み直し、接続できなかったマシンにつなぎ直します。",
+                            )),
+                    ),
+            )
             .child(group("新しい Pi の既定", p).child(self.preference(
                 n,
                 "ask",

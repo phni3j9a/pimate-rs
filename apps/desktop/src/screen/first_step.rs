@@ -114,8 +114,11 @@ impl Desktop {
             .child(step(
                 "02",
                 div()
-                    .child("Pi を動かす PC のターミナルで実行する")
+                    .child("Pi を動かす PC のターミナルで PiMate を入れ、Pi を起動する")
                     .child(command("install-cmd", "$", "pi install npm:@phni3j9a/pimate"))
+                    .child(command("pi-cmd", "$", "pi"))
+                    // シェルのコマンドではないので、どこに打つかを分けて示す。
+                    .child("起動した Pi の入力欄で実行する")
                     .child(command("setup-cmd", ">", "/pimate setup")),
             ))
             .child(step(
@@ -139,7 +142,9 @@ impl Desktop {
                     .justify_end()
                     .gap_1()
                     // 読み出せないときは、上の知らせの中に同じボタンが出る。
-                    .when(!warned, |row| row.child(self.reload_button(p, cx)))
+                    .when(!warned, |row| {
+                        row.child(self.reload_button("reload", "登録を読み直す", p, cx))
+                    })
                     .child(go("settings", "設定", Route::Settings)),
             );
         div()

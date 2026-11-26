@@ -27,9 +27,6 @@ pub struct Settings {
     pub appearance: Appearance,
     pub font_size: FontSize,
     pub ask_tool: bool,
-    /// ドラッグで変えたサイドバーの幅（px）。未設定なら既定の幅。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sidebar_width: Option<f32>,
 }
 impl Settings {
     pub fn path() -> std::io::Result<std::path::PathBuf> {
@@ -75,6 +72,20 @@ impl Settings {
         }
         result
     }
+}
+/// サイドバーの幅の置き場。settings.json は旧版が未知の項目を拒み、読めなかったときに
+/// 上書きすると利用者の設定を失うので、幅は別のファイルに置く。
+pub fn layout_path() -> std::io::Result<std::path::PathBuf> {
+    Ok(Settings::path()?.with_file_name("layout.json"))
+}
+/// 読めなければ既定の幅に戻るだけなので、失敗は知らせない。知らない項目は読み飛ばす。
+pub fn load_sidebar_width(path: &Path) -> Option<f32> {
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    v["sidebar_width"].as_f64().map(|w| w as f32)
+}
+pub fn save_sidebar_width(path: &Path, width: f32) -> std::io::Result<()> {
+    std::fs::create_dir_all(path.parent().ok_or(std::io::ErrorKind::InvalidInput)?)?;
+    std::fs::write(path, json!({ "sidebar_width": width }).to_string())
 }
 fn sequence() -> u64 {
     static N: AtomicU64 = AtomicU64::new(0);
@@ -474,6 +485,25 @@ mod tests {
         assert_eq!(v.as_object().unwrap().len(), 3);
         std::fs::write(&path, "{not-json}").unwrap();
         assert!(Settings::load(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn sidebar_width_is_kept_apart_from_the_settings_file() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let (settings, layout) = (dir.join("settings.json"), dir.join("layout.json"));
+        assert_eq!(load_sidebar_width(&layout), None);
+        // A settings file this build cannot read (a newer build's key) must survive a resize.
+        std::fs::create_dir_all(&dir).unwrap();
+        let unreadable = r#"{"appearance":"Dark","from_a_newer_build":1}"#;
+        std::fs::write(&settings, unreadable).unwrap();
+        assert!(Settings::load(&settings).is_err());
+        save_sidebar_width(&layout, 330.).unwrap();
+        assert_eq!(load_sidebar_width(&layout), Some(330.));
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), unreadable);
+        std::fs::write(&layout, r#"{"sidebar_width":300,"later":true}"#).unwrap();
+        assert_eq!(load_sidebar_width(&layout), Some(300.));
+        std::fs::write(&layout, "{not-json}").unwrap();
+        assert_eq!(load_sidebar_width(&layout), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

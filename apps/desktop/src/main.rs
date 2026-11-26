@@ -42,6 +42,8 @@ struct Desktop {
     scroll: ListState,
     /// 760px 未満で重ねて出すサイドバーの開閉。
     sidebar_open: bool,
+    /// ドラッグで変えたサイドバーの幅（px）。未設定なら既定の幅。
+    sidebar_width: Option<f32>,
     search: Option<(Entity<InputState>, Subscription)>,
     title: String,
 }
@@ -72,6 +74,7 @@ impl Desktop {
             size: 16.,
             scroll: screen::transcript(),
             sidebar_open: false,
+            sidebar_width: None,
             search: None,
             title: String::new(),
         };
@@ -423,7 +426,13 @@ fn main() {
             },
             |w, cx| {
                 let view = cx.new(|cx| {
-                    Desktop::new(Arc::new(Core::new(Arc::new(store::Store::open()))), w, cx)
+                    let mut app =
+                        Desktop::new(Arc::new(Core::new(Arc::new(store::Store::open()))), w, cx);
+                    // 覚えた幅はここでだけ読む（試験は利用者のファイルに左右されない）。
+                    app.sidebar_width = state::layout_path()
+                        .ok()
+                        .and_then(|p| state::load_sidebar_width(&p));
+                    app
                 });
                 cx.new(|cx| Root::new(view, w, cx))
             },

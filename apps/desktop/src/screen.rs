@@ -317,9 +317,26 @@ impl Desktop {
             );
             if let Some(error) = self.state.registration.connection_errors.get(&h.id) {
                 rows = rows.child(
-                    p.caption(format!("接続できません: {error}"))
-                        .text_color(p.fail_ink)
-                        .px_3(),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .pl_3()
+                        .child(
+                            p.caption(format!("接続できません: {error}"))
+                                .text_color(p.fail_ink)
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .child(
+                            self.reload_button(
+                                SharedString::from(format!("retry-{}", h.id)),
+                                "つなぎ直す",
+                                p,
+                                cx,
+                            )
+                            .flex_none(),
+                        ),
                 );
             }
             if let Some(data) = data {
@@ -404,11 +421,7 @@ impl Desktop {
     }
     fn sidebar_width(&self) -> f32 {
         let (min, max) = theme::SIDEBAR_RANGE;
-        self.state
-            .settings
-            .sidebar_width
-            .unwrap_or(theme::SIDEBAR)
-            .clamp(min, max)
+        self.sidebar_width.unwrap_or(theme::SIDEBAR).clamp(min, max)
     }
     fn sidebar_toggle(&self, p: &Colors, cx: &Context<Self>) -> Button {
         p.icon_button("sidebar-toggle", "side", "Pi の一覧", cx)
@@ -418,11 +431,11 @@ impl Desktop {
                 cx.notify()
             }))
     }
-    /// 登録の結果と失敗。読み出せないときは、ここから読み直せる。
+    /// 登録の進み具合・結果・失敗。読み出せないときは、ここから読み直せる。
     fn registration_notice(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
         let r = &self.state.registration;
         let message = r.message();
-        if message.is_empty() {
+        if message.is_empty() && !self.pairing {
             return None;
         }
         let warning = r.error.is_some() || r.save_unknown;
@@ -438,27 +451,41 @@ impl Desktop {
                 .items_start()
                 .gap_1()
                 .debug_selector(|| "registration-notice".into())
-                .child(
-                    div()
-                        .text_color(if warning { p.fail_ink } else { p.ink })
-                        .child(message),
-                )
+                // 保存の応答は待ち続けることがある。その間も画面は操作できるよう、幕は出さない。
+                .when(self.pairing, |card| card.child("登録・保存の結果を確認中…"))
+                .when(!message.is_empty(), |card| {
+                    card.child(
+                        div()
+                            .text_color(if warning { p.fail_ink } else { p.ink })
+                            .child(message),
+                    )
+                })
                 .children(r.error.map(|e| {
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
                         .font_family("monospace")
                         .child(format!("Error: {e}"))
                 }))
-                .when(warning, |card| card.child(self.reload_button(p, cx))),
+                .when(warning, |card| {
+                    card.child(self.reload_button("reload", "登録を読み直す", p, cx))
+                }),
         )
     }
-    fn reload_button(&self, p: &Colors, cx: &Context<Self>) -> Button {
-        p.text_button("reload", p.accent_ink, cx)
-            .label("登録を読み直す")
+    /// 登録を読み直し、つながっていないマシンへつなぎ直す。
+    fn reload_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: &'static str,
+        p: &Colors,
+        cx: &Context<Self>,
+    ) -> Button {
+        p.text_button(id, p.accent_ink, cx)
+            .label(label)
             .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
     }
-    /// 貼り付けたリンクの接続先を見せてから登録する。
+    /// 貼り付けたリンクの接続先を見せてから登録する。確定したあとの進み具合は知らせに出す。
     fn pair_dialog(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
+        let (_, target) = self.confirmation.as_ref()?;
         let card = div()
             .w(px(380.))
             .max_w(relative(0.9))
@@ -470,41 +497,37 @@ impl Desktop {
             .bg(p.bg)
             .shadow_lg()
             .debug_selector(|| "pair-dialog".into());
-        let card = if let Some((_, target)) = &self.confirmation {
-            let (name, address) = target.rsplit_once(" · ").unwrap_or((target, ""));
-            card.child(p.caption("接続先を確認"))
-                .child(
-                    div()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(name.to_owned()),
-                )
-                .child(p.caption(address.to_owned()).font_family("monospace"))
-                .child(
-                    div()
-                        .mt_3()
-                        .flex()
-                        .justify_end()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            p.text_button("cancel", p.secondary, cx)
-                                .label("キャンセル")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirmation = None;
-                                    cx.notify()
-                                })),
-                        )
-                        .child(
-                            p.primary("pair", cx)
-                                .label("この接続先を登録")
-                                .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
-                        ),
-                )
-        } else if self.pairing {
-            card.child("登録・保存の結果を確認中…")
-        } else {
-            return None;
-        };
+        let (name, address) = target.rsplit_once(" · ").unwrap_or((target, ""));
+        let card = card
+            .child(p.caption("接続先を確認"))
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name.to_owned()),
+            )
+            .child(p.caption(address.to_owned()).font_family("monospace"))
+            .child(
+                div()
+                    .mt_3()
+                    .flex()
+                    .justify_end()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        p.text_button("cancel", p.secondary, cx)
+                            .label("キャンセル")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirmation = None;
+                                cx.notify()
+                            })),
+                    )
+                    .child(
+                        p.primary("pair", cx)
+                            .label("この接続先を登録")
+                            .disabled(self.pairing)
+                            .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
+                    ),
+            );
         Some(p.scrim().items_center().justify_center().child(card))
     }
     /// 3ペインの入れ物。幅に応じてサイドバーとインスペクターを並べるか重ねる。
@@ -528,13 +551,14 @@ impl Desktop {
                     .on_drag_move(cx.listener(
                         move |this, e: &DragMoveEvent<DragSidebar>, _, cx| {
                             let width = f32::from(e.event.position.x - e.bounds.left());
-                            this.state.settings.sidebar_width = Some(width.clamp(min, max));
+                            this.sidebar_width = Some(width.clamp(min, max));
                             cx.notify()
                         },
                     ))
                     .on_drop(cx.listener(|this, _: &DragSidebar, _, _| {
-                        // 幅は次回も覚える。書けなくても、この起動中は効く。
-                        let _ = state::Settings::path().and_then(|p| this.state.settings.save(&p));
+                        // 幅は次回も覚える。書けなくても、この起動中は効く。設定のファイルには触れない。
+                        let _ = state::layout_path()
+                            .and_then(|p| state::save_sidebar_width(&p, this.sidebar_width()));
                     }))
                     .child(side)
                     .child(
@@ -947,6 +971,47 @@ mod tests {
                 d.title,
                 "(1) a-rather-long-folder-name-for-the-header — PiMate"
             );
+        });
+    }
+    #[gpui::test]
+    fn dragged_sidebar_width_is_used_within_its_range(cx: &mut gpui::TestAppContext) {
+        // Desktop::new never reads the saved width, so these tests don't depend on the user's file.
+        let (desktop, w, _socket) = open_chat(cx);
+        w.simulate_resize(size(px(1280.), px(800.)));
+        for (saved, shown) in [(None, 264.), (Some(300.), 300.), (Some(1000.), 360.)] {
+            desktop.update(w, |d, cx| {
+                d.sidebar_width = saved;
+                cx.notify()
+            });
+            w.run_until_parked();
+            assert_eq!(
+                w.debug_bounds("chat-header").unwrap().left(),
+                px(shown),
+                "{saved:?}"
+            );
+        }
+    }
+    #[gpui::test]
+    fn registrations_reload_from_settings_even_while_a_pairing_is_saving(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (desktop, w, _socket) = open_chat(cx);
+        // A save that never answers shows its progress without covering the window.
+        desktop.update(w, |d, cx| {
+            d.pairing = true;
+            cx.notify()
+        });
+        w.run_until_parked();
+        assert!(w.debug_bounds("registration-notice").is_some());
+        assert!(w.debug_bounds("pair-dialog").is_none());
+        for id in ["nav-settings", "settings-reload"] {
+            let pos = w.debug_bounds(id).unwrap().center();
+            w.simulate_click(pos, Default::default());
+            w.run_until_parked();
+        }
+        // The fixture's store lists no machines, so a reload that really ran forgets the injected one.
+        desktop.read_with(w, |d, _| {
+            assert!(d.hosts.is_empty() && d.machines.is_empty())
         });
     }
     #[gpui::test]
