@@ -66,9 +66,11 @@ internal fun NewPage(
     key(h?.id) {
         val form = remember { SpawnForm(hostId, m.settings.askTool) }
         var folders by remember { mutableStateOf<JSONObject?>(null) }
-        var models by remember { mutableStateOf<JSONObject?>(null) }
         val rows = m.rowsFor(hostId)
         val online = rows.hostValue("connection") == "\"connected\""
+        val listKnown = rows.hostValue("listKnown") == "true"
+        var models by remember(online, listKnown) { mutableStateOf<JSONObject?>(null) }
+        var loadingModels by remember(online, listKnown) { mutableStateOf(online) }
         val split = remember(form.cwd) { splitFolderPath(form.cwd) }
         val parent = split?.parent
         var focused by remember { mutableStateOf(false) }
@@ -97,10 +99,11 @@ internal fun NewPage(
                 folders = JSONObject(m.machineRequest(hostId, Operation.Folders))
             }
         }
-        LaunchedEffect(hostId, online, rows.hostValue("listKnown")) {
-            models = null
-            if (online && rows.hostValue("listKnown") == "true")
+        LaunchedEffect(hostId, online, listKnown) {
+            if (online && listKnown) {
                 checked({ error = it }) { models = m.hostModels(hostId) }
+                loadingModels = false
+            }
         }
         val recent = folders?.optJSONArray("folders").objects()
         fun folder(path: String) =
@@ -242,21 +245,19 @@ internal fun NewPage(
             }
             val catalog = models?.optJSONArray("models").objects()
             val saved = models?.optJSONObject("default")
-            val ref = form.model ?: saved?.optJSONObject("model")
-            val label =
+            fun label(ref: JSONObject?, thinking: String?): String? =
                 ref?.let {
                     val entry = catalog.find { model -> same(it, model) }
                     modelLabel(
                         it.str("id"),
                         entry?.str("name")?.takeIf(String::isNotBlank),
-                        if (form.model == null) saved?.str("thinking").orEmpty()
-                        else form.thinking.orEmpty(),
+                        thinking.orEmpty(),
                         entry?.optJSONArray("thinkingLevels")?.length(),
                     )
                 }
+            val defaultLabel = label(saved?.optJSONObject("model"), saved?.str("thinking"))
             val value =
-                if (form.model != null) label.orEmpty()
-                else label?.let { "Pi の既定（$it）" } ?: "Pi の既定"
+                label(form.model, form.thinking) ?: defaultLabel?.let { "Pi の既定（$it）" } ?: "Pi の既定"
             Spacer(Modifier.height(16.dp))
             ListRow(
                 "モデル",
@@ -274,7 +275,7 @@ internal fun NewPage(
                         Arrangement.SpaceBetween,
                         Alignment.CenterVertically,
                     ) {
-                        SheetTitle("モデル")
+                        Box(Modifier.weight(1f)) { SheetTitle("モデル") }
                         TextAction("完了", { modelPicker = false })
                     }
                     val favorites = models?.optJSONArray("scoped").objects()
@@ -295,7 +296,7 @@ internal fun NewPage(
                     if (query.isBlank())
                         ListRow(
                             "Pi の既定",
-                            if (form.model == null && label != null) label else "PC の Pi の設定に従います",
+                            defaultLabel ?: "PC の Pi の設定に従います",
                             onClick = {
                                 form.model = null
                                 form.thinking = null
@@ -304,12 +305,13 @@ internal fun NewPage(
                     val shown =
                         catalog.filter { model ->
                             (all || favorites.any { same(it, model) }) &&
-                                "${model.str("name")} ${model.str("id")} ${model.str("provider")}"
+                                "${model.str("provider")}/${model.str("id")} ${model.str("name")}"
                                     .contains(query.trim(), true)
                         }
                     if (shown.isEmpty())
                         Hint(
-                            if (catalog.isEmpty()) "モデル一覧を取得できません。Pi の既定で起動します。"
+                            if (loadingModels) "モデルを読み込み中…"
+                            else if (models == null) "モデル一覧を取得できません。Pi の既定で起動します。"
                             else "一致するモデルはありません"
                         )
                     shown

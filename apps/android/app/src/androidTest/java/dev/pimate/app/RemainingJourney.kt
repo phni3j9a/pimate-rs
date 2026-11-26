@@ -5,6 +5,7 @@ import android.view.KeyEvent
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -107,12 +108,19 @@ class RemainingJourney {
         find(hasText("お気に入り 3"))
         ui.onAllNodesWithText("Grok 5").assertCountEquals(0)
         tap("すべて 8")
-        find(hasContentDescription("モデルを検索")).performTextInput("gRoK")
+        val search = find(hasContentDescription("モデルを検索"))
+        search.performTextInput("xAi/gRoK-5")
         find(hasText("Grok 5"))
         ui.onAllNodesWithText("Claude Opus 5.5").assertCountEquals(0)
         tap("Grok 5")
         tap("high")
-        tap("完了")
+        search.performTextClearance()
+        find(hasText("Pi の既定") and hasText("Opus 5.5 · medium")).assertExists()
+        find(hasText("完了") and hasClickAction())
+            .performScrollTo()
+            .assertWidthIsAtLeast(48.dp)
+            .performTouchInput { click(center) }
+        ui.waitUntil { ui.onAllNodesWithText("完了").fetchSemanticsNodes().isEmpty() }
         find(hasText("Grok 5 · high"))
         val path = find(hasContentDescription("フォルダのパス"))
         path.performTextInput("~/S")
