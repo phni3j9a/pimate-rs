@@ -148,19 +148,19 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
         XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
         openPi("demo")
-        let finalBlock = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "使い方を書く")).firstMatch
-        XCTAssertTrue(finalBlock.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "表を開く")).firstMatch.waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["メッセージを送信"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch.exists)
         openVisibleTable()
         let copy = app.buttons["表をコピー"]
         guard copy.waitForExistence(timeout: 8) else { XCTFail("Table viewer did not open"); return }; copy.tap()
         app.buttons["表を閉じる"].tap()
-        if variant == "light" {
-            field.tap(); field.typeText("test"); app.buttons["送信"].tap()
-            let jump = app.buttons["最新へ"]
-            for _ in 0..<3 where !jump.exists { scroll.swipeDown() }
-            XCTAssertTrue(jump.waitForExistence(timeout: 5))
+        do {
+            field.tap(); field.typeText("test")
+            let jump = app.buttons["最新へ"], transcript = app.scrollViews["transcript"]
+            let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.12))
+            for _ in 0..<4 where !jump.isHittable { start.press(forDuration: 0.1, thenDragTo: start.withOffset(CGVector(dx: 0, dy: 165))) }
+            XCTAssertTrue(jump.isHittable); app.buttons["送信"].tap()
             XCTAssertTrue(app.staticTexts["上の質問や PC の操作を完了すると入力できます"].waitForExistence(timeout: 30))
             XCTAssertTrue(jump.isHittable); shot("ReadingHistory"); jump.tap()
             XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 8))

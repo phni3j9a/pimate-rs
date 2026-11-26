@@ -62,40 +62,42 @@ private struct Conversation: View {
                 Text(pc && questions.isEmpty ? "PC で操作待ち" : !questions.isEmpty ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
             }.foregroundStyle(PiTheme.secondary).padding(.bottom, 6).accessibilityElement(children: .combine)
             ScrollViewReader { reader in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22) {
-                        if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
-                        ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }) }
-                        if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
-                        if !text.isEmpty {
-                            // A new streamed answer must not render with the previous answer's parsed blocks.
-                            let answer = "stream:" + (entries.last?.id ?? "begin")
-                            MarkdownBody(source: text, answer: answer).id(answer)
+                GeometryReader { outer in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 22) {
+                            if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
+                            ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }) }
+                            if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
+                            if !text.isEmpty {
+                                // A new streamed answer must not render with the previous answer's parsed blocks.
+                                let answer = "stream:" + (entries.last?.id ?? "begin")
+                                MarkdownBody(source: text, answer: answer).id(answer)
+                            }
+                            if let move = model.move { MoveNote(move: move) }
+                            if let result = model.receipt { ReceiptNote(receipt: result) { model.dismissReceipt(host: key.host, result) } }
+                            if let prompt = edge?.pcPrompt, questions.isEmpty { TerminalCard(title: prompt.str("title"), command: edge?.attachCommand) }
+                            ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
+                            Color.clear.frame(height: 1).id("tail")
+                        }.padding(.horizontal, 20).padding(.vertical, 12)
+                        .onGeometryChange(for: TailMetrics.self) { geometry in
+                            let top = geometry.frame(in: .named("transcript")).minY
+                            return TailMetrics(height: geometry.size.height, viewport: CGRect(x: 0, y: -top, width: outer.size.width, height: outer.size.height))
+                        } action: { next in
+                            let follow = next.shouldFollow(after: metrics, dragging: dragging)
+                            metrics = next
+                            if follow { reader.scrollTo("tail", anchor: .bottom) }
                         }
-                        if let move = model.move { MoveNote(move: move) }
-                        if let result = model.receipt { ReceiptNote(receipt: result) { model.dismissReceipt(host: key.host, result) } }
-                        if let prompt = edge?.pcPrompt, questions.isEmpty { TerminalCard(title: prompt.str("title"), command: edge?.attachCommand) }
-                        ForEach(questions, id: \.id) { q in QuestionCard(model: model, key: QuestionKey(editor: key, requestId: q.id), item: q).id(q.id) }
-                        Color.clear.frame(height: 1).id("tail")
-                    }.padding(.horizontal, 20).padding(.vertical, 12)
-                    .onGeometryChange(for: TailMetrics.self) { geometry in
-                        let viewport = geometry.bounds(of: .scrollView) ?? .zero
-                        return TailMetrics(height: geometry.size.height, viewport: viewport)
-                    } action: { next in
-                        let follow = next.shouldFollow(after: metrics, dragging: dragging)
-                        metrics = next
-                        if follow { reader.scrollTo("tail", anchor: .bottom) }
-                    }
-                }.modifier(PhotoViewport()).scrollDismissesKeyboard(.interactively)
-                    .simultaneousGesture(DragGesture().updating($dragging) { _, state, _ in state = true })
-                    .overlay(alignment: .bottomTrailing) {
-                        if metrics?.nearTail == false {
-                            Button { withAnimation { reader.scrollTo("tail", anchor: .bottom) } } label: {
-                                Label("最新へ", systemImage: "arrow.down").padding(10).background(.regularMaterial, in: Capsule())
-                            }.padding(8)
+                    }.coordinateSpace(name: "transcript").accessibilityIdentifier("transcript").modifier(PhotoViewport()).scrollDismissesKeyboard(.interactively)
+                        .simultaneousGesture(DragGesture().updating($dragging) { _, state, _ in state = true })
+                        .overlay(alignment: .bottomTrailing) {
+                            if metrics?.nearTail == false {
+                                Button { withAnimation { reader.scrollTo("tail", anchor: .bottom) } } label: {
+                                    Label("最新へ", systemImage: "arrow.down").padding(10).background(.regularMaterial, in: Capsule())
+                                }.padding(8)
+                            }
                         }
-                    }
-                    .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
+                        .onChange(of: questions.map(\.id)) { _, ids in if !ids.isEmpty { UIAccessibility.post(notification: .announcement, argument: "Pi からの質問が届きました") } }
+                }
             }
         }.background(PiTheme.background).foregroundStyle(PiTheme.text)
             .safeAreaInset(edge: .bottom, spacing: 8) {
