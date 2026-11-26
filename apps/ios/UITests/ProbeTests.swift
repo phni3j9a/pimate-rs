@@ -78,6 +78,10 @@ final class ProbeTests: XCTestCase {
         app.navigationBars["セッションツリー"].buttons.element(boundBy: 0).tap()
         app.buttons["sheet-close"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
+        if variant == "large" {
+            let search = app.searchFields.firstMatch
+            search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "shout".count) + "\n")
+        }
         XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "既存の認証 API を拡張")).firstMatch.tap(); XCTAssertTrue(answer.isEnabled)
@@ -88,10 +92,6 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 8))
         func openPi(_ id: String) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
-            if variant == "large", let value = app.searchFields.firstMatch.value as? String, value == "shout" {
-                let search = app.searchFields.firstMatch
-                search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count) + "\n")
-            }
             let row = app.buttons["pi-" + id]
             // A partially visible row is hittable even when its center lands under the tab bar.
             func visible() -> Bool { row.isHittable && row.frame.midY > 140 && row.frame.midY < app.frame.maxY - 50 }
