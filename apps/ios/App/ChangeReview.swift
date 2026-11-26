@@ -39,7 +39,7 @@ struct ChangePatch {
         }
     }
 }
-struct ChangePiece { let call: String, lineID: String, output: String, created: Bool, patch: String?, diff: ChangePatch?, content: String?, omitted: String? }
+struct ChangePiece { let call: String, lineID: String, output: String, truncated: Bool, created: Bool, patch: String?, diff: ChangePatch?, content: String?, omitted: String? }
 struct ChangeFile { let path: String; var pieces: [ChangePiece] }
 struct ChangeReview {
     let key: EditorKey, turn: String?
@@ -82,7 +82,7 @@ struct ChangeReview {
                 if index == files.count { indices[pathBytes] = index; files.append(.init(path: !cwd.isEmpty && path.hasPrefix(root) ? String(path.dropFirst(root.count)) : path, pieces: [])) }
                 let reason = r["detailsOmitted"] as? Bool == true ? "too_large" : write.str("omitted")
                 let content = name == "write" && patch == nil && !["too_large", "binary"].contains(reason) ? args["content"] as? String : nil
-                files[index].pieces.append(.init(call: id, lineID: "\(entries[i].id):\(j)", output: r.str("text"), created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,
+                files[index].pieces.append(.init(call: id, lineID: "\(entries[i].id):\(j)", output: r.str("text"), truncated: r["truncated"] as? Bool == true, created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,
                     content: content, omitted: patch != nil ? nil : !reason.isEmpty ? reason : content == nil ? "no_diff" : "unknown_before"))
             }
         }

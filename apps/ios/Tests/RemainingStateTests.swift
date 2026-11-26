@@ -84,6 +84,17 @@ private final class MachineCore: Core, @unchecked Sendable {
         XCTAssertEqual(UsageSheet.timeLeft(1), "あと1分"); XCTAssertEqual(UsageSheet.timeLeft(3_600_001), "あと1時間1分")
         XCTAssertEqual(UsageSheet.timeLeft(90_060_000), "あと1日1時間")
     }
+    func testReviewUsesRCTruncationFlagNotOutputLengthOrOmittedPatch() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
+        // At the RC limit the retained prefix and a complete result may have identical lengths.
+        let text = String(repeating: "🌱", count: 16_384)
+        let entries: [Object] = [["kind":"assistant", "toolCalls":[["id":"a", "name":"edit"], ["id":"b", "name":"edit"]]],
+            ["kind":"tool_result", "toolCallId":"a", "text":text, "truncated":true],
+            ["kind":"tool_result", "toolCallId":"b", "text":text, "detailsOmitted":true]]
+        let items = try entries.enumerated().map { item("entry", String($0.offset), try jsonString($0.element)) }
+        let pieces = ChangeReview(key: key, entries: items, cwd: "", turn: nil).files.flatMap(\.pieces)
+        XCTAssertEqual(pieces.map(\.truncated), [true, false]); XCTAssertEqual(pieces.map(\.output), [text, text])
+    }
     func testBeginningReviewRetainsOmittedResultWithoutIncludingLaterCalls() throws {
         let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
         func change(_ path: String) -> [Object] { [

@@ -68,7 +68,7 @@ private struct DiffFile: View {
         DisclosureGroup(isExpanded: $expanded) {
             ForEach(file.pieces, id: \.lineID) { piece in
                 if showOutput && !piece.output.isEmpty {
-                    DisclosureGroup("ツールの出力") { ChangeBody(text: piece.output) }
+                    DisclosureGroup("ツールの出力") { ChangeBody(text: piece.output, truncated: piece.truncated) }
                 }
                 if let hunks = piece.diff?.hunks, !hunks.isEmpty {
                     ForEach(hunks.indices, id: \.self) { n in DiffHunk(hunk: hunks[n]) }
@@ -89,11 +89,13 @@ private struct DiffFile: View {
 }
 private struct ChangeBody: View {
     let text: String
+    var truncated = false
     @State private var limit = 6000
     var body: some View {
+        if truncated { Text("出力の末尾は省略されています。").foregroundStyle(.secondary) }
         Text(verbatim: String(text.prefix(limit))).modifier(PiFont(.caption)).fontDesign(.monospaced).textSelection(.enabled)
         if text.dropFirst(limit).first != nil { Button("続きを表示") { limit += 6000 } }
-        CopyText(text: text, label: "全文をコピー")
+        CopyText(text: text, label: truncated ? "取得済みの出力をコピー" : "全文をコピー")
     }
 }
 private struct DiffHunk: View {
