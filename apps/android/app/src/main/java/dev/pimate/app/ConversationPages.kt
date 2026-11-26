@@ -430,9 +430,16 @@ internal fun AgentsPage(
                         RowView(row, expanded) { expanded = !expanded }
                     }
                 }
-                child.str("question").takeIf(String::isNotEmpty)?.let {
-                    Hint("親の Pi に確認中")
-                    Text(it)
+                if (child.str("state") == "waiting") {
+                    val question = child.str("question")
+                    Hint(if (question.isEmpty()) "確認が必要です" else "親の Pi に質問しています")
+                    if (question.isNotEmpty()) Text(question)
+                    TextAction(if (question.isEmpty()) "チャットで確認" else "チャットで回答", {
+                        if (at == m.edits.current && at.target == m.target) {
+                            m.edits.text(at, childAnswerDraft(child, m.edits.body.text))
+                            close()
+                        }
+                    }, enabled = at == m.edits.current && at.target == m.target)
                 }
                 child.str("error").takeIf(String::isNotEmpty)?.let { SheetError(it) }
                 if (record.truncated) Hint("記録の一部を省略しています")

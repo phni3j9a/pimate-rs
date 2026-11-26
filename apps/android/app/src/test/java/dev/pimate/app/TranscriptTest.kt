@@ -4,6 +4,10 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TranscriptTest {
+    @Test fun answeringChildPrefixesExistingDraft() {
+        val child = org.json.JSONObject().put("agent", "reviewer").put("title", "確認")
+        assertEquals("確認（reviewer）の質問への回答: 下書き", childAnswerDraft(child, "下書き"))
+    }
     @Test fun thinkingLabelsMatchObservedDuration() {
         assertEquals("Thinking…", thinkingLabel(true, null))
         assertEquals("Thought", thinkingLabel(false, 999))
