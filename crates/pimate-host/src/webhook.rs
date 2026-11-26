@@ -157,6 +157,9 @@ fn clean(v: &mut Value, k: &str, home: &str) {
         _ => (),
     }
 }
+pub fn redact(v: &mut Value) {
+    clean(v, "", &display_home());
+}
 pub fn payload(
     c: &Value,
     event: &str,
@@ -248,7 +251,7 @@ pub fn payload(
         }
     };
     d.as_object_mut().unwrap().extend(json!({"event":event,"eventId":key(json!([event,id,reference])),"machine":machine,"instanceId":id,"sessionId":session,"title":title,"cwd":cwd,"sentAt":Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true),"text":text}).as_object().unwrap().clone());
-    clean(&mut d, "", &display_home());
+    redact(&mut d);
     d
 }
 async fn post(c: &Value, v: &Value) -> Result<(u16, bool)> {

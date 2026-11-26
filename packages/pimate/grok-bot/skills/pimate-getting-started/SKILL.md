@@ -6,7 +6,7 @@ Follow pimate-rules. Use ListMachines and select the computer the user names; as
 
 ## Check (read-only)
 1. Run `uname -sm`, `node --version` and `pi --version`. Find `pimate` on PATH, else `~/.pi/agent/npm/node_modules/.bin/pimate`.
-2. Run `pimate --help`. Its usage must include `wait ID`, `shutdown ID` and `webhook`; otherwise stop here and identify the installed edition (see "Updating"). A missing command alone does not mean PiMate is not installed.
+2. Run `pimate --help`. Its usage must include `wait ID`, `shutdown ID`, `webhook`, `--label` and `--answer-labels`; otherwise stop here and identify the installed edition (see "Updating"). A missing command alone does not mean PiMate is not installed.
 3. Run `pimate list`, `pimate service status` and `pimate webhook status`.
 
 Report what is missing. Don't install, start or change anything without permission.

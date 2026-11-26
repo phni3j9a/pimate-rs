@@ -10,6 +10,10 @@ const commands = new Set(Array.from(usage.matchAll(/(?:Usage: pimate | \| )([a-z
 const webhookActions = new Set(usage.match(/webhook <([a-z|]+)>/)?.[1].split("|"));
 
 describe("Grok Bot skills", () => {
+	it("never requests a pending snapshot from the webhook card flow", () => {
+		const cards = readFileSync(new URL("pimate-phone-answers/SKILL.md", skills), "utf8");
+		expect(cards).not.toMatch(/\bpimate wait\b|--wait\b/);
+	});
 	it("has matching frontmatter and uses only real CLI subcommands", () => {
 		const folders = readdirSync(skills, { withFileTypes: true }).filter((entry) => entry.isDirectory());
 		expect(folders.map((entry) => entry.name).sort()).toEqual([

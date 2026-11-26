@@ -122,13 +122,10 @@ fn items(h: &Value) -> Result<&Vec<Value>> {
 // Match display labels on the PC; never include raw options in CLI output or errors.
 fn match_option<'a>(
     value: &mut Value,
-    options: impl Iterator<Item = &'a str> + Clone,
+    options: impl Iterator<Item = &'a str>,
     home: &str,
 ) -> Result<()> {
     let pick = value.as_str().context("Invalid selection")?;
-    if options.clone().any(|o| o == pick) {
-        return Ok(());
-    }
     let mut matches = options.filter(|o| crate::webhook::display_text(o, home) == pick);
     let original = matches.next().context("Unknown option")?;
     ensure!(matches.next().is_none(), "Ambiguous option");
@@ -174,6 +171,8 @@ fn match_ui_options(params: &mut Value, pending: &[Value], home: &str) -> Result
                 )?;
             }
         }
+    } else {
+        anyhow::bail!("Card label does not match dialog kind");
     }
     Ok(())
 }
@@ -208,6 +207,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
     let mut last = None;
     let mut method = cmd;
     let mut params = json!({});
+    let mut card_labels = false;
     match cmd {
         "prompt" | "wait" => {
             secs = option(&mut args, "--timeout")?.unwrap_or(300);
@@ -242,7 +242,13 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
             match args[1].as_str() {
                 "--confirm" => params["confirmed"] = true.into(),
                 "--cancel" => params["cancelled"] = true.into(),
-                "--answers" => {
+                "--label" => {
+                    ensure!(args.len() == 3, "--label requires one label");
+                    card_labels = true;
+                    params["value"] = args[2].clone().into();
+                }
+                "--answers" | "--answer-labels" => {
+                    card_labels = args[1] == "--answer-labels";
                     ensure!(args.len() == 3);
                     params["answers"] = serde_json::from_str(&args[2])?;
                     ensure!(params["answers"].is_array())
@@ -296,7 +302,9 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
     let mut reply = json!({});
     if cmd != "wait" {
         let marker = if cmd == "ui" {
-            match_ui_options(&mut params, &t.pending, &crate::webhook::display_home())?;
+            if card_labels {
+                match_ui_options(&mut params, &t.pending, &crate::webhook::display_home())?;
+            }
             crate::webhook::mark(&id, &params["requestId"]).unwrap_or_else(|_| {
                 eprintln!("webhook answer marker failed");
                 None
@@ -322,6 +330,9 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
                         && (nonempty(&v["text"]) || nonempty(&v["errorMessage"]))
                 {
                     let mut row = json!({"kind":v["kind"],"text":v["text"]});
+                    if let Some(id) = v["entryId"].as_str() {
+                        row["entryId"] = id.into();
+                    }
                     if nonempty(&v["errorMessage"]) {
                         row["error"] = v["errorMessage"].clone()
                     }
@@ -380,6 +391,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
             "done"
         })
     }
+    crate::webhook::redact(&mut result);
     reply
         .as_object_mut()
         .context("invalid RC result")?
@@ -394,11 +406,12 @@ mod tests {
     fn matches_only_the_target_and_never_reports_raw_options() {
         let pending = [
             json!({"requestId":"other","kind":"editor","value":"private"}),
-            json!({"requestId":"R","kind":"select","options":["/home/test/one", "sk-aaaaaaaaaaaaaaaaaaaaaaaaa", "sk-bbbbbbbbbbbbbbbbbbbbbbbbb"]}),
+            json!({"requestId":"R","kind":"select","options":["/home/test/one", "/home/test/x", "~/x", "sk-aaaaaaaaaaaaaaaaaaaaaaaaa", "sk-bbbbbbbbbbbbbbbbbbbbbbbbb"]}),
         ];
         for (pick, expected) in [
             ("~/one", Ok("/home/test/one")),
-            ("/home/test/one", Ok("/home/test/one")),
+            ("/home/test/one", Err("Unknown option")),
+            ("~/x", Err("Ambiguous option")),
             ("[redacted]", Err("Ambiguous option")),
             ("other", Err("Unknown option")),
         ] {
