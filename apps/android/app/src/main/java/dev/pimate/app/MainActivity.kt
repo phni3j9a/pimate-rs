@@ -152,7 +152,7 @@ private fun Screen(m: SessionModel, chat: ChatUi) {
                             m.showPairing(true)
                         }
                     }
-                }
+                } ?: LaunchedEffect(machine) { sheet = "settings" }
         "new" ->
             NewPage(m, firstHost ?: host, { sheet = "" }) { h, id ->
                 first = ""

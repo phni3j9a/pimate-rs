@@ -59,9 +59,8 @@ class RemainingJourney {
         tap("ペアリングする")
     }
 
-    @Test
-    fun revokeThisDeviceOnDisposableHost() {
-        val secret = link("revoke-link")
+    private fun openDisposableMachine(linkFile: String): SessionModel {
+        val secret = link(linkFile)
         val target = requireNotNull(uniffi.pimate_ffi.previewPair(secret))
         require(target.address.startsWith("127.0.0.1:"))
         val model = ui.runOnIdle { ViewModelProvider(ui.activity)[SessionModel::class.java] }
@@ -72,6 +71,12 @@ class RemainingJourney {
         icon("設定")
         tap(target.name)
         find(hasText("このスマホ", substring = true))
+        return model
+    }
+
+    @Test
+    fun revokeThisDeviceOnDisposableHost() {
+        val model = openDisposableMachine("revoke-link")
         shot("Machine-Revoke-Detail")
         find(hasText("このマシンを削除") and hasClickAction()).performScrollTo().performClick()
         find(hasText("キャンセル") and isFocused())
@@ -82,6 +87,23 @@ class RemainingJourney {
         shot("Machine-Revoke-Confirm")
         tap("削除")
         ui.waitUntil(20000) { model.hosts.isEmpty() }
+    }
+
+    /** `android-screen-fixture.cjs PORT revoke-rotation` drops the successful Host reply. */
+    @Test
+    fun recreateWhileRevokingKeepsPendingAndUnknownResult() {
+        val model = openDisposableMachine("revoke-rotation-link")
+        tap("このマシンを削除")
+        tap("削除")
+        ui.activityRule.scenario.recreate()
+        find(hasText("このマシンを削除")).assertIsNotEnabled()
+        val warning = "取消の結果を確認できません。PC の端末一覧で確かめてください。"
+        find(hasText(warning))
+        ui.activityRule.scenario.recreate()
+        find(hasText(warning))
+        tap("キャンセル")
+        find(hasText("このマシンを削除")).assertIsEnabled()
+        ui.runOnIdle { Assert.assertEquals(1, model.hosts.size) }
     }
 
     @Test

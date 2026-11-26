@@ -643,7 +643,9 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
     var retry by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    var operating by remember { mutableStateOf(false) }
+    val result = m.removal(host)
+    val busy = operating || result == Removal.REVOKING
 
     var removal by remember { mutableStateOf<RemovalPrompt?>(null) }
     val scope = rememberCoroutineScope()
@@ -682,14 +684,14 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
     }
     fun operate(action: suspend () -> Unit) {
         if (busy || m.hosts.none { it.id == host.id && it.deviceId == host.deviceId }) return
-        busy = true
+        operating = true
         note = ""
         error = ""
         scope.launch {
             try {
                 checked({ error = it }, action)
             } finally {
-                busy = false
+                operating = false
             }
         }
     }
@@ -871,7 +873,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 )
             }
         }
-        SheetError(error)
+        SheetError(if (result == Removal.FAILED) "操作結果を確認できません。再実行の前に状態を確認してください。" else error)
         if (note.isNotEmpty()) Hint(note)
         Spacer(Modifier.height(28.dp))
         // 読み込みや操作に失敗したとき、公開版を照会できなかったときに出す。
@@ -893,7 +895,13 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
             weight = FontWeight.Normal,
             style = Type.lead,
         )
-        removal?.let { prompt ->
+        val prompt =
+            when (result) {
+                Removal.LOCAL_ONLY -> RemovalPrompt.REFUSED
+                Removal.UNKNOWN -> RemovalPrompt.UNKNOWN
+                else -> removal
+            }
+        prompt?.let { prompt ->
             val revoke = prompt == RemovalPrompt.REMOTE
             ConfirmDialog(
                 prompt.title ?: "「${host.name}」を削除しますか？",
@@ -901,20 +909,19 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 else "この端末からだけ接続情報と下書きを削除しますか？PC 側に登録が残る場合は、PC の Pi の /pimate devices で取り消してください。",
                 if (revoke) "削除" else "この端末から削除",
                 pi.failedText,
-                { removal = null },
+                {
+                    removal = null
+                    m.dismissRemoval(host)
+                },
             ) {
                 removal = null
-                operate {
-                    if (!revoke) {
+                if (revoke) m.revoke(host)
+                else
+                    operate {
+                        m.dismissRemoval(host)
                         m.forget(host)
                         close()
-                    } else
-                        when (m.revoke(host)) {
-                            Removal.REMOVED -> close()
-                            Removal.LOCAL_ONLY -> removal = RemovalPrompt.REFUSED
-                            Removal.UNKNOWN -> removal = RemovalPrompt.UNKNOWN
-                        }
-                }
+                    }
             }
         }
     }

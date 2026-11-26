@@ -108,6 +108,8 @@ internal class HostRows(private val states: MutableMap<String, Rows>) {
 }
 
 internal enum class Removal {
+    REVOKING,
+    FAILED,
     REMOVED,
     LOCAL_ONLY,
     UNKNOWN,
@@ -331,6 +333,9 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
                     val first = hosts.isEmpty()
                     val paired = core.pair(link, android.os.Build.MODEL)
                     hosts = core.hosts()
+                    removals.keys.removeAll { (id, device) ->
+                        id == paired.id && device != paired.deviceId
+                    }
                     connect(paired)
                     showPairing(false)
                     pairedHostId = paired.id.takeIf { first }
@@ -452,18 +457,39 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
         slots[id]?.connection?.retryNow()
     }
 
-    internal suspend fun revoke(host: Host): Removal =
-        viewModelScope
-            .async {
-                val c = slots[host.id]?.connection
-                revokeMachine(
-                    c != null && rowsFor(host.id).supportsRevoke(),
-                    { core.revokeAndForget(checkNotNull(c), host.id, host.deviceId) },
-                ) {
-                    removed(host)
+    private val removals = mutableStateMapOf<Pair<String, String>, Removal>()
+
+    internal fun removal(host: Host) = removals[host.id to host.deviceId]
+
+    internal fun dismissRemoval(host: Host) {
+        if (removal(host) != Removal.REVOKING) removals.remove(host.id to host.deviceId)
+    }
+
+    internal fun revoke(host: Host) {
+        val key = host.id to host.deviceId
+        if (
+            removal(host) !in listOf(null, Removal.FAILED) ||
+                hosts.none { it.id == host.id && it.deviceId == host.deviceId }
+        )
+            return
+        removals[key] = Removal.REVOKING
+        viewModelScope.launch {
+            val c = slots[host.id]?.connection
+            val result =
+                try {
+                    revokeMachine(
+                        c != null && rowsFor(host.id).supportsRevoke(),
+                        { core.revokeAndForget(checkNotNull(c), host.id, host.deviceId) },
+                    ) {
+                        removed(host)
+                    }
+                } catch (_: CoreException) {
+                    Removal.FAILED
                 }
-            }
-            .await()
+            if (result != Removal.REMOVED && removals[key] == Removal.REVOKING)
+                removals[key] = result
+        }
+    }
 
     internal fun forget(host: Host) {
         core.forgetDevice(host.id, host.deviceId)
@@ -472,6 +498,7 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
 
     private fun removed(registration: Host) {
         val id = registration.id
+        removals.remove(id to registration.deviceId)
         if (hosts.none { it.id == id && it.deviceId == registration.deviceId }) return
         slots.remove(id)?.connection?.close()
         states.remove(id)
