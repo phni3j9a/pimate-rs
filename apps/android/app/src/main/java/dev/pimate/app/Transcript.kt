@@ -101,6 +101,7 @@ internal data class Entry(
     val callId: String = "", // tool_result
     val name: String = "",
     val isError: Boolean = false,
+    val patch: String? = null,
     val change: String = "", // edit / write の「+6 −2」
     val time: Long? = null,
     /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
@@ -139,7 +140,7 @@ internal sealed interface ChatRow {
             get() = null
     }
 
-    data class Summary(override val key: String, val text: String) : ChatRow {
+    data class Summary(override val key: String, val text: String, val reviewTurn: String? = null) : ChatRow {
         override val fold: String?
             get() = null
     }
@@ -279,7 +280,8 @@ internal fun buildRows(
             shownName,
             subject.ifEmpty { now?.subject.orEmpty() },
             state,
-            result?.text ?: now?.output.orEmpty(),
+            if (state == ToolState.Done && result != null && shownName in listOf("edit", "write"))
+                result.patch ?: "差分情報はありません" else result?.text ?: now?.output.orEmpty(),
             meta,
             pics = result?.pics ?: ImageSlots.Empty,
             since = now?.startedAt?.takeIf { state == ToolState.Running },
@@ -309,6 +311,7 @@ internal fun buildRows(
                             key,
                             listOfNotNull(took?.let { "${seconds(it)} 作業" }, "ツール $tools 回")
                                 .joinToString(" · "),
+                            id.takeIf { turn.any { it is ChatRow.Tool && it.state == ToolState.Done && it.name in listOf("edit", "write") } },
                         )
                 }
                 out += folded ?: row
@@ -545,6 +548,7 @@ internal fun entry(o: JSONObject): Entry {
                 callId = o.str("toolCallId"),
                 name = o.str("toolName"),
                 isError = o.optBoolean("isError"),
+                patch = patch,
                 change = if (patch != null && !o.optBoolean("isError")) change(patch) else "",
                 time = time,
                 pics = pics(id, o),

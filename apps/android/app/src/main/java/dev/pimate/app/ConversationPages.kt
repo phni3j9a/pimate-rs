@@ -13,7 +13,7 @@ import kotlinx.coroutines.*
 import org.json.*
 
 @Composable
-internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
+internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit, initialTurn: String? = null) {
     val items = m.rows.groups["entry"].orEmpty()
     val cwd =
         m.rows.groups["instance"]
@@ -22,7 +22,7 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
             ?.let { JSONObject(it.json).str("cwd") }
             .orEmpty()
     var all by rememberSaveable { mutableStateOf(false) }
-    var turn by rememberSaveable { mutableStateOf<String?>(null) }
+    var turn by rememberSaveable { mutableStateOf(initialTurn) }
     var choose by remember { mutableStateOf(false) }
     var data by remember(items, cwd, all, turn) { mutableStateOf<Review?>(null) }
     var turns by remember { mutableStateOf(emptyList<Pair<String, String>>()) }
@@ -58,6 +58,8 @@ internal fun ReviewPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                 }
         }
         data?.let { r ->
+            val patch = remember(r) { r.files.flatMap { it.pieces }.mapNotNull { it.patch }.filter { it.isNotEmpty() }.joinToString("") { if (it.endsWith("\n")) it else "$it\n" } }
+            if (patch.isNotEmpty()) CopyAction(patch, "差分をコピー")
             if (r.files.isEmpty()) Hint("変更はありません")
             r.files.forEachIndexed { index, file ->
                 key(file.path) {

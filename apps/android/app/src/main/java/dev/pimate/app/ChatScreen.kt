@@ -372,6 +372,7 @@ internal fun ChatScreen(
                                     row,
                                     if (row is ChatRow.Summary) "+${row.key}" in open
                                     else isOpen(row),
+                                    review = { id: String -> show("review:$id") }.takeIf { key != null },
                                 ) {
                                     if (row is ChatRow.Summary) {
                                         if (!open.remove("+${row.key}")) open.add("+${row.key}")
@@ -436,6 +437,7 @@ internal fun ChatScreen(
                 else ->
                     if (name.startsWith("agents:"))
                         AgentsPage(m, at, close, name.removePrefix("agents:"))
+                    else if (name.startsWith("review:")) ReviewPage(m, at, close, name.removePrefix("review:"))
                     else SessionSheet(m, at, name, { ui.sheet = it to at }, close)
             }
         }
@@ -648,7 +650,7 @@ internal fun PcCard(title: String, command: String?) {
 }
 
 @Composable
-internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
+internal fun RowView(row: ChatRow, open: Boolean, review: ((String) -> Unit)? = null, toggle: () -> Unit) {
     when (row) {
         is ChatRow.User ->
             Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
@@ -673,8 +675,10 @@ internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
                         )
                     }
             }
-        is ChatRow.Summary ->
+        is ChatRow.Summary -> Row(verticalAlignment = Alignment.CenterVertically) {
             Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
+            if (row.reviewTurn != null && review != null) TextAction("変更を確認", { review(row.reviewTurn) })
+        }
         is ChatRow.Thinking ->
             Column {
                 Expander(

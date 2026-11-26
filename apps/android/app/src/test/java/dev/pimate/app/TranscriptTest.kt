@@ -29,6 +29,13 @@ class TranscriptTest {
         )
 
     @Test
+    fun editRowShowsPatchAndLinksToInitiatingTurn() {
+        val rows = buildRows(listOf(Entry("u", "user"), Entry("a", "assistant", calls=listOf(Call("c", "edit", "foo"))), Entry("r", "tool_result", "success", callId="c", patch="patch")), emptyList(), false)
+        assertEquals("u", rows.filterIsInstance<ChatRow.Summary>().single().reviewTurn)
+        assertEquals("patch", rows.filterIsInstance<ChatRow.Tool>().single().output)
+    }
+
+    @Test
     fun completedTurnFoldsWorkButKeepsTheAnswer() {
         val rows = buildRows(turn, emptyList(), active = false)
         assertEquals(
