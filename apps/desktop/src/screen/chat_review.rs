@@ -3,10 +3,10 @@ use state::{Page, review::Review};
 #[derive(Default)]
 pub(crate) struct Inspector {
     pub review: Option<Arc<Review>>,
-    pub review_open: bool,
+    pub(super) tab: Option<Tab>,
+    pub(super) github: Option<Navigation>,
     read: Option<Task<()>>,
     error: Option<Error>,
-    pub agents: bool,
     pub child: Option<state::Child>,
     pub run: Option<String>,
 }
@@ -18,7 +18,7 @@ impl Inspector {
         latest: bool,
         cx: &mut Context<Self>,
     ) {
-        self.review_open = true;
+        self.tab = Some(Tab::Review);
         self.review = None;
         self.error = None;
         self.read = Some(cx.spawn(async move |this, cx| {
@@ -121,16 +121,32 @@ impl Desktop {
                 body = body.child(p.caption("この範囲に読み込み済みの変更はありません"))
             }
             for (fi, f) in r.files.iter().enumerate() {
+                let collapsed = w.use_keyed_state(
+                    SharedString::from(format!("collapsed:{}", f.path)),
+                    cx,
+                    |_, _| false,
+                );
+                let closed = *collapsed.read(cx);
                 let mut card = div()
                     .rounded_md()
                     .border_1()
                     .border_color(p.border)
                     .p_3()
                     .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(f.path.clone()),
+                        Button::new(("toggle-file", fi))
+                            .ghost()
+                            .label(format!("{} {}", if closed { "▸" } else { "▾" }, f.path))
+                            .on_click(move |_, _, cx| {
+                                collapsed.update(cx, |v, cx| {
+                                    *v = !*v;
+                                    cx.notify()
+                                })
+                            }),
                     );
+                if closed {
+                    body = body.child(card);
+                    continue;
+                }
                 for (i, piece) in f.pieces.iter().enumerate() {
                     if let Some(omitted) = &piece.omitted {
                         card = card.child(p.caption(omitted.clone()))
@@ -148,7 +164,9 @@ impl Desktop {
                             "変更内容"
                         }));
                         let mut lines = text.lines();
-                        for l in lines.by_ref().take(n) {
+                        for (li, l) in lines.by_ref().take(n).enumerate() {
+                            let page = pg.clone();
+                            let quote = format!("{}\n> {l}", f.path);
                             card = card.child(
                                 div()
                                     .font_family("monospace")
@@ -159,7 +177,15 @@ impl Desktop {
                                     } else {
                                         p.bg
                                     })
-                                    .child(l.to_owned()),
+                                    .child(l.to_owned())
+                                    .id(SharedString::from(format!("quote:{fi}:{i}:{li}")))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |app, _, w, cx| {
+                                        if let Err(e) = page.append_reference(app, &quote, w, cx) {
+                                            app.notice = format!("入力欄に追加できません: {e}")
+                                        };
+                                        cx.notify()
+                                    })),
                             );
                         }
                         if lines.next().is_some() {

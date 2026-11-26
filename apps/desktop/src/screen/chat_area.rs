@@ -31,7 +31,7 @@ impl Desktop {
         // 760px 未満ではサイドバーを隠すので、ヘッダーの左に一覧を出すボタンを置く。
         let toggle = (Layout::of(w.viewport_size().width) == Layout::Narrow)
             .then(|| self.sidebar_toggle(p, cx));
-        let nav = self.init_navigation(w, cx);
+
         if self.receive_editor_text(w, cx) {
             self.bind_editor(w, cx);
         }
@@ -70,17 +70,8 @@ impl Desktop {
             if shutdown {
                 self.confirm_shutdown(&page, w, cx)
             } else {
-                inspector.update(cx, |s, cx| {
-                    s.agents = false;
-                    s.load(page.clone(), None, true, cx)
-                });
+                inspector.update(cx, |s, cx| s.load(page.clone(), None, true, cx));
             }
-        }
-        if inspector.read(cx).agents {
-            return main.child(self.agent_panel(&key, &page, &inspector, p, w, cx));
-        }
-        if inspector.read(cx).review_open {
-            return main.child(self.review_panel(&key, &page, &inspector, p, w, cx));
         }
         let media = super::chat_media::Media {
             page: page.clone(),
@@ -121,11 +112,10 @@ impl Desktop {
             );
         }
         let github = github_available(rows, &key.host, &key.instance).then(|| {
-            let nav = nav.clone();
             p.icon_button("github", "github", "GitHub — Issue / PR", cx)
                 .debug_selector(|| "nav-github".into())
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
+                    this.select_github(pimate_protocol::GitHubQuery::List, cx)
                 }))
         });
         // 760px 未満では状態の文字を置く幅がない（文字サイズ「大」の 480px で右のボタンが切れる）。
@@ -479,7 +469,8 @@ impl Desktop {
                     ),
             );
         }
-        outer.child(theme::column(main).flex_shrink_0())
+        let chat = outer.child(theme::column(main).flex_shrink_0());
+        self.with_inspector(chat, &key, &page, &inspector, p, w, cx)
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
         if self.overlay_open(w, cx) || !page.visible(self) {

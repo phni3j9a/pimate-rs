@@ -130,7 +130,7 @@ impl Desktop {
                 ))
                 .on_click(move |_, _, cx| {
                     ins.update(cx, |s, cx| {
-                        s.agents = true;
+                        s.tab = Some(Tab::Agents);
                         s.run = None;
                         s.child = None;
                         cx.notify()

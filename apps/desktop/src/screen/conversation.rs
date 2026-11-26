@@ -607,7 +607,7 @@ impl Desktop {
                             .label("サブエージェントの実行を開く")
                             .on_click(move |_, _, cx| {
                                 ins.update(cx, |s, cx| {
-                                    s.agents = true;
+                                    s.tab = Some(Tab::Agents);
                                     s.child = None;
                                     s.run = Some(run.clone());
                                     cx.notify()

@@ -300,7 +300,7 @@ impl Desktop {
         } else if self
             .chat_keys
             .as_ref()
-            .is_some_and(|(_, i)| i.read(cx).agents || i.read(cx).review_open)
+            .is_some_and(|(_, i)| i.read(cx).tab.is_some())
         {
             Some(Inspector)
         } else {
@@ -459,11 +459,9 @@ impl Desktop {
                 {
                     ins.update(cx, |s, cx| {
                         if c == Review {
-                            s.agents = false;
                             s.load(page.clone(), None, true, cx)
                         } else {
-                            s.review_open = false;
-                            s.agents = true;
+                            s.tab = Some(Tab::Agents);
                             cx.notify()
                         }
                     });
@@ -473,7 +471,7 @@ impl Desktop {
                 if let Some((host, id)) = &self.selected
                     && github_available(&self.machines[host].rows, host, id)
                 {
-                    self.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
+                    self.select_github(pimate_protocol::GitHubQuery::List, cx)
                 }
             }
             PageUp | PageDown if home && let Some(h) = &self.history => h

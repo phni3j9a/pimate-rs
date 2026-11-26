@@ -8,6 +8,8 @@ pub(crate) mod context;
 mod conversation;
 mod first_step;
 mod github;
+mod inspector;
+use inspector::Tab;
 pub(crate) mod keys;
 mod machine;
 mod new_pi;
@@ -1639,10 +1641,10 @@ mod key_tests {
         assert_eq!(app.read_with(w, |d, _| d.palette_index), 1);
         press(w, "escape");
         assert!(app.read_with(w, |d, cx| !d.palette_open
-            && d.chat_keys.as_ref().unwrap().1.read(cx).review_open));
+            && d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)));
         press(w, "escape");
         assert!(!app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
     #[gpui::test]
@@ -1653,7 +1655,7 @@ mod key_tests {
         assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
         press(w, "escape");
         assert!(!app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
     #[gpui::test]
@@ -1705,7 +1707,7 @@ mod key_tests {
         });
         w.run_until_parked();
         assert!(app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
     #[gpui::test]
@@ -1811,7 +1813,7 @@ mod key_tests {
         assert_eq!(before.item_ix, 23);
         press(w, "secondary-shift-d");
         assert!(app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
         press(w, "escape");
         assert!(w.debug_bounds("composer-input").is_some());

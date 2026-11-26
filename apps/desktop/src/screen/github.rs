@@ -3,9 +3,10 @@ use pimate_protocol::GitHubQuery;
 use settings::{group, line};
 #[derive(Default)]
 pub(super) struct Github {
-    loaded: bool,
-    data: Option<Value>,
-    docs: markdown::Messages,
+    pub(super) query: Option<GitHubQuery>,
+    pub(super) loaded: bool,
+    pub(super) data: Option<Value>,
+    pub(super) docs: markdown::Messages,
     pub(super) viewer: Option<Entity<chat_media::Viewer>>,
 }
 fn check_note(v: &Value) -> Option<&'static str> {
@@ -53,13 +54,12 @@ impl Desktop {
             return if n.read(cx).note.is_empty() {
                 root.child(p.caption("PC から読み込み中…"))
             } else {
-                root.child(self.nav_button(
-                    n,
-                    "github-retry",
-                    "再読み込み",
-                    Route::Github(q.clone()),
-                    cx,
-                ))
+                let q = q.clone();
+                root.child(p.caption(n.read(cx).note.clone())).child(
+                    Button::new("github-retry").label("再読み込み").on_click(
+                        cx.listener(move |app, _, _, cx| app.select_github(q.clone(), cx)),
+                    ),
+                )
             };
         };
         if q == &GitHubQuery::List {
@@ -85,7 +85,7 @@ impl Desktop {
                         } else {
                             GitHubQuery::Pr { number }
                         };
-                        let nav = n.clone();
+
                         let shown = page.clone();
                         let label = format!(
                             "#{number}　{}　·　{}",
@@ -97,7 +97,7 @@ impl Desktop {
                             .justify_start()
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 if shown.visible(app) {
-                                    app.navigate(&nav, Route::Github(query.clone()), cx);
+                                    app.select_github(query.clone(), cx);
                                 }
                             }));
                         g = g.child(open);
@@ -152,7 +152,13 @@ impl Desktop {
         controls = controls.child(Button::new("ask").label("Pi の下書きに追加").on_click(
             cx.listener(move |app, _, w, cx| {
                 if item.ask_about(app, w, cx).is_ok() {
-                    app.navigate(&nav, Route::Home, cx);
+                    if let Some((_, ins)) = &app.chat_keys {
+                        ins.update(cx, |s, cx| {
+                            s.tab = None;
+                            cx.notify();
+                        });
+                    }
+                    app.restore_input(w, cx);
                 } else {
                     nav.update(cx, |s, _| {
                         s.note = "送信先が変わりました。下書きは変更していません。".into()

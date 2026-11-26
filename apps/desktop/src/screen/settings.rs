@@ -13,7 +13,6 @@ pub(super) enum Route {
     New(String),
     Machine(String),
     Providers(String),
-    Github(pimate_protocol::GitHubQuery),
 }
 #[derive(Default)]
 pub(crate) struct Nav {
@@ -106,9 +105,6 @@ impl Desktop {
             | (Route::SetupPc, Route::Settings)
             | (Route::Tailscale, Route::Settings) => previous.clone(),
             (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
-            (Route::Github(q), _) if q != &pimate_protocol::GitHubQuery::List => {
-                Route::Github(pimate_protocol::GitHubQuery::List)
-            }
             (Route::Providers(id), _) => Route::Machine(id.clone()),
             (Route::Machine(_), _) => Route::Settings,
             (Route::SetupPc, _) => Route::Tailscale,
@@ -120,7 +116,6 @@ impl Desktop {
             Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
                 self.open_machine(id).ok()
             }
-            Route::Github(_) => self.open_chat().ok(),
             _ => None,
         };
         n.update(cx, |s, _| {
@@ -389,18 +384,6 @@ impl Desktop {
             Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
             Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
-            Route::Github(q) => {
-                if n.read(cx)
-                    .page
-                    .as_ref()
-                    .is_some_and(|page| page.visible(self))
-                    && let Some(viewer) = n.read(cx).github.viewer.clone()
-                    && let Some(panel) = chat_media::Viewer::panel(&viewer, None, p, w, cx)
-                {
-                    return Some(div().min_w_0().flex_1().child(panel));
-                }
-                ("GitHub", self.github_view(n, p, q, w, cx))
-            }
         };
         let back = n.read(cx).back.clone();
         let header = div()
