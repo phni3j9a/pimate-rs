@@ -5,6 +5,7 @@ struct WorkLine: Identifiable, Equatable {
     var output: String, state: String
     var images: HistoryImages?
     var callID: String?
+    var hasChange: Bool { ["write", "edit"].contains(name) && state == "完了" && !id.hasPrefix("live:") }
     var isThought: Bool { state.isEmpty }
     static func streamThought(_ stream: [Item], hasAnswer: Bool) -> (automatic: Bool, title: String) {
         func timestamp(_ id: String) -> UInt64? { stream.first { $0.id == id }.flatMap { UInt64($0.json) } }

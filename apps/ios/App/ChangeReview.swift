@@ -39,7 +39,7 @@ struct ChangePatch {
         }
     }
 }
-struct ChangePiece { let call: String, created: Bool, patch: String?, diff: ChangePatch?, content: String?, omitted: String? }
+struct ChangePiece { let call: String, lineID: String, created: Bool, patch: String?, diff: ChangePatch?, content: String?, omitted: String? }
 struct ChangeFile { let path: String; var pieces: [ChangePiece] }
 struct ChangeReview {
     let key: EditorKey, turn: String?
@@ -51,14 +51,18 @@ struct ChangeReview {
     }
     init(key: EditorKey, entries: [Item], cwd: String, turn: String?) {
         self.key = key; self.turn = turn
-        let history = entries.map(\.object); var results: [String: Object] = [:], indices: [Data: Int] = [:], current: String?
-        for r in history where r.str("kind") == "tool_result" { results[r.str("toolCallId")] = r }
-        for entry in history {
+        let history = entries.map(\.object); var results: [String: Object] = [:], pending: [String: String] = [:], indices: [Data: Int] = [:], current: String?
+        for (i, entry) in history.enumerated() {
+            if entry.str("kind") == "assistant" {
+                for (j, call) in entry.list("toolCalls").enumerated() { pending[call.str("id")] = "\(i):\(j)" }
+            } else if entry.str("kind") == "tool_result", let position = pending.removeValue(forKey: entry.str("toolCallId")) { results[position] = entry }
+        }
+        for (i, entry) in history.enumerated() {
             if entry.str("kind") == "user" { current = entry.str("entryId") }
             guard entry.str("kind") == "assistant", turn == nil || turn == current else { continue }
-            for call in entry.list("toolCalls") {
+            for (j, call) in entry.list("toolCalls").enumerated() {
                 let id = call.str("id"), name = call.str("name"), args = call.obj("args")
-                guard ["write", "edit"].contains(name), let r = results[id], r["isError"] as? Bool != true else { continue }
+                guard ["write", "edit"].contains(name), let r = results["\(i):\(j)"], r["isError"] as? Bool != true else { continue }
                 latestChangedTurn = current
                 let details = r.obj("details"), w = details.obj("pimate")
                 let write: Object = name == "write" && w.str("kind") == "write_diff" ? w : [:]
@@ -78,7 +82,7 @@ struct ChangeReview {
                 if index == files.count { indices[pathBytes] = index; files.append(.init(path: !cwd.isEmpty && path.hasPrefix(root) ? String(path.dropFirst(root.count)) : path, pieces: [])) }
                 let reason = r["detailsOmitted"] as? Bool == true ? "too_large" : write.str("omitted")
                 let content = name == "write" && patch == nil && !["too_large", "binary"].contains(reason) ? args["content"] as? String : nil
-                files[index].pieces.append(.init(call: id, created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,
+                files[index].pieces.append(.init(call: id, lineID: "\(entries[i].id):\(j)", created: write["existed"] as? Bool == false && reason != "concurrent", patch: patch, diff: diff,
                     content: content, omitted: patch != nil ? nil : !reason.isEmpty ? reason : content == nil ? "no_diff" : "unknown_before"))
             }
         }

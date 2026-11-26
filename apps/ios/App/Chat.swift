@@ -45,7 +45,8 @@ struct TailMetrics: Equatable {
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     @State private var turns: [ChatTurn] = []
-    @State private var review = false
+    private struct ReviewRoute: Identifiable { let id = UUID(); var turn: String?, line: String? }
+    @State private var review: ReviewRoute?
     @State private var agents: AgentSheet?
     @State private var table: OpenTable?
     @State private var photo: OpenPhoto?
@@ -75,7 +76,7 @@ private struct Conversation: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 22) {
                             if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
-                            ForEach(turns) { turn in TurnView(turn: turn, active: turn.id == content.activeTurnID, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }, didToggle: didToggle) }
+                            ForEach(turns) { turn in TurnView(turn: turn, active: turn.id == content.activeTurnID, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }, didToggle: didToggle, openReview: { review = ReviewRoute(turn: turn.id, line: $0) }) }
                             if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 let thought = WorkLine.streamThought(stream, hasAnswer: !text.isEmpty)
                                 ActiveDisclosure(automatic: thought.automatic, didToggle: didToggle) { Text(verbatim: thinking) } label: { Text(thought.title) }
@@ -121,8 +122,8 @@ private struct Conversation: View {
             }
             .sheet(item: $agents) { AgentsView(model: model, key: key, sheet: $0) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("変更をレビュー", systemImage: "doc.text.magnifyingglass") { review = true } } }
-            .sheet(isPresented: $review) { ReviewView(model: model, key: key, turns: turns.filter { $0.id != "begin" }) }
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("変更をレビュー", systemImage: "doc.text.magnifyingglass") { review = ReviewRoute() } } }
+            .sheet(item: $review) { route in ReviewView(model: model, key: key, turns: turns.filter { $0.id != "begin" }, turn: route.turn, line: route.line) }
             .modifier(PiSheetMenu(model: model, key: key))
             .environment(\.photoContext, photos)
             .fullScreenCover(item: $photo) { shown in
@@ -141,6 +142,7 @@ struct TurnView: View {
     let turn: ChatTurn, active: Bool
     let runForCall: (String) -> String?, openRun: (String) -> Void
     var didToggle: () -> Void = {}
+    var openReview: ((String?) -> Void)?
     var caption: String? = nil
     @State private var expanded = false
     var body: some View {
@@ -163,9 +165,13 @@ struct TurnView: View {
                         Button { didToggle(); expanded.toggle() } label: {
                             HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
                         }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
+                        if let openReview, turn.work.contains(where: { $0.hasChange }) { Button("このターンの変更") { openReview(nil) } }
                     }
                     let run = w.callID.flatMap(runForCall)
-                    if !folds || expanded || (run != nil && w.state == "失敗") { work(w) }
+                    if !folds || expanded || (run != nil && w.state == "失敗") {
+                        if let openReview, w.hasChange { Button { openReview(w.id) } label: { Label(w.name + " " + w.subject, systemImage: "doc.text.magnifyingglass") }.accessibilityHint("差分を開く") }
+                        else { work(w) }
+                    }
                     if let run {
                         Button { openRun(run) } label: { Label("サブエージェントの実行", systemImage: "person.2").frame(minHeight: 44) }
                     }

@@ -80,6 +80,18 @@ private final class MachineCore: Core, @unchecked Sendable {
         do { try await late.value; XCTFail() } catch is CancellationError {}
         XCTAssertEqual(model.editor?.host, "a"); XCTAssertEqual(core.b.calls.count, 1)
     }
+    func testReviewMatchesReusedCallIDByOccurrence() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
+        let entries: [Object] = [
+            ["kind":"user", "entryId":"first"], ["kind":"assistant", "toolCalls":[["id":"c", "name":"write", "args":["content":"first body"]]]],
+            ["kind":"user", "entryId":"second"], ["kind":"tool_result", "toolCallId":"c"],
+            ["kind":"assistant", "toolCalls":[["id":"c", "name":"write"]]], ["kind":"tool_result", "toolCallId":"c", "isError":true]]
+        let items = try entries.enumerated().map { item("entry", String($0.offset), try jsonString($0.element)) }
+        let review = ChangeReview(key: key, entries: items, cwd: "", turn: nil)
+        XCTAssertEqual(review.files.first?.pieces.map(\.lineID), ["1:0"])
+        XCTAssertEqual(review.files.first?.pieces.first?.content, "first body")
+        XCTAssertEqual(review.latestChangedTurn, "first")
+    }
     func testReviewKeepsCanonicallyEquivalentLinuxPathsSeparate() throws {
         let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil)), paths = ["が.txt", "か\u{3099}.txt"]
         let calls = paths.enumerated().map { ["id": String($0.offset), "name": "edit", "args": ["path": $0.element]] as Object }
