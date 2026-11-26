@@ -30,10 +30,10 @@ struct ChatScreen: View {
 struct TailMetrics: Equatable {
     let height: CGFloat, viewport: CGRect
     var nearTail: Bool { height - viewport.maxY < 48 }
-    func shouldFollow(after old: Self?, dragging: Bool) -> Bool {
+    func shouldFollow(after old: Self?, dragging: Bool, manualResize: Bool = false) -> Bool {
         guard !dragging, !viewport.isEmpty else { return false }
         guard let old, !old.viewport.isEmpty else { return true }
-        return old.nearTail && (height != old.height || viewport.height != old.viewport.height)
+        return old.nearTail && ((!manualResize && height != old.height) || viewport.height != old.viewport.height)
     }
 }
 private struct Conversation: View {
@@ -48,8 +48,12 @@ private struct Conversation: View {
     }
     @State private var loaded = false
     @State private var metrics: TailMetrics?
-    @State private var holdFollowUntil = ContinuousClock.Instant.now
-    private func didToggle() { holdFollowUntil = .now + .milliseconds(500) }
+    // Match the rendered content, not a time window: a question can arrive in the same layout pass.
+    private struct ContentStamp: Equatable {
+        let turns: Int, stream: [Item], questions: [Item], pc: String?, receipt: String?, move: UUID?
+    }
+    @State private var turnRevision = 0
+    @State private var manualLayout: ContentStamp?
     @GestureState private var dragging = false
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
@@ -58,6 +62,8 @@ private struct Conversation: View {
         let timing = groups["thinkingMs"] ?? []
         let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
+        let content = ContentStamp(turns: turnRevision, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id)
+        let didToggle = { manualLayout = content }
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Circle().fill(questions.isEmpty && !pc ? PiTheme.accent : PiTheme.waiting).frame(width: 6, height: 6)
@@ -85,7 +91,8 @@ private struct Conversation: View {
                             let top = geometry.frame(in: .named("transcript")).minY
                             return TailMetrics(height: geometry.size.height, viewport: CGRect(x: 0, y: -top, width: outer.size.width, height: outer.size.height))
                         } action: { next in
-                            let follow = ContinuousClock.now >= holdFollowUntil && next.shouldFollow(after: metrics, dragging: dragging)
+                            let follow = next.shouldFollow(after: metrics, dragging: dragging, manualResize: manualLayout == content)
+                            if next.height != metrics?.height || manualLayout != content { manualLayout = nil }
                             metrics = next
                             if follow { reader.scrollTo("tail", anchor: .bottom) }
                         }
@@ -122,7 +129,7 @@ private struct Conversation: View {
             .task(id: [entries, tools, timing]) {
                 let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools, timing: timing) }
                 let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-                if !Task.isCancelled { turns = result; loaded = true }
+                if !Task.isCancelled { turns = result; turnRevision += 1; loaded = true }
             }
     }
 }
@@ -178,6 +185,10 @@ private struct ActiveDisclosure<Content: View, Label: View>: View {
     @ViewBuilder let label: () -> Label
     @State private var manual: Bool?
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(get: { manual ?? automatic }, set: { didToggle(); manual = $0 }), content: content, label: label)
+        DisclosureGroup(isExpanded: Binding(get: { manual ?? automatic }, set: { value in
+            // A manual resize is a single layout change rather than a sequence of animated heights.
+            var transaction = Transaction(); transaction.disablesAnimations = true
+            withTransaction(transaction) { didToggle(); manual = value }
+        }), content: content, label: label)
     }
 }
