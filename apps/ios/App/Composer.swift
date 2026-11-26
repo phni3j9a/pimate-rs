@@ -40,6 +40,7 @@ private struct MessageField: UIViewRepresentable {
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
     @State private var sendError = ""
+    @State private var unavailablePhotos = false
     @State private var selection: [PhotosPickerItem] = []
     @StateObject private var input = MessageInput()
     static func submit(_ model: SessionModel, key: EditorKey, sent: RestoredDraft) async throws -> String {
@@ -109,6 +110,9 @@ struct Composer: View {
                                 SwiftUI.Image(systemName: "photo.on.rectangle").frame(minWidth: 44, minHeight: 44)
                             }.accessibilityLabel("画像を添付").disabled(remaining <= 0 || !selection.isEmpty || model.submissionBlocked)
                         }
+                        if rows.field("promptImages") != "true" {
+                            Button { unavailablePhotos = true } label: { SwiftUI.Image(systemName: "photo.badge.exclamationmark").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("画像を添付できない理由")
+                        }
                         if !selection.isEmpty { ProgressView().accessibilityLabel("画像を準備中") }
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         stop
@@ -124,6 +128,7 @@ struct Composer: View {
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
         }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.background)
+        .alert("この Pi は画像の添付に対応していません", isPresented: $unavailablePhotos) { Button("閉じる") {} } message: { Text("PC の PiMate RC を更新し、Pi を起動し直してください。") }
         .task(id: selection) {
             guard !selection.isEmpty else { return }
             var files: [URL] = []
@@ -174,7 +179,7 @@ struct DraftList: View {
                 if n.imageCount > 0 { Label("画像 \(n.imageCount) 枚", systemImage: "photo").font(.caption) }
                 if !n.text.isEmpty { Text(verbatim: n.text).lineLimit(2) }
                 if n.status == "unconfirmed" {
-                    Text("自動で再送しません。").font(.caption).foregroundStyle(PiTheme.secondary)
+                    Text(key == nil ? "再接続したら確認します（自動で再送しません）。" : "PC の入力欄に戻っている場合があります。履歴を確認してください。自動で再送しません。").font(.caption).foregroundStyle(PiTheme.secondary)
                     Button("下書きへ戻す") {
                         guard let key else { return }
                         do { try model.restore(key, id: n.id); error = "" } catch { self.error = "下書きを復元できません" }
