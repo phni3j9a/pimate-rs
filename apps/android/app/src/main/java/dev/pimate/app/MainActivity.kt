@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.*
@@ -161,12 +162,12 @@ private fun Screen(m: SessionModel, chat: ChatUi) {
     }
 }
 
-/** ドロワーの面。幅は画面の 85%、広い画面でも 330dp まで。 */
+/** ドロワーの面。幅は画面の 84.6%、広い画面でも 360dp まで。 */
 @Composable
 internal fun DrawerSheet(content: @Composable ColumnScope.() -> Unit) {
     BoxWithConstraints {
         ModalDrawerSheet(
-            Modifier.width(min(maxWidth * .85f, 330.dp)),
+            Modifier.width(min((maxWidth.value * .846f).roundToInt().dp, 360.dp)),
             drawerShape = RectangleShape,
             drawerContainerColor = pi.background,
             drawerTonalElevation = 0.dp,
@@ -224,7 +225,11 @@ private fun DrawerContent(
                         query.isBlank() ||
                             title(o.optJSONObject("session"), o.str("cwd"))
                                 .contains(query.trim(), true) ||
-                            o.str("cwd").contains(query.trim(), true)
+                            tilde(o.str("cwd")).contains(query.trim(), true) ||
+                            o.str("cwd").contains(query.trim(), true) ||
+                            h.name.contains(query.trim(), true) ||
+                            (o.str("origin") == "grok-bot" &&
+                                "Grok Bot".contains(query.trim(), true))
                     }
             }
         }
@@ -232,7 +237,7 @@ private fun DrawerContent(
         Row(
             Modifier.padding(start = 2.dp, top = 6.dp, end = 2.dp)
                 .fillMaxWidth()
-                .heightIn(min = tap)
+                .heightIn(min = 40.dp)
                 .background(pi.surface, CircleShape)
                 .padding(horizontal = 14.dp),
             Arrangement.spacedBy(8.dp),
@@ -276,7 +281,7 @@ private fun DrawerContent(
                             else -> "入力待ち: Pi が回答を待っています"
                         },
                         ago(o.optLong("updatedAt"), now),
-                        machine = h.name,
+                        machine = h.name.takeIf { m.hosts.size > 1 },
                     ) {
                         select(h, id)
                     }
@@ -288,12 +293,7 @@ private fun DrawerContent(
                 val stop = stopped(state["connection"])
                 item("host:${host.id}") {
                     val connection = state["connection"]
-                    GroupHeader(
-                        if (state["info"]?.contains("\"darwin\"") == true) Icons.Laptop
-                        else Icons.Server,
-                        host.name,
-                        pi.textSecondary,
-                    ) {
+                    GroupHeader(Icons.Monitor, host.name, pi.text) {
                         when (connection) {
                             "\"connected\"" -> {
                                 Dot(pi.done)
@@ -327,15 +327,24 @@ private fun DrawerContent(
                 }
                 if (bots.isNotEmpty())
                     item("bots:${host.id}") {
-                        Text(
-                            "Grok Bot",
-                            Modifier.padding(start = 36.dp, top = 10.dp, bottom = 2.dp).semantics {
-                                heading()
-                            },
-                            pi.textSecondary,
-                            style = Type.meta,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                        Row(
+                            Modifier.padding(start = 12.dp, top = 12.dp)
+                                .heightIn(min = 28.dp)
+                                .semantics(mergeDescendants = true) {
+                                    heading()
+                                    contentDescription = "${host.name}: Grok Bot"
+                                },
+                            Arrangement.spacedBy(10.dp),
+                            Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.GrokBot, null, Modifier.size(14.dp), pi.text)
+                            Text(
+                                "Grok Bot",
+                                color = pi.textSecondary,
+                                style = Type.caption,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
                     }
                 items(bots, key = { "b:${it.first.id}:${it.second}" }) { (h, id, o) ->
                     InstanceRow(
@@ -420,9 +429,9 @@ private fun GroupHeader(
     Row(
         Modifier.padding(top = 22.dp)
             .fillMaxWidth()
-            .heightIn(min = 28.dp)
+            .heightIn(min = 32.dp)
             .padding(horizontal = 12.dp),
-        Arrangement.spacedBy(6.dp),
+        Arrangement.spacedBy(10.dp),
         Alignment.CenterVertically,
     ) {
         Icon(icon, null, Modifier.size(15.dp), color)
@@ -457,7 +466,7 @@ private fun OtherHost(host: Host, enabled: Boolean, onClick: () -> Unit) {
         Arrangement.spacedBy(6.dp),
         Alignment.CenterVertically,
     ) {
-        Icon(Icons.Server, null, Modifier.size(15.dp), pi.textSecondary)
+        Icon(Icons.Monitor, null, Modifier.size(15.dp), pi.textSecondary)
         Text(
             host.name,
             Modifier.weight(1f),
@@ -483,6 +492,7 @@ internal fun InstanceRow(
     attention: String?,
     right: String,
     machine: String? = null,
+    inset: androidx.compose.ui.unit.Dp = 12.dp,
     onClick: () -> Unit,
 ) {
     val agents = o.optJSONObject("subagents")
@@ -495,7 +505,7 @@ internal fun InstanceRow(
             .background(if (selected) pi.selected else pi.background)
             .selectable(selected, role = Role.Button, onClick = onClick)
             .heightIn(min = 60.dp)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = inset, vertical = 10.dp),
         Arrangement.spacedBy(10.dp),
     ) {
         MarkColumn(21.dp) {
@@ -522,7 +532,7 @@ internal fun InstanceRow(
                 )
             if (attention != null)
                 Text(
-                    attention,
+                    if (o.str("origin") == "grok-bot") "Grok Bot · $attention" else attention,
                     Modifier.padding(top = 1.dp),
                     pi.waitingText,
                     style = Type.caption,

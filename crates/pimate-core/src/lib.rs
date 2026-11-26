@@ -2,6 +2,7 @@
 mod catalog;
 mod connection;
 mod operation;
+pub mod path_complete;
 mod state;
 pub use connection::Connection;
 pub use operation::{Image, Operation, RestoredDraft, Target};

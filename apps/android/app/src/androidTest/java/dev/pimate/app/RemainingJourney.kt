@@ -5,6 +5,7 @@ import android.view.KeyEvent
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
@@ -89,13 +90,64 @@ class RemainingJourney {
         find(hasText("API キーを設定"))
     }
 
+    /** `android-demo.py` の list fixture。起動はせず、選択・補完・保存だけを見る。 */
+    @Test
+    fun newPiAndDrawer() {
+        pair(link("new-pi-link"))
+        find(hasText("選ぶとチャットを開きます。"))
+        shot("Parity-First")
+        tap("ログイン画面の改修")
+        icon("Instance 一覧を開く")
+        find(hasText("要対応"))
+        shot("Parity-Drawer")
+        icon("新しい Pi を起動")
+        find(hasText("Pi の既定（Opus 5.5 · medium）"))
+        ui.onNodeWithText("起動").assertIsNotEnabled()
+        shot("Parity-New")
+        tap("モデル")
+        find(hasText("お気に入り 3"))
+        ui.onAllNodesWithText("Grok 5").assertCountEquals(0)
+        tap("すべて 8")
+        val search = find(hasContentDescription("モデルを検索"))
+        search.performTextInput("xAi/gRoK-5")
+        find(hasText("Grok 5"))
+        ui.onAllNodesWithText("Claude Opus 5.5").assertCountEquals(0)
+        tap("Grok 5")
+        tap("high")
+        search.performTextClearance()
+        find(hasText("Pi の既定") and hasText("Opus 5.5 · medium")).assertExists()
+        find(hasText("完了") and hasClickAction())
+            .performScrollTo()
+            .assertWidthIsAtLeast(48.dp)
+            .performTouchInput { click(center) }
+        ui.waitUntil { ui.onAllNodesWithText("完了").fetchSemanticsNodes().isEmpty() }
+        find(hasText("Grok 5 · high"))
+        val path = find(hasContentDescription("フォルダのパス"))
+        path.performTextInput("~/S")
+        tap("src/")
+        path.assertTextContains("~/src/")
+        find(hasText("test/"))
+        val toggle = find(hasContentDescription("質問ツールを使う"))
+        toggle.assertIsOff().performSemanticsAction(SemanticsActions.OnClick)
+        icon("閉じる")
+        icon("Instance 一覧を開く")
+        icon("新しい Pi を起動")
+        find(hasContentDescription("質問ツールを使う")).assertIsOn()
+        icon("閉じる")
+        icon("Instance 一覧を開く")
+        icon("設定")
+        tap("マシンを追加（ペアリング）")
+        find(hasText("PC の準備"))
+        shot("Parity-Pair")
+    }
+
     @Test
     fun firstEmpty() {
         pair(link("empty-link"))
         find(hasText("まだ起動中", substring = true))
         shot("First-Step-Empty")
         tap("新しい Pi を起動")
-        find(hasText("フォルダのパス"))
+        find(hasContentDescription("フォルダのパス"))
     }
 
     @Test
@@ -122,7 +174,7 @@ class RemainingJourney {
             tap("更新")
             find(hasText("実行時の最新版に更新します（確認時点の最新版: 0.1.20）", substring = true))
             tap("更新")
-            find(hasText("0.1.20 に更新しました"))
+            find(hasText("0.1.20 に更新しました。実行中の各 Pi で /reload を実行してください。"))
             tap("Host を再起動")
             tap("Host を再起動")
             find(hasText("再起動を受け付けました"))
@@ -146,7 +198,7 @@ class RemainingJourney {
         icon("戻る")
         icon("Instance 一覧を開く")
         icon("新しい Pi を起動")
-        find(hasText("PC の既定"))
+        find(hasText("モデル"))
         shot("New-Pi")
         back()
         icon("Instance 一覧を開く")
@@ -216,16 +268,13 @@ class RemainingJourney {
         find(hasText("Hello from the PiMate faux model.", substring = true))
         icon("Instance 一覧を開く")
         icon("新しい Pi を起動")
-        val folder = find(hasText("フォルダのパス") and hasSetTextAction())
-        ui.waitUntil(25000) {
-            folder
-                .fetchSemanticsNode()
-                .config[androidx.compose.ui.semantics.SemanticsProperties.EditableText]
-                .text
-                .isNotBlank()
-        }
+        val folder = find(hasContentDescription("フォルダのパス") and hasSetTextAction())
+        ui.onNodeWithText("起動").assertIsNotEnabled()
+        folder.performTextInput("~/")
         tap("起動")
-        ui.waitUntil(30000) { ui.onAllNodes(hasText("フォルダのパス")).fetchSemanticsNodes().isEmpty() }
+        ui.waitUntil(30000) {
+            ui.onAllNodes(hasContentDescription("フォルダのパス")).fetchSemanticsNodes().isEmpty()
+        }
         find(hasContentDescription("セッションのメニュー"))
         icon("Instance 一覧を開く")
         icon("設定")

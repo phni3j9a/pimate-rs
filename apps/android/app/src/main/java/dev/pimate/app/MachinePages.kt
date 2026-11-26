@@ -1,6 +1,7 @@
 package dev.pimate.app
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -13,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -64,27 +66,71 @@ internal fun NewPage(
     key(h?.id) {
         val form = remember { SpawnForm(hostId, m.settings.askTool) }
         var folders by remember { mutableStateOf<JSONObject?>(null) }
-        var models by remember { mutableStateOf<JSONObject?>(null) }
-        var dirs by remember(form.cwd) { mutableStateOf<List<String>?>(null) }
+        val rows = m.rowsFor(hostId)
+        val online = rows.hostValue("connection") == "\"connected\""
+        val listKnown = rows.hostValue("listKnown") == "true"
+        var models by remember(online, listKnown) { mutableStateOf<JSONObject?>(null) }
+        var loadingModels by remember(online, listKnown) { mutableStateOf(online) }
+        val split = remember(form.cwd) { splitFolderPath(form.cwd) }
+        val parent = split?.parent
+        var focused by remember { mutableStateOf(false) }
+        val canList = online && rows.info().optBoolean("dirs")
+        var dirs by remember(parent, canList) { mutableStateOf(emptyList<String>()) }
+        LaunchedEffect(parent, canList) {
+            if (parent != null && canList) {
+                delay(150)
+                checked({ /* Completion is optional; a manually typed path remains usable. */ }) {
+                    dirs =
+                        JSONObject(m.machineRequest(hostId, Operation.Dirs(parent)))
+                            .optJSONArray("dirs")
+                            .strings()
+                }
+            }
+        }
         var modelPicker by remember { mutableStateOf(false) }
         var error by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         var outcome by remember { mutableStateOf("") }
         val scope = rememberCoroutineScope()
-        LaunchedEffect(hostId) {
+        LaunchedEffect(hostId, online) {
+            folders = null
+            if (!online) return@LaunchedEffect
             checked({ error = it }) {
                 folders = JSONObject(m.machineRequest(hostId, Operation.Folders))
-                if (form.cwd.isEmpty()) form.folder(folders!!.str("home"))
             }
-            checked({ error = it }) { models = m.hostModels(hostId) }
+        }
+        LaunchedEffect(hostId, online, listKnown) {
+            if (online && listKnown) {
+                checked({ error = it }) { models = m.hostModels(hostId) }
+                loadingModels = false
+            }
         }
         val recent = folders?.optJSONArray("folders").objects()
         fun folder(path: String) =
-            form.folder(path, recent.any { it.str("path") == path && it.optBoolean("trusted") })
+            form.folder(
+                path,
+                recent.any {
+                    sameFolder(path, it.str("path"), folders?.str("home").orEmpty()) &&
+                        it.optBoolean("trusted")
+                },
+            )
         Page(
             "新しい Pi",
             close,
+            centered = true,
+            gap = 0.dp,
             footer = {
+                if (error.isNotEmpty()) SheetError(error)
+                else if (outcome.isNotEmpty()) Hint(outcome)
+                else
+                    Text(
+                        "起動後は PC の pimate attach で同じ Pi に接続できます",
+                        Modifier.fillMaxWidth(),
+                        color = pi.textSecondary,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        style = Type.caption,
+                    )
+                Spacer(Modifier.height(6.dp))
                 PrimaryButton(
                     if (busy) "起動を確認しています…" else "起動",
                     {
@@ -111,11 +157,12 @@ internal fun NewPage(
                         }
                     },
                     Modifier.fillMaxWidth(),
-                    enabled = h != null && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
+                    enabled =
+                        h != null && online && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
                 )
             },
         ) {
-            Label("マシン", top = 8.dp)
+            Label("マシン", top = 4.dp)
             m.hosts.forEach {
                 val rows = m.rowsFor(it.id)
                 val connection = rows.hostValue("connection")
@@ -139,112 +186,236 @@ internal fun NewPage(
                         },
                 )
             }
-            Label("フォルダ")
-            OutlinedTextField(
+            Label("フォルダ", top = 20.dp, bottom = 8.dp)
+            SpawnInput(
                 form.cwd,
-                { folder(it) },
-                Modifier.fillMaxWidth(),
-                label = { Text("フォルダのパス") },
-                singleLine = true,
-                shape = CircleShape,
-                enabled = !busy,
+                ::folder,
+                "フォルダのパス",
+                "~/code/project",
+                !busy,
+                path = true,
+                modifier = Modifier.onFocusChanged { focused = it.isFocused },
             )
-            if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
+            if (focused && split != null)
+                matchFolders(dirs, split.prefix).forEach { name ->
+                    MenuRow("$name/", "", !busy) { folder("${split.parent}$name/") }
+                }
+            if (!online) Hint("このマシンに接続していません")
+            else if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
+            if (recent.isNotEmpty()) Label("最近使ったフォルダ", top = 14.dp, bottom = 0.dp)
             recent.take(8).forEach {
                 val path = it.str("path")
-                MenuRow(tilde(path), if (form.cwd == path) "選択中" else "", !busy) { folder(path) }
+                val shown = shortFolder(path, folders?.str("home").orEmpty())
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(!busy, role = Role.Button) { folder(shown) }
+                        .heightIn(min = 44.dp),
+                    Arrangement.spacedBy(10.dp),
+                    Alignment.CenterVertically,
+                ) {
+                    Text(
+                        shown,
+                        Modifier.weight(1f),
+                        style = Type.mono,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                    val running = it.optInt("running")
+                    val lastUsed = it.optLong("lastUsed")
+                    Hint(
+                        if (running > 0) "Pi $running 件実行中"
+                        else if (lastUsed > 0) ago(lastUsed, System.currentTimeMillis()) else ""
+                    )
+                }
             }
-            if (m.rowsFor(hostId).info().optBoolean("dirs")) {
-                TextAction(
-                    "子フォルダを表示",
-                    {
-                        val path = form.cwd
-                        scope.launch {
-                            checked({ error = it }) {
-                                val r = JSONObject(m.machineRequest(hostId, Operation.Dirs(path)))
-                                if (form.cwd == path) dirs = r.optJSONArray("dirs").strings()
+            Spacer(Modifier.height(20.dp))
+            Toggle(
+                "このフォルダを信頼する",
+                form.trust,
+                "フォルダ内の設定と Extension を読み込みます。オンにすると PC の Pi にも記憶され、次回から確認されません。",
+            ) {
+                if (!busy) form.trust = it
+            }
+            Spacer(Modifier.height(20.dp))
+            Toggle("質問ツールを使う", form.askTool, "迷ったときに Pi が選択式で質問します（pimate_ask）。スマホからも回答できます。") {
+                if (!busy) {
+                    form.askTool = it
+                    m.settings.chooseAskTool(it)
+                }
+            }
+            val catalog = models?.optJSONArray("models").objects()
+            val saved = models?.optJSONObject("default")
+            fun label(ref: JSONObject?, thinking: String?): String? =
+                ref?.let {
+                    val entry = catalog.find { model -> same(it, model) }
+                    modelLabel(
+                        it.str("id"),
+                        entry?.str("name")?.takeIf(String::isNotBlank),
+                        thinking.orEmpty(),
+                        entry?.optJSONArray("thinkingLevels")?.length(),
+                    )
+                }
+            val defaultLabel = label(saved?.optJSONObject("model"), saved?.str("thinking"))
+            val value =
+                label(form.model, form.thinking) ?: defaultLabel?.let { "Pi の既定（$it）" } ?: "Pi の既定"
+            Spacer(Modifier.height(16.dp))
+            ListRow(
+                "モデル",
+                enabled = online && !busy,
+                onClick = { modelPicker = true },
+                trailing = {
+                    Text(value, color = pi.textSecondary, style = Type.body)
+                    Icon(Icons.Right, null, Modifier.size(14.dp), pi.textSecondary)
+                },
+            )
+            if (modelPicker)
+                PiSheet({ modelPicker = false }) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        Arrangement.SpaceBetween,
+                        Alignment.CenterVertically,
+                    ) {
+                        Box(Modifier.weight(1f)) { SheetTitle("モデル") }
+                        TextAction("完了", { modelPicker = false })
+                    }
+                    val favorites = models?.optJSONArray("scoped").objects()
+                    val searchable = catalog.size > 6
+                    var query by remember(searchable) { mutableStateOf("") }
+                    var all by remember(favorites.isEmpty()) { mutableStateOf(favorites.isEmpty()) }
+                    if (favorites.isNotEmpty())
+                        Segment(
+                            listOf(
+                                "favorites" to "お気に入り ${favorites.size}",
+                                "all" to "すべて ${catalog.size}",
+                            ),
+                            if (all) "all" else "favorites",
+                        ) {
+                            all = it == "all"
+                        }
+                    if (searchable)
+                        SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
+                    if (query.isBlank())
+                        ListRow(
+                            "Pi の既定",
+                            defaultLabel ?: "PC の Pi の設定に従います",
+                            onClick = {
+                                form.model = null
+                                form.thinking = null
+                            },
+                        )
+                    val shown =
+                        catalog.filter { model ->
+                            (all || favorites.any { same(it, model) }) &&
+                                "${model.str("provider")}/${model.str("id")} ${model.str("name")}"
+                                    .contains(query.trim(), true)
+                        }
+                    if (shown.isEmpty())
+                        Hint(
+                            if (loadingModels) "モデルを読み込み中…"
+                            else if (models == null) "モデル一覧を取得できません。起動時の設定: $value"
+                            else "一致するモデルはありません"
+                        )
+                    shown
+                        .groupBy { it.str("provider") }
+                        .forEach { (provider, list) ->
+                            Label(providerName(provider), top = 12.dp)
+                            list.forEach { model ->
+                                ListRow(
+                                    model.str("name").ifEmpty { model.str("id") },
+                                    "$provider/${model.str("id")}",
+                                    onClick = {
+                                        form.model =
+                                            JSONObject()
+                                                .put("provider", provider)
+                                                .put("id", model.str("id"))
+                                        form.thinking =
+                                            form.thinking?.takeIf {
+                                                it in model.optJSONArray("thinkingLevels").strings()
+                                            }
+                                    },
+                                    trailing = {
+                                        if (same(model, form.model))
+                                            Icon(
+                                                Icons.Check,
+                                                "選択中",
+                                                Modifier.size(16.dp),
+                                                pi.accentText,
+                                            )
+                                    },
+                                )
                             }
                         }
-                    },
-                    enabled = !busy && form.cwd.isNotBlank(),
-                )
-                dirs?.let { names ->
-                    if (names.isEmpty()) Hint("子フォルダはありません")
-                    names.forEach {
-                        MenuRow(it, "", !busy, next = true) {
-                            folder(form.cwd.trimEnd('/') + "/" + it)
+                    val levels =
+                        catalog
+                            .find { same(it, form.model) }
+                            ?.optJSONArray("thinkingLevels")
+                            .strings()
+                    if (levels.size > 1) {
+                        Label("Thinking", top = 16.dp)
+                        Segment(levels.map { it to thinkingShort(it) }, form.thinking) {
+                            form.thinking = it
                         }
+                        TextAction(
+                            "Pi の既定のレベル" +
+                                saved
+                                    ?.str("thinking")
+                                    .orEmpty()
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { "（$it）" }
+                                    .orEmpty(),
+                            { form.thinking = null },
+                        )
                     }
                 }
-            }
-            Toggle("このフォルダを信頼する", form.trust) { if (!busy) form.trust = it }
-            Hint("信頼すると、このフォルダの設定と Extension を読み込みます。")
-            Label("モデル")
-            MenuRow(
-                form.model?.str("id") ?: "PC の既定",
-                form.thinking
-                    ?: (if (form.model == null)
-                            models?.optJSONObject("default")?.optJSONObject("model")?.str("id")
-                        else null)
-                        .orEmpty(),
-                !busy && models != null,
-                next = true,
-            ) {
-                modelPicker = !modelPicker
-            }
-            if (modelPicker) {
-                val favorites = models?.optJSONArray("scoped").objects()
-                TextAction(
-                    "PC の既定",
-                    {
-                        form.model = null
-                        form.thinking = null
-                        modelPicker = false
-                    },
-                )
-                models
-                    ?.optJSONArray("models")
-                    .objects()
-                    .sortedByDescending { model -> favorites.any { same(it, model) } }
-                    .forEach { model ->
-                        MenuRow(
-                            model.str("name").ifEmpty { model.str("id") },
-                            (if (favorites.any { same(it, model) }) "★ " else "") +
-                                model.str("provider"),
-                            !busy,
-                        ) {
-                            form.model =
-                                JSONObject()
-                                    .put("provider", model.str("provider"))
-                                    .put("id", model.str("id"))
-                            form.thinking = null
-                            modelPicker = false
-                        }
-                    }
-            }
-            models
-                ?.optJSONArray("models")
-                .objects()
-                .find { same(it, form.model) }
-                ?.optJSONArray("thinkingLevels")
-                .strings()
-                .forEach { level ->
-                    MenuRow(level, if (form.thinking == level) "選択中" else "", !busy) {
-                        form.thinking = level
-                    }
-                }
-            Toggle("質問ツール（pimate_ask）", form.askTool) { if (!busy) form.askTool = it }
-            OutlinedTextField(
-                form.message,
-                { form.message = it },
-                Modifier.fillMaxWidth(),
-                label = { Text("最初のメッセージ（任意）") },
-                enabled = !busy,
-            )
-            SheetError(error)
-            if (outcome.isNotEmpty()) Hint(outcome)
+            Label("最初のメッセージ（任意）", top = 20.dp, bottom = 8.dp)
+            SpawnInput(form.message, { form.message = it }, "最初のメッセージ", "起動したらすぐに送るメッセージ", !busy)
         }
     }
+}
+
+private fun shortFolder(path: String, home: String) =
+    if (home.isNotEmpty() && (path == home || path.startsWith("$home/")))
+        "~" + path.removePrefix(home)
+    else path
+
+internal fun sameFolder(path: String, known: String, home: String): Boolean {
+    fun normalize(s: String) = s.trimEnd('/').ifEmpty { if (s.startsWith('/')) "/" else "" }
+    val short = shortFolder(known, home)
+    return path.isNotBlank() &&
+        (normalize(path) == normalize(known) || normalize(path) == normalize(short))
+}
+
+@Composable
+private fun SpawnInput(
+    value: String,
+    change: (String) -> Unit,
+    label: String,
+    hint: String,
+    enabled: Boolean,
+    path: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.text.BasicTextField(
+        value,
+        change,
+        modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = label }
+            .background(pi.surface, if (path) CircleShape else RoundedCornerShape(14.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        enabled = enabled,
+        singleLine = path,
+        textStyle =
+            Type.body.copy(color = pi.text, fontFamily = if (path) Mono else Type.body.fontFamily),
+        cursorBrush = androidx.compose.ui.graphics.SolidColor(pi.accent),
+        decorationBox = { inner ->
+            Box(Modifier.heightIn(min = if (path) 20.dp else 48.dp)) {
+                if (value.isEmpty())
+                    Text(hint, color = pi.textSecondary, style = if (path) Type.mono else Type.body)
+                inner()
+            }
+        },
+    )
 }
 
 /** マシンの状態の印（12dp の列）。色だけに頼らず、隣の文字でも状態を示す。 */
@@ -386,14 +557,13 @@ internal fun SettingsPage(
         ) {
             Icon(Icons.Plus, null, Modifier.size(16.dp), pi.accentText)
             Text(
-                if (m.hosts.any { it.needsPairing }) "ペアリングし直す・マシンを追加"
-                else "マシンを追加（ペアリング）",
+                if (m.hosts.any { it.needsPairing }) "ペアリングし直す・マシンを追加" else "マシンを追加（ペアリング）",
                 color = pi.accentText,
                 style = Type.lead,
             )
         }
         Label("新しい Pi の既定", bottom = 0.dp)
-        Toggle("質問ツール（pimate_ask）", s.askTool, s::chooseAskTool)
+        Toggle("質問ツール（pimate_ask）", s.askTool, set = s::chooseAskTool)
         Label("表示", bottom = 0.dp)
         SegmentRow(
             "テーマ",
@@ -528,7 +698,13 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 style = Type.lead,
             )
             if (host.needsPairing || stopped(connection)?.repair == true)
-                TextAction("ペアリングし直す", pair, flushEnd, weight = FontWeight.Normal, style = Type.lead)
+                TextAction(
+                    "ペアリングし直す",
+                    pair,
+                    flushEnd,
+                    weight = FontWeight.Normal,
+                    style = Type.lead,
+                )
         }
         ListRow(
             host.address,
@@ -547,10 +723,12 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         // Host は公開版を照会できないと、失敗にせず latest のない結果を返す。これも読み直しの対象にする。
         val unchecked = check != null && latest == ""
         val canUpdate =
-            online && available && caps.optBoolean("packageUpdate") &&
+            online &&
+                available &&
+                caps.optBoolean("packageUpdate") &&
                 check?.optBoolean("canUpdate") == true
         // Host が自分では更新できない（常駐サービスでない・公開パッケージでない）。PC で操作してもらう。
-        val manual = check?.str("reason").orEmpty().takeIf { online && (available || unchecked) }
+        val manual = check?.str("reason").orEmpty().takeIf { online && available }
         ListRow(
             if (current.isEmpty()) "PiMate" else "現在 $current",
             when {
@@ -568,7 +746,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                         ConfirmAction(
                             host to latest,
                             "更新",
-                            "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。",
+                            "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。実行中の Pi は /reload または再起動まで旧版のままです。",
                             enabled = !busy,
                             title = "PC の PiMate を更新しますか？",
                             modifier = flushEnd,
@@ -577,7 +755,11 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                         ) {
                             operate {
                                 val r = request(Operation.Update)
-                                note = "${r.getString("to")} に更新しました"
+                                note =
+                                    if (r.getString("to") == r.getString("from"))
+                                        "更新されませんでした（版が固定されている可能性があります）"
+                                    else
+                                        "${r.getString("to")} に更新しました。実行中の各 Pi で /reload を実行してください。"
                                 retry++
                             }
                         }
@@ -635,8 +817,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         }
         if (online && caps.optBoolean("pairedDevices")) {
             Label("ペアリング済みの端末", bottom = 0.dp)
-            if (devices == null)
-                Hint(if ("devices" in unloaded) "端末の一覧を確認できませんでした" else "確認中…")
+            if (devices == null) Hint(if ("devices" in unloaded) "端末の一覧を確認できませんでした" else "確認中…")
             devices.orEmpty().forEach { d ->
                 val seen = d.optLong("lastSeenAt").takeIf { it > 0 }?.let { "最終接続 ${day(it)}" }
                 val self = d.optBoolean("current")

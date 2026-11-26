@@ -118,7 +118,7 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                 // TS 版の残りのデータは消さないので、案内は最初のペアリングだけに出す。
                 val fromTs =
                     remember(context) {
-                        onBack == null && File(context.dataDir, "shared_prefs/SecureStore.xml").isFile
+                        File(context.dataDir, "shared_prefs/SecureStore.xml").isFile
                     }
                 Text(
                     if (fromTs) "以前の接続は引き継がれません。PC とペアリングし直してください。"
@@ -128,8 +128,9 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                     style = Type.lead.copy(lineBreak = Type.phrase),
                 )
             }
-            PiTerminal(Modifier.padding(top = if (onBack == null) 24.dp else 8.dp))
-            Column(Modifier.padding(top = 20.dp)) {
+            if (onBack == null) PiTerminal(Modifier.padding(top = 24.dp))
+            else Label("PC の準備", top = 8.dp, bottom = 4.dp)
+            Column(Modifier.padding(top = if (onBack == null) 20.dp else 0.dp)) {
                 Step(1, "スマホと PC を Tailscale でつなぐ", AnnotatedString("両方で同じアカウントにログイン")) {
                     guide = 1
                 }

@@ -75,9 +75,9 @@ class UiContract {
                 ) {}
             }
         }
-        ui.onNodeWithText("幅").assertWidthIsEqualTo(330.dp)
+        ui.onNodeWithText("幅").assertWidthIsEqualTo(360.dp)
         ui.runOnIdle { width = 360.dp }
-        ui.onNodeWithText("幅").assertWidthIsEqualTo(306.dp)
+        ui.onNodeWithText("幅").assertWidthIsEqualTo(305.dp)
     }
 
     @Test

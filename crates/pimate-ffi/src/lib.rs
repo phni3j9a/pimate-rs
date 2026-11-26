@@ -225,3 +225,22 @@ fn pairing_preview_uses_protocol_validation_without_a_request() {
         ("Demo", "127.0.0.1:9")
     );
 }
+
+#[derive(uniffi::Record)]
+pub struct FolderPrefix {
+    pub parent: String,
+    pub prefix: String,
+}
+
+#[uniffi::export]
+pub fn split_folder_path(text: String) -> Option<FolderPrefix> {
+    pimate_core::path_complete::split_folder_path(&text).map(|(parent, prefix)| FolderPrefix {
+        parent: parent.into(),
+        prefix: prefix.into(),
+    })
+}
+
+#[uniffi::export]
+pub fn match_folders(names: Vec<String>, prefix: String) -> Vec<String> {
+    pimate_core::path_complete::match_folders(names, &prefix)
+}
