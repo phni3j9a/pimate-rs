@@ -1,7 +1,7 @@
 package dev.pimate.app
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -78,7 +78,10 @@ internal fun NewPage(
             if (parent != null && canList) {
                 delay(150)
                 checked({ /* Completion is optional; a manually typed path remains usable. */ }) {
-                    dirs = JSONObject(m.machineRequest(hostId, Operation.Dirs(parent))).optJSONArray("dirs").strings()
+                    dirs =
+                        JSONObject(m.machineRequest(hostId, Operation.Dirs(parent)))
+                            .optJSONArray("dirs")
+                            .strings()
                 }
             }
         }
@@ -96,17 +99,34 @@ internal fun NewPage(
         }
         LaunchedEffect(hostId, online, rows.hostValue("listKnown")) {
             models = null
-            if (online && rows.hostValue("listKnown") == "true") checked({ error = it }) { models = m.hostModels(hostId) }
+            if (online && rows.hostValue("listKnown") == "true")
+                checked({ error = it }) { models = m.hostModels(hostId) }
         }
         val recent = folders?.optJSONArray("folders").objects()
         fun folder(path: String) =
-            form.folder(path, recent.any { sameFolder(path, it.str("path"), folders?.str("home").orEmpty()) && it.optBoolean("trusted") })
+            form.folder(
+                path,
+                recent.any {
+                    sameFolder(path, it.str("path"), folders?.str("home").orEmpty()) &&
+                        it.optBoolean("trusted")
+                },
+            )
         Page(
             "新しい Pi",
             close,
             centered = true,
+            gap = 0.dp,
             footer = {
-                Hint("起動後は PC の pimate attach で同じ Pi に接続できます")
+                if (error.isNotEmpty()) SheetError(error)
+                else if (outcome.isNotEmpty()) Hint(outcome)
+                else
+                    Text(
+                        "起動後は PC の pimate attach で同じ Pi に接続できます",
+                        Modifier.fillMaxWidth(),
+                        color = pi.textSecondary,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        style = Type.caption,
+                    )
                 Spacer(Modifier.height(6.dp))
                 PrimaryButton(
                     if (busy) "起動を確認しています…" else "起動",
@@ -134,11 +154,16 @@ internal fun NewPage(
                         }
                     },
                     Modifier.fillMaxWidth(),
-                    enabled = h != null && m.rowsFor(hostId).hostValue("connection") == "\"connected\"" && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
+                    enabled =
+                        h != null &&
+                            online &&
+                            form.cwd.isNotBlank() &&
+                            !busy &&
+                            outcome.isEmpty(),
                 )
             },
         ) {
-            Label("マシン", top = 8.dp)
+            Label("マシン", top = 4.dp)
             m.hosts.forEach {
                 val rows = m.rowsFor(it.id)
                 val connection = rows.hostValue("connection")
@@ -162,52 +187,127 @@ internal fun NewPage(
                         },
                 )
             }
-            Label("フォルダ")
-            SpawnInput(form.cwd, ::folder, "フォルダのパス", "~/code/project", !busy, path = true, modifier = Modifier.onFocusChanged { focused = it.isFocused })
-            if (focused && split != null) matchFolders(dirs, split.prefix).forEach { name ->
-                MenuRow("$name/", "", !busy) { folder("${split.parent}$name/") }
-            }
-            if (!online) Hint("このマシンに接続していません") else if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
-            if (recent.isNotEmpty()) Hint("最近使ったフォルダ")
+            Label("フォルダ", top = 20.dp, bottom = 8.dp)
+            SpawnInput(
+                form.cwd,
+                ::folder,
+                "フォルダのパス",
+                "~/code/project",
+                !busy,
+                path = true,
+                modifier = Modifier.onFocusChanged { focused = it.isFocused },
+            )
+            if (focused && split != null)
+                matchFolders(dirs, split.prefix).forEach { name ->
+                    MenuRow("$name/", "", !busy) { folder("${split.parent}$name/") }
+                }
+            if (!online) Hint("このマシンに接続していません")
+            else if (folders == null && error.isEmpty()) Hint("フォルダを読み込み中…")
+            if (recent.isNotEmpty()) Label("最近使ったフォルダ", top = 14.dp, bottom = 0.dp)
             recent.take(8).forEach {
                 val path = it.str("path")
-                MenuRow(tilde(path), it.optInt("running").takeIf { n -> n > 0 }?.let { n -> "Pi $n 件実行中" }.orEmpty(), !busy) { folder(path) }
+                val shown = shortFolder(path, folders?.str("home").orEmpty())
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clickable(!busy, role = Role.Button) { folder(shown) }
+                        .heightIn(min = 44.dp),
+                    Arrangement.spacedBy(10.dp),
+                    Alignment.CenterVertically,
+                ) {
+                    Text(
+                        shown,
+                        Modifier.weight(1f),
+                        style = Type.mono,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                    val running = it.optInt("running")
+                    val lastUsed = it.optLong("lastUsed")
+                    Hint(
+                        if (running > 0) "Pi $running 件実行中"
+                        else if (lastUsed > 0) ago(lastUsed, System.currentTimeMillis()) else ""
+                    )
+                }
             }
-            Toggle("このフォルダを信頼する", form.trust, "フォルダ内の設定と Extension を読み込みます。オンにすると PC の Pi にも記憶され、次回から確認されません。") { if (!busy) form.trust = it }
-            Toggle("質問ツールを使う", form.askTool, "迷ったときに Pi が選択式で質問します（pimate_ask）。スマホからも回答できます。") { if (!busy) { form.askTool = it; m.settings.chooseAskTool(it) } }
+            Spacer(Modifier.height(20.dp))
+            Toggle(
+                "このフォルダを信頼する",
+                form.trust,
+                "フォルダ内の設定と Extension を読み込みます。オンにすると PC の Pi にも記憶され、次回から確認されません。",
+            ) {
+                if (!busy) form.trust = it
+            }
+            Spacer(Modifier.height(20.dp))
+            Toggle("質問ツールを使う", form.askTool, "迷ったときに Pi が選択式で質問します（pimate_ask）。スマホからも回答できます。") {
+                if (!busy) {
+                    form.askTool = it
+                    m.settings.chooseAskTool(it)
+                }
+            }
             val catalog = models?.optJSONArray("models").objects()
             val saved = models?.optJSONObject("default")
             val ref = form.model ?: saved?.optJSONObject("model")
-            val label = ref?.let {
-                val entry = catalog.find { model -> same(it, model) }
-                modelLabel(it.str("id"), entry?.str("name")?.takeIf(String::isNotBlank),
-                    if (form.model == null) saved?.str("thinking").orEmpty() else form.thinking.orEmpty(), entry?.optJSONArray("thinkingLevels")?.length())
-            }
-            val value = if (form.model != null) label.orEmpty() else label?.let { "Pi の既定（$it）" } ?: "Pi の既定"
-            ListRow("モデル", enabled = online && !busy, onClick = { modelPicker = true }, trailing = {
-                Text(value, color = pi.textSecondary, style = Type.caption)
-                Icon(Icons.Right, null, Modifier.size(14.dp), pi.textSecondary)
-            })
-            if (modelPicker) PiSheet({ modelPicker = false }) {
-                SheetTitle("モデル")
-                val favorites = models?.optJSONArray("scoped").objects()
-                var query by remember { mutableStateOf("") }
-                var all by remember(favorites.isEmpty()) { mutableStateOf(favorites.isEmpty()) }
-                if (favorites.isNotEmpty()) Segment(listOf("favorites" to "お気に入り ${favorites.size}", "all" to "すべて ${catalog.size}"), if (all) "all" else "favorites") { all = it == "all" }
-                SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
-                TextAction(
-                    "Pi の既定",
-                    {
-                        form.model = null
-                        form.thinking = null
-                        modelPicker = false
-                    },
-                )
-                val shown = catalog.filter { model ->
-                    (all || favorites.any { same(it, model) }) && "${model.str("name")} ${model.str("id")} ${model.str("provider")}".contains(query.trim(), true)
+            val label =
+                ref?.let {
+                    val entry = catalog.find { model -> same(it, model) }
+                    modelLabel(
+                        it.str("id"),
+                        entry?.str("name")?.takeIf(String::isNotBlank),
+                        if (form.model == null) saved?.str("thinking").orEmpty()
+                        else form.thinking.orEmpty(),
+                        entry?.optJSONArray("thinkingLevels")?.length(),
+                    )
                 }
-                if (shown.isEmpty()) Hint(if (catalog.isEmpty()) "モデル一覧を取得できません。Pi の既定で起動します。" else "一致するモデルはありません")
-                shown.forEach { model ->
+            val value =
+                if (form.model != null) label.orEmpty()
+                else label?.let { "Pi の既定（$it）" } ?: "Pi の既定"
+            Spacer(Modifier.height(16.dp))
+            ListRow(
+                "モデル",
+                enabled = online && !busy,
+                onClick = { modelPicker = true },
+                trailing = {
+                    Text(value, color = pi.textSecondary, style = Type.caption)
+                    Icon(Icons.Right, null, Modifier.size(14.dp), pi.textSecondary)
+                },
+            )
+            if (modelPicker)
+                PiSheet({ modelPicker = false }) {
+                    SheetTitle("モデル")
+                    val favorites = models?.optJSONArray("scoped").objects()
+                    var query by remember { mutableStateOf("") }
+                    var all by remember(favorites.isEmpty()) { mutableStateOf(favorites.isEmpty()) }
+                    if (favorites.isNotEmpty())
+                        Segment(
+                            listOf(
+                                "favorites" to "お気に入り ${favorites.size}",
+                                "all" to "すべて ${catalog.size}",
+                            ),
+                            if (all) "all" else "favorites",
+                        ) {
+                            all = it == "all"
+                        }
+                    SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
+                    TextAction(
+                        "Pi の既定",
+                        {
+                            form.model = null
+                            form.thinking = null
+                            modelPicker = false
+                        },
+                    )
+                    val shown =
+                        catalog.filter { model ->
+                            (all || favorites.any { same(it, model) }) &&
+                                "${model.str("name")} ${model.str("id")} ${model.str("provider")}"
+                                    .contains(query.trim(), true)
+                        }
+                    if (shown.isEmpty())
+                        Hint(
+                            if (catalog.isEmpty()) "モデル一覧を取得できません。Pi の既定で起動します。"
+                            else "一致するモデルはありません"
+                        )
+                    shown.forEach { model ->
                         MenuRow(
                             model.str("name").ifEmpty { model.str("id") },
                             (if (favorites.any { same(it, model) }) "★ " else "") +
@@ -222,7 +322,7 @@ internal fun NewPage(
                             modelPicker = false
                         }
                     }
-            }
+                }
             models
                 ?.optJSONArray("models")
                 .objects()
@@ -234,32 +334,54 @@ internal fun NewPage(
                         form.thinking = level
                     }
                 }
-            Label("最初のメッセージ（任意）")
+            Label("最初のメッセージ（任意）", top = 20.dp, bottom = 8.dp)
             SpawnInput(form.message, { form.message = it }, "最初のメッセージ", "起動したらすぐに送るメッセージ", !busy)
-            SheetError(error)
-            if (outcome.isNotEmpty()) Hint(outcome)
         }
     }
 }
 
+private fun shortFolder(path: String, home: String) =
+    if (home.isNotEmpty() && (path == home || path.startsWith("$home/")))
+        "~" + path.removePrefix(home)
+    else path
+
 internal fun sameFolder(path: String, known: String, home: String): Boolean {
     fun normalize(s: String) = s.trimEnd('/').ifEmpty { if (s.startsWith('/')) "/" else "" }
-    val short = if (home.isNotEmpty() && (known == home || known.startsWith("$home/"))) "~" + known.removePrefix(home) else known
-    return path.isNotBlank() && (normalize(path) == normalize(known) || normalize(path) == normalize(short))
+    val short = shortFolder(known, home)
+    return path.isNotBlank() &&
+        (normalize(path) == normalize(known) || normalize(path) == normalize(short))
 }
 
 @Composable
-private fun SpawnInput(value: String, change: (String) -> Unit, label: String, hint: String, enabled: Boolean, path: Boolean = false, modifier: Modifier = Modifier) {
-    androidx.compose.foundation.text.BasicTextField(value, change,
-        modifier.fillMaxWidth().semantics { contentDescription = label }
-            .background(pi.surface, if (path) CircleShape else RoundedCornerShape(14.dp)).padding(horizontal = 16.dp, vertical = 12.dp),
-        enabled = enabled, singleLine = path,
-        textStyle = Type.body.copy(color = pi.text, fontFamily = if (path) Mono else Type.body.fontFamily),
+private fun SpawnInput(
+    value: String,
+    change: (String) -> Unit,
+    label: String,
+    hint: String,
+    enabled: Boolean,
+    path: Boolean = false,
+    modifier: Modifier = Modifier,
+) {
+    androidx.compose.foundation.text.BasicTextField(
+        value,
+        change,
+        modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = label }
+            .background(pi.surface, if (path) CircleShape else RoundedCornerShape(14.dp))
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        enabled = enabled,
+        singleLine = path,
+        textStyle =
+            Type.body.copy(color = pi.text, fontFamily = if (path) Mono else Type.body.fontFamily),
         cursorBrush = androidx.compose.ui.graphics.SolidColor(pi.accent),
-        decorationBox = { inner -> Box(Modifier.heightIn(min = if (path) 20.dp else 48.dp)) {
-            if (value.isEmpty()) Text(hint, color = pi.textSecondary, style = if (path) Type.mono else Type.body)
-            inner()
-        } },
+        decorationBox = { inner ->
+            Box(Modifier.heightIn(min = if (path) 20.dp else 48.dp)) {
+                if (value.isEmpty())
+                    Text(hint, color = pi.textSecondary, style = if (path) Type.mono else Type.body)
+                inner()
+            }
+        },
     )
 }
 
@@ -402,8 +524,7 @@ internal fun SettingsPage(
         ) {
             Icon(Icons.Plus, null, Modifier.size(16.dp), pi.accentText)
             Text(
-                if (m.hosts.any { it.needsPairing }) "ペアリングし直す・マシンを追加"
-                else "マシンを追加（ペアリング）",
+                if (m.hosts.any { it.needsPairing }) "ペアリングし直す・マシンを追加" else "マシンを追加（ペアリング）",
                 color = pi.accentText,
                 style = Type.lead,
             )
@@ -544,7 +665,13 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 style = Type.lead,
             )
             if (host.needsPairing || stopped(connection)?.repair == true)
-                TextAction("ペアリングし直す", pair, flushEnd, weight = FontWeight.Normal, style = Type.lead)
+                TextAction(
+                    "ペアリングし直す",
+                    pair,
+                    flushEnd,
+                    weight = FontWeight.Normal,
+                    style = Type.lead,
+                )
         }
         ListRow(
             host.address,
@@ -563,7 +690,9 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         // Host は公開版を照会できないと、失敗にせず latest のない結果を返す。これも読み直しの対象にする。
         val unchecked = check != null && latest == ""
         val canUpdate =
-            online && available && caps.optBoolean("packageUpdate") &&
+            online &&
+                available &&
+                caps.optBoolean("packageUpdate") &&
                 check?.optBoolean("canUpdate") == true
         // Host が自分では更新できない（常駐サービスでない・公開パッケージでない）。PC で操作してもらう。
         val manual = check?.str("reason").orEmpty().takeIf { online && available }
@@ -593,7 +722,11 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                         ) {
                             operate {
                                 val r = request(Operation.Update)
-                                note = if (r.getString("to") == r.getString("from")) "更新されませんでした（版が固定されている可能性があります）" else "${r.getString("to")} に更新しました。実行中の各 Pi で /reload を実行してください。"
+                                note =
+                                    if (r.getString("to") == r.getString("from"))
+                                        "更新されませんでした（版が固定されている可能性があります）"
+                                    else
+                                        "${r.getString("to")} に更新しました。実行中の各 Pi で /reload を実行してください。"
                                 retry++
                             }
                         }
@@ -651,8 +784,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         }
         if (online && caps.optBoolean("pairedDevices")) {
             Label("ペアリング済みの端末", bottom = 0.dp)
-            if (devices == null)
-                Hint(if ("devices" in unloaded) "端末の一覧を確認できませんでした" else "確認中…")
+            if (devices == null) Hint(if ("devices" in unloaded) "端末の一覧を確認できませんでした" else "確認中…")
             devices.orEmpty().forEach { d ->
                 val seen = d.optLong("lastSeenAt").takeIf { it > 0 }?.let { "最終接続 ${day(it)}" }
                 val self = d.optBoolean("current")

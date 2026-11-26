@@ -227,7 +227,8 @@ private fun DrawerContent(
                             tilde(o.str("cwd")).contains(query.trim(), true) ||
                             o.str("cwd").contains(query.trim(), true) ||
                             h.name.contains(query.trim(), true) ||
-                            (o.str("origin") == "grok-bot" && "Grok Bot".contains(query.trim(), true))
+                            (o.str("origin") == "grok-bot" &&
+                                "Grok Bot".contains(query.trim(), true))
                     }
             }
         }
@@ -291,11 +292,7 @@ private fun DrawerContent(
                 val stop = stopped(state["connection"])
                 item("host:${host.id}") {
                     val connection = state["connection"]
-                    GroupHeader(
-                        Icons.Monitor,
-                        host.name,
-                        pi.text,
-                    ) {
+                    GroupHeader(Icons.Monitor, host.name, pi.text) {
                         when (connection) {
                             "\"connected\"" -> {
                                 Dot(pi.done)
@@ -329,9 +326,23 @@ private fun DrawerContent(
                 }
                 if (bots.isNotEmpty())
                     item("bots:${host.id}") {
-                        Row(Modifier.padding(start = 12.dp, top = 12.dp).heightIn(min = 28.dp).semantics(mergeDescendants = true) { heading(); contentDescription = "${host.name}: Grok Bot" }, Arrangement.spacedBy(10.dp), Alignment.CenterVertically) {
+                        Row(
+                            Modifier.padding(start = 12.dp, top = 12.dp)
+                                .heightIn(min = 28.dp)
+                                .semantics(mergeDescendants = true) {
+                                    heading()
+                                    contentDescription = "${host.name}: Grok Bot"
+                                },
+                            Arrangement.spacedBy(10.dp),
+                            Alignment.CenterVertically,
+                        ) {
                             Icon(Icons.GrokBot, null, Modifier.size(14.dp), pi.text)
-                            Text("Grok Bot", color = pi.textSecondary, style = Type.caption, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Grok Bot",
+                                color = pi.textSecondary,
+                                style = Type.caption,
+                                fontWeight = FontWeight.SemiBold,
+                            )
                         }
                     }
                 items(bots, key = { "b:${it.first.id}:${it.second}" }) { (h, id, o) ->
@@ -417,9 +428,9 @@ private fun GroupHeader(
     Row(
         Modifier.padding(top = 22.dp)
             .fillMaxWidth()
-            .heightIn(min = 28.dp)
+            .heightIn(min = 32.dp)
             .padding(horizontal = 12.dp),
-        Arrangement.spacedBy(6.dp),
+        Arrangement.spacedBy(10.dp),
         Alignment.CenterVertically,
     ) {
         Icon(icon, null, Modifier.size(15.dp), color)

@@ -217,10 +217,12 @@ class RemainingJourney {
         icon("Instance 一覧を開く")
         icon("新しい Pi を起動")
         val folder = find(hasContentDescription("フォルダのパス") and hasSetTextAction())
+        ui.onNodeWithText("起動").assertIsNotEnabled()
         folder.performTextInput("~/")
-        ui.runOnIdle { ui.activity.getSystemService(android.view.inputmethod.InputMethodManager::class.java).hideSoftInputFromWindow(ui.activity.window.decorView.windowToken, 0) }
         tap("起動")
-        ui.waitUntil(30000) { ui.onAllNodes(hasContentDescription("フォルダのパス")).fetchSemanticsNodes().isEmpty() }
+        ui.waitUntil(30000) {
+            ui.onAllNodes(hasContentDescription("フォルダのパス")).fetchSemanticsNodes().isEmpty()
+        }
         find(hasContentDescription("セッションのメニュー"))
         icon("Instance 一覧を開く")
         icon("設定")
