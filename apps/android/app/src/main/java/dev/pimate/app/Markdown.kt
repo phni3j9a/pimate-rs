@@ -303,6 +303,12 @@ private fun TaskMark(checked: Boolean) {
 }
 
 @Composable
+internal fun CopyAction(source: String, label: String) {
+    val clipboard = LocalClipboardManager.current
+    IconAction(Icons.Copy, label, { clipboard.setText(AnnotatedString(source)) }, size = 16.dp)
+}
+
+@Composable
 private fun CodeBlock(code: String) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }

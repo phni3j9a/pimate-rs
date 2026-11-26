@@ -699,6 +699,7 @@ internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
         is ChatRow.Text ->
             Column {
                 Markdown(row.text, live = row.key == "live:text")
+                CopyAction(row.text, "回答全文をコピー（Markdown）")
             }
         is ChatRow.Tool ->
             Column {
