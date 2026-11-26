@@ -42,7 +42,11 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
-        for _ in 0..<5 where !main.isHittable || main.frame.midY >= app.buttons["新しい Pi"].frame.minY { app.swipeUp() }
+        if variant == "large" {
+            // On XXXL the main row starts below the footer. Use the visible search control instead of tapping through it.
+            let search = app.searchFields.firstMatch
+            XCTAssertTrue(search.isHittable); search.tap(); search.typeText("shout\n")
+        }
         XCTAssertTrue(main.isHittable); main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
         if variant == "light" {
             let read = app.staticTexts["read"].firstMatch
@@ -84,6 +88,10 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 8))
         func openPi(_ id: String) {
             app.navigationBars.buttons.element(boundBy: 0).tap()
+            if variant == "large", let value = app.searchFields.firstMatch.value as? String, value == "shout" {
+                let search = app.searchFields.firstMatch
+                search.tap(); search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count) + "\n")
+            }
             let row = app.buttons["pi-" + id]
             // A partially visible row is hittable even when its center lands under the tab bar.
             func visible() -> Bool { row.isHittable && row.frame.midY > 140 && row.frame.midY < app.frame.maxY - 50 }
