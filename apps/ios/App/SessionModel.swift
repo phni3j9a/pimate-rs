@@ -256,8 +256,15 @@ extension SessionModel {
         return try decodeObject(raw)
     }
 
-    func forget(_ id: String) throws {
-        try core.forget(id: id)
+    func retryNow(_ id: String) { connections[id]?.retryNow() }
+
+    func removeMachine(_ approved: MachineConfirmation, localOnly: Bool) async throws {
+        let id = approved.host
+        if localOnly { try core.forgetDevice(id: id, device: approved.device) }
+        else {
+            guard let c = connections[id], try await core.revokeAndForget(connection: c, id: id, device: approved.device) else { throw RemovalError.notRevoked }
+        }
+        guard hosts.contains(where: { $0.id == id && $0.deviceId == approved.device }) else { throw CoreError.StaleTarget }
         instructions.forget(id)
         generations[id] = nil; connections[id] = nil; rows[id] = nil
         drafts = drafts.filter { $0.key.host != id }; answers = answers.filter { $0.key.editor.host != id }

@@ -103,22 +103,25 @@ struct GithubItem {
     var reference: String { "#\(number)「\(title)」" + (url.map { " \($0.absoluteString)" } ?? "") }
 }
 
+enum RemovalError: Error { case notRevoked }
+
 struct MachineConfirmation: Equatable {
-    enum Action: Equatable { case update, restart, revoke(String), forget }
+    enum Action: Equatable { case update, restart, revoke(String), forget, forgetLocal }
     let host: String, device: String, generation: UUID?, action: Action
     var warning: String {
         switch action {
         case .update: "このマシンの PiMate を実行時の最新版に更新します。確認時に表示した版と異なる場合があります。"
         case .restart: "このマシンの Host を再起動します。接続が一時切断されます。"
         case .revoke: "選んだ端末の登録を PC から取り消します。"
-        case .forget: "この iPhone / iPad から選んだマシンの登録を削除します。"
+        case .forget: "この端末から接続情報と下書きを削除し、PC 側の登録も取り消します。"
+        case .forgetLocal: "この端末からだけ接続情報と下書きを削除しますか？PC 側に登録が残る場合は、PC の Pi の /pimate devices で取り消してください。"
         }
     }
 }
 extension SessionModel {
     func confirmation(host id: String, _ action: MachineConfirmation.Action) throws -> MachineConfirmation {
         guard let registration = hosts.first(where: { $0.id == id }) else { throw CoreError.StaleTarget }
-        return .init(host: id, device: registration.deviceId, generation: rows[id]?.connectionGeneration, action: action)
+        return .init(host: id, device: registration.deviceId, generation: [.forget, .forgetLocal].contains(action) ? nil : rows[id]?.connectionGeneration, action: action)
     }
     func confirm(_ approved: MachineConfirmation) async throws -> Object {
         guard try confirmation(host: approved.host, approved.action) == approved else { throw CoreError.StaleTarget }
@@ -126,7 +129,7 @@ extension SessionModel {
         case .update: return try await machineRequest(approved.host, .update)
         case .restart: return try await machineRequest(approved.host, .restart)
         case .revoke(let device): return try await machineRequest(approved.host, .revoke(deviceId: device))
-        case .forget: try forget(approved.host); return [:]
+        case .forget, .forgetLocal: try await removeMachine(approved, localOnly: approved.action == .forgetLocal); return [:]
         }
     }
 }

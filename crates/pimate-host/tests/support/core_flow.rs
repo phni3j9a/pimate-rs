@@ -45,6 +45,17 @@ impl SecretStore for Storage {
         }
         Ok(())
     }
+    fn forget_device(&self, id: String, device: String) -> Result<(), Error> {
+        let mut row = self.0.lock().unwrap();
+        if !row
+            .as_ref()
+            .is_some_and(|(h, _)| h.id == id && h.device_id == device)
+        {
+            return Err(Error::StaleTarget);
+        }
+        *row = None;
+        Ok(())
+    }
     fn forget(&self, _: String) -> Result<(), Error> {
         *self.0.lock().unwrap() = None;
         Ok(())
@@ -267,7 +278,7 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
         Err(Error::InvalidCode)
     );
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let c = core.connect(h.id, Arc::new(Changes(tx)))?;
+    let c = core.connect(h.id.clone(), Arc::new(Changes(tx)))?;
     until(&mut rx, "instance", "stub", None).await?;
     // Observe at least one discovery refresh with the phone connected but unsubscribed.
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -291,6 +302,13 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
         Err(Error::OutcomeUnknown)
     );
     until(&mut rx, "host", "connection", Some("offline")).await?;
+    assert!(
+        !core
+            .revoke_and_forget(c.clone(), h.id.clone(), h.device_id.clone())
+            .await?
+    );
+    assert_eq!(core.hosts()?.as_slice(), std::slice::from_ref(&h));
+    c.retry_now();
     assert!(
         c.snapshot()
             .items
@@ -323,12 +341,17 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
                 && serde_json::from_str::<Value>(&i.json).is_ok_and(|v| v["outcome"] == "unknown"))
     );
     c.check(compact)?;
-    c.perform(Operation::Revoke {
-        device_id: h.device_id,
-    })
-    .await?;
+    assert_eq!(
+        core.revoke_and_forget(c.clone(), h.id.clone(), "other".into())
+            .await,
+        Err(Error::StaleTarget)
+    );
+    assert!(core.revoke_and_forget(c.clone(), h.id, h.device_id).await?);
+    let devices: Vec<Value> =
+        serde_json::from_slice(&std::fs::read(s.dir.path().join("config/devices.json"))?)?;
+    assert!(devices.is_empty());
     until(&mut rx, "host", "connection", Some("revoked")).await?;
     assert_eq!(c.perform(Operation::Devices).await, Err(Error::Offline));
-    assert!(core.hosts()?[0].needs_pairing);
+    assert!(core.hosts()?.is_empty());
     Ok(())
 }

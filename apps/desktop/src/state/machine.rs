@@ -352,17 +352,7 @@ impl CredentialOutcome {
     }
 }
 
-pub struct Forget(pimate_core::Host);
 impl Desktop {
-    pub fn forget_confirmation(&self, id: &str) -> Result<Forget, Error> {
-        Ok(Forget(
-            self.hosts
-                .iter()
-                .find(|h| h.id == id)
-                .ok_or(Error::StaleTarget)?
-                .clone(),
-        ))
-    }
     pub fn removed(&mut self, host: &pimate_core::Host, cx: &mut gpui::Context<Self>) {
         if self.hosts.contains(host) {
             self.state.close_page();
@@ -379,14 +369,6 @@ impl Desktop {
         }
     }
 }
-impl Forget {
-    /// Blocking secure storage: dispatch on the background executor.
-    pub fn confirm(self) -> Result<pimate_core::Host, Error> {
-        crate::store::Store::open().forget_matching(&self.0)?;
-        Ok(self.0)
-    }
-}
-
 pub struct Logout<'a>(&'a Login, p::AuthLogoutParams);
 impl Login {
     pub fn instance(&self) -> &str {
