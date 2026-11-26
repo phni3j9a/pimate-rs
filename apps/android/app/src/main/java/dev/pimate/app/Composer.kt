@@ -451,7 +451,7 @@ internal fun Composer(
                     target == null -> "読み込み中…"
                     asking -> "上の質問に回答すると入力できます"
                     pcPrompt -> "PC での操作が終わると入力できます"
-                    else -> "メッセージ"
+                    else -> "Pi にメッセージ"
                 }
             // 入力は ViewModel（ChatEdits）が持つ。欄は編集の対象ごとに作り直し、古い IME の確定を捨てる。
             key(editor) {

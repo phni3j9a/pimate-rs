@@ -363,15 +363,13 @@ private fun TableBody(
     val total = widths.sum().dp
     // 収まる表は横送りにしない（表の上から右へ送っても一覧を開ける）。
     Column(
-        if (scroll && total > available + .5.dp) modifier.horizontalScroll(rememberScrollState())
-        else modifier
+        modifier.background(pi.surface, RoundedCornerShape(12.dp)).then(
+            if (scroll && total > available + .5.dp) Modifier.horizontalScroll(rememberScrollState()) else Modifier
+        )
     ) {
         (listOf(table.header) + table.rows).forEachIndexed { index, row ->
-            if (index > 1) Box(Modifier.width(total).height(1.dp).background(pi.surface))
-            Row(
-                if (index == 0) Modifier.background(pi.surface, RoundedCornerShape(8.dp))
-                else Modifier
-            ) {
+            if (index > 0) Box(Modifier.width(total).height(1.dp).background(pi.background))
+            Row {
                 widths.forEachIndexed { col, width ->
                     Paragraph(
                         row.getOrElse(col) { emptyList() },

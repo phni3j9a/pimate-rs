@@ -464,7 +464,15 @@ private fun Header(
         Modifier.height(52.dp).padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconAction(Icons.Menu, "Instance 一覧を開く", openDrawer, tint = pi.text)
+        IconButton(onClick = openDrawer, modifier = Modifier.semantics { contentDescription = "Instance 一覧を開く" }) {
+            val color = pi.text
+            Canvas(Modifier.size(24.dp)) {
+                for (y in listOf(6.dp, 12.dp, 18.dp)) drawLine(color,
+                    androidx.compose.ui.geometry.Offset(3.dp.toPx(), y.toPx()),
+                    androidx.compose.ui.geometry.Offset(21.dp.toPx(), y.toPx()),
+                    2.dp.toPx(), androidx.compose.ui.graphics.StrokeCap.Round)
+            }
+        }
         Text(
             if (m.selected == null) "PiMate" else title(session, cwd),
             Modifier.weight(1f).padding(start = 2.dp).semantics { heading() },
@@ -518,6 +526,10 @@ private fun Header(
                         style = Type.caption,
                         maxLines = 1,
                     )
+                }
+                else -> {
+                    Dot(pi.textTertiary, 6.dp)
+                    Text("待機", color = pi.textSecondary, style = Type.caption)
                 }
             }
         }
