@@ -58,6 +58,10 @@ pub trait SecretStore: Send + Sync {
     fn load(&self, id: String) -> Result<Credential, Error>;
     /// Mark only the matching device; a late close must not invalidate a replacement pairing.
     fn invalidate(&self, id: String, device_id: String) -> Result<(), Error>;
+    /// Atomically forget only this registration, including after its self-revoke close.
+    fn forget_device(&self, _id: String, _device: String) -> Result<(), Error> {
+        Err(Error::Unsupported)
+    }
     fn forget(&self, id: String) -> Result<(), Error>;
 }
 fn runtime() -> &'static Runtime {
@@ -82,6 +86,53 @@ impl Core {
     }
     pub fn forget(&self, id: String) -> Result<(), Error> {
         self.store.forget(id)
+    }
+    /// False: revoke was not sent or was refused. OutcomeUnknown: it may have succeeded.
+    /// Both keep the local registration until the user confirms local-only deletion.
+    pub async fn revoke_and_forget(
+        &self,
+        connection: Arc<Connection>,
+        id: String,
+        device: String,
+    ) -> Result<bool, Error> {
+        if connection.registration.0 != id || connection.registration.1 != device {
+            return Err(Error::StaleTarget);
+        }
+        // Confirm which device authenticated this socket; never revoke another listed device.
+        let current = connection
+            .perform(Operation::Devices)
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+        if !current
+            .as_ref()
+            .and_then(|v| v["devices"].as_array())
+            .is_some_and(|ds| {
+                ds.iter()
+                    .any(|d| d["current"] == true && d["deviceId"].as_str() == Some(&device))
+            })
+        {
+            return Ok(false);
+        }
+        match connection
+            .perform(Operation::Revoke {
+                device_id: device.clone(),
+            })
+            .await
+        {
+            Ok(_) => (),
+            Err(Error::OutcomeUnknown) => return Err(Error::OutcomeUnknown),
+            Err(_) => return Ok(false),
+        }
+        let store = self.store.clone();
+        runtime()
+            .spawn_blocking(move || store.forget_device(id, device))
+            .await
+            .map_err(|_| Error::Storage)??;
+        Ok(true)
+    }
+    pub fn forget_device(&self, id: String, device: String) -> Result<(), Error> {
+        self.store.forget_device(id, device)
     }
     pub async fn pair(&self, link: String, name: String) -> Result<Host, Error> {
         let store = self.store.clone();

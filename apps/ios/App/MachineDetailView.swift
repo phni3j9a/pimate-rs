@@ -3,6 +3,7 @@ import SwiftUI
 struct MachineDetailView: View {
     let model: SessionModel, host: Host
     @Environment(\.dismiss) private var dismiss
+    @State private var pair = false
     @State private var devices: [Object]?
     @State private var check: Object?
     @State private var github = GithubStatus.unknown
@@ -26,6 +27,10 @@ struct MachineDetailView: View {
         Form {
             Section("状態") {
                 Text(MachineDetailView.summary(host, rows)); Text(verbatim: host.address).modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled)
+                let status = rows?.groups["host"]?.first(where: { $0.id == "connection" })?.string
+                if host.needsPairing || ["auth_failed", "invalid_token", "revoked"].contains(status ?? "") {
+                    Button("ペアリングし直す") { pair = true }
+                } else if status == "offline" { Button("今すぐ再接続") { model.retryNow(host.id) } }
                 if let current = devices?.first(where: { $0["current"] as? Bool == true }), let paired = date(current["createdAt"]) { Text("\(paired) にペアリング").foregroundStyle(.secondary) }
             }
             maintenance
@@ -36,7 +41,9 @@ struct MachineDetailView: View {
                 switch github {
                 case .unknown: Text("ログイン状態は未確認です")
                 case .notInstalled: Text("PC に GitHub CLI（gh）がありません")
-                case .loggedOut: Text("PC で gh auth login を実行してください")
+                case .loggedOut:
+                    Text("PC で gh auth login を実行してください")
+                    Button("gh auth login をコピー") { UIPasteboard.general.string = "gh auth login" }
                 case .loggedIn(let login): Text("\(login) でログイン中")
                 }
             }
@@ -45,13 +52,14 @@ struct MachineDetailView: View {
                 if loading || action != nil { ProgressView("PC の応答を待っています…") }
                 if !error.isEmpty { Text(error).foregroundStyle(PiTheme.failure) }; if !note.isEmpty { Text(note) }
                 Button("状態を再読み込み") { refresh += 1 }.disabled(!online || loading)
-                confirmButton("このマシンを削除…", .forget)
+                confirmButton("このマシンを削除…", supports("pairedDevices") ? .forget : .forgetLocal)
             }
         }.disabled(action != nil).navigationTitle(host.name).navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $pair) { PairScreen(model: model) { pair = false } }
         .task(id: reloadKey) { await load() }
         .alert(title, isPresented: Binding(get: { confirmation != nil }, set: { if !$0 { confirmation = nil } }), presenting: confirmation) { fixed in
-            Button("キャンセル", role: .cancel) {}; Button("実行", role: .destructive) { perform(fixed) }
-        } message: { fixed in Text(targetName + "\n" + fixed.warning + (fixed.action == .forget ? " 保存された下書きも削除されます。" : "")) }
+            Button("キャンセル", role: .cancel) {}; Button(fixed.action == .forgetLocal ? "この端末から削除" : fixed.action == .forget ? "削除" : "実行", role: .destructive) { perform(fixed) }
+        } message: { fixed in Text(targetName + "\n" + fixed.warning) }
         .onDisappear { action?.cancel() }
     }
     private var maintenance: some View {
@@ -110,16 +118,24 @@ struct MachineDetailView: View {
             do {
                 try Task.checkCancellation(); let reply = try await model.confirm(fixed); try Task.checkCancellation()
                 switch fixed.action {
-                case .forget: dismiss()
+                case .forget, .forgetLocal: dismiss()
                 case .restart: note = "再起動を受け付けました。"
                 case .update: note = reply.str("to").isEmpty ? "更新後の版は未確認です。" : "\(reply.str("to")) に更新しました。"
                 case .revoke: note = "端末の登録を取り消しました。"
                 }; refresh += 1
+            } catch RemovalError.notRevoked {
+                offerLocalRemoval(fixed, title: "PC 側の登録を取り消せませんでした")
+            } catch CoreError.OutcomeUnknown where fixed.action == .forget {
+                offerLocalRemoval(fixed, title: "取消の結果を確認できません。PC の端末一覧で確かめてください。")
             } catch { if !Task.isCancelled { self.error = "操作結果を確認できません。再実行の前に状態を確認してください。" } }
         }
     }
+    private func offerLocalRemoval(_ fixed: MachineConfirmation, title: String) {
+        guard !Task.isCancelled, let local = try? model.confirmation(host: fixed.host, .forgetLocal), local.device == fixed.device else { return }
+        self.title = title; confirmation = local
+    }
     private func load() async {
-        devices = nil; check = nil; github = .unknown; error = ""; confirmation = nil
+        devices = nil; check = nil; github = .unknown; error = ""; if confirmation?.action != .forget && confirmation?.action != .forgetLocal { confirmation = nil }
         guard online else { loading = false; return }; loading = true
         defer { if !Task.isCancelled { loading = false } }
         for (cap, op) in [("pairedDevices", Operation.devices), ("githubStatus", .githubStatus), ("packageUpdate", .updateCheck)] where supports(cap) {

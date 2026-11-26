@@ -59,12 +59,15 @@ impl pimate_core::Listener for Delivery {
         }
     }
 }
+// Foreign stores can be shared by Core instances. Serialize compare/delete with pair saves.
+static REGISTRATIONS: Mutex<()> = Mutex::new(());
 struct Store(Arc<dyn SecretStore>);
 impl pimate_core::SecretStore for Store {
     fn hosts(&self) -> Result<Vec<Host>, CoreError> {
         self.0.hosts().map_err(|_| CoreError::Storage)
     }
     fn save(&self, host: Host, token: String) -> Result<(), CoreError> {
+        let _lock = REGISTRATIONS.lock().unwrap();
         self.0.save(host, token).map_err(|_| CoreError::Storage)
     }
     fn load(&self, id: String) -> Result<Credential, CoreError> {
@@ -74,6 +77,13 @@ impl pimate_core::SecretStore for Store {
         self.0
             .invalidate(id, device_id)
             .map_err(|_| CoreError::Storage)
+    }
+    fn forget_device(&self, id: String, device: String) -> Result<(), CoreError> {
+        let _lock = REGISTRATIONS.lock().unwrap();
+        if self.load(id.clone())?.host.device_id != device {
+            return Err(CoreError::StaleTarget);
+        }
+        self.forget(id)
     }
     fn forget(&self, id: String) -> Result<(), CoreError> {
         self.0.forget(id).map_err(|_| CoreError::Storage)
@@ -95,6 +105,19 @@ impl Core {
     }
     pub fn forget(&self, id: String) -> Result<(), CoreError> {
         self.0.forget(id)
+    }
+    pub async fn revoke_and_forget(
+        &self,
+        connection: Arc<Connection>,
+        id: String,
+        device: String,
+    ) -> Result<bool, CoreError> {
+        self.0
+            .revoke_and_forget(connection.core.clone(), id, device)
+            .await
+    }
+    pub fn forget_device(&self, id: String, device: String) -> Result<(), CoreError> {
+        self.0.forget_device(id, device)
     }
     pub fn connect(
         &self,
@@ -122,6 +145,9 @@ pub struct Connection {
 }
 #[uniffi::export]
 impl Connection {
+    pub fn retry_now(&self) {
+        self.core.retry_now()
+    }
     pub fn subscribe(&self, instance: Option<String>) -> Result<(), CoreError> {
         self.core.subscribe(instance)
     }
