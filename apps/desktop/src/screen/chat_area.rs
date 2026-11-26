@@ -49,6 +49,7 @@ impl Desktop {
             page
         };
         let send_page = page.clone();
+        let stop_page = page.clone();
         let key_page = page.clone();
         let rows = &self.machines[&key.host].rows;
         let inspector = w.use_keyed_state(
@@ -60,6 +61,7 @@ impl Desktop {
             cx,
             |_, _| super::chat_review::Inspector::default(),
         );
+        self.chat_keys = Some((page.clone(), inspector.clone()));
         if inspector.read(cx).agents {
             return main.child(self.agent_panel(&key, &page, &inspector, p, w, cx));
         }
@@ -84,6 +86,7 @@ impl Desktop {
         let session = rows.get("view", "session");
         let info = rows.get("instance", &key.instance);
         let running = rows.get("view", "status") == "running";
+        let can_stop = rows.can_stop();
         let blocked = !rows.group("question").is_empty() || !rows.get("view", "pcPrompt").is_null();
         let status = if blocked {
             "入力待ち"
@@ -327,8 +330,16 @@ impl Desktop {
                     })
                     .child(
                         div()
+                            .key_context("Composer")
+                            .on_action(cx.listener(|this, _: &keys::Newline, w, cx| {
+                                if !this.composing
+                                    && let Some((_, input, _)) = &this.input
+                                {
+                                    input.update(cx, |s, cx| s.insert("\n", w, cx));
+                                }
+                            }))
                             .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
-                                if e.secondary {
+                                if e.secondary == this.ctrl_enter {
                                     if !disabled {
                                         this.submit_chat(&key_page, w, cx);
                                     }
@@ -347,11 +358,23 @@ impl Desktop {
                             })
                             .child(p.caption(if blocked {
                                 "入力待ちのため送信できません"
+                            } else if !self.ctrl_enter {
+                                "Enter で送信　Shift+Enter で改行"
                             } else if cfg!(target_os = "macos") {
                                 "↩ 改行　⌘↩ 送信"
                             } else {
                                 "Enter で改行　Ctrl+Enter で送信"
                             }))
+                            .when(can_stop, |row| {
+                                row.child(
+                                    p.text_button("abort", p.fail_ink, cx)
+                                        .label("停止")
+                                        .disabled(self.stopping)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.stop_chat(&stop_page, cx)
+                                        })),
+                                )
+                            })
                             .child(
                                 p.primary("send", cx)
                                     .label(action)

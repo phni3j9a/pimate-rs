@@ -252,19 +252,11 @@ if mode == 'hotplug':
     snap('candidate-after-hotplug')
 key(0xff0d)
 snap('commit')
-key(0xff0d)  # ordinary Enter adds newline, not a prompt
-time.sleep(3.5)
-assert prompts() == external
-if mode == 'check':
-    seat.NotifyKeyboardKeysym(0xffe3, True)
-    key(0xff0d)
-    seat.NotifyKeyboardKeysym(0xffe3, False)
-else:
-    # Look for the enabled (filled) send button now, not in the frame right after the commit:
-    # the button is redrawn one frame after the composition ends.
-    click(*blob(snap('before-send'), ACCENT, (x+300, y+560, 1280, 800))[:2])
+time.sleep(1)
+assert prompts() == external, 'conversion Enter sent a prompt'
+key(0xff0d)
 time.sleep(4)
-assert prompts() == external + [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
+assert prompts() == external + [['demo', 'ニホンゴ']], 'Enter did not send the committed text exactly once'
 snap('sent')
-print(f'{mode}: paired, demo listed, selection survived stream; Enter: 0 prompts; explicit send: 1 prompt = ニホンゴ + newline')
+print(f'{mode}: conversion Enter: 0 prompts; committed Enter: 1 prompt = ニホンゴ')
 seat.Stop()

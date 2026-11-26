@@ -1,7 +1,7 @@
 use super::*;
 use state::{Page, review::Review};
 #[derive(Default)]
-pub(super) struct Inspector {
+pub(crate) struct Inspector {
     pub review: Option<Arc<Review>>,
     pub review_open: bool,
     read: Option<Task<()>>,

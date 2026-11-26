@@ -232,6 +232,11 @@ impl Rows {
             .map(|(_, v)| v)
             .unwrap_or(&Value::Null)
     }
+    pub fn can_stop(&self) -> bool {
+        self.get("host", "connection") == "connected"
+            && self.get("view", "phase") == "ready"
+            && self.get("view", "agentActive") == true
+    }
     pub fn editor(&self, host: &str, instance: &str) -> Option<EditorKey> {
         if self.get("view", "phase") != "ready" || self.get("view", "instanceId") != instance {
             return None;

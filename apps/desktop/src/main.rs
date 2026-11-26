@@ -38,6 +38,17 @@ struct Desktop {
     input: Option<(EditorKey, Entity<InputState>, [Subscription; 2])>,
     composing: bool,
     sending: bool,
+    stopping: bool,
+    ctrl_enter: bool,
+    root_focus: FocusHandle,
+    sidebar_hidden: bool,
+    side_focus: FocusHandle,
+    main_focus: FocusHandle,
+    keyboard_focus: bool,
+    navigation: Option<screen::Navigation>,
+    chat_keys: Option<(state::Page, Entity<screen::Inspector>)>,
+    palette_open: bool,
+    palette_index: usize,
     epoch: u64,
     size: f32,
     scroll: ListState,
@@ -73,6 +84,17 @@ impl Desktop {
             input: None,
             composing: false,
             sending: false,
+            stopping: false,
+            ctrl_enter: false,
+            root_focus: cx.focus_handle(),
+            sidebar_hidden: false,
+            side_focus: cx.focus_handle(),
+            main_focus: cx.focus_handle(),
+            keyboard_focus: false,
+            navigation: None,
+            chat_keys: None,
+            palette_open: false,
+            palette_index: 0,
             epoch: 0,
             size: 16.,
             scroll: screen::transcript(),
@@ -90,6 +112,12 @@ impl Desktop {
         let settings = state::Settings::path().and_then(|p| state::Settings::load(&p));
         self.pref_error = settings.is_err();
         self.state.settings = settings.unwrap_or_default();
+        if let Ok(path) = state::Settings::path() {
+            match state::load_send_key(&path) {
+                Ok(v) => self.ctrl_enter = v,
+                Err(_) => self.pref_error = true,
+            }
+        }
         self.sidebar_width = state::layout_path()
             .ok()
             .and_then(|p| state::load_sidebar_width(&p));
@@ -413,6 +441,7 @@ fn main() {
     }
     Application::new().with_assets(screen::Assets).run(|cx| {
         gpui_component::init(cx);
+        screen::keys::init(cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit()

@@ -7,14 +7,17 @@ mod chat_review;
 mod conversation;
 mod first_step;
 mod github;
+pub(crate) mod keys;
 mod machine;
 mod new_pi;
+mod palette;
 mod providers;
 mod settings;
 mod sheet_chat;
 mod sheet_tree;
 mod theme;
 use super::*;
+pub(crate) use chat_review::Inspector;
 use gpui_component::{
     Disableable, Selectable, Sizable, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
@@ -22,7 +25,8 @@ use gpui_component::{
     scroll::ScrollableElement,
 };
 use serde_json::Value;
-use settings::{Navigation, Route};
+pub(crate) use settings::Navigation;
+use settings::Route;
 pub(crate) use theme::Assets;
 use theme::{Colors, Layout, icon};
 
@@ -240,20 +244,7 @@ impl Desktop {
             }))
     }
     /// サイドバー: 検索欄・要対応・マシンごと・最下段（設定／＋新しい Pi）。
-    fn sidebar(
-        &self,
-        n: &Navigation,
-        p: &Colors,
-        search: &Entity<InputState>,
-        cx: &Context<Self>,
-    ) -> Div {
-        let query = search.read(cx).value().trim().to_lowercase();
-        let shown = |id: &str, v: &Value| {
-            query.is_empty()
-                || format!("{} {}", pi_title(v, id), v["cwd"].as_str().unwrap_or(""))
-                    .to_lowercase()
-                    .contains(&query)
-        };
+    fn sidebar(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
         let group = || {
             div()
                 .flex()
@@ -282,7 +273,7 @@ impl Desktop {
                     .iter()
                     .map(move |(id, v)| (h, id, v))
             })
-            .filter(|(_, id, v)| v["section"] == "waiting" && shown(id, v))
+            .filter(|(_, _, v)| v["section"] == "waiting")
             .collect();
         if !waiting.is_empty() {
             rows = rows.child(
@@ -352,10 +343,7 @@ impl Desktop {
                         .py_2(),
                     );
                 }
-                for (id, v) in entries
-                    .iter()
-                    .filter(|(id, v)| v["section"] != "waiting" && shown(id, v))
-                {
+                for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
                     rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
@@ -380,19 +368,11 @@ impl Desktop {
             .pt_3()
             .pb_2()
             .child(
-                div()
-                    .mx_1()
-                    .mb_1()
+                p.row("sidebar-search", false, cx)
                     .h(px(theme::CONTROL))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl_3()
-                    .rounded(px(theme::CONTROL / 2.))
-                    .bg(p.bg)
                     .child(icon("search", 16., p.secondary))
-                    .child(Input::new(search).appearance(false).cleanable(true)),
+                    .label("Pi・コマンドを検索")
+                    .on_click(cx.listener(|app, _, w, cx| app.open_palette(false, w, cx))),
             )
             .child(rows)
             .child(
@@ -627,16 +607,25 @@ impl Render for Desktop {
         let layout = Layout::of(w.viewport_size().width);
         if self.search.is_none() {
             let input = cx.new(|cx| InputState::new(w, cx).placeholder("Pi・フォルダを検索"));
-            let changed = cx.subscribe(&input, |_, _, e: &InputEvent, cx| {
+            let changed = cx.subscribe(&input, |this, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
+                    this.palette_index = 0;
                     cx.notify()
                 }
             });
             self.search = Some((input, changed));
         }
-        let search = self.search.as_ref().unwrap().0.clone();
+        self.navigation = Some(nav.clone());
+        self.chat_keys = None;
         // マシンが1台もないうちは、並べる Pi がないのでサイドバーを出さない。
-        let side = (!self.hosts.is_empty()).then(|| self.sidebar(&nav, &p, &search, cx));
+        let side = (!self.hosts.is_empty() && (layout == Layout::Narrow || !self.sidebar_hidden))
+            .then(|| {
+                self.sidebar(&nav, &p, cx)
+                    .track_focus(&self.side_focus)
+                    .when(self.keyboard_focus, |d| {
+                        d.focus(|d| d.border_2().border_color(p.accent))
+                    })
+            });
         let toggle =
             (side.is_some() && layout == Layout::Narrow).then(|| self.sidebar_toggle(&p, cx));
         // The answer belongs to the pending question, not to the visible workspace panel.
@@ -652,7 +641,16 @@ impl Render for Desktop {
         });
         let home = nav.read(cx).route == Route::Home;
         let first = home && self.hosts.is_empty();
-        let mut main = div().flex().flex_col().flex_1().min_w_0().h_full();
+        let mut main = div()
+            .track_focus(&self.main_focus)
+            .when(self.keyboard_focus, |d| {
+                d.focus(|d| d.border_2().border_color(p.accent))
+            })
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full();
         if !first && let Some(notice) = self.registration_notice(&p, cx) {
             main = main.child(notice.mx_4().mt_3());
         }
@@ -725,7 +723,19 @@ impl Render for Desktop {
                     .child(self.title.clone()),
             )
         });
-        div()
+        if w.focused(cx).is_none() {
+            w.focus(&self.root_focus);
+        }
+        let root = div().track_focus(&self.root_focus).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                if this.keyboard_focus {
+                    this.keyboard_focus = false;
+                    cx.notify();
+                }
+            }),
+        );
+        keys::listeners(root, cx)
             .relative()
             .flex()
             .flex_col()
@@ -735,6 +745,7 @@ impl Render for Desktop {
             .text_size(rems(0.875))
             .children(titlebar)
             .child(self.panes(layout, side, main, None, &p, cx))
+            .children(self.command_palette(&p, cx))
             .children(self.pair_dialog(&p, cx))
     }
 }
