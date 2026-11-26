@@ -2,6 +2,7 @@ package dev.pimate.app
 
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.*
 import org.junit.Assert.*
@@ -21,6 +23,35 @@ class ChatReviewContract {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
     private val png =
         "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAFCAIAAADzBuo/AAAAEklEQVR4nGP8z4APMOGVpa00AJ0IAQl63qFDAAAAAElFTkSuQmCC"
+
+    @Test
+    fun jumpIncludesRowsAddedDuringAnimation() {
+        lateinit var list: LazyListState
+        var finished by mutableStateOf(false)
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                list = rememberLazyListState()
+                var count by remember { mutableIntStateOf(30) }
+                LaunchedEffect(Unit) {
+                    snapshotFlow { list.isScrollInProgress }.first { it }
+                    count += 10
+                }
+                LaunchedEffect(Unit) {
+                    snapshotFlow { list.layoutInfo.totalItemsCount }.first { it == 30 }
+                    list.jumpToLatest()
+                    finished = true
+                }
+                LazyColumn(Modifier.height(180.dp), state = list) {
+                    items(count) { Spacer(Modifier.height(48.dp)) }
+                }
+            }
+        }
+        ui.waitUntil(5000) { finished }
+        ui.runOnIdle {
+            assertEquals(40, list.layoutInfo.totalItemsCount)
+            assertFalse(list.canScrollForward)
+        }
+    }
 
     @Test
     fun copyAnswerKeepsMarkdownAndWhitespace() {

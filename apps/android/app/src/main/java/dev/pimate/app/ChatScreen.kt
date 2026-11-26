@@ -32,6 +32,12 @@ import kotlinx.coroutines.launch
 import org.json.*
 import uniffi.pimate_ffi.*
 
+/** 移動中に加わった行にも合わせる。ドラッグによるキャンセル時は追従を再開しない。 */
+internal suspend fun LazyListState.jumpToLatest() {
+    animateScrollToItem((layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+    scrollToItem((layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+}
+
 /** JSON の解析を行ごとに 1 回で済ませる（長い履歴に 1 件足すたびに全件を読み直さない）。 */
 private class Parsed<T>(private val parse: (Item) -> T) {
     private var seen = emptyMap<String, Pair<String, T>>()
@@ -140,13 +146,9 @@ internal fun ChatScreen(
         }
     fun clock(id: String) = groups["stream"].orEmpty().find { it.id == id }?.json?.toLongOrNull()
     val duration = clock("thinkingSince")?.let { since -> clock("thinkingUntil")?.minus(since) }
-    val waiting =
-        questions.isNotEmpty() ||
-            view["status"] == "\"waiting_input\"" ||
-            view["pcPrompt"]?.let { it != "null" } == true
     val rows =
-        remember(entries, tools, active, text, thinking, thinkingMs, duration, waiting) {
-            buildRows(entries, tools, active, text, thinking, thinkingMs, duration, waiting)
+        remember(entries, tools, active, text, thinking, thinkingMs, duration) {
+            buildRows(entries, tools, active, text, thinking, thinkingMs, duration)
         }
     // 利用者が開閉した行: 「+key」は開いた、「-key」は閉じた。回転では保ち、Pi を切り替えたら忘れる。
     val open =
@@ -436,9 +438,8 @@ internal fun ChatScreen(
                             IconButton(
                                 onClick = {
                                     scope.launch {
-                                        list.animateScrollToItem(
-                                            list.layoutInfo.totalItemsCount - 1
-                                        )
+                                        list.jumpToLatest()
+                                        follow = true
                                     }
                                 },
                                 modifier =

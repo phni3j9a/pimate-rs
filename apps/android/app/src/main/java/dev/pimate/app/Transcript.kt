@@ -238,7 +238,6 @@ internal fun buildRows(
     streamThinking: String = "",
     thinkingMs: Map<String, Long> = emptyMap(),
     liveThinkingMs: Long? = null,
-    waiting: Boolean = false,
 ): List<ChatRow> {
     // 結果は、同じ ID でまだ結果のない直前の呼び出しに対応付ける（ID がターンをまたいで重なる履歴でも取り違えない）。
     val results = HashMap<Pair<String, String>, Entry>() // (呼び出し元 entry, call ID) → 結果
@@ -395,7 +394,8 @@ internal fun buildRows(
             }
         }
     }
-    close(active || waiting)
+    // 実行後に PC 拡張が開いた質問は、完了ターンを再び展開する理由にならない。
+    close(active)
     // 途中から開いたときなど、発言より先に届いた実行中のツール。サブエージェントの中のツールは出さない。
     running.values
         .filter { it.id !in caller }

@@ -142,13 +142,14 @@ class TranscriptTest {
     }
 
     @Test
-    fun waitingDoesNotFoldTheCurrentTurnAndHiddenToolsDoNotChangeVisibleRows() {
+    fun onlyParentActivityKeepsTurnOpenAndHiddenToolsDoNotChangeVisibleRows() {
         val history = turn.take(2)
-        val waiting = buildRows(history, emptyList(), false, waiting = true)
-        assertTrue(waiting.none { it is ChatRow.Summary || it.fold != null })
+        val running = buildRows(history, emptyList(), active = true)
+        assertTrue(buildRows(history, emptyList(), active = false).any { it is ChatRow.Summary })
+        assertTrue(running.none { it is ChatRow.Summary || it.fold != null })
         for (id in listOf("unseen", "c1")) {
             val nested = Live(id, "read", "", "running", "hidden", null, true)
-            assertEquals(waiting, buildRows(history, listOf(nested), false, waiting = true))
+            assertEquals(running, buildRows(history, listOf(nested), active = true))
         }
     }
 
