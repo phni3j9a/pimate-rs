@@ -30,6 +30,8 @@ struct ChatScreen: View {
 // Match the rendered content, not a time window: a question can arrive in the same layout pass.
 struct TailContent: Equatable {
     let turns: [ChatTurn], stream: [Item], questions: [Item], pc: String?, receipt: String?, move: UUID?
+    let agentActive: Bool
+    var activeTurnID: String? { agentActive ? turns.last?.id : nil }
 }
 struct TailMetrics: Equatable {
     let height: CGFloat, viewport: CGRect
@@ -61,7 +63,7 @@ private struct Conversation: View {
         let timing = groups["thinkingMs"] ?? []
         let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
-        let content = TailContent(turns: turns, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id)
+        let content = TailContent(turns: turns, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id, agentActive: rows.field("agentActive") == "true")
         let didToggle = { manualLayout = content }
         VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -73,7 +75,7 @@ private struct Conversation: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 22) {
                             if loaded && turns.isEmpty && stream.isEmpty && questions.isEmpty && !pc { Text("まだメッセージはありません").foregroundStyle(PiTheme.secondary) }
-                            ForEach(turns) { turn in TurnView(turn: turn, active: running && turn.id == turns.last?.id, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }, didToggle: didToggle) }
+                            ForEach(turns) { turn in TurnView(turn: turn, active: turn.id == content.activeTurnID, runForCall: rows.originalRun(toolCallId:), openRun: { agents = AgentSheet(run: $0) }, didToggle: didToggle) }
                             if !thinking.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { ActiveDisclosure(automatic: true, didToggle: didToggle) { Text(verbatim: thinking) } label: { Text("Thinking…") } }
                             if !text.isEmpty {
                                 // A new streamed answer must not render with the previous answer's parsed blocks.

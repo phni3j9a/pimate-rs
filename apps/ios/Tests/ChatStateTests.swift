@@ -15,7 +15,7 @@ final class ChatStateTests: XCTestCase {
         let before = metrics(453, 1000)
         let entries = [row("entry", "prompt", #"{"kind":"user","text":"hello"}"#)]
         func stamp(_ tools: [Item] = [], questions: [Item] = []) -> TailContent {
-            TailContent(turns: ChatTurn.read(entries, live: tools), stream: [], questions: questions, pc: nil, receipt: nil, move: nil)
+            TailContent(turns: ChatTurn.read(entries, live: tools), stream: [], questions: questions, pc: nil, receipt: nil, move: nil, agentActive: true)
         }
         let manual = stamp(), question = stamp(questions: [row("question", "new", "{}")])
         let child = row("tool", "child", #"{"status":"running","parentToolCallId":"parent"}"#)
@@ -25,6 +25,13 @@ final class ChatStateTests: XCTestCase {
         XCTAssertTrue(after.shouldFollow(after: before, dragging: false, content: question, manualLayout: manual))
         XCTAssertFalse(after.shouldFollow(after: metrics(452, 1000), dragging: false))
         XCTAssertFalse(after.shouldFollow(after: metrics(500, 1000), dragging: true))
+    }
+    func testQuestionDoesNotFoldActiveParentTurn() {
+        let turns = [ChatTurn(id: "old"), ChatTurn(id: "current")]
+        for active in [true, false] {
+            let waiting = TailContent(turns: turns, stream: [], questions: [row("question", "q", "{}")], pc: nil, receipt: nil, move: nil, agentActive: active)
+            XCTAssertEqual(waiting.activeTurnID, active ? "current" : nil)
+        }
     }
     func testReceiptsSurviveSceneAndSnapshotButNeverChangeOwner() {
         let busy = row("busy", "operation", #"{"id":"r","method":"session_op","op":"fork","sessionId":"source"}"#)
