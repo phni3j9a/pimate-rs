@@ -15,6 +15,7 @@ impl Desktop {
             && w.context_stack().iter().any(|c| c.contains("Input")))
         .then(|| w.focused(cx).map(|f| f.downgrade()))
         .flatten();
+        self.push_overlay(crate::screen::keys::Overlay::Palette);
         self.palette_open = true;
         self.palette_index = 0;
         if let Some((s, _)) = &self.search {

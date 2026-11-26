@@ -18,6 +18,8 @@ pub(super) struct Fields {
     trusted: Option<String>,
     folders: Value,
     catalog: Value,
+    catalog_source: bool,
+    choices: FocusHandle,
     home: String,
     all: bool,
     query: Entity<InputState>,
@@ -152,13 +154,15 @@ impl Desktop {
                 }
                 cx.notify();
             });
-            n.update(cx, |s, _| {
+            n.update(cx, |s, cx| {
                 s.spawn = Some(Fields {
                     folder,
                     message,
                     trusted,
                     folders: Value::Null,
                     catalog: Value::Null,
+                    catalog_source: false,
+                    choices: cx.focus_handle(),
                     home: String::new(),
                     all: false,
                     query,
@@ -179,12 +183,8 @@ impl Desktop {
                 n,
                 w,
                 cx,
-                async move |p| {
-                    let folders = p.query(MachineQuery::Folders).await;
-                    let models = p.host_models().await;
-                    (folders, models)
-                },
-                |_, n, (folders, models), w, cx| {
+                async move |p| p.query(MachineQuery::Folders).await,
+                |_, n, folders, w, cx| {
                     n.update(cx, |s, cx| {
                         let f = s.spawn.as_mut().unwrap();
                         f.busy = false;
@@ -201,16 +201,30 @@ impl Desktop {
                         } else {
                             s.note = "最近のフォルダは未確認です。パスを入力してください。".into();
                         }
-                        match models {
-                            Ok(Some(x)) => f.catalog = x,
+                    });
+                },
+            );
+        }
+        let source = !self.machines[id].rows.group("instance").is_empty();
+        if n.read(cx).spawn.as_ref().unwrap().catalog_source != source {
+            n.update(cx, |s, _| s.spawn.as_mut().unwrap().catalog_source = source);
+            if source {
+                self.page_task(
+                    n,
+                    w,
+                    cx,
+                    async move |p| p.host_models().await,
+                    |_, n, models, _, cx| {
+                        n.update(cx, |s, _| match models {
+                            Ok(Some(x)) => s.spawn.as_mut().unwrap().catalog = x,
                             Err(_) => s
                                 .note
                                 .push_str(" モデル一覧は未確認です。Pi の既定を利用できます。"),
                             _ => {}
-                        }
-                    });
-                },
-            );
+                        });
+                    },
+                );
+            }
         }
         let f = n.read(cx).spawn.as_ref().unwrap();
         let locked = f.submitted;
@@ -219,7 +233,7 @@ impl Desktop {
         let path = folder.read(cx).value().to_string();
         let split = (!locked
             && self.machines[id].rows.get("host", "info")["dirs"] == true
-            && folder.focus_handle(cx).is_focused(w))
+            && (folder.focus_handle(cx).is_focused(w) || f.choices.contains_focused(w, cx)))
         .then(|| split_folder_path(&path))
         .flatten();
         if f.request.as_ref().map(|r| r.0.as_str()) != split.map(|r| r.0) {
@@ -264,7 +278,7 @@ impl Desktop {
         }
         let f = n.read(cx).spawn.as_ref().unwrap();
         let mut folders = group("フォルダ", p).child(context::field(&folder, locked));
-        let mut recent = line();
+        let mut recent = line().track_focus(&f.choices);
         for (i, path) in f
             .folders
             .as_array()

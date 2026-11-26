@@ -92,7 +92,7 @@ pub(super) fn action(
         }))
 }
 impl Desktop {
-    pub(super) fn confirm_shutdown(&self, page: &Page, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn confirm_shutdown(&mut self, page: &Page, w: &mut Window, cx: &mut Context<Self>) {
         if !page.visible(self) {
             return;
         }
@@ -111,7 +111,6 @@ impl Desktop {
         } else {
             "処理が止まります。保存先が不明なため履歴が失われる可能性があります。"
         };
-        self.restore_input(w, cx);
         self.confirm_action(
             format!("{title} を終了しますか？"),
             detail.into(),
@@ -136,7 +135,7 @@ impl Desktop {
         );
     }
     pub(super) fn confirm_action(
-        &self,
+        &mut self,
         title: String,
         detail: String,
         (label, destructive): (&'static str, bool),
@@ -147,6 +146,7 @@ impl Desktop {
         if self.dialog_focus.borrow().is_some() {
             return;
         }
+        self.prepare_dialog(w, cx);
         let run = std::rc::Rc::new(std::cell::RefCell::new(Some(run)));
         let open = self.dialog_focus.clone();
         let app = cx.weak_entity();
@@ -203,6 +203,7 @@ impl Desktop {
                 )
         });
         if let Some(root) = w.focused(cx) {
+            self.push_overlay(keys::Overlay::Prompt);
             *self.dialog_focus.borrow_mut() = Some(root.clone());
             w.on_next_frame(move |w, _| {
                 if root.is_focused(w) {
@@ -222,6 +223,7 @@ impl Desktop {
             .as_str()
             .and_then(state::attach_command);
         Button::new("session-menu")
+            .debug_selector(|| "session-menu".into())
             .small()
             .ghost()
             .label("⋯")
@@ -283,7 +285,17 @@ impl Desktop {
                 app.show_context(menu, e.position(), w, cx);
             }))
     }
+    pub(super) fn prepare_dialog(&mut self, w: &mut Window, cx: &App) {
+        self.context_menu = None;
+        self.sidebar_open = false;
+        w.dismiss_tooltip();
+        self.restore_input(w, cx);
+    }
     pub(super) fn show_sheet(&mut self, kind: S, w: &mut Window, cx: &mut Context<Self>) {
+        if self.media_keys.is_some() {
+            return;
+        }
+        self.prepare_dialog(w, cx);
         if self.open_sheet(kind).is_ok() {
             if let Some(a) = load(kind) {
                 self.sheet_action(a, w, cx)

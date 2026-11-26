@@ -501,6 +501,7 @@ impl Desktop {
         let life = Arc::new(());
         let mut page = self.background_chat().ok_or(Error::StaleTarget)?;
         page.page = Arc::downgrade(&life);
+        self.push_overlay(crate::screen::keys::Overlay::Sheet);
         self.state.sheet = Some(Sheet {
             _life: life,
             page: page.clone(),

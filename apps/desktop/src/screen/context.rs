@@ -59,6 +59,7 @@ impl Desktop {
             });
         });
         menu.focus_handle(cx).focus(w);
+        self.push_overlay(crate::screen::keys::Overlay::Menu);
         self.context_menu = Some(OpenMenu {
             position,
             menu,

@@ -80,6 +80,7 @@ impl Desktop {
                 inspector.update(cx, |s, cx| s.load(page.clone(), None, true, cx));
             }
         }
+        let rows = &self.machines[&key.host].rows;
         let media = super::chat_media::Media {
             page: page.clone(),
             files: rows.get("view", "fileImages") == true,
@@ -511,12 +512,7 @@ impl Desktop {
             );
         }
         let chat = outer.child(theme::column(main).flex_shrink_0());
-        let chat = self.with_inspector(chat, &page, &inspector, p, w, cx);
-        if self.active_sheet().is_some_and(|s| s.kind.is_popover()) {
-            chat.child(self.sheet_overlay(&key, p, w, cx))
-        } else {
-            chat
-        }
+        self.with_inspector(chat, &page, &inspector, p, w, cx)
     }
     pub(super) fn sheet_overlay(
         &self,
@@ -528,12 +524,7 @@ impl Desktop {
         let kind = self.active_sheet().unwrap().kind;
         let pop = kind.is_popover();
         let focus = self.modal_focus.clone();
-        if !focus.contains_focused(w, cx)
-            && !self.sidebar_open
-            && !self.palette_open
-            && !self.dialog_focus.borrow().is_some()
-            && self.context_menu.is_none()
-        {
+        if !focus.contains_focused(w, cx) && self.front(w, cx) == Some(keys::Overlay::Sheet) {
             w.focus(&focus);
         }
         let scrim = div()

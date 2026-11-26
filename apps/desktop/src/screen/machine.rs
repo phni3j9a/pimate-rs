@@ -65,6 +65,25 @@ impl Desktop {
             n.update(cx, |s, _| s.page = Some(page));
         }
         let page = n.read(cx).page.clone().filter(|p| p.visible(self));
+        if !self.dialog_focus.borrow().is_some()
+            && let Some((fixed, warning, decision)) = n.update(cx, |s, _| s.machine.pending.take())
+        {
+            let nav = n.clone();
+            let generation = nav.read(cx).generation.clone();
+            let destructive = !matches!(&decision,Decision::Host(c) if !c.destructive());
+            self.confirm_action(
+                format!("{} · {}", fixed.name, fixed.address),
+                warning,
+                ("確認して実行", destructive),
+                w,
+                cx,
+                move |app, w, cx| {
+                    if Arc::ptr_eq(&generation, &nav.read(cx).generation) {
+                        app.confirm_machine(&nav, fixed, decision, w, cx)
+                    }
+                },
+            );
+        }
         let rows = self.machines.get(id).map(|m| &m.rows);
         let caps = rows.map(|r| r.get("host", "info")).unwrap_or(&Value::Null);
         let online =
@@ -112,25 +131,6 @@ impl Desktop {
                             s.note = "PC の状態を一部確認できませんでした。".into();
                         }
                     });
-                },
-            );
-        }
-        if !self.dialog_focus.borrow().is_some()
-            && let Some((fixed, warning, decision)) = n.update(cx, |s, _| s.machine.pending.take())
-        {
-            let nav = n.clone();
-            let generation = nav.read(cx).generation.clone();
-            let destructive = !matches!(&decision,Decision::Host(c) if !c.destructive());
-            self.confirm_action(
-                format!("{} · {}", fixed.name, fixed.address),
-                warning,
-                ("確認して実行", destructive),
-                w,
-                cx,
-                move |app, w, cx| {
-                    if Arc::ptr_eq(&generation, &nav.read(cx).generation) {
-                        app.confirm_machine(&nav, fixed, decision, w, cx)
-                    }
                 },
             );
         }

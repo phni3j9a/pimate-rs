@@ -916,9 +916,11 @@ impl Desktop {
                                 gpui_component::menu::PopupMenuItem::new("ここから分岐").on_click(
                                     move |_, w, cx| {
                                         let _ = owner.update(cx, |app, cx| {
-                                            if source.visible(app)
-                                                && app.open_sheet(state::SheetPage::Fork).is_ok()
-                                            {
+                                            if !source.visible(app) {
+                                                return;
+                                            }
+                                            app.prepare_dialog(w, cx);
+                                            if app.open_sheet(state::SheetPage::Fork).is_ok() {
                                                 app.sheet_action(
                                                     state::SheetAction::Fork(id.clone()),
                                                     w,

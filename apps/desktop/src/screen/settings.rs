@@ -105,6 +105,13 @@ impl Desktop {
         {
             return;
         }
+        if matches!(route, Route::New(_)) {
+            self.sidebar_open = false;
+            self.context_menu = None;
+        }
+        if route != Route::Home {
+            self.push_overlay(keys::Overlay::Route);
+        }
         self.remember_spawn(n, cx);
         let previous = &n.read(cx).route;
         let back = match (&route, previous) {

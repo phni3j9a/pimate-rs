@@ -277,8 +277,9 @@ impl Desktop {
                     let nav = new_nav.clone();
                     gpui_component::menu::PopupMenuItem::new(label)
                         .disabled(start.is_none())
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, w, cx| {
                             let _ = owner.update(cx, |app, cx| {
+                                app.prepare_dialog(w, cx);
                                 let Some(start) = start else { return };
                                 if app.machines.get(&host).is_none_or(|m| {
                                     m.rows.get("instance", &pi)["startedAt"].as_u64() != Some(start)
@@ -313,8 +314,9 @@ impl Desktop {
                 .when_some(folder.clone(), |m, path| {
                     m.item(
                         gpui_component::menu::PopupMenuItem::new("同じフォルダで新しい Pi…")
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, w, cx| {
                                 let _ = owner.update(cx, |d, cx| {
+                                    d.prepare_dialog(w, cx);
                                     d.navigate(&n, Route::New(host.clone()), cx);
                                     n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
                                 });
@@ -641,7 +643,7 @@ impl Desktop {
         main: Div,
         p: &Colors,
         cx: &Context<Self>,
-    ) -> Div {
+    ) -> (Div, Option<Div>) {
         let (min, max) = theme::SIDEBAR_RANGE;
         let width = self.sidebar_width();
         let side = side.map(|s| s.w(px(width)));
@@ -681,24 +683,22 @@ impl Desktop {
             side => overlay = side.filter(|_| self.sidebar_open),
         }
         panes = panes.child(main);
-        if let Some(side) = overlay {
-            panes = panes.child(
-                p.scrim()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, w, cx| {
-                            this.sidebar_open = false;
-                            this.restore_input(w, cx);
-                            cx.notify()
-                        }),
-                    )
-                    .child(
-                        side.shadow_lg()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                    ),
-            );
-        }
-        panes
+        let overlay = overlay.map(|side| {
+            p.scrim()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, w, cx| {
+                        this.sidebar_open = false;
+                        this.restore_input(w, cx);
+                        cx.notify()
+                    }),
+                )
+                .child(
+                    side.shadow_lg()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                )
+        });
+        (panes, overlay)
     }
 }
 impl Render for Desktop {
@@ -855,12 +855,27 @@ impl Render for Desktop {
                 }
             }),
         );
-        let sheet_dialog = self
-            .active_sheet()
-            .is_some_and(|s| !s.kind.is_popover())
-            .then(|| self.editor().map(|key| self.sheet_overlay(&key, &p, w, cx)))
-            .flatten();
-        keys::listeners(root, cx)
+        let (panes, mut sidebar) = self.panes(layout, side, main, &p, cx);
+        let mut new_pi = new_pi.map(|panel| {
+            p.scrim().items_center().justify_center().child(
+                div()
+                    .id("new-pi-dialog")
+                    .track_focus(&self.modal_focus)
+                    .occlude()
+                    .flex()
+                    .flex_col()
+                    .w(px(560.))
+                    .max_w_full()
+                    .h(relative(0.86))
+                    .bg(p.surface)
+                    .rounded(px(theme::R_CARD))
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .child(panel),
+            )
+        });
+        let stack = self.overlay_stack(w, cx).clone();
+        let mut root = keys::listeners(root, cx)
             .relative()
             .flex()
             .flex_col()
@@ -869,30 +884,29 @@ impl Render for Desktop {
             .text_color(p.ink)
             .text_size(rems(0.875))
             .children(titlebar)
-            .child(self.panes(layout, side, main, &p, cx))
-            .children(sheet_dialog)
-            .children(new_pi.map(|panel| {
-                p.scrim().items_center().justify_center().child(
-                    div()
-                        .id("new-pi-dialog")
-                        .track_focus(&self.modal_focus)
-                        .occlude()
-                        .flex()
-                        .flex_col()
-                        .w(px(560.))
-                        .max_w_full()
-                        .h(relative(0.86))
-                        .bg(p.surface)
-                        .rounded(px(theme::R_CARD))
-                        .shadow_lg()
-                        .overflow_hidden()
-                        .child(panel),
-                )
-            }))
-            .children(self.command_palette(&p, cx))
-            .children(self.pair_dialog(&p, w, cx))
-            .children(self.context_menu.as_ref().map(context::OpenMenu::layer))
-            .children(Root::render_dialog_layer(w, cx))
+            .child(panes);
+        for layer in stack {
+            use keys::Overlay::*;
+            let panel = match layer {
+                Sheet => self
+                    .editor()
+                    .map(|k| self.sheet_overlay(&k, &p, w, cx).into_any_element()),
+                Sidebar => sidebar.take().map(IntoElement::into_any_element),
+                Route => new_pi.take().map(IntoElement::into_any_element),
+                Palette => self
+                    .command_palette(&p, cx)
+                    .map(IntoElement::into_any_element),
+                Pair => self
+                    .pair_dialog(&p, w, cx)
+                    .map(IntoElement::into_any_element),
+                Menu => self.context_menu.as_ref().map(context::OpenMenu::layer),
+                Prompt => Root::render_dialog_layer(w, cx).map(IntoElement::into_any_element),
+                // Conversation-local controls are in panes; tooltip is painted by Window.
+                Inspector | Media | Slash | Tooltip => None,
+            };
+            root = root.children(panel);
+        }
+        root
     }
 }
 
@@ -1499,7 +1513,7 @@ mod key_tests {
         let buttons = ["send-message", "abort-turn"].map(|s| w.debug_bounds(s).unwrap().center());
         w.update(|w, cx| {
             app.update(cx, |d, cx| {
-                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0.clone(), w, cx)
             })
         });
         w.run_until_parked();
@@ -1520,13 +1534,7 @@ mod key_tests {
             )
         });
     }
-    #[gpui::test]
-    fn release_in_shutdown_dialog_rearms_enter_and_default_is_cancel(
-        cx: &mut gpui::TestAppContext,
-    ) {
-        let (app, w, _) = tests::open_chat(cx);
-        w.update(|_, cx| keys::init(cx));
-        let (rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+    fn fixture_pi_row(app: &gpui::Entity<super::Desktop>, w: &mut gpui::VisualTestContext) {
         // この RC fixture は会話行だけを送る。実際のサイドバーと同じ instance 行も置く。
         app.update(w, |d, cx| {
             let m = d.machines.get_mut("key-menu").unwrap();
@@ -1544,6 +1552,84 @@ mod key_tests {
             );
             cx.notify()
         });
+    }
+    #[gpui::test]
+    fn sidebar_menu_new_pi_tabs_only_in_dialog(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _, _server) = attach_active(&app, w, "key-menu");
+        fixture_pi_row(&app, w);
+        w.simulate_resize(gpui::size(gpui::px(620.), gpui::px(800.)));
+        let button = wait(w, "sidebar-toggle");
+        w.simulate_click(button, Default::default());
+        let row = wait(w, "context-pi-pi");
+        w.simulate_mouse_down(row, gpui::MouseButton::Right, Default::default());
+        // Open, copy path, new Pi (attach is not present on this fixture).
+        press(w, "down down down enter tab");
+        assert!(w.update(|w, cx| {
+            let d = app.read(cx);
+            !d.sidebar_open
+                && d.context_menu.is_none()
+                && d.front(w, cx) == Some(keys::Overlay::Route)
+                && d.modal_focus.contains_focused(w, cx)
+        }));
+        press(w, "escape");
+        assert!(w.update(|w, cx| app.read(cx).front(w, cx).is_none()));
+    }
+    fn focus_explicit(w: &mut gpui::VisualTestContext) {
+        // Tab order is window-scoped and the destructive action needs explicit focus.
+        for _ in 0..2 {
+            if w.update(|w, _| {
+                w.context_stack()
+                    .iter()
+                    .any(|c| c.contains("ExplicitConfirmation"))
+            }) {
+                break;
+            }
+            press(w, "tab");
+        }
+        assert!(w.update(|w, _| {
+            w.context_stack()
+                .iter()
+                .any(|c| c.contains("ExplicitConfirmation"))
+        }));
+    }
+    #[gpui::test]
+    fn stop_confirmation_does_not_follow_the_next_turn(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, mut wire, _server) = attach_active(&app, w, "abort-test");
+        press(w, "escape");
+        wait(w, "confirm-destructive");
+        app.update(w, |d, cx| {
+            let m = d.machines.get_mut("abort-test").unwrap();
+            let changes = [false, true].map(|b| {
+                pimate_core::Change::Upsert(pimate_core::Item {
+                    collection: "view".into(),
+                    id: "agentActive".into(),
+                    position: 0,
+                    json: b.to_string(),
+                })
+            });
+            m.rows.apply(
+                (m.conn.snapshot().revision + 1, changes.into()),
+                || unreachable!(),
+            );
+            cx.notify();
+        });
+        focus_explicit(w);
+        press(w, "enter");
+        assert!(app.read_with(w, |d, _| !d.stopping && d.dialog_focus.borrow().is_none()));
+        assert!(wire.try_recv().is_err());
+    }
+    #[gpui::test]
+    fn release_in_shutdown_dialog_rearms_enter_and_default_is_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        fixture_pi_row(&app, w);
         w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
         w.run_until_parked();
         for close in ["escape", "enter"] {
@@ -1563,28 +1649,34 @@ mod key_tests {
             assert!(!app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()));
             assert!(wire.try_recv().is_err());
         }
+        // The session menu closes before the dialog records its return focus.
+        let more = wait(w, "session-menu");
+        w.simulate_click(more, Default::default());
+        press(w, "up enter");
+        wait(w, "confirm-destructive");
+        w.simulate_keystrokes("space");
+        focus_explicit(w);
+        release(w, "space");
+        assert!(w.update(gpui_component::WindowExt::has_active_dialog));
+        assert!(wire.try_recv().is_err());
+        press(w, "escape");
+        assert!(w.update(|w, cx| {
+            use gpui::Focusable;
+            app.read(cx)
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .focus_handle(cx)
+                .is_focused(w)
+        }));
         w.update(|w, cx| {
             app.update(cx, |d, cx| {
-                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0.clone(), w, cx)
             })
         });
         w.run_until_parked();
-        // Tab order is window-scoped and the destructive action needs explicit focus.
-        for _ in 0..2 {
-            if w.update(|w, _| {
-                w.context_stack()
-                    .iter()
-                    .any(|c| c.contains("ExplicitConfirmation"))
-            }) {
-                break;
-            }
-            press(w, "tab");
-        }
-        assert!(w.update(|w, _| {
-            w.context_stack()
-                .iter()
-                .any(|c| c.contains("ExplicitConfirmation"))
-        }));
+        focus_explicit(w);
         press(w, "enter");
         assert_eq!(
             rt.block_on(async {

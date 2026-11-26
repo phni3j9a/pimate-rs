@@ -80,7 +80,7 @@ commands! {
     ResetSize=>("secondary-0","標準の文字サイズ"),
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Overlay {
+pub(crate) enum Overlay {
     Prompt,
     Tooltip,
     Menu,
@@ -103,6 +103,17 @@ pub(crate) fn intercept(w: &mut Window, cx: &mut Context<Desktop>) -> Subscripti
             return;
         }
         let key = e.keystroke.key.as_str();
+        if matches!(key, "enter" | "space") {
+            let focus = w.focused(cx);
+            if d.activation_focus
+                .entry(key.to_owned())
+                .or_insert_with(|| focus.clone())
+                != &focus
+            {
+                cx.stop_propagation();
+                return;
+            }
+        }
         // X11 can report repeats as fresh presses. Only the physical release re-arms a consumed key.
         if let Some(text_target) = d.consumed_keys.get(key) {
             if !text_target
@@ -123,6 +134,7 @@ pub(crate) fn intercept(w: &mut Window, cx: &mut Context<Desktop>) -> Subscripti
         }
         let top = d.front(w, cx);
         if key == "tab"
+            && top == Some(Overlay::Prompt)
             && let Some(focus) = d.dialog_focus.borrow().as_ref()
         {
             d.consumed_keys.insert(key.into(), None);
@@ -263,12 +275,11 @@ impl Desktop {
     pub(super) fn background_click(&self, e: &ClickEvent) -> bool {
         matches!(e, ClickEvent::Keyboard(_)) || self.pointer_down_on_overlay
     }
-    fn overlay_key_up(&mut self, e: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self
-            .consumed_keys
-            .remove(e.keystroke.key.as_str())
-            .is_some()
-        {
+    fn overlay_key_up(&mut self, e: &KeyUpEvent, w: &mut Window, cx: &mut Context<Self>) {
+        let key = e.keystroke.key.as_str();
+        let moved = matches!(key, "enter" | "space")
+            && self.activation_focus.remove(key) != Some(w.focused(cx));
+        if self.consumed_keys.remove(key).is_some() || moved {
             cx.stop_propagation();
         }
     }
@@ -290,44 +301,62 @@ impl Desktop {
             _ => {}
         }
     }
+    pub(crate) fn push_overlay(&self, layer: Overlay) {
+        let mut stack = self.overlays.borrow_mut();
+        stack.retain(|l| *l != layer);
+        stack.push(layer);
+    }
     pub(super) fn front(&self, w: &Window, cx: &App) -> Option<Overlay> {
+        self.overlay_stack(w, cx).last().copied()
+    }
+    pub(super) fn overlay_stack(&self, w: &Window, cx: &App) -> std::cell::Ref<'_, Vec<Overlay>> {
         use Overlay::*;
-        if self.dialog_focus.borrow().is_some() {
-            Some(Prompt)
-        } else if w.tooltip_visible() {
-            Some(Tooltip)
-        } else if self.context_menu.is_some() {
-            Some(Menu)
-        } else if self.confirmation.is_some() {
-            Some(Pair)
-        } else if self.palette_open {
-            Some(Palette)
-        } else if self.sidebar_open
-            && !self.hosts.is_empty()
-            && Layout::of(w.viewport_size().width) == Layout::Narrow
-        {
-            Some(Sidebar)
-        } else if self.active_sheet().is_some() {
-            Some(Sheet)
-        } else if self.slash_visible {
-            Some(Slash)
-        } else if self
-            .navigation
-            .as_ref()
-            .is_some_and(|n| n.read(cx).route != super::Route::Home)
-        {
-            Some(Route)
-        } else if self.media_keys.is_some() {
-            Some(Media)
-        } else if self
-            .chat_keys
-            .as_ref()
-            .is_some_and(|(_, i)| i.read(cx).tab.is_some())
-        {
-            Some(Inspector)
-        } else {
-            None
+        let active = [
+            (
+                Inspector,
+                self.chat_keys
+                    .as_ref()
+                    .is_some_and(|(_, i)| i.read(cx).tab.is_some()),
+            ),
+            (Media, self.media_keys.is_some()),
+            (Slash, self.slash_visible),
+            (
+                Route,
+                self.navigation
+                    .as_ref()
+                    .is_some_and(|n| n.read(cx).route != super::Route::Home),
+            ),
+            (Sheet, self.active_sheet().is_some()),
+            (
+                Sidebar,
+                self.sidebar_open
+                    && !self.hosts.is_empty()
+                    && Layout::of(w.viewport_size().width) == Layout::Narrow,
+            ),
+            (Palette, self.palette_open),
+            (Pair, self.confirmation.is_some()),
+            (Menu, self.context_menu.is_some()),
+            (Prompt, self.dialog_focus.borrow().is_some()),
+            (Tooltip, w.tooltip_visible()),
+        ];
+        let mut stack = self.overlays.borrow_mut();
+        stack.retain(|layer| active.contains(&(*layer, true)));
+        for (layer, visible) in active {
+            if visible && !stack.contains(&layer) {
+                // Conversation-local layers are mounted inside the base pane, below window overlays.
+                if matches!(layer, Inspector | Media | Slash) {
+                    let index = stack
+                        .iter()
+                        .take_while(|l| matches!(l, Inspector | Media | Slash))
+                        .count();
+                    stack.insert(index, layer);
+                } else {
+                    stack.push(layer);
+                }
+            }
         }
+        drop(stack);
+        self.overlays.borrow()
     }
     pub(super) fn overlay_open(&self, w: &Window, cx: &App) -> bool {
         self.front(w, cx).is_some_and(|l| l != Overlay::Inspector)
@@ -359,6 +388,7 @@ impl Desktop {
         {
             return;
         }
+        let turn = self.machines[page.host()].rows.turn_revision;
         let page = page.clone();
         self.confirm_action(
             "このターンを停止しますか？".into(),
@@ -372,7 +402,7 @@ impl Desktop {
                     && app
                         .machines
                         .get(page.host())
-                        .is_some_and(|m| m.rows.can_stop())
+                        .is_some_and(|m| m.rows.can_stop() && turn == m.rows.turn_revision)
                 {
                     app.abort_turn(&page, cx)
                 }
@@ -475,6 +505,9 @@ impl Desktop {
             Sidebar => {
                 if narrow {
                     self.sidebar_open = !self.sidebar_open;
+                    if self.sidebar_open {
+                        self.push_overlay(Overlay::Sidebar);
+                    }
                     w.focus(if self.sidebar_open {
                         &self.side_focus
                     } else {
@@ -495,6 +528,7 @@ impl Desktop {
                     w.focus(&self.inspector_focus)
                 } else if !self.hosts.is_empty() && !self.side_focus.contains_focused(w, cx) {
                     if narrow {
+                        self.push_overlay(Overlay::Sidebar);
                         self.sidebar_open = true
                     } else {
                         self.sidebar_hidden = false

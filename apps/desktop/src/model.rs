@@ -36,6 +36,7 @@ pub struct Rows {
     pub host_life: std::sync::Arc<()>,
     pub view_life: std::sync::Arc<()>,
     revision: u64,
+    pub turn_revision: u64,
     pub entry_revision: u64,
     pub receipts: crate::state::receipts::Receipts,
     moves: HashMap<String, (String, String, u64)>,
@@ -45,6 +46,7 @@ impl Rows {
     pub fn snapshot(s: Snapshot) -> Self {
         let mut rows = Self {
             revision: s.revision,
+            turn_revision: s.revision,
             entry_revision: s.revision,
             ..Default::default()
         };
@@ -76,6 +78,7 @@ impl Rows {
                 Change::ResyncRequired => continue,
             };
             match (c.as_str(), id.as_str()) {
+                ("view", "agentActive") => self.turn_revision = rev,
                 ("entry", _) => self.entry_revision = rev,
                 ("host", "connection") => host_changed = true,
                 ("view", "instanceId" | "startedAt" | "phase") => view_changed = true,
@@ -100,6 +103,9 @@ impl Rows {
         if batch.len() > 128 || missed {
             let mut next = Self::snapshot(snapshot());
             if next.revision == rev {
+                if !missed {
+                    next.turn_revision = self.turn_revision;
+                }
                 std::mem::swap(&mut next.host_life, &mut self.host_life);
                 std::mem::swap(&mut next.view_life, &mut self.view_life);
             }

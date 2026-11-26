@@ -57,6 +57,8 @@ struct Desktop {
     slash_hidden: bool,
     slash_visible: bool,
     context_menu: Option<screen::context::OpenMenu>,
+    overlays: std::cell::RefCell<Vec<screen::keys::Overlay>>,
+    activation_focus: HashMap<String, Option<FocusHandle>>,
     consumed_keys: HashMap<String, Option<WeakFocusHandle>>,
     palette_form_input: Option<WeakFocusHandle>,
     pointer_down_on_overlay: bool,
@@ -100,6 +102,7 @@ impl Desktop {
         cx.observe_window_activation(w, |d, w, _| {
             if !w.is_window_active() {
                 d.consumed_keys.clear();
+                d.activation_focus.clear();
             }
         })
         .detach();
@@ -139,6 +142,8 @@ impl Desktop {
             slash_hidden: false,
             slash_visible: false,
             context_menu: None,
+            overlays: Default::default(),
+            activation_focus: Default::default(),
             consumed_keys: Default::default(),
             palette_form_input: None,
             pointer_down_on_overlay: false,
@@ -302,6 +307,7 @@ impl Desktop {
         if let Some(link) = cx.read_from_clipboard().and_then(|v| v.text())
             && let Some(p) = pimate_protocol::parse_pairing_link(link.trim())
         {
+            self.push_overlay(screen::keys::Overlay::Pair);
             self.confirmation = Some((
                 link.trim().to_owned(),
                 format!("{} · {}", p.host_name, p.address),
