@@ -148,15 +148,22 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
         XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
         openPi("demo")
-        let receipt = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch
-        XCTAssertTrue(receipt.waitForExistence(timeout: 20))
+        let finalBlock = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "使い方を書く")).firstMatch
+        XCTAssertTrue(finalBlock.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.staticTexts["メッセージを送信"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch.exists)
         openVisibleTable()
         let copy = app.buttons["表をコピー"]
         guard copy.waitForExistence(timeout: 8) else { XCTFail("Table viewer did not open"); return }; copy.tap()
         app.buttons["表を閉じる"].tap()
         if variant == "light" {
             field.tap(); field.typeText("test"); app.buttons["送信"].tap()
-            XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 30))
+            let jump = app.buttons["最新へ"]
+            for _ in 0..<3 where !jump.exists { scroll.swipeDown() }
+            XCTAssertTrue(jump.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts["上の質問や PC の操作を完了すると入力できます"].waitForExistence(timeout: 30))
+            XCTAssertTrue(jump.isHittable); shot("ReadingHistory"); jump.tap()
+            XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 8))
         }
         openPi("main")
         XCTAssertTrue(app.buttons["画像を添付"].waitForExistence(timeout: 12))
@@ -180,7 +187,7 @@ final class ProbeTests: XCTestCase {
         app.buttons["添付画像 2 を開く"].tap()
         let draftPhoto = app.images["添付画像 2 / 4"]
         XCTAssertTrue(draftPhoto.waitForExistence(timeout: 12)); draftPhoto.doubleTap(); shot("DraftZoom")
-        draftPhoto.doubleTap(); app.buttons["画像を閉じる"].tap()
+        draftPhoto.doubleTap(); draftPhoto.swipeDown()
         XCTAssertTrue(fourth.exists)
         app.buttons["画像 2 を取り消す"].tap(); XCTAssertFalse(fourth.exists); XCTAssertTrue(app.buttons["画像 3 を取り消す"].exists)
         XCTAssertTrue(app.buttons["画像を添付"].isEnabled)
