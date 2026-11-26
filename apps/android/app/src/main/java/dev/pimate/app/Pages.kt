@@ -7,6 +7,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.*
@@ -99,24 +101,34 @@ internal fun ConfirmAction(
         remember(identity, label, detail, enabled) { mutableStateOf<(() -> Unit)?>(null) }
     TextAction(button, { pending = onConfirm }, modifier, enabled, color, weight, style)
     pending?.let { approved ->
-        AlertDialog(
-            { pending = null },
-            title = { Text(title, style = Type.sheet) },
-            text = { Text(detail) },
-            confirmButton = {
-                TextAction(
-                    label,
-                    {
-                        pending = null
-                        approved()
-                    },
-                    color = color,
-                )
-            },
-            dismissButton = { TextAction("キャンセル", { pending = null }) },
-            containerColor = pi.background,
-        )
+        ConfirmDialog(title, detail, label, color, { pending = null }) {
+            pending = null
+            approved()
+        }
     }
+}
+
+@Composable
+internal fun ConfirmDialog(
+    title: String,
+    detail: String,
+    label: String,
+    color: Color,
+    dismiss: () -> Unit,
+    confirm: () -> Unit,
+) {
+    AlertDialog(
+        dismiss,
+        title = { Text(title, style = Type.sheet) },
+        text = { Text(detail) },
+        confirmButton = { TextAction(label, confirm, color = color) },
+        dismissButton = {
+            val cancel = remember { FocusRequester() }
+            TextAction("キャンセル", dismiss, Modifier.focusRequester(cancel))
+            LaunchedEffect(Unit) { cancel.requestFocus() }
+        },
+        containerColor = pi.background,
+    )
 }
 
 internal suspend fun checked(error: (String) -> Unit, task: suspend () -> Unit) {
@@ -310,8 +322,7 @@ internal fun FirstPage(
                             false,
                             when {
                                 o.has("failureText") -> "失敗: ${o.str("failureText")}"
-                                o.str("status") == "waiting_input" ->
-                                    "入力待ち: Pi が回答を待っています"
+                                o.str("status") == "waiting_input" -> "入力待ち: Pi が回答を待っています"
                                 o.str("section") == "waiting" -> "サブエージェントの確認が必要です"
                                 else -> null
                             },

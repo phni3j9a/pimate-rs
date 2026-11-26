@@ -107,6 +107,29 @@ internal class HostRows(private val states: MutableMap<String, Rows>) {
     }
 }
 
+internal enum class Removal {
+    REMOVED,
+    LOCAL_ONLY,
+    UNKNOWN,
+}
+
+internal suspend fun revokeMachine(
+    supported: Boolean,
+    revoke: suspend () -> Boolean,
+    removed: () -> Unit,
+): Removal {
+    if (!supported) return Removal.LOCAL_ONLY
+    val revoked =
+        try {
+            revoke()
+        } catch (_: CoreException.OutcomeUnknown) {
+            return Removal.UNKNOWN
+        }
+    if (!revoked) return Removal.LOCAL_ONLY
+    removed()
+    return Removal.REMOVED
+}
+
 internal fun terminalCommand(session: String): String? =
     session
         .takeIf { it.matches(Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")) }
@@ -425,8 +448,31 @@ class SessionModel(app: Application, private val saved: SavedStateHandle) : Andr
         }
     }
 
-    internal fun forget(id: String) {
-        core.forget(id)
+    internal fun retryNow(id: String) {
+        slots[id]?.connection?.retryNow()
+    }
+
+    internal suspend fun revoke(host: Host): Removal =
+        viewModelScope
+            .async {
+                val c = slots[host.id]?.connection
+                revokeMachine(
+                    c != null && rowsFor(host.id).supportsRevoke(),
+                    { core.revokeAndForget(checkNotNull(c), host.id, host.deviceId) },
+                ) {
+                    removed(host)
+                }
+            }
+            .await()
+
+    internal fun forget(host: Host) {
+        core.forgetDevice(host.id, host.deviceId)
+        removed(host)
+    }
+
+    private fun removed(registration: Host) {
+        val id = registration.id
+        if (hosts.none { it.id == id && it.deviceId == registration.deviceId }) return
         slots.remove(id)?.connection?.close()
         states.remove(id)
         edits.forget(id)

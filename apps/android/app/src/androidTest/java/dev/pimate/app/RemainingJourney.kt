@@ -60,6 +60,27 @@ class RemainingJourney {
     }
 
     @Test
+    fun revokeThisDeviceOnDisposableHost() {
+        val secret = link("revoke-link")
+        val target = requireNotNull(uniffi.pimate_ffi.previewPair(secret))
+        require(target.address.startsWith("127.0.0.1:"))
+        val model = ui.runOnIdle { ViewModelProvider(ui.activity)[SessionModel::class.java] }
+        require(model.hosts.isEmpty())
+        pair(secret)
+        find(hasText("${target.name} とつながりました"))
+        tap("一覧を開く")
+        icon("設定")
+        tap(target.name)
+        find(hasText("このスマホ", substring = true))
+        shot("Machine-Revoke-Detail")
+        find(hasText("このマシンを削除") and hasClickAction()).performScrollTo().performClick()
+        find(hasText("キャンセル")).assertIsFocused()
+        shot("Machine-Revoke-Confirm")
+        tap("削除")
+        ui.waitUntil(20000) { model.hosts.isEmpty() }
+    }
+
+    @Test
     fun loginHoldRecoversAfterDisconnect() {
         pair(link("reconnect-link"))
         find(hasText("選ぶとチャットを開きます。"))
