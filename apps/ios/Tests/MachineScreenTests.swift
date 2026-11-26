@@ -3,6 +3,11 @@ import XCTest
 @testable import PiMate
 
 final class MachineScreenTests: XCTestCase {
+    func testCompletionPreservesTrustOnlyForTheSameLinuxFolder() {
+        XCTAssertTrue(SpawnForm.sameFolder("~/code/", known: "/home/user/code", home: "/home/user"))
+        XCTAssertFalse(SpawnForm.sameFolder("/code/../project", known: "/project", home: ""))
+        XCTAssertFalse(SpawnForm.sameFolder("/か\u{3099}/", known: "/が", home: ""))
+    }
     func testPackageUpdateRequiresANewerRelease() {
         XCTAssertTrue(AppUpdate.newerPackage("0.1.10", than: "0.1.9"))
         XCTAssertFalse(AppUpdate.newerPackage("0.1.9", than: "0.1.10"))

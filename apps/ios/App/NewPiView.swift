@@ -26,6 +26,7 @@ private struct SpawnFields<HostPicker: View>: View {
     let select: (String, String) -> Void
     @ViewBuilder var hostPicker: () -> HostPicker
     @State private var folders: [Object] = []
+    @State private var home = ""
     @State private var catalog: Object = [:]
     @State private var all = false
     @State private var query = ""
@@ -49,7 +50,7 @@ private struct SpawnFields<HostPicker: View>: View {
     @State private var outcome = ""
     private var rows: Rows? { model.rows[form.host] }
     private func choose(_ path: String) {
-        form.folder(path, knownTrusted: folders.contains { $0.str("path").utf8.elementsEqual(path.utf8) && $0["trusted"] as? Bool == true })
+        form.folder(path, knownTrusted: folders.contains { $0["trusted"] as? Bool == true && SpawnForm.sameFolder(path, known: $0.str("path"), home: home) })
     }
     var body: some View {
         Form {
@@ -118,7 +119,7 @@ private struct SpawnFields<HostPicker: View>: View {
             defer { loading = false }
             do {
                 let result = try await model.machineRequest(form.host, .folders); try Task.checkCancellation()
-                folders = result.list("folders"); if form.cwd.isEmpty { choose(result.str("home")) }
+                home = result.str("home"); folders = result.list("folders"); if form.cwd.isEmpty { choose(home) }
             } catch { if !Task.isCancelled { note = "最近のフォルダを取得できません。パスを直接入力できます。" } }
             do { let catalog = try await model.hostModels(form.host); try Task.checkCancellation(); self.catalog = catalog ?? [:] }
             catch { if !Task.isCancelled { note += " モデル一覧を取得できません。PC の既定を利用できます。" } }
