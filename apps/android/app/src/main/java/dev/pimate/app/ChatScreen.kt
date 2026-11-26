@@ -843,15 +843,8 @@ private fun ToolRow(
     onClick: () -> Unit,
     onExpandDiff: () -> Unit,
 ) {
-    val output =
-        remember(row.output) {
-            row.output
-                .trimEnd()
-                .lines()
-                .let { if (it.size > 40) listOf("…") + it.takeLast(40) else it }
-                .joinToString("\n")
-        }
-    val canOpen = row.change != null || output.isNotEmpty() || row.state == ToolState.Running
+    val output = remember(row.output, row.state) { row.expandedOutput() }
+    val canOpen = row.change != null || output != null || row.truncated
     // 実行中は、始まってからの秒数を右に出す（開始時刻が分かるときだけ）。
     val running by
         produceState("", row.since) {
@@ -912,11 +905,21 @@ private fun ToolRow(
                     pi.textSecondary,
                 )
         }
-        if (open && row.change != null) ChangeDiff(row.change, onExpandDiff)
-        else if (open && canOpen)
+        if (open && (row.output.isNotEmpty() || row.truncated)) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 22.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (row.truncated)
+                    Text("出力の末尾は省略されています。", color = pi.textSecondary, style = Type.caption)
+                Spacer(Modifier.weight(1f))
+                if (row.output.isNotEmpty()) CopyAction(row.output, row.outputCopyLabel)
+            }
+        }
+        if (open && output != null)
             SelectionContainer {
                 Text(
-                    output.ifEmpty { "出力を待っています…" },
+                    output,
                     Modifier.padding(start = 22.dp, top = 4.dp, bottom = 4.dp)
                         .fillMaxWidth()
                         .background(pi.surface, RoundedCornerShape(10.dp))
@@ -927,5 +930,6 @@ private fun ToolRow(
                     softWrap = false,
                 )
             }
+        if (open && row.change != null) ChangeDiff(row.change, onExpandDiff)
     }
 }

@@ -100,6 +100,37 @@ class ChatReviewContract {
     }
 
     @Test
+    fun expandingEditShowsBothResultAndPatch() {
+        val patch = "@@ -1 +1 @@\n-old\n+new"
+        val tool =
+            ChatRow.Tool(
+                "c",
+                "edit",
+                "src/message.kt",
+                ToolState.Done,
+                "編集しました。",
+                "+1 −1",
+                change = Piece("c", false, patch, parsePatch(patch), null, null),
+                truncated = true,
+            )
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    var open by remember { mutableStateOf(false) }
+                    RowView(tool, open) { open = !open }
+                }
+            }
+        }
+        ui.onNodeWithText(tool.output).assertDoesNotExist()
+        ui.onNodeWithText("edit").performClick()
+        ui.onNodeWithText(tool.output).assertIsDisplayed()
+        ui.onNodeWithText("+ new", substring = true).assertIsDisplayed()
+        ui.onNodeWithText("出力の末尾は省略されています。").assertIsDisplayed()
+        ui.onNodeWithContentDescription("取得済みの出力をコピー").performClick()
+        ui.onNodeWithContentDescription("コピーしました").assertExists()
+    }
+
+    @Test
     fun showingMoreDiffLinesNotifiesTheChatBeforeGrowing() {
         val source = "@@ -0,0 +1,125 @@\n" + (1..125).joinToString("\n") { "+line $it" }
         val piece = Piece("id", false, source, parsePatch(source), null, null)
