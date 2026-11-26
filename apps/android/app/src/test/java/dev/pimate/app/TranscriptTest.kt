@@ -55,7 +55,33 @@ class TranscriptTest {
                 false,
             )
         assertEquals("u", rows.filterIsInstance<ChatRow.Summary>().single().reviewTurn)
-        assertEquals("patch", rows.filterIsInstance<ChatRow.Tool>().single().change?.patch)
+        val tool = rows.filterIsInstance<ChatRow.Tool>().single()
+        assertEquals("patch", tool.change?.patch)
+        assertEquals("success", tool.expandedOutput())
+        assertNull(tool.copy(output = "").expandedOutput())
+    }
+
+    @Test
+    fun onlyRcTruncationMarksOutputAsPartialRegardlessOfPreviewLength() {
+        val text = (1..42).joinToString("\n") { "行 $it" } + "\n"
+        for (flag in listOf(true, false, null)) {
+            val result =
+                org.json
+                    .JSONObject()
+                    .put("kind", "tool_result")
+                    .put("entryId", "r")
+                    .put("text", text)
+                    .put("detailsOmitted", true)
+                    .put("truncated", flag)
+            val tool =
+                buildRows(listOf(entry(result)), emptyList(), false)
+                    .filterIsInstance<ChatRow.Tool>()
+                    .single()
+            assertEquals(flag == true, tool.truncated)
+            assertEquals(if (flag == true) "取得済みの出力をコピー" else "出力をコピー", tool.outputCopyLabel)
+            assertTrue(tool.expandedOutput()!!.startsWith("…\n"))
+            assertEquals(text, tool.output) // Copy the received text, not the 40-line preview.
+        }
     }
 
     @Test

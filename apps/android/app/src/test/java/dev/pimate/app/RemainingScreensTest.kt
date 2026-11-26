@@ -32,6 +32,29 @@ class RemainingScreensTest {
     }
 
     @Test
+    fun beginningSummaryReviewsOnlyCallsBeforeTheFirstPrompt() {
+        val entries =
+            JSONArray(
+                    """[
+            {"kind":"assistant","entryId":"a","toolCalls":[{"id":"early","name":"edit","args":{"path":"before"}}]},
+            {"kind":"user","entryId":"u","text":"次の依頼"},
+            {"kind":"tool_result","entryId":"r","toolCallId":"early","toolName":"edit","text":"完了","detailsOmitted":true},
+            {"kind":"assistant","entryId":"b","toolCalls":[{"id":"late","name":"write","args":{"path":"after"}}]},
+            {"kind":"tool_result","entryId":"s","toolCallId":"late","toolName":"write"}
+        ]"""
+                )
+                .objects()
+        val rows = buildRows(entries.map(::entry), emptyList(), false)
+        val beginning = rows.filterIsInstance<ChatRow.Summary>().first().reviewTurn
+        assertNotNull(beginning)
+        assertEquals(beginning, review(entries.take(3), "").latestChangedTurn)
+        val scoped = review(entries, "", beginning)
+        assertEquals("このターンの変更（before）について：", scoped.reference)
+        assertEquals(listOf("before"), scoped.files.map { it.path })
+        assertEquals(listOf("before", "after"), review(entries, "").files.map { it.path })
+    }
+
+    @Test
     fun combinedPatchFollowsCallOccurrenceAndNeverCopiesOnlyAPrefix() {
         val entries =
             listOf("one", "two").flatMap { id ->

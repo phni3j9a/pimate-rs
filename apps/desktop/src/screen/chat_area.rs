@@ -49,6 +49,7 @@ impl Desktop {
             page
         };
         let send_page = page.clone();
+        let stop_page = page.clone();
         let key_page = page.clone();
         let rows = &self.machines[&key.host].rows;
         let inspector = w.use_keyed_state(
@@ -60,6 +61,21 @@ impl Desktop {
             cx,
             |_, _| super::chat_review::Inspector::default(),
         );
+        self.chat_keys = Some((page.clone(), inspector.clone()));
+        if let Some((host, pi, start, shutdown)) = self.row_action.take()
+            && key.host == host
+            && key.instance == pi
+            && rows.get("view", "startedAt").as_u64() == Some(start)
+        {
+            if shutdown {
+                self.confirm_shutdown(&page, w, cx)
+            } else {
+                inspector.update(cx, |s, cx| {
+                    s.agents = false;
+                    s.load(page.clone(), None, true, cx)
+                });
+            }
+        }
         if inspector.read(cx).agents {
             return main.child(self.agent_panel(&key, &page, &inspector, p, w, cx));
         }
@@ -76,6 +92,7 @@ impl Desktop {
             ),
         };
         if let Some(viewer) = media.panel(p, w, cx) {
+            self.media_keys = Some(media.viewer.clone());
             return main.child(viewer);
         }
         let movement = rows.pending_move(&key, &self.drafts).or_else(|| {
@@ -84,6 +101,7 @@ impl Desktop {
         let session = rows.get("view", "session");
         let info = rows.get("instance", &key.instance);
         let running = rows.get("view", "status") == "running";
+        let can_stop = rows.can_stop();
         let blocked = !rows.group("question").is_empty() || !rows.get("view", "pcPrompt").is_null();
         let status = if blocked {
             "入力待ち"
@@ -226,7 +244,7 @@ impl Desktop {
                 chat = chat.child(format!(
                     "{}: {}",
                     match d["status"].as_str() {
-                        Some("queued") => "割り込み待ち",
+                        Some("queued") => "送信待ち（受理済み・個別取消不可）",
                         Some("sending") => "送信中",
                         _ => "未確認（自動再送しません）",
                     },
@@ -241,6 +259,7 @@ impl Desktop {
                     let id = id.clone();
                     chat = chat.child(
                         Button::new(SharedString::from(format!("restore-{id}")))
+                            .debug_selector(|| "restore-draft".into())
                             .label("入力欄へ戻す")
                             .on_click(cx.listener(move |this, _, w, cx| {
                                 if pg.visible(this) {
@@ -300,7 +319,9 @@ impl Desktop {
                 .px_4(),
             );
         }
-        main = main.children(self.commands(&key, &page, p, w, cx));
+        let (suggestions, candidates) = self.commands(&key, &page, p, w, cx);
+        self.slash_visible = suggestions.is_some();
+        main = main.children(suggestions);
         if let Some((_, input, _)) = &self.input {
             let has_photos = !self.state.attachments.images(&key).is_empty();
             let movement = movement.is_some();
@@ -311,7 +332,39 @@ impl Desktop {
                 || self.composing
                 || (self.state.attachments.images(&key).is_empty()
                     && self.drafts.get(&key).is_none_or(|s| s.trim().is_empty()));
-            let action = if running { "割り込む" } else { "送信" };
+            let now = chrono::Utc::now().timestamp_millis() as u64;
+            let allowances = self.machines[&key.host].conn.allowances(now);
+            let gauges = std::iter::once((
+                "コンテキスト",
+                rows.get("view", "context")["percent"].as_f64(),
+            ))
+            .chain(allowances.iter().map(|a| {
+                (
+                    if a.source == "claude" {
+                        "Claude"
+                    } else {
+                        "Codex"
+                    },
+                    a.gauge,
+                )
+            }))
+            .collect::<Vec<_>>();
+            let usage_hint = gauges
+                .iter()
+                .map(|(label, v)| {
+                    format!(
+                        "{label}: {}",
+                        v.map_or_else(|| "未確認".into(), |n| format!("{n:.0}%"))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" · ");
+            let model = rows.get("view", "model")["id"]
+                .as_str()
+                .unwrap_or("モデル")
+                .to_owned();
+            let pg = page.clone();
+            let usage_page = page.clone();
             main = main.child(
                 div()
                     .mx_4()
@@ -326,37 +379,100 @@ impl Desktop {
                         b.child(self.attachments(&key, &page, w, cx))
                     })
                     .child(
-                        div()
-                            .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
-                                if e.secondary {
-                                    if !disabled {
-                                        this.submit_chat(&key_page, w, cx);
-                                    }
-                                    cx.stop_propagation();
+                        super::context::editor(
+                            div().debug_selector(|| "composer-input".into()),
+                            input.clone(),
+                            false,
+                        )
+                        .key_context("Composer")
+                        .when_some(candidates, |div, c| c.bind(div, cx))
+                        .on_action(cx.listener(|this, _: &keys::Newline, w, cx| {
+                            if !this.composing
+                                && let Some((_, input, _)) = &this.input
+                            {
+                                input.update(cx, |s, cx| s.replace("\n", w, cx));
+                            }
+                        }))
+                        .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
+                            if e.secondary == this.ctrl_enter {
+                                if !disabled {
+                                    this.submit_chat(&key_page, w, cx);
                                 }
-                            }))
-                            .child(Input::new(input).appearance(false).h(rems(4.))),
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(Input::new(input).appearance(false).h(rems(4.))),
                     )
                     .child(
                         div()
                             .flex()
                             .items_center()
-                            .justify_between()
+                            .gap_1()
                             .when(!has_photos, |b| {
                                 b.child(self.attachments(&key, &page, w, cx))
                             })
-                            .child(p.caption(if blocked {
-                                "入力待ちのため送信できません"
-                            } else if cfg!(target_os = "macos") {
-                                "↩ 改行　⌘↩ 送信"
-                            } else {
-                                "Enter で改行　Ctrl+Enter で送信"
-                            }))
+                            .child(
+                                p.text_button("composer-model", p.secondary, cx)
+                                    .max_w(rems(10.))
+                                    .child(div().truncate().child(model))
+                                    .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
+                                        if pg.visible(app)
+                                            && (e.is_keyboard() || !app.pointer_down_on_overlay)
+                                            && !app.overlay_open(w, cx)
+                                        {
+                                            app.show_sheet(state::SheetPage::Model, cx)
+                                        }
+                                    })),
+                            )
+                            .child(
+                                p.text_button("composer-usage", p.secondary, cx)
+                                    .tooltip(usage_hint)
+                                    .children(gauges.into_iter().map(|(_, v)| {
+                                        let used = v.unwrap_or_default().clamp(0., 100.) as f32;
+                                        let data = [(used, p.accent), (100. - used, p.track)];
+                                        div().size(px(15.)).child(
+                                            gpui_component::chart::PieChart::new(data)
+                                                .value(|d| d.0)
+                                                .color(|d| d.1)
+                                                .inner_radius(4.5)
+                                                .outer_radius(7.),
+                                        )
+                                    }))
+                                    .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
+                                        if usage_page.visible(app)
+                                            && (e.is_keyboard() || !app.pointer_down_on_overlay)
+                                            && !app.overlay_open(w, cx)
+                                        {
+                                            app.show_sheet(state::SheetPage::Usage, cx)
+                                        }
+                                    })),
+                            )
+                            .child(div().flex_1())
+                            .when(can_stop, |row| {
+                                row.child(
+                                    p.text_button("abort", p.fail_ink, cx)
+                                        .tab_stop(false)
+                                        .label("停止")
+                                        .debug_selector(|| "abort-turn".into())
+                                        .disabled(self.stopping)
+                                        .on_click(cx.listener(move |this, e, w, cx| {
+                                            if this.background_click(e) {
+                                                return;
+                                            }
+                                            this.stop_chat(&stop_page, w, cx)
+                                        })),
+                                )
+                            })
                             .child(
                                 p.primary("send", cx)
-                                    .label(action)
+                                    .tab_stop(false)
+                                    .debug_selector(|| "send-message".into())
+                                    .label("送信")
                                     .disabled(disabled)
-                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                    .on_click(cx.listener(move |this, e, w, cx| {
+                                        if this.background_click(e) {
+                                            return;
+                                        }
                                         this.submit_chat(&send_page, w, cx)
                                     })),
                             ),
@@ -366,7 +482,7 @@ impl Desktop {
         outer.child(theme::column(main).flex_shrink_0())
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
-        if !page.visible(self) {
+        if self.overlay_open(w, cx) || !page.visible(self) {
             return;
         }
         let t = match self.prepare_submission(page, w, cx) {
@@ -377,6 +493,16 @@ impl Desktop {
                 return;
             }
         };
+        self.run_submission(page, t, true, w, cx);
+    }
+    pub(super) fn run_submission(
+        &mut self,
+        page: &state::Page,
+        t: state::Submission,
+        from_input: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.sending = true;
         self.notice.clear();
         let page = page.clone();
@@ -386,7 +512,13 @@ impl Desktop {
                 this.sending = false;
                 match result {
                     Ok(ack) => {
-                        let open = ack.finish(this, w, cx);
+                        let open = if from_input {
+                            ack.finish(this, w, cx)
+                        } else if page.visible(this) {
+                            ack.opened_sheet()
+                        } else {
+                            None
+                        };
                         if let Some(name) = open {
                             use state::SheetPage::*;
                             this.show_sheet(

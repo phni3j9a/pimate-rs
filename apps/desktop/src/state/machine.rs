@@ -60,6 +60,20 @@ impl Settings {
         replace_file(path, &serde_json::to_vec(self)?)
     }
 }
+// 旧版は settings.json の未知の項目を拒む。送信キーは同じ場所の別ファイルに保存する。
+pub fn load_send_key(settings: &Path) -> std::io::Result<bool> {
+    match std::fs::read(settings.with_file_name("ctrl-enter.json")) {
+        Ok(v) => Ok(serde_json::from_slice(&v)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+pub fn save_send_key(settings: &Path, ctrl_enter: bool) -> std::io::Result<()> {
+    replace_file(
+        &settings.with_file_name("ctrl-enter.json"),
+        &serde_json::to_vec(&ctrl_enter)?,
+    )
+}
 /// 同じディレクトリの一時ファイルに書いてから置き換える。途中で失敗しても、前の内容が残る。
 fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -381,6 +395,7 @@ impl Desktop {
             self.state.attachments.forget(&host.id);
             self.state.instructions.forget(&host.id);
             if self.selected.as_ref().is_some_and(|(h, _)| h == &host.id) {
+                self.row_action = None;
                 self.selected = None;
                 self.input = None;
                 self.epoch += 1;
@@ -480,6 +495,9 @@ mod tests {
     fn settings_only_persist_three_nonsecret_preferences() {
         let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
         let path = dir.join("settings.json");
+        assert!(!load_send_key(&path).unwrap());
+        save_send_key(&path, true).unwrap();
+        assert!(load_send_key(&path).unwrap());
         let mut s = Settings::load(&path).unwrap();
         s.ask_tool = true;
         s.appearance = Appearance::Dark;

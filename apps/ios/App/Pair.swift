@@ -28,12 +28,12 @@ struct PairScreen: View {
             VStack(alignment: .leading, spacing: 24) {
                 SwiftUI.Image("Mark").resizable().scaledToFit().frame(width: 34, height: 32).foregroundStyle(PiTheme.text).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("PC の Pi とつなぐ").font(.title.bold()).accessibilityAddTraits(.isHeader)
+                    Text("PC の Pi とつなぐ").modifier(PiFont(.title)).bold().accessibilityAddTraits(.isHeader)
                     Text("PC で動いている Pi を、このスマホから確認・操作できます。").foregroundStyle(PiTheme.secondary)
                 }
                 VStack(alignment: .leading, spacing: 12) {
-                    Label("pi", systemImage: "terminal").font(.system(.headline, design: .monospaced))
-                    Divider(); Text("/pimate setup").font(.system(.body, design: .monospaced)); Divider()
+                    Label("pi", systemImage: "terminal").modifier(PiFont(.sheet)).fontDesign(.monospaced)
+                    Divider(); Text("/pimate setup").modifier(PiFont(.body)).fontDesign(.monospaced); Divider()
                     Text("PC の Pi でこう打つと、QR コードが表示されます").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                 }.padding(18).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 18))
                 VStack(alignment: .leading, spacing: 20) {
@@ -50,9 +50,9 @@ struct PairScreen: View {
         }.safeAreaInset(edge: .bottom) {
             VStack(spacing: 8) {
                 if let candidate {
-                    Text("接続先を確認").font(.headline).accessibilityAddTraits(.isHeader)
+                    Text("接続先を確認").modifier(PiFont(.sheet)).fontWeight(.semibold).accessibilityAddTraits(.isHeader)
                     Text(verbatim: candidate.preview.name).accessibilityIdentifier("pair-name")
-                    Text(verbatim: candidate.preview.address).font(.callout.monospaced()).accessibilityIdentifier("pair-address")
+                    Text(verbatim: candidate.preview.address).modifier(PiFont(.lead)).fontDesign(.monospaced).accessibilityIdentifier("pair-address")
                     Button("このマシンに接続") { pair(candidate.link) }.buttonStyle(PiPrimary()).disabled(model.busy)
                     Button("キャンセル") { self.candidate = nil }.frame(minHeight: 44)
                 } else if entering {
@@ -79,7 +79,7 @@ struct PairScreen: View {
     }
     private func step(_ n: String, _ title: String, _ detail: String) -> some View {
         HStack(alignment: .top, spacing: 14) {
-            Text(n).font(.system(.subheadline, design: .monospaced).bold()).frame(width: 30, height: 30).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 7))
+            Text(n).modifier(PiFont(.body)).fontDesign(.monospaced).bold().frame(width: 30, height: 30).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 3) { Text(title).fontWeight(.semibold); Text(detail).modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary) }
         }.accessibilityElement(children: .combine)
     }

@@ -14,7 +14,7 @@ struct FirstStepView: View {
                     Label("\(host.name) とつながりました", systemImage: "checkmark.circle").modifier(PiFont(.title)).bold().accessibilityAddTraits(.isHeader)
                     if phase == .empty {
                         DeviceBridge(); Text("まだ起動中の Pi はありません。このスマホから PC のフォルダを選んで、新しい Pi を起動できます。")
-                        Text("$ pi").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled)
+                        Text("$ pi").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled).padding(.horizontal, 16).padding(.vertical, 8).background(PiTheme.surface, in: Capsule())
                         Text("PC のターミナルで起動した Pi も、ここに表示されます。").foregroundStyle(.secondary)
                     } else { Text("選ぶとチャットを開きます。").foregroundStyle(.secondary) }
                 }.listRowSeparator(.hidden)
@@ -35,11 +35,7 @@ struct FirstStepView: View {
                 Button("一覧を開く", action: close).frame(minHeight: 44)
             }.padding(.horizontal, 20).padding(.vertical, 6).background(PiTheme.background)
         }.sheet(isPresented: $newPi) {
-            NavigationStack {
-                NewPiView(model: model, initial: host.id, select: select).toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { newPi = false } }
-                }
-            }
+            NewPiView(model: model, initial: host.id, select: select)
         }
     }
 }

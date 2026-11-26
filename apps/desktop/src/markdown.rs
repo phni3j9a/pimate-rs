@@ -52,6 +52,32 @@ impl Selection {
     }
 }
 
+// Only standalone references in prose, never the middle of a URL or email address.
+fn references(text: &str) -> Vec<(Range<usize>, bool)> {
+    let mut spans = Vec::new();
+    let mut it = text.char_indices().peekable();
+    while let Some((i, marker @ ('/' | '@'))) = it.find(|(_, c)| matches!(c, '/' | '@')) {
+        if i > 0
+            && !text[..i]
+                .ends_with(|c: char| c.is_whitespace() || matches!(c, '(' | '[' | '（' | '「'))
+        {
+            continue;
+        }
+        let file = marker == '@';
+        let mut end = i + 1;
+        while let Some(&(j, c)) = it.peek() {
+            if !(c.is_alphanumeric() || matches!(c, '-' | '_') || file && matches!(c, '/' | '.')) {
+                break;
+            }
+            end = j + c.len_utf8();
+            it.next();
+        }
+        if end > i + 1 && (file || !text[end..].starts_with('/')) {
+            spans.push((i..end, file));
+        }
+    }
+    spans
+}
 fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement {
     let state = w.use_keyed_state(
         SharedString::from(format!("selection:{id}")),
@@ -85,6 +111,7 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
     for s in spans {
         let start = end;
         let mut style = HighlightStyle::default();
+        let mut refs = Vec::new();
         match s {
             Inline::Image(i) => end += i.alt.len(),
             Inline::Text { text: t, style: m } => {
@@ -95,6 +122,9 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
                     thickness: px(1.),
                     ..Default::default()
                 });
+                if !m.code && m.href.is_none() {
+                    refs = references(t);
+                }
                 style.background_color = m.code.then(|| cx.theme().muted);
                 if let Some(url) = m.href.as_ref().filter(|u| web_link(u)) {
                     links.push((start..end, url.clone()));
@@ -107,17 +137,39 @@ fn line(id: &str, spans: &[Inline], w: &mut Window, cx: &mut App) -> AnyElement 
             }
         }
         // StyledText requires sorted, non-overlapping UTF-8 byte ranges.
-        let mut a = start;
-        for b in [selected.start, selected.end, end] {
-            let b = b.min(end);
-            if a < b && text.is_char_boundary(b) {
-                let mut hi = style;
-                if selected.contains(&a) {
-                    hi.background_color = Some(cx.theme().selection);
-                }
-                runs.push((a..b, hi));
-                a = b;
+        let mut cuts = vec![
+            start,
+            selected.start.clamp(start, end),
+            selected.end.clamp(start, end),
+            end,
+        ];
+        for (r, _) in &refs {
+            cuts.extend([start + r.start, start + r.end]);
+        }
+        cuts.sort_unstable();
+        let mut refs = refs.into_iter().peekable();
+        for range in cuts.windows(2) {
+            let (a, b) = (range[0], range[1]);
+            if a == b {
+                continue;
             }
+            while refs.peek().is_some_and(|(r, _)| start + r.end <= a) {
+                refs.next();
+            }
+            let mut hi = style;
+            if let Some((r, file)) = refs.peek()
+                && r.contains(&(a - start))
+            {
+                hi.color = Some(if *file {
+                    cx.theme().link
+                } else {
+                    cx.theme().chart_2
+                });
+            }
+            if selected.contains(&a) {
+                hi.background_color = Some(cx.theme().selection);
+            }
+            runs.push((a..b, hi));
         }
     }
     let styled = StyledText::new(text.clone()).with_highlights(runs);
@@ -264,29 +316,34 @@ fn block(
             .child(rich_line(&id, spans, media, w, cx))
             .into_any_element(),
         Content::Rule => div().h(px(1.)).bg(cx.theme().border).into_any_element(),
-        Content::Code { text, language } => col
-            .bg(cx.theme().muted)
-            .rounded_md()
-            .p_3()
-            .font_family(cx.theme().mono_font_family.clone())
-            .when_some(language.as_ref(), |c, l| {
-                c.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(l.clone()),
-                )
-            })
-            .child(line(
-                &id,
-                &[Inline::Text {
-                    text: text.clone(),
-                    style: SpanStyle::default(),
-                }],
-                w,
-                cx,
-            ))
-            .into_any_element(),
+        Content::Code { text, language } => crate::screen::context::on_right_click(
+            col.bg(cx.theme().muted)
+                .rounded_md()
+                .p_3()
+                .font_family(cx.theme().mono_font_family.clone())
+                .when_some(language.as_ref(), |c, l| {
+                    c.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(l.clone()),
+                    )
+                })
+                .child(line(
+                    &id,
+                    &[Inline::Text {
+                        text: text.clone(),
+                        style: SpanStyle::default(),
+                    }],
+                    w,
+                    cx,
+                )),
+            {
+                let text = text.clone();
+                move |m| m.item(crate::screen::context::copy("コードをコピー", text.clone()))
+            },
+        )
+        .into_any_element(),
         Content::Quote(children) | Content::Item { children, .. } => col
             .pl_2()
             .when(matches!(b.content, Content::Quote(_)), |c| {
@@ -345,7 +402,25 @@ pub(crate) fn table(
     w: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
-    div()
+    let measured = w.use_keyed_state(
+        SharedString::from(format!("table-width:{id}")),
+        cx,
+        |_, _| px(0.),
+    );
+    let available = f32::from(*measured.read(cx));
+    let mut natural = vec![0; t.header.len()];
+    for row in std::iter::once(&t.header).chain(&t.rows) {
+        natural.resize(natural.len().max(row.len()), 0);
+        for (n, cell) in natural.iter_mut().zip(row) {
+            *n = (*n).max(pimate_markdown::cell_width(cell));
+        }
+    }
+    let widths = pimate_markdown::table_widths(
+        &natural,
+        (available - 2.).max(0.) as f64,
+        f32::from(w.rem_size()) as f64 / 16.,
+    );
+    let scroll = div()
         .flex()
         .flex_col()
         .min_w_0()
@@ -367,8 +442,8 @@ pub(crate) fn table(
                         })
                         .children(row.iter().enumerate().map(|(k, s)| {
                             div()
-                                .flex_1()
-                                .min_w(rems(6.))
+                                .flex_none()
+                                .w(px(widths[k] as f32))
                                 .px_2()
                                 .py_1()
                                 .border_b_1()
@@ -377,6 +452,21 @@ pub(crate) fn table(
                         }))
                 }),
         )
+        .w_full();
+    div()
+        .w_full()
+        .min_w_0()
+        .child(scroll)
+        .on_children_prepainted(move |bounds, _, cx| {
+            if let Some(b) = bounds.first()
+                && *measured.read(cx) != b.size.width
+            {
+                measured.update(cx, |v, cx| {
+                    *v = b.size.width;
+                    cx.notify()
+                });
+            }
+        })
         .into_any_element()
 }
 
@@ -691,4 +781,16 @@ fn tall_viewport_keeps_every_mounted_document(cx: &mut gpui::TestAppContext) {
     let later = mounted(w);
     assert!(later.len() > 64 && initial.keys().all(|id| !later.contains_key(id)));
     docs.read_with(w, |d, _| assert_eq!(d.offscreen.len(), 64));
+}
+
+#[test]
+fn references_ignore_addresses_and_keep_unicode_byte_ranges() {
+    let text = "@場所/名.rs と /help user@example.org https://a/b /src/file";
+    assert_eq!(
+        references(text)
+            .into_iter()
+            .map(|(r, file)| (&text[r], file))
+            .collect::<Vec<_>>(),
+        [("@場所/名.rs", true), ("/help", false)]
+    );
 }

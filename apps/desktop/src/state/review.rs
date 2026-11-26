@@ -129,10 +129,82 @@ pub struct ChangedFile {
     pub path: String,
     pub pieces: Vec<Piece>,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Turn {
+    Beginning,
+    User(String),
+}
+impl Turn {
+    pub fn at(entries: &[(String, Value)], start: usize) -> Self {
+        let (id, v) = &entries[start];
+        if v["kind"] == "user" {
+            Self::User(v["entryId"].as_str().unwrap_or(id).into())
+        } else {
+            Self::Beginning
+        }
+    }
+}
+#[derive(Clone, Copy)]
+pub struct Position {
+    pub entry: usize,
+    pub slot: usize,
+    pub start: usize,
+}
+#[derive(Default)]
+pub struct ToolPairs {
+    pub by_result: HashMap<usize, Position>,
+    pub by_call: HashMap<(usize, usize), usize>,
+    // Live sidecars are keyed only by ID; don't attribute them when the ID is reused.
+    occurrences: HashMap<String, usize>,
+    pub pending: HashMap<String, Position>,
+}
+impl ToolPairs {
+    pub fn read(entries: &[(String, Value)]) -> Self {
+        let mut pairs = Self::default();
+        let mut start = 0;
+        for (entry, (_, v)) in entries.iter().enumerate() {
+            match v["kind"].as_str() {
+                Some("user") => start = entry,
+                Some("assistant") => {
+                    for (slot, call) in v["toolCalls"].as_array().into_iter().flatten().enumerate()
+                    {
+                        if let Some(id) = call["id"].as_str() {
+                            *pairs.occurrences.entry(id.into()).or_default() += 1;
+                            pairs
+                                .pending
+                                .insert(id.into(), Position { entry, slot, start });
+                        }
+                    }
+                }
+                Some("tool_result") => {
+                    if let Some(pos) = v["toolCallId"]
+                        .as_str()
+                        .and_then(|id| pairs.pending.remove(id))
+                    {
+                        pairs.by_call.insert((pos.entry, pos.slot), entry);
+                        pairs.by_result.insert(entry, pos);
+                    }
+                }
+                _ => (),
+            }
+        }
+        pairs
+    }
+    pub fn unique(&self, id: &str) -> bool {
+        self.occurrences.get(id) == Some(&1)
+    }
+    pub fn change_turn(&self, entries: &[(String, Value)], result: usize) -> Option<Turn> {
+        let pos = self.by_result.get(&result)?;
+        let call = &entries[pos.entry].1["toolCalls"][pos.slot];
+        (entries[result].1["isError"] != true
+            && matches!(call["name"].as_str(), Some("edit" | "write")))
+        .then(|| Turn::at(entries, pos.start))
+    }
+}
 pub struct Review {
     page: Page,
-    pub turn: Option<String>,
-    pub latest_changed_turn: Option<String>,
+    pub turn: Option<Turn>,
+    pub latest_changed_turn: Option<Turn>,
     pub files: Vec<ChangedFile>,
 }
 fn normalized(path: &str, cwd: &str) -> String {
@@ -163,47 +235,36 @@ fn normalized(path: &str, cwd: &str) -> String {
 }
 impl Page {
     /// Run on a background executor; parse only locally observed history.
-    pub fn review(&self, turn: Option<String>) -> Result<Review, Error> {
+    pub fn review(&self, turn: Option<Turn>) -> Result<Review, Error> {
         let r = self.current()?;
         let k = self.editor()?;
         let result = self.review_rows(&r, k, turn);
         self.live()?;
         Ok(result)
     }
-    fn review_rows(&self, r: &Rows, k: &EditorKey, turn: Option<String>) -> Review {
+    fn review_rows(&self, r: &Rows, k: &EditorKey, turn: Option<Turn>) -> Review {
         let cwd = r.get("instance", &k.instance)["cwd"]
             .as_str()
             .unwrap_or_default();
         let mut files: Vec<ChangedFile> = vec![];
         let mut indices = HashMap::<String, usize>::new();
         let entries = r.group("entry");
-        let results: HashMap<_, _> = entries
-            .iter()
-            .filter(|(_, v)| v["kind"] == "tool_result")
-            .filter_map(|(_, v)| Some((v["toolCallId"].as_str()?, v)))
-            .collect();
-        let mut current = None;
+        let pairs = ToolPairs::read(entries);
         let mut latest = None;
-        for (id, e) in entries {
-            if e["kind"] == "user" {
-                current = Some(e["entryId"].as_str().unwrap_or(id));
-            }
-            if e["kind"] != "assistant" || turn.is_some() && turn.as_deref() != current {
-                continue;
-            }
-            for call in e["toolCalls"].as_array().into_iter().flatten() {
-                let Some(cid) = call["id"].as_str() else {
+        for (i, (_, e)) in entries.iter().enumerate() {
+            for (j, call) in e["toolCalls"].as_array().into_iter().flatten().enumerate() {
+                let Some(&ix) = pairs.by_call.get(&(i, j)) else {
                     continue;
                 };
-                let Some(result) = results.get(cid) else {
+                let Some(scope) = pairs.change_turn(entries, ix) else {
                     continue;
                 };
-                if result["isError"] == true
-                    || !matches!(call["name"].as_str(), Some("write" | "edit"))
-                {
+                if turn.as_ref().is_some_and(|t| t != &scope) {
                     continue;
                 }
-                latest = current.map(str::to_owned);
+                latest = Some(scope);
+                let result = &entries[ix].1;
+                let cid = call["id"].as_str().expect("matched call");
                 let args = &call["args"];
                 let details = &result["details"];
                 let w = &details["pimate"];
@@ -340,12 +401,75 @@ mod tests {
         assert!(lines[2].no_newline);
     }
     #[test]
+    fn review_pairs_reused_ids_in_order_including_beginning_and_failed_edits() {
+        let entries = [
+            (
+                "before",
+                json!({"kind":"assistant","toolCalls":[{"id":"same","name":"edit","args":{"path":"a"}}]}),
+            ),
+            ("row", json!({"kind":"user","entryId":"begin"})),
+            (
+                "old",
+                json!({"kind":"tool_result","toolCallId":"same","details":{"patch":"old patch"}}),
+            ),
+            (
+                "after",
+                json!({"kind":"assistant","toolCalls":[{"id":"same","name":"edit","args":{"path":"b"}},{"id":"failed","name":"write","args":{"path":"c"}}]}),
+            ),
+            (
+                "new",
+                json!({"kind":"tool_result","toolCallId":"same","details":{"patch":"new patch"}}),
+            ),
+            (
+                "failure",
+                json!({"kind":"tool_result","toolCallId":"failed","isError":true}),
+            ),
+            ("orphan", json!({"kind":"tool_result","toolCallId":"same"})),
+            (
+                "again",
+                json!({"kind":"assistant","toolCalls":[{"id":"same","name":"read"}]}),
+            ),
+        ];
+        let rows = Rows::snapshot(pimate_core::Snapshot {
+            revision: 1,
+            items: entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, (id, v))| pimate_core::Item {
+                    collection: "entry".into(),
+                    id: id.into(),
+                    position: i as u64,
+                    json: v.to_string(),
+                })
+                .collect(),
+        });
+        let entries = rows.group("entry");
+        let pairs = ToolPairs::read(entries);
+        let page = super::super::tests::dummy_page();
+        for (ix, call, scope, path, patch) in [
+            (2, 0, Turn::Beginning, "a", "old patch"),
+            (4, 3, Turn::User("begin".into()), "b", "new patch"),
+        ] {
+            assert_eq!(pairs.by_result[&ix].entry, call);
+            assert_eq!(pairs.change_turn(entries, ix), Some(scope.clone()));
+            let review = page.review_rows(&rows, page.editor().unwrap(), Some(scope));
+            assert_eq!(review.files.len(), 1);
+            assert_eq!(review.files[0].path, path);
+            assert_eq!(review.files[0].pieces[0].patch.as_deref(), Some(patch));
+        }
+        assert_eq!(pairs.change_turn(entries, 5), None);
+        assert_eq!(pairs.change_turn(entries, 6), None);
+        assert!(!pairs.unique("same"));
+        assert!(!pairs.by_call.contains_key(&(7, 0)));
+        assert_eq!(pairs.pending["same"].entry, 7);
+    }
+    #[test]
     fn review_keeps_call_order_and_unicode_identity() {
         let page = super::super::tests::dummy_page();
         let key = page.editor().unwrap();
         let items=[("u",json!({"kind":"user"})),("a",json!({"kind":"assistant","toolCalls":[{"id":"1","name":"write","args":{"path":"./é","content":"body"}},{"id":"2","name":"edit","args":{"path":"sub/../é"}},{"id":"3","name":"write","args":{"path":"e\u{301}"}}]})),("r1",json!({"kind":"tool_result","toolCallId":"1","details":{"pimate":{"kind":"write_diff","existed":false}}})),("r2",json!({"kind":"tool_result","toolCallId":"2","details":{"patch":"patch"}})),("r3",json!({"kind":"tool_result","toolCallId":"3","detailsOmitted":true}))].into_iter().enumerate().map(|(i,(id,v))|pimate_core::Item{collection:"entry".into(),id:id.into(),position:i as u64,json:v.to_string()}).collect();
         let r = Rows::snapshot(pimate_core::Snapshot { revision: 1, items });
-        let v = page.review_rows(&r, key, Some("u".into()));
+        let v = page.review_rows(&r, key, Some(Turn::User("u".into())));
         assert_eq!(v.files.len(), 2);
         let p = &v.files[0].pieces;
         assert!(p[0].created);
@@ -353,7 +477,7 @@ mod tests {
         assert_eq!(p[1].patch.as_deref(), Some("patch"));
         assert_eq!(v.files[1].pieces[0].omitted.as_deref(), Some("too_large"));
         assert!(
-            page.review_rows(&r, key, Some("other".into()))
+            page.review_rows(&r, key, Some(Turn::User("other".into())))
                 .files
                 .is_empty()
         );

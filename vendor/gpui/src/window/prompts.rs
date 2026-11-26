@@ -146,6 +146,15 @@ impl Render for FallbackPromptRenderer {
             }));
 
         div()
+            .occlude()
+            .on_key_down(cx.listener(|prompt, e: &crate::KeyDownEvent, _, cx| {
+                if e.keystroke.key == "escape"
+                    && let Some(cancel) = prompt.actions.iter().position(PromptButton::is_cancel)
+                {
+                    cx.emit(PromptResponse(cancel));
+                    cx.stop_propagation();
+                }
+            }))
             .size_full()
             .child(
                 div()

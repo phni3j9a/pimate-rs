@@ -112,6 +112,7 @@ internal data class Entry(
     val time: Long? = null,
     /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
     val pics: ImageSlots = ImageSlots.Empty,
+    val truncated: Boolean = false,
 )
 
 /** 実行中のツール（"tool" の行）。履歴に結果が載るまでの表示に使う。 */
@@ -184,7 +185,11 @@ internal sealed interface ChatRow {
         /** 実行中のツールの開始時刻（epoch ms）。分からなければ秒数を出さない。 */
         val since: Long? = null,
         val change: Piece? = null,
-    ) : ChatRow
+        val truncated: Boolean = false,
+    ) : ChatRow {
+        val outputCopyLabel: String
+            get() = if (truncated) "取得済みの出力をコピー" else "出力をコピー"
+    }
 
     /** 会話の切り替え（PC の /resume など）。履歴にはない行で、切り替えを見た位置に置く。 */
     data class Switch(val reason: String, val byPhone: Boolean, val from: String, val to: String) :
@@ -204,6 +209,14 @@ internal sealed interface ChatRow {
         override val fold: String? = null,
     ) : ChatRow
 }
+
+internal fun ChatRow.Tool.expandedOutput(): String? =
+    output
+        .trimEnd()
+        .lines()
+        .let { if (it.size > 40) listOf("…") + it.takeLast(40) else it }
+        .joinToString("\n")
+        .ifEmpty { if (state == ToolState.Running) "出力を待っています…" else null }
 
 internal fun thinkingLabel(live: Boolean, ms: Long?): String {
     if (live) return "Thinking…"
@@ -261,7 +274,7 @@ internal fun buildRows(
     val running = live.filterNot { it.nested }.associateBy { it.id }
     val out = mutableListOf<ChatRow>()
     var turn = mutableListOf<ChatRow>()
-    var turnId: String? = null
+    var turnId = BEGINNING_TURN
     var started: Long? = null
     var ended: Long? = null
     var finalKey: String? = null
@@ -301,6 +314,7 @@ internal fun buildRows(
             result?.text ?: now?.output.orEmpty(),
             meta,
             change = piece,
+            truncated = result?.truncated == true,
             pics = result?.pics ?: ImageSlots.Empty,
             since = now?.startedAt?.takeIf { state == ToolState.Running },
         )
@@ -309,7 +323,11 @@ internal fun buildRows(
     fun close(inProgress: Boolean) {
         val id = turnId
         val tools = turn.count { it is ChatRow.Tool }
-        if (id == null || inProgress || tools == 0) out += turn
+        val changes =
+            turn.filterIsInstance<ChatRow.Tool>().filter {
+                it.change != null && it.key.startsWith("tool:")
+            }
+        if (inProgress || tools == 0 || id == BEGINNING_TURN && changes.isEmpty()) out += turn
         else {
             val key = "turn:$id"
             val took = started?.let { s -> ended?.let { it - s } }?.takeIf { it >= 1000 }
@@ -322,9 +340,8 @@ internal fun buildRows(
                         row is ChatRow.Text && row.key != finalKey -> row.copy(fold = key)
                         else -> null
                     }
-                if (folded != null && !summarized) {
+                if (!summarized && (folded != null || row is ChatRow.Tool && row.change != null)) {
                     summarized = true
-                    val changes = turn.filterIsInstance<ChatRow.Tool>().filter { it.change != null }
                     val diffs = changes.mapNotNull { it.change?.diff }
                     out +=
                         ChatRow.Summary(
@@ -574,6 +591,7 @@ internal fun entry(o: JSONObject): Entry {
                 name = o.str("toolName"),
                 isError = o.optBoolean("isError"),
                 change = resultPiece(o.str("toolName"), o),
+                truncated = o.optBoolean("truncated"),
                 time = time,
                 pics = pics(id, o),
             )

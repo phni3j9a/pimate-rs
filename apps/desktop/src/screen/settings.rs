@@ -16,21 +16,23 @@ pub(super) enum Route {
     Github(pimate_protocol::GitHubQuery),
 }
 #[derive(Default)]
-pub(super) struct Nav {
-    pub route: Route,
-    pub page: Option<Page>,
-    pub note: String,
-    pub pref_error: bool,
-    pub machine: super::machine::MachineData,
-    pub providers: super::providers::ProviderData,
-    pub github: super::github::Github,
-    pub spawn: Option<super::new_pi::Fields>,
-    pub back: Route,
-    pub generation: Arc<()>,
-    pub scroll: ScrollHandle,
-    pub tasks: Vec<Task<()>>,
+pub(crate) struct Nav {
+    pub(super) route: Route,
+    pub(super) page: Option<Page>,
+    pub(super) note: String,
+    pub(super) pref_error: bool,
+    pub(super) machine: super::machine::MachineData,
+    pub(super) providers: super::providers::ProviderData,
+    pub(super) github: super::github::Github,
+    pub(super) initial_folder: Option<String>,
+    pub(super) spawn_drafts: HashMap<String, super::new_pi::SpawnDraft>,
+    pub(super) spawn: Option<super::new_pi::Fields>,
+    pub(super) back: Route,
+    pub(super) generation: Arc<()>,
+    pub(super) scroll: ScrollHandle,
+    pub(super) tasks: Vec<Task<()>>,
 }
-pub(super) type Navigation = Entity<Nav>;
+pub(crate) type Navigation = Entity<Nav>;
 pub(super) fn group(title: impl Into<SharedString>, p: &Colors) -> Div {
     div()
         .flex()
@@ -56,32 +58,10 @@ pub(super) fn link(id: &'static str, title: &'static str, url: &'static str) -> 
 }
 impl Desktop {
     pub(super) fn init_navigation(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Navigation {
-        #[cfg(target_os = "macos")]
-        let app = cx.weak_entity();
-        // 設定は起動時に読み終えている（main.rs の load_saved）。
         let pref_error = self.pref_error;
-        w.use_keyed_state("desktop-other-navigation", cx, |_w, _cx| {
-            #[cfg(target_os = "macos")]
-            {
-                let nav = _cx.weak_entity();
-                let window = _w.window_handle().window_id();
-                _cx.intercept_keystrokes(move |e, w, cx| {
-                    if window == w.window_handle().window_id()
-                        && e.keystroke.modifiers == Modifiers::command()
-                        && e.keystroke.key == ","
-                        && let Some(nav) = nav.upgrade()
-                    {
-                        let _ = app.update(cx, |app, cx| app.navigate(&nav, Route::Settings, cx));
-                        cx.stop_propagation();
-                    }
-                })
-                .detach();
-            }
-
-            Nav {
-                pref_error,
-                ..Default::default()
-            }
+        w.use_keyed_state("desktop-other-navigation", cx, |_, _| Nav {
+            pref_error,
+            ..Default::default()
         })
     }
     pub(super) fn palette(&mut self, w: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -92,7 +72,9 @@ impl Desktop {
         };
         if self.size != size {
             self.size = size;
-            self.scroll.reset(self.scroll.item_count());
+            if let Some(h) = &self.history {
+                h.scroll.reset(h.scroll.item_count());
+            }
         }
         let dark = match self.state.settings.appearance {
             Appearance::System => matches!(
@@ -116,6 +98,7 @@ impl Desktop {
         dark
     }
     pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
+        self.remember_spawn(n, cx);
         let previous = &n.read(cx).route;
         let back = match (&route, previous) {
             (Route::New(_), Route::First(_))
@@ -131,6 +114,7 @@ impl Desktop {
             (Route::SetupPc, _) => Route::Tailscale,
             _ => Route::Home,
         };
+        self.row_action = None;
         self.state.close_page();
         let page = match &route {
             Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
@@ -145,6 +129,7 @@ impl Desktop {
                 back,
                 page,
                 pref_error: s.pref_error,
+                spawn_drafts: std::mem::take(&mut s.spawn_drafts),
                 ..Default::default()
             }
         });
@@ -226,9 +211,10 @@ impl Desktop {
             .selected(selected)
             .on_click(cx.listener(move |this, _, _, cx| {
                 apply(&mut this.state.settings);
-                let failed = Settings::path()
-                    .and_then(|p| this.state.settings.save(&p))
-                    .is_err();
+                let failed = this
+                    .settings_path
+                    .as_ref()
+                    .is_none_or(|p| this.state.settings.save(p).is_err());
                 n.update(cx, |s, _| s.pref_error = failed);
                 cx.notify();
             }))
@@ -280,6 +266,15 @@ impl Desktop {
                             )),
                     ),
             )
+            .child(group("キーボード", p).child(p.text_button("shortcut-list",p.accent_ink,cx).label("ショートカット一覧").on_click(cx.listener(|app,_,w,cx|app.open_palette(true,w,cx)))).child({
+                let n = n.clone();
+                Button::new("send-key").label(if cfg!(target_os="macos") {"⌘+Enter で送信"} else {"Ctrl+Enter で送信"}).selected(self.ctrl_enter).on_click(cx.listener(move |this, _, _, cx| {
+                    this.ctrl_enter = !this.ctrl_enter;
+                    let failed = this.settings_path.as_ref().is_none_or(|p|state::save_send_key(p,this.ctrl_enter).is_err());
+                    n.update(cx, |s,_| s.pref_error = failed);
+                    cx.notify();
+                }))
+            }))
             .child(group("新しい Pi の既定", p).child(self.preference(
                 n,
                 "ask",

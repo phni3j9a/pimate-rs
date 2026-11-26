@@ -35,7 +35,8 @@ struct MachineDetailView: View {
             }
             maintenance
             Section("プロバイダー") {
-                NavigationLink("プロバイダーのログイン") { ProviderView(model: model, host: host) }.disabled(!supports("authSession"))
+                NavigationLink("プロバイダーのログイン") { ProviderView(model: model, host: host) }.disabled(!supports("authSession") || !supports("providerAuth"))
+                if online && (!supports("authSession") || !supports("providerAuth")) { Text("PC の PiMate を更新し、Host を再起動してください。").foregroundStyle(.secondary) }
             }
             Section("GitHub") {
                 switch github {
@@ -65,14 +66,13 @@ struct MachineDetailView: View {
     private var maintenance: some View {
         Section("PC の PiMate") {
             LabeledContent("現在の版", value: check?["current"] as? String ?? caps["version"] as? String ?? "未確認")
-            if check?.str("reason") == "not_package" { Text("開発版は PC で更新してください。") }
-            else if let latest = check?["latest"] as? String, !latest.isEmpty {
-                if latest == check?.str("current") { Text("最新です") }
-                else {
+            if let latest = check?["latest"] as? String, !latest.isEmpty {
+                if AppUpdate.newerPackage(latest, than: check?.str("current") ?? caps.str("version")) {
                     LabeledContent("照会時の最新版", value: latest)
                     if supports("packageUpdate") && check?["canUpdate"] as? Bool == true { confirmButton("実行時の最新版に更新…", .update) }
-                    else { Text("PC で実行：pi update npm:@phni3j9a/pimate").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled) }
-                }
+                    else if check?.str("reason") == "not_service" { Text("PC で実行：pi update npm:@phni3j9a/pimate").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled) }
+                    else { Text("開発版は PC で更新してください。") }
+                } else { Text("最新です") }
             } else { Text("最新版は未確認です").foregroundStyle(.secondary) }
             if supports("hostRestart") { confirmButton("Host を再起動…", .restart) }
         }
@@ -120,7 +120,7 @@ struct MachineDetailView: View {
                 switch fixed.action {
                 case .forget, .forgetLocal: dismiss()
                 case .restart: note = "再起動を受け付けました。"
-                case .update: note = reply.str("to").isEmpty ? "更新後の版は未確認です。" : "\(reply.str("to")) に更新しました。"
+                case .update: note = reply.str("to").isEmpty ? "更新後の版は未確認です。" : reply.str("to") == reply.str("from") ? "更新されませんでした（版が固定されている可能性があります）" : "\(reply.str("to")) に更新しました。実行中の各 Pi で /reload を実行してください。"
                 case .revoke: note = "端末の登録を取り消しました。"
                 }; refresh += 1
             } catch RemovalError.notRevoked {

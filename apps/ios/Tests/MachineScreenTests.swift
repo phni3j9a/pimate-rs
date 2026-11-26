@@ -3,6 +3,32 @@ import XCTest
 @testable import PiMate
 
 final class MachineScreenTests: XCTestCase {
+    func testSpawnCatalogBelongsOnlyToTheConnectedListedHostGeneration() {
+        func hostRow(_ id: String, _ json: String) -> Item { Item(collection: "host", id: id, position: 0, json: json) }
+        var rows = Rows(); rows.groups["host"] = [hostRow("connection", "\"connected\"")]
+        XCTAssertNil(rows.catalogGeneration)
+        rows.groups["host"]?.append(hostRow("listKnown", "true"))
+        XCTAssertNil(rows.catalogGeneration) // A known empty list has no Pi to answer .hostModels.
+        rows.groups["instance"] = [Item(collection: "instance", id: "first", position: 0, json: "{}")]
+        let old = SpawnCatalog(generation: rows.connectionGeneration, payload: ["default": "old"])
+        XCTAssertEqual(old.value(for: rows.catalogGeneration)?.str("default"), "old")
+        rows.apply(1, [.upsert(hostRow("connection", "\"offline\""))]) { fatalError() }
+        XCTAssertNil(old.value(for: rows.catalogGeneration))
+        rows.apply(2, [.upsert(hostRow("connection", "\"connected\""))]) { fatalError() }
+        XCTAssertNotNil(rows.catalogGeneration); XCTAssertNil(old.value(for: rows.catalogGeneration))
+        XCTAssertNil(SpawnCatalog(generation: rows.connectionGeneration, payload: nil).value(for: rows.catalogGeneration))
+    }
+    func testCompletionPreservesTrustOnlyForTheSameLinuxFolder() {
+        XCTAssertTrue(SpawnForm.sameFolder("~/code/", known: "/home/user/code", home: "/home/user"))
+        XCTAssertFalse(SpawnForm.sameFolder("/code/../project", known: "/project", home: ""))
+        XCTAssertFalse(SpawnForm.sameFolder("/か\u{3099}/", known: "/が", home: ""))
+    }
+    func testPackageUpdateRequiresANewerRelease() {
+        XCTAssertTrue(AppUpdate.newerPackage("0.1.10", than: "0.1.9"))
+        XCTAssertFalse(AppUpdate.newerPackage("0.1.9", than: "0.1.10"))
+        XCTAssertFalse(AppUpdate.newerPackage("0.1.01", than: "0.1.1"))
+        XCTAssertFalse(AppUpdate.newerPackage("0.2.0", than: "dev"))
+    }
     func testSameNamedDestinationsIncludeTheExactAddress() {
         let a = Host(id: "a", name: "Mac", address: "127.0.0.1:1234", deviceId: "1", needsPairing: false)
         let b = Host(id: "b", name: "Mac", address: "127.0.0.1:2345", deviceId: "2", needsPairing: false)

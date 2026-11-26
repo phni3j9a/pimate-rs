@@ -272,6 +272,11 @@ impl Media {
     }
 }
 impl Viewer {
+    pub(super) fn close(&mut self) {
+        if self.photo.take().is_none() {
+            self.table = None
+        }
+    }
     pub(super) fn panel(
         viewer: &Entity<Self>,
         media: Option<&Media>,
@@ -291,9 +296,7 @@ impl Viewer {
             })
             .on_click(move |_, _, cx| {
                 dismiss.update(cx, |s, cx| {
-                    if s.photo.take().is_none() {
-                        s.table = None
-                    }
+                    s.close();
                     cx.notify()
                 })
             });
@@ -439,6 +442,17 @@ impl Desktop {
                         .detach();
                         cx.notify();
                     })),
+            );
+        }
+        if rows.get("view", "promptImages") != true {
+            row = row.child(
+                Button::new("unsupported-images")
+                    .ghost()
+                    .small()
+                    .label("画像添付不可")
+                    .tooltip(
+                        "この Pi の RC は画像添付に対応していません。PC で拡張を更新してください。",
+                    ),
             );
         }
         for i in 0..shown.len() {

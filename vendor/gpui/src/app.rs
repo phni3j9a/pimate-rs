@@ -2330,6 +2330,8 @@ pub struct AnyTooltip {
 /// A keystroke event, and potentially the associated action
 #[derive(Debug)]
 pub struct KeystrokeEvent {
+    /// True for an automatic repeat of a still-pressed key.
+    pub is_held: bool,
     /// The keystroke that occurred
     pub keystroke: Keystroke,
 

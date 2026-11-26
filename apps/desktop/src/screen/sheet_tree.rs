@@ -71,7 +71,7 @@ impl Desktop {
             let entry = id.clone();
             let input = label.clone();
             let page = pg.clone();
-            card = card.child(Input::new(&label).disabled(busy)).child(
+            card = card.child(context::field(&label, busy)).child(
                 Button::new("save-label")
                     .label("ラベルを保存")
                     .disabled(

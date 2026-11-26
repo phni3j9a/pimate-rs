@@ -19,12 +19,12 @@ struct SetupGuide: View {
                     Text("スマホの Tailscale に PC が表示されれば準備完了です。").foregroundStyle(.secondary)
                 } else {
                     Text("1　ターミナルで実行").modifier(PiFont(.sheet)).fontWeight(.semibold)
-                    Text("Rust 版の公開前は開発版のパッケージを使ってください。公開後は次のコマンドでインストールできます。")
+                    Text("PC に PiMate をインストールし、Pi を起動します。")
                     command(install); command("pi")
                     Divider(); Text("2　Pi の入力欄で実行").modifier(PiFont(.sheet)).fontWeight(.semibold)
                     command("/pimate setup")
                     Text("QR コードが表示されます。再ペアリングや 2 台目のスマホには /pimate pair で出し直せます。")
-                    ShareLink(item: "Rust 版の公開後、ターミナルで：\n\(install)\npi\nPi の入力欄で：\n/pimate setup") { Label("この手順を PC に送る", systemImage: "square.and.arrow.up") }
+                    ShareLink(item: "ターミナルで：\n\(install)\npi\nPi の入力欄で：\n/pimate setup") { Label("この手順を PC に送る", systemImage: "square.and.arrow.up") }
                 }
             }.padding(20).frame(maxWidth: 560, alignment: .leading).frame(maxWidth: .infinity)
         }.background(PiTheme.background).navigationTitle(step == .pc ? "PC に PiMate を入れる" : "Tailscale でつなぐ").navigationBarTitleDisplayMode(.inline)
@@ -37,7 +37,7 @@ struct SetupGuide: View {
     }
     private func command(_ text: String) -> some View {
         Text(verbatim: text).modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled).padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+            .background(PiTheme.surface, in: Capsule())
     }
 }
 

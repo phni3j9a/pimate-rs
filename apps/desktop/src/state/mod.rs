@@ -173,4 +173,4 @@ impl DesktopState {
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::dummy_page;
+pub(crate) use tests::{dummy_page, fixture};
