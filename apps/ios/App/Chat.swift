@@ -111,7 +111,7 @@ struct TurnView: View {
             ForEach(turn.lines) { line in
                 switch line {
                 case .reply(let reply):
-                    MarkdownBody(source: reply.text, answer: reply.id); if !reply.meta.isEmpty { Text(reply.meta).modifier(PiFont(.meta)).foregroundStyle(PiTheme.secondary) }
+                    MarkdownBody(source: reply.text, answer: reply.id)
                 case .work(let w):
                     if !active && w.id == firstWork {
                         Button { expanded.toggle() } label: {

@@ -39,7 +39,6 @@ struct UsageSheet: View {
                         if let observed = allowance.observedAt { Text("\(clock(observed)) 取得") }
                     }
                 }
-                Text("利用枠は同じ PC の Pi の最新の応答から取得します。他の端末での利用は、次の応答まで反映されません。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("使用状況").navigationBarTitleDisplayMode(.inline)
     }

@@ -23,7 +23,7 @@ struct ChatTurn: Identifiable {
         guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; w.images = images; lines[index] = .work(w)
     }
     var start: Int?, end: Int?
-    struct Reply: Identifiable { let id: String, text: String, meta: String }
+    struct Reply: Identifiable { let id: String, text: String }
     var summary: String {
         let calls = work.filter { $0.name != "考えた内容" }.count
         let elapsed = start.flatMap { a in end.map { max(0, ($0 - a) / 1000) } } ?? 0
@@ -49,9 +49,8 @@ struct ChatTurn: Identifiable {
                 turns[t].updateWork(w, output: text, state: o["isError"] as? Bool == true ? "失敗" : "完了", images: HistoryImages(item))
             } else {
                 if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: "考えた内容", subject: "", output: o.str("thinking"), state: ""))) }
-                let error = o.str("errorMessage"), usage = o.obj("usage")
-                let meta = [o.obj("model").str("id"), (usage["input"] as? Int).map { "\($0.formatted()) in" } ?? "", (usage["output"] as? Int).map { "\($0.formatted()) out" } ?? "", (usage["cost"] as? Double).map { String(format: "$%.2f", $0) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
-                if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n"), meta: meta))) }
+                let error = o.str("errorMessage")
+                if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n")))) }
                 for (n, c) in o.list("toolCalls").enumerated() {
                     pending[c.str("id")] = (i, turns[i].lines.count)
                     turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"), callID: c.str("id"))))
