@@ -88,6 +88,24 @@ fn connection(h: &Host, rows: Option<&Rows>) -> &'static str {
         _ => "接続しています…",
     }
 }
+fn working_spinner(color: Hsla) -> impl IntoElement {
+    div()
+        .size(px(12.))
+        .flex_none()
+        .rounded_full()
+        .border_2()
+        .border_color(color)
+        .with_animation(
+            "working",
+            Animation::new(std::time::Duration::from_millis(800)).repeat(),
+            |ring, phase| match (phase * 4.) as u8 {
+                0 => ring.border_t_0(),
+                1 => ring.border_r_0(),
+                2 => ring.border_b_0(),
+                _ => ring.border_l_0(),
+            },
+        )
+}
 fn pi_title<'a>(v: &'a Value, id: &'a str) -> &'a str {
     v["session"]["name"]
         .as_str()
@@ -111,13 +129,12 @@ impl Desktop {
         let (host, pi) = (h.id.clone(), id.to_owned());
         let waiting = v["section"] == "waiting";
         let nav = nav.clone();
+        let working = v["working"] == true;
         let failed = v["failureText"].as_str().is_some_and(|s| !s.is_empty());
         let state = if failed {
             "失敗"
         } else if waiting {
             "入力待ち"
-        } else if v["status"] == "running" {
-            "作業中"
         } else {
             "待機"
         };
@@ -128,6 +145,8 @@ impl Desktop {
         };
         let detail = if waiting {
             format!("{state} · {} · {origin}", self.host_label(h))
+        } else if working {
+            format!("{origin} で起動")
         } else {
             format!("{state} · {origin} で起動")
         };
@@ -149,18 +168,25 @@ impl Desktop {
                     .items_center()
                     .gap_2()
                     .min_w_0()
-                    .max_w(rems(13.))
-                    .child(div().size(px(7.)).rounded_full().bg(if waiting {
-                        p.waiting
-                    } else if selected || v["status"] == "running" {
-                        p.accent
-                    } else {
-                        p.secondary
-                    }))
+                    .w_full()
+                    .when_else(
+                        working,
+                        |row| row.child(working_spinner(p.accent)),
+                        |row| {
+                            row.child(div().size(px(7.)).rounded_full().bg(if waiting {
+                                p.waiting
+                            } else if selected {
+                                p.accent
+                            } else {
+                                p.secondary
+                            }))
+                        },
+                    )
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(
                                 div()
@@ -169,7 +195,8 @@ impl Desktop {
                                     .child(pi_title(v, id).to_owned()),
                             )
                             .child(p.caption(detail).truncate()),
-                    ),
+                    )
+                    .when(working, |row| row.child(p.caption("作業中").flex_none())),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if nav.read(cx).route != Route::Home {
