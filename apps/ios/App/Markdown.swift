@@ -15,12 +15,22 @@ struct MarkdownBody: View {
     @Environment(\.photoContext) private var photos
     @State private var blocks: [Block] = []
     @State private var gallery: [MarkdownImage] = []
+    var copyAnswer = false
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(blocks, id: \.id) { MarkdownBlock(block: $0, answer: answer) }
+            if copyAnswer { CopyText(text: source, label: "回答全文をコピー（Markdown）") }
         }.environment(\.markdownGallery, gallery).task(id: [source, photos?.files == true ? "file" : ""]) {
             if let result = try? await MarkdownParser.shared.blocks(source, files: photos?.files == true), !Task.isCancelled { (blocks, gallery) = result }
         }
+    }
+}
+struct CopyText: View {
+    let text: String, label: String
+    var body: some View {
+        Button { UIPasteboard.general.string = text; UIAccessibility.post(notification: .announcement, argument: "コピーしました") } label: {
+            Label(label, systemImage: "doc.on.doc").modifier(PiFont(.caption)).frame(minHeight: 44)
+        }.buttonStyle(.borderless)
     }
 }
 // UITextView exposes the native range-selection handles, unlike SwiftUI Text on iOS 17.

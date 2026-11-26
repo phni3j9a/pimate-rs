@@ -83,7 +83,7 @@ private struct Conversation: View {
                             if !text.isEmpty {
                                 // A new streamed answer must not render with the previous answer's parsed blocks.
                                 let answer = "stream:" + (entries.last?.id ?? "begin")
-                                MarkdownBody(source: text, answer: answer).id(answer)
+                                MarkdownBody(source: text, answer: answer, copyAnswer: true).id(answer)
                             }
                             if let move = model.move { MoveNote(move: move) }
                             if let result = model.receipt { ReceiptNote(receipt: result) { model.dismissReceipt(host: key.host, result) } }
@@ -157,7 +157,7 @@ struct TurnView: View {
             ForEach(turn.lines) { line in
                 switch line {
                 case .reply(let reply):
-                    MarkdownBody(source: reply.text, answer: reply.id)
+                    MarkdownBody(source: reply.text, answer: reply.id, copyAnswer: true)
                 case .work(let w):
                     if folds && w.id == firstWork {
                         Button { didToggle(); expanded.toggle() } label: {
