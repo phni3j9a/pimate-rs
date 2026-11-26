@@ -205,6 +205,14 @@ internal sealed interface ChatRow {
     ) : ChatRow
 }
 
+internal fun ChatRow.Tool.expandedOutput(): String? =
+    output
+        .trimEnd()
+        .lines()
+        .let { if (it.size > 40) listOf("…") + it.takeLast(40) else it }
+        .joinToString("\n")
+        .ifEmpty { if (state == ToolState.Running) "出力を待っています…" else null }
+
 internal fun thinkingLabel(live: Boolean, ms: Long?): String {
     if (live) return "Thinking…"
     if (ms == null || ms < 1000) return "Thought"
@@ -261,7 +269,7 @@ internal fun buildRows(
     val running = live.filterNot { it.nested }.associateBy { it.id }
     val out = mutableListOf<ChatRow>()
     var turn = mutableListOf<ChatRow>()
-    var turnId: String? = null
+    var turnId = BEGINNING_TURN
     var started: Long? = null
     var ended: Long? = null
     var finalKey: String? = null
@@ -309,7 +317,11 @@ internal fun buildRows(
     fun close(inProgress: Boolean) {
         val id = turnId
         val tools = turn.count { it is ChatRow.Tool }
-        if (id == null || inProgress || tools == 0) out += turn
+        val changes =
+            turn.filterIsInstance<ChatRow.Tool>().filter {
+                it.change != null && it.key.startsWith("tool:")
+            }
+        if (inProgress || tools == 0 || id == BEGINNING_TURN && changes.isEmpty()) out += turn
         else {
             val key = "turn:$id"
             val took = started?.let { s -> ended?.let { it - s } }?.takeIf { it >= 1000 }
@@ -322,9 +334,8 @@ internal fun buildRows(
                         row is ChatRow.Text && row.key != finalKey -> row.copy(fold = key)
                         else -> null
                     }
-                if (folded != null && !summarized) {
+                if (!summarized && (folded != null || row is ChatRow.Tool && row.change != null)) {
                     summarized = true
-                    val changes = turn.filterIsInstance<ChatRow.Tool>().filter { it.change != null }
                     val diffs = changes.mapNotNull { it.change?.diff }
                     out +=
                         ChatRow.Summary(

@@ -141,6 +141,9 @@ internal fun Piece.withWriteContent(content: String?): Piece =
     if (content == null || patch != null || omitted in listOf("binary", "too_large")) this
     else copy(content = content, omitted = if (omitted == "no_diff") "unknown_before" else omitted)
 
+// Entry IDs are nonempty; null is reserved for a session-wide review.
+internal const val BEGINNING_TURN = ""
+
 /** Scope calls by the initiating turn; a result can arrive in a later turn. */
 internal fun review(entries: List<JSONObject>, cwd: String, turn: String? = null): Review {
     // Match the result to the most recent unmatched call, not every call sharing its ID.
@@ -153,7 +156,7 @@ internal fun review(entries: List<JSONObject>, cwd: String, turn: String? = null
     }
     val files = linkedMapOf<String, Pair<String, MutableList<Piece>>>()
     var latest: String? = null
-    var current: String? = null
+    var current = BEGINNING_TURN
     for (entry in entries) {
         if (entry.str("kind") == "user") current = entry.str("entryId")
         if (entry.str("kind") != "assistant" || turn != null && turn != current) continue

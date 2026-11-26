@@ -39,9 +39,13 @@ internal fun ReviewPage(
                 val full = review(entries, cwd)
                 val id = turn ?: full.latestChangedTurn
                 (if (all || id == null) full else review(entries, cwd, id)) to
-                    entries
-                        .filter { it.str("kind") == "user" }
-                        .map { it.str("entryId") to it.str("text").take(80) }
+                    buildList {
+                        if (entries.isNotEmpty() && entries.first().str("kind") != "user")
+                            add(BEGINNING_TURN to "最初の入力より前")
+                        entries
+                            .filter { it.str("kind") == "user" }
+                            .forEach { add(it.str("entryId") to it.str("text").take(80)) }
+                    }
             }
         data = r
         turns = users

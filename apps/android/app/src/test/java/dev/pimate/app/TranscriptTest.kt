@@ -55,7 +55,10 @@ class TranscriptTest {
                 false,
             )
         assertEquals("u", rows.filterIsInstance<ChatRow.Summary>().single().reviewTurn)
-        assertEquals("patch", rows.filterIsInstance<ChatRow.Tool>().single().change?.patch)
+        val tool = rows.filterIsInstance<ChatRow.Tool>().single()
+        assertEquals("patch", tool.change?.patch)
+        assertEquals("success", tool.expandedOutput())
+        assertNull(tool.copy(output = "").expandedOutput())
     }
 
     @Test
