@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>キーボードショートカット</title></head><body>
+<div class="win"><script>titlebar('PiMate')</script><div class="app">
+<script>sidebar({sel:'shout', focus:'auth'})</script>
+<div class="main"><script>chat()</script></div>
+<div class="scrim"><div class="dlg" style="width:760px">
+	<h2><span class="grow">キーボードショートカット</span><kbd>Esc</kbd></h2>
+	<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 36px">
+	<div>
+		<div class="lab" style="padding-left:0">移動</div>
+		<div class="line">コマンドパレット・Pi の検索<span class="v"><kbd>Ctrl K</kbd></span></div>
+		<div class="line">上から n 番目の Pi<span class="v"><kbd>Ctrl 1</kbd>〜<kbd>9</kbd></span></div>
+		<div class="line">前 / 次の Pi<span class="v"><kbd>Ctrl ↑</kbd> <kbd>Ctrl ↓</kbd></span></div>
+		<div class="line">次の要対応の Pi<span class="v"><kbd>Ctrl Shift A</kbd></span></div>
+		<div class="line">ペインの間を移る<span class="v"><kbd>F6</kbd></span></div>
+		<div class="line">サイドバーを出す / 隠す<span class="v"><kbd>Ctrl B</kbd></span></div>
+		<div class="line">新しい Pi<span class="v"><kbd>Ctrl N</kbd></span></div>
+		<div class="line">設定<span class="v"><kbd>Ctrl ,</kbd></span></div>
+	</div>
+	<div>
+		<div class="lab" style="padding-left:0">会話</div>
+		<div class="line">送信 / 改行<span class="v"><kbd>Enter</kbd> <kbd>Shift Enter</kbd></span></div>
+		<div class="line">完了後に送信（作業中）<span class="v"><kbd>Alt Enter</kbd></span></div>
+		<div class="line">停止<span class="v"><kbd>Esc</kbd></span></div>
+		<div class="line">入力欄へ<span class="v"><kbd>Ctrl L</kbd></span></div>
+		<div class="line">モデル・Thinking<span class="v"><kbd>Ctrl Shift M</kbd></span></div>
+		<div class="line">変更 / サブエージェント / GitHub<span class="v"><kbd>Ctrl Shift D</kbd> <kbd>S</kbd> <kbd>G</kbd></span></div>
+		<div class="line">会話をスクロール<span class="v"><kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Ctrl End</kbd></span></div>
+		<div class="line">文字サイズ<span class="v"><kbd>Ctrl +</kbd> <kbd>Ctrl −</kbd> <kbd>Ctrl 0</kbd></span></div>
+	</div></div>
+	<div class="cap" style="margin-top:14px">macOS では Ctrl の代わりに ⌘。メニューバー（macOS）にも同じ項目を置きます。</div>
+</div></div>
+</div></div>
+<script>notes('キーボード — すべての操作をマウスなしでできるようにする', [
+'<b>この一覧:</b> <kbd>Ctrl /</kbd>、設定の「キーボード」、パレットから開く。',
+'<b>フォーカスの順:</b> <kbd>Tab</kbd> でサイドバー → ヘッダー → 会話 → 入力欄 → インスペクター。一覧やメニューの中は <kbd>↑</kbd><kbd>↓</kbd>、<kbd>Enter</kbd> で実行。',
+'<b>フォーカスの表示:</b> アクセント色の 2px の枠（左のサイドバーの「認証まわりのレビュー」）。キーボードで動かしたときだけ出す。',
+'<b>Esc の順:</b> メニュー・ポップオーバー → ダイアログ → インスペクター → （作業中なら）停止。1回で1つだけ閉じる。',
+'<b>入力欄が空のとき:</b> <kbd>↑</kbd> で送信待ちのメッセージを入力欄に戻す。<span class="mono">/</span> でコマンド、<span class="mono">@</span> でファイルの候補。',
+'<b>送信キー:</b> 既定は Enter 送信。設定の「キーボード」で「Ctrl+Enter で送信（Enter は改行）」に変えられる。'])</script>
+</body></html>

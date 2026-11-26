@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>新しい Pi を起動 — ダイアログ</title></head><body>
+<div class="win"><script>titlebar('PiMate')</script><div class="app">
+<script>sidebar({sel:'shout'})</script>
+<div class="main"><script>chat()</script></div>
+<div class="scrim"><div class="dlg" style="width:560px">
+	<h2><span class="grow">新しい Pi</span><span class="ib"><script>W(I('x'))</script></span></h2>
+	<div class="flab" style="margin-top:0">マシン</div>
+	<div class="row"><span class="seg"><span class="on">MacBook</span><span>server-Macmini</span></span></div>
+	<div class="flab">フォルダ</div>
+	<div class="field focus"><span class="mono grow" style="font-size:13px">~/work/web<span class="caret"></span></span><script>W(I('folder'))</script></div>
+	<div class="pop" style="position:static;box-shadow:0 0 0 1px var(--fill2);margin-top:6px;padding:4px">
+		<div class="mi sel"><span class="mono grow">~/work/web</span><span class="cap">子フォルダ</span></div>
+		<div class="mi"><span class="mono grow">~/work/website-old</span></div>
+		<div class="lab">最近使ったフォルダ</div>
+		<div class="mi"><span class="mono grow">~/code/demo</span><span class="cap">Pi 1 件実行中</span></div>
+		<div class="mi"><span class="mono grow">~/work/api</span><span class="cap">2日前</span></div>
+	</div>
+	<div class="row" style="margin-top:14px;align-items:flex-start"><div class="col grow"><span>このフォルダを信頼する</span><span class="cap">フォルダ内の設定と Extension を読み込みます。起動時の Pi の確認は省かれます。</span></div><span class="toggle on"></span></div>
+	<div class="row" style="margin-top:12px"><span class="grow">モデル</span><span class="chip muted">Opus 5.5 · high <script>W(I('down',12))</script></span></div>
+	<div class="flab">最初のメッセージ（任意）</div>
+	<div class="field area"><span class="muted">起動したらすぐに送るメッセージ</span></div>
+	<div class="acts"><span class="cap grow">起動後は PC の <span class="mono">pimate attach</span> で同じ Pi に接続できます</span><span class="tbtn plain">キャンセル</span><span class="btn">起動 <kbd style="background:transparent;color:inherit">Ctrl Enter</kbd></span></div>
+</div></div>
+</div></div>
+<script>notes('新しい Pi — ダイアログ（短い入力はページを変えない）', [
+'<b>開く:</b> サイドバー右下の「＋ 新しい Pi」、<kbd>Ctrl N</kbd>、パレット、行の右クリック「同じフォルダで新しい Pi…」。',
+'<b>フォルダ:</b> 開くとここにフォーカス。打つと PC のフォルダを補完（<kbd>↑</kbd><kbd>↓</kbd> で選び <kbd>Tab</kbd> で確定）。空のときは最近使ったフォルダ。',
+'<b>マシン:</b> 2〜3台はセグメント、4台以上はメニュー。オフラインのマシンは選べない理由を添える。',
+'<b>起動:</b> <kbd>Ctrl Enter</kbd> か「起動」。起動したらダイアログを閉じ、その Pi を選んで入力欄にフォーカス。',
+'<b>閉じる:</b> ×・キャンセル・<kbd>Esc</kbd>。入力済みなら次に開いたとき残す。',
+'ダイアログにするもの: 新しい Pi、ペアリングの確認、<span class="mono">/resume</span>・<span class="mono">/tree</span>・<span class="mono">/fork</span> の選択、終了・削除・停止の確認、画像の拡大、ショートカット一覧。'])</script>
+</body></html>

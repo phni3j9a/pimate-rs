@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>チャット — 再接続・未確認・PC で操作が必要</title></head><body>
+<div class="win"><script>titlebar('API クライアントのリファクタ — PiMate')</script><div class="app">
+<script>sidebar({sel:'api'})</script>
+<div class="main">
+<script>head({title:'API クライアントのリファクタ', path:'~/work/api', status:'<span class="dot fail"></span><span class="danger">再接続中…</span>'})</script>
+<div class="banner" style="margin-top:4px"><span class="dot fail" style="margin:0"></span><span class="grow">MacBook に再接続しています。接続が戻るまで送信できません。下書きは残ります。</span><span class="tbtn" style="padding:0">今すぐ再試行</span></div>
+<div class="scroll"><div class="column">
+	<div class="me">エラー処理を Result 型にそろえて</div>
+	<div class="sum">1分12秒 作業 · ツール 8 回 · 2 ファイル編集 <script>W(I('down',12))</script></div>
+	<div><code>src/client.ts</code> と <code>src/errors.ts</code> を Result 型に書き換えました。</div>
+	<div class="me" style="opacity:.6">呼び出し側のテストも直して</div>
+	<div class="row cap" style="justify-content:flex-end;gap:10px"><span class="waitc">届いたか未確認（自動では再送しません）</span><span class="tbtn" style="padding:0">入力欄へ戻す</span></div>
+	<div class="card" style="margin-top:14px">
+		<div class="row"><script>W(I('laptop'))</script><b>PC のターミナルで操作が必要です</b></div>
+		<div class="cap" style="margin:4px 0 10px">Extension「deploy」の画面は PiMate から操作できません。Pi を起動した PC で続けてください。</div>
+		<div class="cmd" style="background:var(--bg)"><span class="muted">$</span><span class="grow">pimate attach pimate-4c1e9b22</span><script>W(I('copy',14))</script></div>
+	</div>
+	<div class="row cap" style="justify-content:center;margin-top:14px">— PC で <span class="mono">/resume</span> が実行され、別のセッションに移りました —</div>
+</div></div>
+<div class="banner"><span class="grow">下書きは前のセッション「エラー処理の整理」宛てでした。今のセッションに送りますか？</span><span class="tbtn plain" style="padding:0">下書きを消す</span><span class="tbtn" style="padding:0">このセッションに送る</span></div>
+<script>composer({text:'型の名前は ApiResult にして', off:true})</script>
+</div>
+</div></div>
+<script>notes('チャット — 接続が切れたとき・PC 側で変わったとき', [
+'<b>再接続:</b> ヘッダーの状態とヘッダー直下の1行で知らせる。会話は読める。送信ボタンは無効にし、理由を1行で書く。サイドバーのマシン名の横も「再接続中」。',
+'<b>未確認のメッセージ:</b> 薄く表示し、その下に黄色の文字と「入力欄へ戻す」。自動では再送しない。',
+'<b>PC で操作が必要:</b> 会話の中のカード。コマンドは右端のアイコンか行のクリックでコピー。PC 側で画面が閉じたらカードは消える。',
+'<b>セッションの切り替え:</b> PC で <span class="mono">/new</span>・<span class="mono">/resume</span> が実行されたら会話に区切りの1行を入れ、ウィンドウは同じ Pi に追従する。',
+'<b>下書きの送信先:</b> 切り替え前に書いた下書きは、送る先を確かめるまで送信できない（入力欄のすぐ上で聞く）。',
+'どれもモーダルにせず、その場所で次の手を示す。状態は色だけでなく文字でも書く。'])</script>
+</body></html>

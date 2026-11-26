@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>チャット — 入力待ち</title></head><body>
+<div class="win"><script>titlebar('ログイン画面の改修 — PiMate')</script><div class="app">
+<script>sidebar({sel:'login'})</script>
+<div class="main">
+<script>head({title:'ログイン画面の改修', path:'~/work/login', status:'<span class="dot wait"></span><span class="waitc">入力待ち</span>'})</script>
+<div class="scroll"><div class="column">
+	<div class="me">ログイン画面をメールリンク認証に対応させて</div>
+	<div class="sum">52秒 作業 · ツール 7 回 · 読み取りのみ <script>W(I('down',12))</script></div>
+	<div>現状の構成を確認しました。</div>
+	<div style="padding-left:18px">• <code>LoginForm.tsx</code> はパスワード入力のみ<br>• 認証は <code>/api/session</code> に集約</div>
+	<div>実装方針を選んでください。</div>
+	<div class="card" style="margin-top:6px">
+		<div class="row cap"><span class="dot wait" style="margin:0"></span><span class="waitc">選択してください</span><span class="grow"></span><kbd>1</kbd>〜<kbd>3</kbd> で選択</div>
+		<div style="font-weight:600;margin:8px 0 10px">メールリンクの実装方式は？</div>
+		<div class="row focus" style="align-items:flex-start;padding:7px 8px;margin:0 -8px;border-radius:10px"><span class="radio on"></span><div class="col"><span>既存の認証 API を拡張</span><span class="cap">変更は 3 ファイル程度</span></div></div>
+		<div class="row" style="align-items:flex-start;padding:7px 8px;margin:0 -8px"><span class="radio"></span><div class="col"><span>外部の Magic Link サービスを使う</span><span class="cap">SDK の追加と環境変数が必要</span></div></div>
+		<div class="row" style="align-items:flex-start;padding:7px 8px;margin:0 -8px"><span class="radio"></span><div class="col"><span>今回は UI の整理だけ</span><span class="cap">認証方式は変更しない</span></div></div>
+		<div class="field" style="background:var(--bg);margin-top:8px"><span class="muted">その他（自由に入力）</span></div>
+		<div class="row" style="justify-content:flex-end;margin-top:12px"><span class="tbtn plain">キャンセル <kbd>Esc</kbd></span><span class="btn">回答する <kbd style="background:transparent;color:inherit">Ctrl Enter</kbd></span></div>
+	</div>
+</div></div>
+<script>composer({text:'<span class="ph">上の質問に回答すると入力できます</span>', off:true})</script>
+</div>
+</div></div>
+<script>notes('チャット — 入力待ち（Pi からの質問はチャットの中）', [
+'<b>要対応:</b> サイドバーの最上段に黄色の印と質問の1行目。<kbd>Ctrl Shift A</kbd> で次の要対応の Pi へ移る。ウィンドウのタイトルにも件数を出す。',
+'<b>質問カード:</b> 会話の末尾に出す。モーダルにしない。開いた時点で最初の選択肢にフォーカス。',
+'<b>キーボード:</b> <kbd>↑</kbd><kbd>↓</kbd> または数字で選び、<kbd>Ctrl Enter</kbd> で回答、<kbd>Esc</kbd> でキャンセル（＝質問を取り消す）。自由入力の欄は <kbd>Tab</kbd> で移る。',
+'<b>フォーカス:</b> キーボードで動かしたときはアクセント色の 2px の枠。マウス操作のときは出さない。',
+'<b>入力欄:</b> 回答するまで送信できないことを欄の中に書く。下書きは消さない。',
+'この画面の塗りボタンは「回答する」だけ（送信は無効）。'])</script>
+</body></html>
