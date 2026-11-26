@@ -122,7 +122,7 @@ class RemainingJourney {
             tap("更新")
             find(hasText("実行時の最新版に更新します（確認時点の最新版: 0.1.20）", substring = true))
             tap("更新")
-            find(hasText("0.1.20 に更新しました"))
+            find(hasText("0.1.20 に更新しました。実行中の各 Pi で /reload を実行してください。"))
             tap("Host を再起動")
             tap("Host を再起動")
             find(hasText("再起動を受け付けました"))

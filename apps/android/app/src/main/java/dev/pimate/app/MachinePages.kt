@@ -566,7 +566,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
             online && available && caps.optBoolean("packageUpdate") &&
                 check?.optBoolean("canUpdate") == true
         // Host が自分では更新できない（常駐サービスでない・公開パッケージでない）。PC で操作してもらう。
-        val manual = check?.str("reason").orEmpty().takeIf { online && (available || unchecked) }
+        val manual = check?.str("reason").orEmpty().takeIf { online && available }
         ListRow(
             if (current.isEmpty()) "PiMate" else "現在 $current",
             when {
@@ -584,7 +584,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                         ConfirmAction(
                             host to latest,
                             "更新",
-                            "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。",
+                            "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。実行中の Pi は /reload または再起動まで旧版のままです。",
                             enabled = !busy,
                             title = "PC の PiMate を更新しますか？",
                             modifier = flushEnd,
@@ -593,7 +593,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                         ) {
                             operate {
                                 val r = request(Operation.Update)
-                                note = "${r.getString("to")} に更新しました"
+                                note = if (r.getString("to") == r.getString("from")) "更新されませんでした（版が固定されている可能性があります）" else "${r.getString("to")} に更新しました。実行中の各 Pi で /reload を実行してください。"
                                 retry++
                             }
                         }
