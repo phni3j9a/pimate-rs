@@ -114,15 +114,29 @@ internal fun NewPage(
                 )
             },
         ) {
-            Label("マシン")
+            Label("マシン", top = 8.dp)
             m.hosts.forEach {
-                MenuRow(
+                val rows = m.rowsFor(it.id)
+                val connection = rows.hostValue("connection")
+                val failed = it.needsPairing || stopped(connection) != null
+                ListRow(
                     it.name,
-                    if (h == it) "選択中" else m.rowsFor(it.id).summary(),
-                    !busy && !it.needsPairing,
-                ) {
-                    hostId = it.id
-                }
+                    // つながっていないマシンは、理由を補足に出す。
+                    when {
+                        it.needsPairing -> "再ペアリングが必要"
+                        connection != "\"connected\"" -> rows.summary()
+                        else -> ""
+                    },
+                    if (failed) pi.failedText else pi.textSecondary,
+                    enabled = !busy && !it.needsPairing,
+                    onClick = { hostId = it.id },
+                    leading = { HostMark(connection, failed) },
+                    trailing =
+                        if (h != it) null
+                        else {
+                            { Icon(Icons.Check, "選択中", Modifier.size(18.dp), pi.accentText) }
+                        },
+                )
             }
             Label("フォルダ")
             OutlinedTextField(
