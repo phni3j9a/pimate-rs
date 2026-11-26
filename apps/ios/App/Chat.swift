@@ -2,11 +2,12 @@ import SwiftUI
 
 struct ChatScreen: View {
     let model: SessionModel, host: String, instance: String
+    let showList: () -> Void
     private var rows: Rows { model.rows[host] ?? Rows() }
     var body: some View {
         let r = rows, info = r.groups["instance"]?.first { $0.id == instance }?.object ?? [:]
         Group {
-            if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r).id(r.viewGeneration).id(key) }
+            if let key = model.editor, key.host == host, key.target.instance == instance { Conversation(model: model, key: key, rows: r, showList: showList).id(r.viewGeneration).id(key) }
             else {
                 VStack {
                     if model.edge?.connection == "offline" || model.edge?.connection == "connecting" {
@@ -44,6 +45,9 @@ struct TailMetrics: Equatable {
 }
 private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
+    let showList: () -> Void
+    @Environment(\.horizontalSizeClass) private var widthClass
+    @State private var horizontalRegions: [CGRect] = []
     @State private var turns: [ChatTurn] = []
     private struct ReviewRoute: Identifiable { let id = UUID(); var turn: String?, line: String? }
     @State private var review: ReviewRoute?
@@ -102,7 +106,11 @@ private struct Conversation: View {
                             if follow { reader.scrollTo("tail", anchor: .bottom) }
                         }
                     }.coordinateSpace(name: "transcript").accessibilityIdentifier("transcript").modifier(PhotoViewport()).scrollDismissesKeyboard(.interactively)
-                        .simultaneousGesture(DragGesture().updating($dragging) { _, state, _ in state = true })
+                        .onPreferenceChange(HorizontalRegions.self) { horizontalRegions = $0 }
+                        .simultaneousGesture(DragGesture(coordinateSpace: .named("transcript")).updating($dragging) { _, state, _ in state = true }.onEnded { drag in
+                            if widthClass == .compact, drag.translation.width > 80, drag.translation.width > abs(drag.translation.height) * 2,
+                               !horizontalRegions.contains(where: { $0.contains(drag.startLocation) }) { showList() }
+                        })
                         .overlay(alignment: .bottomTrailing) {
                             if metrics?.nearTail == false {
                                 Button { withAnimation { reader.scrollTo("tail", anchor: .bottom) } } label: {

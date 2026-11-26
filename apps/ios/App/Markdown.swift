@@ -1,5 +1,14 @@
 import SwiftUI
 
+struct HorizontalRegions: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }
+}
+private extension View {
+    func keepsHorizontalDrag() -> some View {
+        background(GeometryReader { geo in Color.clear.preference(key: HorizontalRegions.self, value: [geo.frame(in: .named("transcript"))]) })
+    }
+}
 private actor MarkdownParser {
     static let shared = MarkdownParser()
     func blocks(_ source: String, files: Bool) throws -> ([Block], [MarkdownImage]) {
@@ -83,7 +92,7 @@ private struct MarkdownBlock: View {
         case .code(let language, let text):
             VStack(alignment: .leading, spacing: 4) {
                 HStack { Text(language ?? "コード").font(.caption.monospaced()); Spacer(); Button("コードをコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44) }
-                ScrollView(.horizontal) { Text(verbatim: text).font(.system(.callout, design: .monospaced)).textSelection(.enabled).fixedSize() }
+                ScrollView(.horizontal) { Text(verbatim: text).font(.system(.callout, design: .monospaced)).textSelection(.enabled).fixedSize() }.keepsHorizontalDrag()
             }.padding(.horizontal, 12).padding(.bottom, 12).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 12))
         case .quote(let children): HStack { Rectangle().fill(PiTheme.secondary).frame(width: 2); nested(children) }
         case .blockList(let start, let items):
@@ -143,7 +152,7 @@ struct MarkdownTable: View {
         }.background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
     }
     var body: some View {
-        grid(full: full).accessibilityAction(named: "表を開く") { if !full { showTable() } }
+        grid(full: full).keepsHorizontalDrag().accessibilityAction(named: "表を開く") { if !full { showTable() } }
     }
 }
 
