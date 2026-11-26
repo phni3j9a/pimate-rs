@@ -921,6 +921,7 @@ mod tests {
         use crate::state::FontSize;
         let (desktop, w, _socket) = open_chat(cx);
         // Desktop::new reads no settings file; every text size the user can choose is set here.
+        // Test text is not measured with the real fonts: whether the labels fit is checked on screen.
         // debug_bounds keeps selectors from earlier frames, so judge by where the header starts.
         for (font, (width, docked)) in ["small", "standard", "large"].into_iter().flat_map(|font| {
             [(1280., true), (900., true), (620., false), (480., false)].map(|at| (font, at))

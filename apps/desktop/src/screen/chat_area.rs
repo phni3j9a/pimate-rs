@@ -110,6 +110,8 @@ impl Desktop {
                     this.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
                 }))
         });
+        // 760px 未満では状態を印だけにする（文字サイズ「大」の 480px でも右のボタンが切れないように）。
+        let narrow = toggle.is_some();
         main = main.child(
             div()
                 .debug_selector(|| "chat-header".into())
@@ -155,7 +157,7 @@ impl Desktop {
                                 p.secondary.opacity(0.55)
                             })
                         })
-                        .child(status),
+                        .when(!narrow, |d| d.child(status)),
                 )
                 .child(self.review_button(&inspector, &page, p, cx))
                 .child(self.sheet_nav(&page, cx))
