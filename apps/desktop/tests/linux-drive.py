@@ -203,6 +203,7 @@ subprocess.run(['wl-copy', 'sentinel'],check=True)
 seat.NotifyKeyboardKeysym(0xffe3, True)
 key(ord('c'))
 seat.NotifyKeyboardKeysym(0xffe3, False)
+time.sleep(.3)
 assert subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2) == copied, 'selection lost at interrupted message_end'
 empty_editor = snap('empty-editor')
 editor = (x+700, y+624)
