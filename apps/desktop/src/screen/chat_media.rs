@@ -272,6 +272,11 @@ impl Media {
     }
 }
 impl Viewer {
+    pub(super) fn close(&mut self) {
+        if self.photo.take().is_none() {
+            self.table = None
+        }
+    }
     pub(super) fn panel(
         viewer: &Entity<Self>,
         media: Option<&Media>,
@@ -291,9 +296,7 @@ impl Viewer {
             })
             .on_click(move |_, _, cx| {
                 dismiss.update(cx, |s, cx| {
-                    if s.photo.take().is_none() {
-                        s.table = None
-                    }
+                    s.close();
                     cx.notify()
                 })
             });

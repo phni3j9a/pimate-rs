@@ -49,6 +49,7 @@ impl Desktop {
             page
         };
         let send_page = page.clone();
+        let stop_page = page.clone();
         let key_page = page.clone();
         let rows = &self.machines[&key.host].rows;
         let inspector = w.use_keyed_state(
@@ -60,6 +61,21 @@ impl Desktop {
             cx,
             |_, _| super::chat_review::Inspector::default(),
         );
+        self.chat_keys = Some((page.clone(), inspector.clone()));
+        if let Some((host, pi, start, shutdown)) = self.row_action.take()
+            && key.host == host
+            && key.instance == pi
+            && rows.get("view", "startedAt").as_u64() == Some(start)
+        {
+            if shutdown {
+                self.confirm_shutdown(&page, w, cx)
+            } else {
+                inspector.update(cx, |s, cx| {
+                    s.agents = false;
+                    s.load(page.clone(), None, true, cx)
+                });
+            }
+        }
         if inspector.read(cx).agents {
             return main.child(self.agent_panel(&key, &page, &inspector, p, w, cx));
         }
@@ -76,6 +92,7 @@ impl Desktop {
             ),
         };
         if let Some(viewer) = media.panel(p, w, cx) {
+            self.media_keys = Some(media.viewer.clone());
             return main.child(viewer);
         }
         let movement = rows.pending_move(&key, &self.drafts).or_else(|| {
@@ -84,6 +101,7 @@ impl Desktop {
         let session = rows.get("view", "session");
         let info = rows.get("instance", &key.instance);
         let running = rows.get("view", "status") == "running";
+        let can_stop = rows.can_stop();
         let blocked = !rows.group("question").is_empty() || !rows.get("view", "pcPrompt").is_null();
         let status = if blocked {
             "入力待ち"
@@ -300,7 +318,9 @@ impl Desktop {
                 .px_4(),
             );
         }
-        main = main.children(self.commands(&key, &page, p, w, cx));
+        let (suggestions, candidates) = self.commands(&key, &page, p, w, cx);
+        self.slash_visible = suggestions.is_some();
+        main = main.children(suggestions);
         if let Some((_, input, _)) = &self.input {
             let has_photos = !self.state.attachments.images(&key).is_empty();
             let movement = movement.is_some();
@@ -326,16 +346,29 @@ impl Desktop {
                         b.child(self.attachments(&key, &page, w, cx))
                     })
                     .child(
-                        div()
-                            .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
-                                if e.secondary {
-                                    if !disabled {
-                                        this.submit_chat(&key_page, w, cx);
-                                    }
-                                    cx.stop_propagation();
+                        super::context::editor(
+                            div().debug_selector(|| "composer-input".into()),
+                            input.clone(),
+                            false,
+                        )
+                        .key_context("Composer")
+                        .when_some(candidates, |div, c| c.bind(div, cx))
+                        .on_action(cx.listener(|this, _: &keys::Newline, w, cx| {
+                            if !this.composing
+                                && let Some((_, input, _)) = &this.input
+                            {
+                                input.update(cx, |s, cx| s.replace("\n", w, cx));
+                            }
+                        }))
+                        .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
+                            if e.secondary == this.ctrl_enter {
+                                if !disabled {
+                                    this.submit_chat(&key_page, w, cx);
                                 }
-                            }))
-                            .child(Input::new(input).appearance(false).h(rems(4.))),
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(Input::new(input).appearance(false).h(rems(4.))),
                     )
                     .child(
                         div()
@@ -347,16 +380,38 @@ impl Desktop {
                             })
                             .child(p.caption(if blocked {
                                 "入力待ちのため送信できません"
+                            } else if !self.ctrl_enter {
+                                "Enter で送信　Shift+Enter で改行"
                             } else if cfg!(target_os = "macos") {
                                 "↩ 改行　⌘↩ 送信"
                             } else {
                                 "Enter で改行　Ctrl+Enter で送信"
                             }))
+                            .when(can_stop, |row| {
+                                row.child(
+                                    p.text_button("abort", p.fail_ink, cx)
+                                        .tab_stop(false)
+                                        .label("停止")
+                                        .debug_selector(|| "abort-turn".into())
+                                        .disabled(self.stopping)
+                                        .on_click(cx.listener(move |this, e, w, cx| {
+                                            if this.background_click(e) {
+                                                return;
+                                            }
+                                            this.stop_chat(&stop_page, w, cx)
+                                        })),
+                                )
+                            })
                             .child(
                                 p.primary("send", cx)
+                                    .tab_stop(false)
+                                    .debug_selector(|| "send-message".into())
                                     .label(action)
                                     .disabled(disabled)
-                                    .on_click(cx.listener(move |this, _, w, cx| {
+                                    .on_click(cx.listener(move |this, e, w, cx| {
+                                        if this.background_click(e) {
+                                            return;
+                                        }
                                         this.submit_chat(&send_page, w, cx)
                                     })),
                             ),
@@ -366,7 +421,7 @@ impl Desktop {
         outer.child(theme::column(main).flex_shrink_0())
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
-        if !page.visible(self) {
+        if self.overlay_open(w, cx) || !page.visible(self) {
             return;
         }
         let t = match self.prepare_submission(page, w, cx) {
@@ -377,6 +432,16 @@ impl Desktop {
                 return;
             }
         };
+        self.run_submission(page, t, true, w, cx);
+    }
+    pub(super) fn run_submission(
+        &mut self,
+        page: &state::Page,
+        t: state::Submission,
+        from_input: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.sending = true;
         self.notice.clear();
         let page = page.clone();
@@ -386,7 +451,13 @@ impl Desktop {
                 this.sending = false;
                 match result {
                     Ok(ack) => {
-                        let open = ack.finish(this, w, cx);
+                        let open = if from_input {
+                            ack.finish(this, w, cx)
+                        } else if page.visible(this) {
+                            ack.opened_sheet()
+                        } else {
+                            None
+                        };
                         if let Some(name) = open {
                             use state::SheetPage::*;
                             this.show_sheet(

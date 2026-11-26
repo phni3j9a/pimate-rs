@@ -264,29 +264,34 @@ fn block(
             .child(rich_line(&id, spans, media, w, cx))
             .into_any_element(),
         Content::Rule => div().h(px(1.)).bg(cx.theme().border).into_any_element(),
-        Content::Code { text, language } => col
-            .bg(cx.theme().muted)
-            .rounded_md()
-            .p_3()
-            .font_family(cx.theme().mono_font_family.clone())
-            .when_some(language.as_ref(), |c, l| {
-                c.child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(l.clone()),
-                )
-            })
-            .child(line(
-                &id,
-                &[Inline::Text {
-                    text: text.clone(),
-                    style: SpanStyle::default(),
-                }],
-                w,
-                cx,
-            ))
-            .into_any_element(),
+        Content::Code { text, language } => crate::screen::context::on_right_click(
+            col.bg(cx.theme().muted)
+                .rounded_md()
+                .p_3()
+                .font_family(cx.theme().mono_font_family.clone())
+                .when_some(language.as_ref(), |c, l| {
+                    c.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(l.clone()),
+                    )
+                })
+                .child(line(
+                    &id,
+                    &[Inline::Text {
+                        text: text.clone(),
+                        style: SpanStyle::default(),
+                    }],
+                    w,
+                    cx,
+                )),
+            {
+                let text = text.clone();
+                move |m| m.item(crate::screen::context::copy("コードをコピー", text.clone()))
+            },
+        )
+        .into_any_element(),
         Content::Quote(children) | Content::Item { children, .. } => col
             .pl_2()
             .when(matches!(b.content, Content::Quote(_)), |c| {

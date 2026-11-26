@@ -369,7 +369,7 @@ impl Desktop {
                     let text = input.read(cx).value().to_string();
                     let unit = unit.clone();
                     let pg = page.clone();
-                    body = body.child(Input::new(&input).disabled(disable)).child(
+                    body = body.child(context::field(&input, disable)).child(
                         p.primary("instruct-child", cx)
                             .label(label)
                             .disabled(disable || text.trim().is_empty())

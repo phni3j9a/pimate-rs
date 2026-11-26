@@ -233,7 +233,7 @@ impl Desktop {
                             .capture_action(|_: &gpui_component::input::Cut, _, cx| {
                                 cx.stop_propagation()
                             })
-                            .child(Input::new(&input)),
+                            .child(context::field(&input, false)),
                     )
                     .child(p.primary("respond", cx).label("送信").on_click(cx.listener(
                         move |app, _, w, cx| {

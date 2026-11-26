@@ -175,13 +175,13 @@ with socket.socket(socket.AF_UNIX) as peer:
         assert reply['ok'] and reply['result']['deliveredAs'] == 'steer'
 # Only switch the isolated GNOME settings. The test namespace and temporary HOME own dconf.
 # Switch twice while updates and cursor/selection rendering can re-enter the platform.
-for n in range(2):
-    subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','prefer-dark'],check=True)
-    time.sleep(.65)
-    assert snap('dark').getpixel((x+12,y+600)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
-    subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
-    time.sleep(.65)
-    assert snap('light').getpixel((x+12,y+600)) == (241,243,244), 'desktop did not return to light appearance'
+for _ in range(2):
+    for scheme, name, rgb in [('prefer-dark', 'dark', (30,35,38)), ('default', 'light', (241,243,244))]:
+        subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme',scheme],check=True)
+        deadline = time.monotonic() + 5
+        while snap(name).getpixel((x+12,y+600)) != rgb:
+            assert time.monotonic() < deadline, f'desktop did not follow GNOME {name} appearance'
+            time.sleep(.2)
 # message_end precedes the idle status. Wait for the actual rendered header
 # and answer (not mock time or a fixed delay); never scroll the selection away.
 deadline = time.monotonic() + 25
@@ -252,19 +252,11 @@ if mode == 'hotplug':
     snap('candidate-after-hotplug')
 key(0xff0d)
 snap('commit')
-key(0xff0d)  # ordinary Enter adds newline, not a prompt
-time.sleep(3.5)
-assert prompts() == external
-if mode == 'check':
-    seat.NotifyKeyboardKeysym(0xffe3, True)
-    key(0xff0d)
-    seat.NotifyKeyboardKeysym(0xffe3, False)
-else:
-    # Look for the enabled (filled) send button now, not in the frame right after the commit:
-    # the button is redrawn one frame after the composition ends.
-    click(*blob(snap('before-send'), ACCENT, (x+300, y+560, 1280, 800))[:2])
+time.sleep(1)
+assert prompts() == external, 'conversion Enter sent a prompt'
+key(0xff0d)
 time.sleep(4)
-assert prompts() == external + [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
+assert prompts() == external + [['demo', 'ニホンゴ']], 'Enter did not send the committed text exactly once'
 snap('sent')
-print(f'{mode}: paired, demo listed, selection survived stream; Enter: 0 prompts; explicit send: 1 prompt = ニホンゴ + newline')
+print(f'{mode}: conversion Enter: 0 prompts; committed Enter: 1 prompt = ニホンゴ')
 seat.Stop()

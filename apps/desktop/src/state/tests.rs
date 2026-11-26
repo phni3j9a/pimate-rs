@@ -261,7 +261,7 @@ async fn connected(host: Host) -> (Machine, async_channel::Receiver<crate::model
     }
     (m, rx)
 }
-pub(super) async fn fixture(
+pub(crate) async fn fixture(
     id: &'static str,
 ) -> (
     Machine,
@@ -281,6 +281,7 @@ pub(super) async fn fixture(
     let server = tokio::spawn(async move {
         let mut ws = accept_async(sock.accept().await.unwrap().0).await.unwrap();
         let mut files = 0;
+        let mut reject_commands = id == "abort-test";
         let mut started = false;
         while let Some(Ok(msg)) = ws.next().await {
             if !msg.is_text() {
@@ -296,7 +297,14 @@ pub(super) async fn fixture(
                         continue;
                     }
                     started = true;
-                    json!({"type":"subscribed","instanceId":"pi","snapshot":snapshot("pi",1),"history":{"session":{"id":"same"},"items":[]}})
+                    let mut snapshot = snapshot("pi", 1);
+                    if id == "key-menu" {
+                        snapshot["pendingUI"] = json!([]);
+                    }
+                    if matches!(id, "abort-test" | "key-menu") {
+                        snapshot["agentActive"] = json!(true);
+                    }
+                    json!({"type":"subscribed","instanceId":"pi","snapshot":snapshot,"history":{"session":{"id":"same"},"items":[]}})
                 }
                 Some("auth_session") => {
                     json!({"type":"auth_session_result","requestId":v["requestId"],"ok":true,"instanceId":"login"})
@@ -309,6 +317,10 @@ pub(super) async fn fixture(
                     let req = &v["request"];
                     let m = req["method"].as_str().unwrap();
                     tx.send(m.to_owned()).unwrap();
+                    if m == "commands" && std::mem::take(&mut reject_commands) {
+                        ws.send(Message::text(json!({"type":"rc_result","instanceId":"pi","response":{"type":"response","id":req["id"],"ok":false,"error":{"code":"bad_request"}}}).to_string())).await.unwrap();
+                        continue;
+                    }
                     let mut flow = json!({"id":"flow","provider":"openai","method":"api_key","revision":1,"expiresAt":9999999999999_u64,"status":"input","prompt":{"kind":"api_key","id":"prompt"}});
                     let result = match m {
                         "ui_respond" => {
@@ -322,6 +334,10 @@ pub(super) async fn fixture(
                             assert!(req["params"]["op"] == "new");
                             ws.send(Message::text(json!({"type":"event","instanceId":"pi","sessionId":"same","seq":2,"event":{"type":"session_changed","reason":"new","session":{"id":"next"}}}).to_string())).await.unwrap();
                             json!({})
+                        }
+                        "abort" if matches!(id, "abort-test" | "key-menu") => json!({}),
+                        "models" if id == "key-menu" => {
+                            json!({"models":[],"current":null,"default":{"model":null,"thinking":null}})
                         }
                         "commands" => json!({"commands":[]}),
                         "file_image" => {

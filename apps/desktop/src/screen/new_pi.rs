@@ -3,6 +3,15 @@ use pimate_protocol::ModelRef;
 use settings::{group, line};
 use state::{MachineQuery, SpawnStatus};
 
+pub(super) struct SpawnDraft {
+    conn: std::sync::Weak<Connection>,
+    folder: String,
+    trusted: Option<String>,
+    message: String,
+    model: Option<ModelRef>,
+    thinking: Option<pimate_protocol::ThinkingLevel>,
+    ask: bool,
+}
 pub(super) struct Fields {
     folder: Entity<InputState>,
     message: Entity<InputState>,
@@ -37,6 +46,29 @@ fn spawn_error(error: Error, submitted: &mut bool) -> &'static str {
     }
 }
 impl Desktop {
+    pub(super) fn remember_spawn(&self, n: &Navigation, cx: &mut Context<Self>) {
+        n.update(cx, |s, cx| {
+            if let Route::New(id) = &s.route
+                && let Some(f) = &s.spawn
+                && !f.submitted
+                && let Some(page) = &s.page
+                && page.visible(self)
+            {
+                s.spawn_drafts.insert(
+                    id.clone(),
+                    SpawnDraft {
+                        conn: Arc::downgrade(&self.machines[id].conn),
+                        folder: f.folder.read(cx).value().to_string(),
+                        trusted: f.trusted.clone(),
+                        message: f.message.read(cx).value().to_string(),
+                        model: f.model.clone(),
+                        thinking: f.thinking,
+                        ask: f.ask,
+                    },
+                );
+            }
+        });
+    }
     pub(super) fn new_pi(
         &mut self,
         n: &Navigation,
@@ -68,8 +100,32 @@ impl Desktop {
             return v.child("起動先に接続してからマシンを選んでください。");
         };
         if n.read(cx).spawn.is_none() {
-            let folder = cx.new(|cx| InputState::new(w, cx).placeholder("/path/to/project"));
-            let message = cx.new(|cx| first_message(w, cx));
+            let draft = n
+                .update(cx, |s, _| s.spawn_drafts.remove(id))
+                .filter(|d| d.conn.ptr_eq(&Arc::downgrade(&self.machines[id].conn)));
+            let path = n
+                .read(cx)
+                .initial_folder
+                .clone()
+                .or_else(|| draft.as_ref().map(|d| d.folder.clone()))
+                .unwrap_or_default();
+            let trusted = draft
+                .as_ref()
+                .and_then(|d| d.trusted.clone())
+                .filter(|d| d == &path);
+            let folder = cx.new(|cx| {
+                InputState::new(w, cx)
+                    .placeholder("/path/to/project")
+                    .default_value(path)
+            });
+            let message = cx.new(|cx| {
+                first_message(w, cx).default_value(
+                    draft
+                        .as_ref()
+                        .map(|d| d.message.clone())
+                        .unwrap_or_default(),
+                )
+            });
             let nav = n.downgrade();
             let watch = cx.subscribe(&folder, move |_, input, event, cx| {
                 if matches!(event, InputEvent::Change)
@@ -91,13 +147,15 @@ impl Desktop {
                 s.spawn = Some(Fields {
                     folder,
                     message,
-                    trusted: None,
+                    trusted,
                     folders: Value::Null,
                     models: Value::Null,
-                    model: None,
+                    model: draft.as_ref().and_then(|d| d.model.clone()),
                     expanded: false,
-                    thinking: None,
-                    ask: self.state.settings.ask_tool,
+                    thinking: draft.as_ref().and_then(|d| d.thinking),
+                    ask: draft
+                        .as_ref()
+                        .map_or(self.state.settings.ask_tool, |d| d.ask),
                     dirs: None,
                     loading_dirs: false,
                     busy: true,
@@ -146,7 +204,7 @@ impl Desktop {
         let folder = f.folder.clone();
         let msg = f.message.clone();
         let path = folder.read(cx).value().to_string();
-        let mut folders = group("フォルダ", p).child(Input::new(&folder).disabled(locked));
+        let mut folders = group("フォルダ", p).child(context::field(&folder, locked));
         let mut recent = line();
         for (i, path) in f
             .folders
@@ -366,8 +424,10 @@ impl Desktop {
             v = v.child(p.caption("候補を取得中…"));
         }
         v.child(
-            group("最初のメッセージ（任意）", p)
-                .child(Input::new(&msg).h(rems(3.5)).disabled(locked)),
+            group("最初のメッセージ（任意）", p).child(
+                context::editor(div(), msg.clone(), locked)
+                    .child(Input::new(&msg).h(rems(3.5)).disabled(locked)),
+            ),
         )
     }
     pub(super) fn spawn_footer(
@@ -469,6 +529,62 @@ fn known_trust(rows: &Value, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::known_trust;
+    #[gpui::test]
+    fn palette_escape_returns_to_message_field(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable;
+        let (app, w, _) = super::super::tests::open_chat(cx);
+        w.update(|_, cx| super::super::keys::init(cx));
+        w.simulate_keystrokes("secondary-n");
+        let field = app.read_with(w, |d, cx| {
+            d.navigation
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .spawn
+                .as_ref()
+                .unwrap()
+                .message
+                .clone()
+        });
+        w.update(|w, cx| field.focus_handle(cx).focus(w));
+        w.simulate_keystrokes("a secondary-k escape b");
+        assert!(w.update(|w, cx| field.focus_handle(cx).is_focused(w)));
+        assert_eq!(field.read_with(w, |s, _| s.value().to_string()), "ab");
+    }
+    #[gpui::test]
+    fn escape_retains_unsent_request_for_same_machine(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = super::super::tests::open_chat(cx);
+        w.update(|_, cx| super::super::keys::init(cx));
+        w.simulate_keystrokes("secondary-n");
+        w.update(|w, cx| {
+            let n = app.read(cx).navigation.clone().unwrap();
+            let f = n.read(cx).spawn.as_ref().unwrap();
+            let (folder, msg) = (f.folder.clone(), f.message.clone());
+            folder.update(cx, |s, cx| s.set_value("/tmp/project", w, cx));
+            msg.update(cx, |s, cx| {
+                s.set_value("入力途中", w, cx);
+                s.focus(w, cx);
+            });
+        });
+        w.simulate_keystrokes("escape");
+        assert!(
+            app.read_with(w, |d, cx| d.navigation.as_ref().unwrap().read(cx).route
+                == super::Route::Home)
+        );
+        w.simulate_keystrokes("secondary-n");
+        app.read_with(w, |d, cx| {
+            let f = d
+                .navigation
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .spawn
+                .as_ref()
+                .unwrap();
+            assert_eq!(f.folder.read(cx).value().as_str(), "/tmp/project");
+            assert_eq!(f.message.read(cx).value().as_str(), "入力途中");
+        });
+    }
     #[test]
     fn only_definite_refusal_unlocks_spawn() {
         use pimate_core::Error;

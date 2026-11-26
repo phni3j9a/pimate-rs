@@ -4,17 +4,21 @@ mod chat_commands;
 pub(crate) mod chat_media;
 mod chat_question;
 mod chat_review;
+pub(crate) mod context;
 mod conversation;
 mod first_step;
 mod github;
+pub(crate) mod keys;
 mod machine;
 mod new_pi;
+mod palette;
 mod providers;
 mod settings;
 mod sheet_chat;
 mod sheet_tree;
 mod theme;
 use super::*;
+pub(crate) use chat_review::Inspector;
 use gpui_component::{
     Disableable, Selectable, Sizable, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
@@ -22,7 +26,8 @@ use gpui_component::{
     scroll::ScrollableElement,
 };
 use serde_json::Value;
-use settings::{Navigation, Route};
+pub(crate) use settings::Navigation;
+use settings::Route;
 pub(crate) use theme::Assets;
 use theme::{Colors, Layout, icon};
 
@@ -151,7 +156,7 @@ impl Desktop {
         nav: &Navigation,
         p: &Colors,
         cx: &Context<Self>,
-    ) -> Button {
+    ) -> Div {
         let (host, pi) = (h.id.clone(), id.to_owned());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -193,7 +198,26 @@ impl Desktop {
             })
             .mt(px(7.))
         };
-        p.row(SharedString::from(format!("pi-{host}-{pi}")), selected, cx)
+        let row_host = host.clone();
+        let row_pi = pi.clone();
+        let start = v["startedAt"].as_u64();
+        let new_nav = nav.clone();
+        let open = cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if nav.read(cx).route != Route::Home {
+                this.navigate(&nav, Route::Home, cx);
+            }
+            this.select(host.clone(), pi.clone(), cx);
+        });
+        let open = std::rc::Rc::new(open);
+        let click = open.clone();
+        let folder = v["cwd"].as_str().map(str::to_owned);
+        let attach = v["abducoSession"].as_str().and_then(state::attach_command);
+        let row = p
+            .row(
+                SharedString::from(format!("pi-{}-{id}", h.id)),
+                selected,
+                cx,
+            )
             .h(px(theme::ROW))
             .px_3()
             .tooltip(format!("{} · {cwd}", self.host_label(h)))
@@ -232,28 +256,75 @@ impl Desktop {
                         .text_size(rems(0.69)),
                     ),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if nav.read(cx).route != Route::Home {
-                    this.navigate(&nav, Route::Home, cx);
-                }
-                this.select(host.clone(), pi.clone(), cx)
-            }))
+            .on_click(move |e, w, cx| click(e, w, cx));
+        let app = cx.weak_entity();
+        context::on_right_click(
+            div()
+                .debug_selector(|| format!("context-pi-{id}"))
+                .child(row),
+            move |m| {
+                let open = open.clone();
+                let owner = app.clone();
+                let host = row_host.clone();
+                let n = new_nav.clone();
+                let on_row = |label, shutdown| {
+                    let owner = app.clone();
+                    let host = row_host.clone();
+                    let pi = row_pi.clone();
+                    let nav = new_nav.clone();
+                    gpui_component::menu::PopupMenuItem::new(label)
+                        .disabled(start.is_none())
+                        .on_click(move |_, _, cx| {
+                            let _ = owner.update(cx, |app, cx| {
+                                let Some(start) = start else { return };
+                                if app.machines.get(&host).is_none_or(|m| {
+                                    m.rows.get("instance", &pi)["startedAt"].as_u64() != Some(start)
+                                }) {
+                                    return;
+                                }
+                                if nav.read(cx).route != Route::Home {
+                                    app.navigate(&nav, Route::Home, cx);
+                                }
+                                if app.selected.as_ref() != Some(&(host.clone(), pi.clone())) {
+                                    app.select(host.clone(), pi.clone(), cx);
+                                }
+                                if app.selected.as_ref() == Some(&(host.clone(), pi.clone())) {
+                                    app.state.close_page();
+                                    app.row_action =
+                                        Some((host.clone(), pi.clone(), start, shutdown));
+                                    cx.notify();
+                                }
+                            });
+                        })
+                };
+                m.item(
+                    gpui_component::menu::PopupMenuItem::new("開く")
+                        .on_click(move |e, w, cx| open(e, w, cx)),
+                )
+                .when_some(folder.clone(), |m, path| {
+                    m.item(context::copy("フォルダのパスをコピー", path))
+                })
+                .when_some(attach.clone(), |m, cmd| {
+                    m.item(context::copy("pimate attach をコピー", cmd))
+                })
+                .when_some(folder.clone(), |m, path| {
+                    m.item(
+                        gpui_component::menu::PopupMenuItem::new("同じフォルダで新しい Pi…")
+                            .on_click(move |_, _, cx| {
+                                let _ = owner.update(cx, |d, cx| {
+                                    d.navigate(&n, Route::New(host.clone()), cx);
+                                    n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
+                                });
+                            }),
+                    )
+                })
+                .item(on_row("変更をレビュー", false))
+                .item(on_row("この Pi を終了…", true))
+            },
+        )
     }
     /// サイドバー: 検索欄・要対応・マシンごと・最下段（設定／＋新しい Pi）。
-    fn sidebar(
-        &self,
-        n: &Navigation,
-        p: &Colors,
-        search: &Entity<InputState>,
-        cx: &Context<Self>,
-    ) -> Div {
-        let query = search.read(cx).value().trim().to_lowercase();
-        let shown = |id: &str, v: &Value| {
-            query.is_empty()
-                || format!("{} {}", pi_title(v, id), v["cwd"].as_str().unwrap_or(""))
-                    .to_lowercase()
-                    .contains(&query)
-        };
+    fn sidebar(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
         let group = || {
             div()
                 .flex()
@@ -282,7 +353,7 @@ impl Desktop {
                     .iter()
                     .map(move |(id, v)| (h, id, v))
             })
-            .filter(|(_, id, v)| v["section"] == "waiting" && shown(id, v))
+            .filter(|(_, _, v)| v["section"] == "waiting")
             .collect();
         if !waiting.is_empty() {
             rows = rows.child(
@@ -352,10 +423,7 @@ impl Desktop {
                         .py_2(),
                     );
                 }
-                for (id, v) in entries
-                    .iter()
-                    .filter(|(id, v)| v["section"] != "waiting" && shown(id, v))
-                {
+                for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
                     rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
@@ -380,19 +448,11 @@ impl Desktop {
             .pt_3()
             .pb_2()
             .child(
-                div()
-                    .mx_1()
-                    .mb_1()
+                p.row("sidebar-search", false, cx)
                     .h(px(theme::CONTROL))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pl_3()
-                    .rounded(px(theme::CONTROL / 2.))
-                    .bg(p.bg)
                     .child(icon("search", 16., p.secondary))
-                    .child(Input::new(search).appearance(false).cleanable(true)),
+                    .label("Pi・コマンドを検索")
+                    .on_click(cx.listener(|app, _, w, cx| app.open_palette(false, w, cx))),
             )
             .child(rows)
             .child(
@@ -426,10 +486,7 @@ impl Desktop {
     fn sidebar_toggle(&self, p: &Colors, cx: &Context<Self>) -> Button {
         p.icon_button("sidebar-toggle", "side", "Pi の一覧", cx)
             .debug_selector(|| "sidebar-toggle".into())
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.sidebar_open = !this.sidebar_open;
-                cx.notify()
-            }))
+            .on_click(cx.listener(|this, _, w, cx| this.command(keys::Command::Sidebar, w, cx)))
     }
     /// 登録の進み具合・結果・失敗。読み出せないときは、ここから読み直せる。
     fn registration_notice(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
@@ -484,9 +541,44 @@ impl Desktop {
             .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
     }
     /// 貼り付けたリンクの接続先を見せてから登録する。確定したあとの進み具合は知らせに出す。
-    fn pair_dialog(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
+    fn pair_dialog(&self, p: &Colors, w: &mut Window, cx: &mut Context<Self>) -> Option<Div> {
         let (_, target) = self.confirmation.as_ref()?;
+        let (cancel, accept) = w
+            .use_keyed_state("pair-dialog-focus", cx, |_, cx| {
+                (cx.focus_handle(), cx.focus_handle())
+            })
+            .read(cx)
+            .clone();
+        if !cancel.is_focused(w) && !accept.is_focused(w) {
+            w.focus(&cancel);
+        }
+        let choices = (cancel.clone(), accept.clone());
+        let confirm = accept.clone();
+        let ring = |focus: &FocusHandle| {
+            div().track_focus(focus).when(self.keyboard_focus, |d| {
+                d.focus(|d| d.border_2().border_color(p.accent))
+            })
+        };
         let card = div()
+            .key_context("PairDialog")
+            .on_action(move |_: &keys::PairTab, w, cx| {
+                w.focus(if choices.0.is_focused(w) {
+                    &choices.1
+                } else {
+                    &choices.0
+                });
+                cx.stop_propagation();
+            })
+            .on_action(cx.listener(move |d, _: &keys::PairEnter, w, cx| {
+                if confirm.is_focused(w) {
+                    d.pair(cx);
+                    d.restore_input(w, cx);
+                } else {
+                    d.confirmation = None;
+                    d.restore_input(w, cx);
+                    cx.notify()
+                }
+            }))
             .w(px(380.))
             .max_w(relative(0.9))
             .p_5()
@@ -514,18 +606,26 @@ impl Desktop {
                     .items_center()
                     .gap_2()
                     .child(
-                        p.text_button("cancel", p.secondary, cx)
-                            .label("キャンセル")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirmation = None;
-                                cx.notify()
-                            })),
+                        ring(&cancel).child(
+                            p.text_button("cancel", p.secondary, cx)
+                                .label("キャンセル")
+                                .on_click(cx.listener(|this, _, w, cx| {
+                                    this.confirmation = None;
+                                    this.restore_input(w, cx);
+                                    cx.notify()
+                                })),
+                        ),
                     )
                     .child(
-                        p.primary("pair", cx)
-                            .label("この接続先を登録")
-                            .disabled(self.pairing)
-                            .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
+                        ring(&accept).child(
+                            p.primary("pair", cx)
+                                .label("この接続先を登録")
+                                .disabled(self.pairing)
+                                .on_click(cx.listener(|this, _, w, cx| {
+                                    this.pair(cx);
+                                    this.restore_input(w, cx);
+                                })),
+                        ),
                     ),
             );
         Some(p.scrim().items_center().justify_center().child(card))
@@ -598,8 +698,9 @@ impl Desktop {
                 p.scrim()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
+                        cx.listener(|this, _, w, cx| {
                             this.sidebar_open = false;
+                            this.restore_input(w, cx);
                             cx.notify()
                         }),
                     )
@@ -622,21 +723,35 @@ impl Render for Desktop {
         }
         let dark = self.palette(w, cx);
         w.set_rem_size(px(self.size));
-        let p = Colors::new(dark);
+        let p = Colors {
+            keyboard_focus: self.keyboard_focus,
+            ..Colors::new(dark)
+        };
         self.sync_title(w);
         let layout = Layout::of(w.viewport_size().width);
         if self.search.is_none() {
             let input = cx.new(|cx| InputState::new(w, cx).placeholder("Pi・フォルダを検索"));
-            let changed = cx.subscribe(&input, |_, _, e: &InputEvent, cx| {
+            let changed = cx.subscribe(&input, |this, _, e: &InputEvent, cx| {
                 if matches!(e, InputEvent::Change) {
+                    this.palette_index = 0;
                     cx.notify()
                 }
             });
             self.search = Some((input, changed));
         }
-        let search = self.search.as_ref().unwrap().0.clone();
+        self.navigation = Some(nav.clone());
+        self.chat_keys = None;
+        self.slash_visible = false;
+        self.media_keys = None;
         // マシンが1台もないうちは、並べる Pi がないのでサイドバーを出さない。
-        let side = (!self.hosts.is_empty()).then(|| self.sidebar(&nav, &p, &search, cx));
+        let side = (!self.hosts.is_empty() && (layout == Layout::Narrow || !self.sidebar_hidden))
+            .then(|| {
+                self.sidebar(&nav, &p, cx)
+                    .track_focus(&self.side_focus)
+                    .when(self.keyboard_focus, |d| {
+                        d.focus(|d| d.border_2().border_color(p.accent))
+                    })
+            });
         let toggle =
             (side.is_some() && layout == Layout::Narrow).then(|| self.sidebar_toggle(&p, cx));
         // The answer belongs to the pending question, not to the visible workspace panel.
@@ -652,7 +767,16 @@ impl Render for Desktop {
         });
         let home = nav.read(cx).route == Route::Home;
         let first = home && self.hosts.is_empty();
-        let mut main = div().flex().flex_col().flex_1().min_w_0().h_full();
+        let mut main = div()
+            .track_focus(&self.main_focus)
+            .when(self.keyboard_focus, |d| {
+                d.focus(|d| d.border_2().border_color(p.accent))
+            })
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .h_full();
         if !first && let Some(notice) = self.registration_notice(&p, cx) {
             main = main.child(notice.mx_4().mt_3());
         }
@@ -725,7 +849,19 @@ impl Render for Desktop {
                     .child(self.title.clone()),
             )
         });
-        div()
+        if w.focused(cx).is_none() {
+            w.focus(&self.root_focus);
+        }
+        let root = div().track_focus(&self.root_focus).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _, _, cx| {
+                if this.keyboard_focus {
+                    this.keyboard_focus = false;
+                    cx.notify();
+                }
+            }),
+        );
+        keys::listeners(root, cx)
             .relative()
             .flex()
             .flex_col()
@@ -735,7 +871,9 @@ impl Render for Desktop {
             .text_size(rems(0.875))
             .children(titlebar)
             .child(self.panes(layout, side, main, None, &p, cx))
-            .children(self.pair_dialog(&p, cx))
+            .children(self.command_palette(&p, cx))
+            .children(self.pair_dialog(&p, w, cx))
+            .children(self.context_menu.as_ref().map(context::OpenMenu::layer))
     }
 }
 
@@ -833,7 +971,7 @@ mod tests {
         });
     }
     /// 1台のマシンと、質問待ちの会話を開いた状態。
-    fn open_chat(
+    pub(super) fn open_chat(
         cx: &mut gpui::TestAppContext,
     ) -> (
         gpui::Entity<super::Desktop>,
@@ -1193,5 +1331,570 @@ mod tests {
                 && restore.bottom() + scroller.offset().y <= area.bottom() + px(1.)
         );
         assert_eq!(editor, w.debug_bounds("editor").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::{Route, keys, state, tests};
+    fn release(w: &mut gpui::VisualTestContext, key: &str) {
+        w.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse(key).unwrap(),
+        });
+        w.run_until_parked();
+    }
+    fn press(w: &mut gpui::VisualTestContext, keys: &str) {
+        for key in keys.split_whitespace() {
+            w.simulate_keystrokes(key);
+            release(w, key);
+        }
+    }
+    fn wait(w: &mut gpui::VisualTestContext, selector: &'static str) -> gpui::Point<gpui::Pixels> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            w.run_until_parked();
+            if let Some(b) = w.debug_bounds(selector) {
+                break b.center();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{selector} did not appear"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    #[gpui::test]
+    fn x11_enter_repeat_cannot_submit_completed_command(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l / m o d");
+        wait(w, "command-choice-0");
+        w.simulate_keystrokes("enter enter enter");
+        app.read_with(w, |d, cx| {
+            assert!(!d.sending && d.active_sheet().is_none());
+            assert_eq!(
+                d.input.as_ref().unwrap().1.read(cx).value().as_str(),
+                "/model "
+            );
+        });
+        release(w, "enter");
+        press(w, "enter");
+        assert!(app.read_with(w, |d, _| {
+            d.active_sheet()
+                .is_some_and(|s| s.kind == state::SheetPage::Model)
+        }));
+    }
+    #[gpui::test]
+    fn palette_preferences_over_narrow_sidebar(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        press(w, "secondary-b secondary-,");
+        assert!(app.read_with(w, |d, cx| d.sidebar_open
+            && d.navigation.as_ref().unwrap().read(cx).route == Route::Home));
+        press(w, "secondary-k");
+        w.simulate_input("設定");
+        press(w, "enter");
+        assert!(app.read_with(w, |d, cx| !d.sidebar_open
+            && !d.palette_open
+            && d.navigation.as_ref().unwrap().read(cx).route == Route::Settings));
+    }
+    #[gpui::test]
+    fn palette_selects_on_keydown_and_discards_release(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d");
+        let before = app.read_with(w, |d, _| d.size);
+        w.simulate_keystrokes("secondary-k");
+        w.update(|w, cx| {
+            app.read(cx)
+                .search
+                .as_ref()
+                .unwrap()
+                .0
+                .clone()
+                .update(cx, |s, cx| s.set_value("文字を大きく", w, cx));
+        });
+        w.run_until_parked();
+        w.simulate_keystrokes("enter");
+        assert!(!app.read_with(w, |d, _| d.palette_open));
+        assert!(app.read_with(w, |d, _| d.size > before
+            && d.consumed_keys.contains_key("enter")));
+        press(w, "down");
+        release(w, "enter");
+        assert!(!app.read_with(w, |d, _| d.consumed_keys.contains_key("enter")));
+        app.read_with(w, |d, cx| {
+            assert!(!d.palette_open && d.size > before && !d.sending && d.notice.is_empty());
+            assert_eq!(d.input.as_ref().unwrap().1.read(cx).value().as_str(), "d");
+        });
+    }
+    #[gpui::test]
+    fn close_palette_with_space_held_returns_to_composer(cx: &mut gpui::TestAppContext) {
+        use gpui::Focusable;
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d f6 secondary-k space escape");
+        assert!(w.update(|w, cx| {
+            app.read(cx)
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .focus_handle(cx)
+                .is_focused(w)
+        }));
+        w.simulate_keystrokes("space");
+        release(w, "space");
+        app.read_with(w, |d, cx| {
+            assert!(
+                !d.sending
+                    && d.notice.is_empty()
+                    && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
+            )
+        });
+    }
+    #[gpui::test]
+    fn palette_model_over_slash_picker_opens_model_sheet(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l / secondary-k / m o d e l");
+        assert!(app.read_with(w, |d, _| d.palette_open && d.slash_visible));
+        press(w, "enter");
+        assert!(app.read_with(w, |d, _| {
+            d.active_sheet()
+                .is_some_and(|s| s.kind == state::SheetPage::Model)
+        }));
+    }
+    #[gpui::test]
+    fn shutdown_prompt_blocks_background_clicks(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| {
+            keys::init(cx);
+            cx.set_prompt_builder(gpui::fallback_prompt_renderer);
+        });
+        let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d");
+        let buttons = ["send-message", "abort-turn"].map(|s| w.debug_bounds(s).unwrap().center());
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+            })
+        });
+        w.run_until_parked();
+        for button in buttons {
+            assert!(w.update(|w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Prompt)));
+            w.simulate_click(button, Default::default());
+        }
+        assert!(w.update(|w, _| w.has_rendered_prompt()));
+        press(w, "escape");
+        assert!(!w.update(|w, _| w.has_rendered_prompt()));
+        assert!(wire.try_recv().is_err());
+        app.read_with(w, |d, cx| {
+            assert!(
+                !d.stopping
+                    && !d.sending
+                    && d.notice.is_empty()
+                    && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
+            )
+        });
+    }
+    #[gpui::test]
+    fn narrow_sidebar_owns_focus_and_enter(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        w.simulate_keystrokes("secondary-l d secondary-b");
+        press(w, "enter");
+        let mut stops = Vec::new();
+        for _ in 0..64 {
+            press(w, "tab");
+            let f = w.update(|w, cx| {
+                assert!(app.read(cx).side_focus.contains_focused(w, cx));
+                w.focused(cx).unwrap()
+            });
+            if stops.first() == Some(&f) {
+                break;
+            }
+            stops.push(f);
+        }
+        assert!((2..64).contains(&stops.len()));
+        press(w, "shift-tab");
+        assert!(w.update(|w, _| stops.last().unwrap().is_focused(w)));
+        app.read_with(w, |d, cx| {
+            assert!(
+                d.sidebar_open
+                    && !d.sending
+                    && d.notice.is_empty()
+                    && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
+            )
+        });
+        press(w, "escape");
+        assert!(!app.read_with(w, |d, _| d.sidebar_open));
+    }
+    #[gpui::test]
+    fn tooltip_owns_escape_before_turn_stop(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
+        w.simulate_resize(gpui::size(gpui::px(640.), gpui::px(800.)));
+        w.simulate_keystrokes("secondary-l");
+        let pos = w.debug_bounds("chat-status").unwrap().center();
+        w.simulate_mouse_move(pos, None, Default::default());
+        w.run_until_parked();
+        w.executor()
+            .advance_clock(std::time::Duration::from_secs(1));
+        w.run_until_parked();
+        assert!(w.update(|w, _| w.tooltip_visible()));
+        w.simulate_keystrokes("a space space");
+        release(w, "space");
+        press(w, "b");
+        assert!(w.update(|w, _| w.tooltip_visible()));
+        assert_eq!(
+            app.read_with(w, |d, cx| d
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .to_string()),
+            "a  b"
+        );
+        w.simulate_keystrokes("escape");
+        for is_held in [false, true] {
+            w.simulate_event(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                is_held,
+            });
+        }
+        release(w, "escape");
+        assert!(!w.update(|w, _| w.tooltip_visible()));
+        assert!(wire.try_recv().is_err());
+        assert!(!app.read_with(w, |d, _| d.stopping));
+        press(w, "escape");
+        assert_eq!(
+            rt.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv()).await
+            })
+            .unwrap()
+            .as_deref(),
+            Some("abort")
+        );
+        server.abort();
+    }
+    #[gpui::test]
+    fn shortcuts_dispatch_and_palette_stacks_over_inspector(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        let record = seen.clone();
+        w.update(|_, cx| {
+            cx.observe_keystrokes(move |e, _, _| {
+                *record.borrow_mut() = e
+                    .action
+                    .as_ref()
+                    .map(|a| a.name().to_string())
+                    .unwrap_or_default();
+            })
+            .detach()
+        });
+        for &(command, key, _) in keys::SHORTCUTS {
+            w.update(|w, cx| {
+                app.update(cx, |d, cx| {
+                    let nav = d.navigation.clone().unwrap();
+                    d.navigate(&nav, Route::Home, cx);
+                    d.palette_open = false;
+                    w.focus(&d.root_focus);
+                })
+            });
+            w.run_until_parked();
+            press(w, key);
+            assert_eq!(*seen.borrow(), format!("pimate::{command:?}"), "{key}");
+        }
+        app.update(w, |d, cx| {
+            d.selected = None;
+            cx.notify()
+        });
+        w.simulate_keystrokes("secondary-1");
+        assert_eq!(
+            app.read_with(w, |d, _| d.selected.clone()),
+            Some(("fixture".into(), "pi".into()))
+        );
+        w.simulate_keystrokes("f6");
+        assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
+        w.simulate_keystrokes("f6");
+        assert!(w.update(|w, cx| app.read(cx).main_focus.is_focused(w)));
+        w.simulate_keystrokes("secondary-shift-d secondary-k");
+        assert!(app.read_with(w, |d, _| d.palette_open));
+        w.simulate_keystrokes("down");
+        assert_eq!(app.read_with(w, |d, _| d.palette_index), 1);
+        press(w, "escape");
+        assert!(app.read_with(w, |d, cx| !d.palette_open
+            && d.chat_keys.as_ref().unwrap().1.read(cx).review_open));
+        press(w, "escape");
+        assert!(!app.read_with(w, |d, cx| {
+            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+        }));
+    }
+    #[gpui::test]
+    fn focused_composer_replaced_by_review_still_receives_pane_keys(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_keystrokes("secondary-l secondary-shift-d f6");
+        assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
+        press(w, "escape");
+        assert!(!app.read_with(w, |d, cx| {
+            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+        }));
+    }
+    #[gpui::test]
+    fn right_click_other_pi_waits_for_subscription(cx: &mut gpui::TestAppContext) {
+        use pimate_core::{Change, Item};
+        use serde_json::json;
+        let row = |c: &str, id: &str, v: serde_json::Value| {
+            Change::Upsert(Item {
+                collection: c.into(),
+                id: id.into(),
+                position: 1,
+                json: v.to_string(),
+            })
+        };
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        app.update(w, |d, cx| {
+            d.machines.get_mut("fixture").unwrap().rows.apply(
+                (2, vec![row("instance", "second", json!({"startedAt":2}))]),
+                || panic!(),
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        w.run_until_parked();
+        let pos = w.debug_bounds("context-pi-second").unwrap().center();
+        w.simulate_mouse_down(pos, gpui::MouseButton::Right, gpui::Modifiers::none());
+        w.run_until_parked();
+        press(w, "down down enter");
+        assert_eq!(
+            app.read_with(w, |d, _| d.selected.clone()).unwrap().1,
+            "second"
+        );
+        app.update(w, |d, cx| {
+            assert!(d.editor().is_none());
+            d.machines.get_mut("fixture").unwrap().rows.apply(
+                (
+                    3,
+                    vec![
+                        row("view", "instanceId", json!("second")),
+                        row("view", "startedAt", json!(2)),
+                    ],
+                ),
+                || panic!(),
+            );
+            d.epoch += 1;
+            cx.notify();
+        });
+        w.run_until_parked();
+        assert!(app.read_with(w, |d, cx| {
+            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+        }));
+    }
+    #[gpui::test]
+    fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let raw = "**太字** と [リンク](https://example.org)\n\n2 行目";
+        app.update(w, |d, cx| {
+            d.machines.get_mut("fixture").unwrap().rows.apply(
+                (
+                    2,
+                    vec![pimate_core::Change::Upsert(pimate_core::Item {
+                        collection: "entry".into(),
+                        id: "msg".into(),
+                        position: 0,
+                        json: serde_json::json!({"kind":"assistant","text":raw}).to_string(),
+                    })],
+                ),
+                || panic!(),
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        let bounds = w.debug_bounds("message-entry:msg").unwrap();
+        w.simulate_mouse_down(
+            bounds.center(),
+            gpui::MouseButton::Right,
+            gpui::Modifiers::none(),
+        );
+        w.run_until_parked();
+        assert!(app.read_with(w, |app, _| app.context_menu.is_some()));
+        w.simulate_keystrokes("down space");
+        assert!(app.read_with(w, |app, _| app.context_menu.is_none()));
+        release(w, "space");
+        assert_eq!(
+            w.update(|_, cx| cx.read_from_clipboard().and_then(|c| c.text()))
+                .as_deref(),
+            Some(raw)
+        );
+    }
+    fn attach_active(
+        app: &gpui::Entity<super::Desktop>,
+        w: &mut gpui::VisualTestContext,
+        id: &'static str,
+    ) -> (
+        tokio::runtime::Runtime,
+        tokio::sync::mpsc::UnboundedReceiver<String>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut m, rx, wire, server) = rt.block_on(state::fixture(id));
+        m.conn.subscribe(Some("pi".into())).unwrap();
+        rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !m.rows.can_stop() {
+                    m.rows.apply(rx.recv().await.unwrap(), || m.conn.snapshot());
+                }
+            })
+            .await
+            .unwrap();
+        });
+        app.update(w, |d, cx| {
+            d.hosts = vec![m.registration.clone()];
+            d.selected = Some((m.registration.id.clone(), "pi".into()));
+            d.machines.insert(m.registration.id.clone(), m);
+            cx.notify();
+        });
+        w.run_until_parked();
+        (rt, wire, server)
+    }
+    #[gpui::test]
+    fn pairing_confirmation_keeps_enter_off_the_composer(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_keystrokes("secondary-l d");
+        app.update(w, |d, cx| {
+            d.confirmation = Some(("unused".into(), "demo".into()));
+            cx.notify();
+        });
+        w.run_until_parked();
+        press(w, "tab shift-tab enter");
+        assert!(app.read_with(w, |d, cx| d.confirmation.is_none()
+            && !d.pairing
+            && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"));
+    }
+    #[gpui::test]
+    fn composer_edit_menu_consumes_enter_and_escape(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, mut wire, server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l d r a f t");
+        let pos = w.debug_bounds("composer-input").unwrap().center();
+        w.simulate_mouse_down(pos, gpui::MouseButton::Right, gpui::Modifiers::none());
+        w.run_until_parked();
+        assert!(app.read_with(w, |d, _| d.context_menu.is_some()));
+        let menu = w.update(|w, cx| w.focused(cx).unwrap());
+        for key in ["shift-tab", "tab", "shift-tab"] {
+            press(w, key);
+            assert!(w.update(|w, _| menu.is_focused(w)));
+        }
+        press(w, "enter escape");
+        assert!(app.read_with(w, |d, cx| d.context_menu.is_none()
+            && d.notice.is_empty()
+            && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "draft"));
+        assert!(wire.try_recv().is_err());
+        server.abort();
+    }
+    #[gpui::test]
+    fn escape_dismisses_slash_only(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, server) = attach_active(&app, w, "key-menu");
+        w.simulate_keystrokes("secondary-l /");
+        assert!(app.read_with(w, |d, _| d.slash_visible));
+        press(w, "escape");
+        assert!(app.read_with(w, |d, cx| !d.slash_visible
+            && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "/"));
+        press(w, "escape");
+        rt.block_on(async {
+            for method in ["commands", "abort"] {
+                assert_eq!(
+                    tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
+                        .await
+                        .unwrap()
+                        .as_deref(),
+                    Some(method)
+                );
+            }
+        });
+        assert!(wire.try_recv().is_err());
+        server.abort();
+    }
+    #[gpui::test]
+    fn active_turn_stops_once_and_commands_retry_into_keyboard_picker(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, server) = attach_active(&app, w, "abort-test");
+        press(w, "escape");
+        let first = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
+                .await
+                .unwrap()
+        });
+        assert_eq!(first.as_deref(), Some("abort"));
+        w.run_until_parked();
+        assert!(wire.try_recv().is_err());
+        // The button and Esc use the same guard and must each generate one request.
+        let stop = wait(w, "abort-turn");
+        w.simulate_click(stop, gpui::Modifiers::none());
+        let second = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
+                .await
+                .unwrap()
+        });
+        assert_eq!(second.as_deref(), Some("abort"));
+        w.simulate_keystrokes("secondary-l shift-enter");
+        assert_eq!(
+            app.read_with(w, |d, cx| d
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .to_string()),
+            "\n"
+        );
+        w.simulate_keystrokes("backspace /");
+        let retry = wait(w, "retry-commands");
+        w.simulate_click(retry, gpui::Modifiers::none());
+        wait(w, "command-choice-0");
+        w.simulate_keystrokes("secondary-l down up down tab");
+        let before = app.read_with(w, |d, cx| {
+            d.input.as_ref().unwrap().1.read(cx).value().to_string()
+        });
+        assert!(before.starts_with('/') && before.ends_with(' ') && before.trim().len() > 1);
+        w.simulate_keystrokes("a r g");
+        assert_eq!(
+            app.read_with(w, |d, cx| d
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .to_string()),
+            format!("{before}arg")
+        );
+        assert_eq!(wire.try_recv().as_deref(), Ok("commands"));
+        assert_eq!(wire.try_recv().as_deref(), Ok("commands"));
+        assert!(wire.try_recv().is_err());
+        server.abort();
     }
 }

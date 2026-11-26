@@ -38,6 +38,28 @@ struct Desktop {
     input: Option<(EditorKey, Entity<InputState>, [Subscription; 2])>,
     composing: bool,
     sending: bool,
+    stopping: bool,
+    ctrl_enter: bool,
+    settings_path: Option<std::path::PathBuf>,
+    root_focus: FocusHandle,
+    sidebar_hidden: bool,
+    side_focus: FocusHandle,
+    main_focus: FocusHandle,
+    keyboard_focus: bool,
+    navigation: Option<screen::Navigation>,
+    chat_keys: Option<(state::Page, Entity<screen::Inspector>)>,
+    row_action: Option<(String, String, u64, bool)>,
+    slash_hidden: bool,
+    slash_visible: bool,
+    context_menu: Option<screen::context::OpenMenu>,
+    consumed_keys: HashMap<String, Option<WeakFocusHandle>>,
+    palette_form_input: Option<WeakFocusHandle>,
+    pointer_down_on_overlay: bool,
+    _overlay_keys: Subscription,
+    media_keys: Option<Entity<screen::chat_media::Viewer>>,
+    palette_scroll: ScrollHandle,
+    palette_open: bool,
+    palette_index: usize,
     epoch: u64,
     size: f32,
     scroll: ListState,
@@ -57,6 +79,26 @@ impl Desktop {
             cx.notify()
         })
         .detach();
+        cx.on_focus_lost(w, |app, w, _| w.focus(&app.main_focus))
+            .detach();
+        let window = w.window_handle().window_id();
+        cx.observe_keystrokes(move |app, e, w, cx| {
+            if w.window_handle().window_id() == window
+                && matches!(e.keystroke.key.as_str(), "tab" | "f6" | "up" | "down")
+                && !app.keyboard_focus
+            {
+                app.keyboard_focus = true;
+                cx.notify();
+            }
+        })
+        .detach();
+        cx.observe_window_activation(w, |d, w, _| {
+            if !w.is_window_active() {
+                d.consumed_keys.clear();
+            }
+        })
+        .detach();
+        let overlay_keys = screen::keys::intercept(w, cx);
         let mut app = Self {
             core,
             state: Default::default(),
@@ -73,6 +115,28 @@ impl Desktop {
             input: None,
             composing: false,
             sending: false,
+            stopping: false,
+            ctrl_enter: false,
+            settings_path: None,
+            root_focus: cx.focus_handle(),
+            sidebar_hidden: false,
+            side_focus: cx.focus_handle(),
+            main_focus: cx.focus_handle(),
+            keyboard_focus: false,
+            navigation: None,
+            chat_keys: None,
+            row_action: None,
+            slash_hidden: false,
+            slash_visible: false,
+            context_menu: None,
+            consumed_keys: Default::default(),
+            palette_form_input: None,
+            pointer_down_on_overlay: false,
+            _overlay_keys: overlay_keys,
+            media_keys: None,
+            palette_scroll: ScrollHandle::new(),
+            palette_open: false,
+            palette_index: 0,
             epoch: 0,
             size: 16.,
             scroll: screen::transcript(),
@@ -87,9 +151,18 @@ impl Desktop {
     }
     /// 設定と覚えた幅を読む。起動時にだけ呼ぶ（試験は利用者のファイルを読まず、既定値で動く）。
     fn load_saved(&mut self) {
-        let settings = state::Settings::path().and_then(|p| state::Settings::load(&p));
-        self.pref_error = settings.is_err();
-        self.state.settings = settings.unwrap_or_default();
+        self.settings_path = state::Settings::path().ok();
+        self.pref_error = self.settings_path.is_none();
+        if let Some(path) = &self.settings_path {
+            match state::Settings::load(path) {
+                Ok(s) => self.state.settings = s,
+                Err(_) => self.pref_error = true,
+            }
+            match state::load_send_key(path) {
+                Ok(v) => self.ctrl_enter = v,
+                Err(_) => self.pref_error = true,
+            }
+        }
         self.sidebar_width = state::layout_path()
             .ok()
             .and_then(|p| state::load_sidebar_width(&p));
@@ -153,6 +226,7 @@ impl Desktop {
             .as_ref()
             .is_some_and(|(host, _)| !self.machines.contains_key(host))
         {
+            self.row_action = None;
             self.selected = None;
             self.epoch += 1;
             self.input = None;
@@ -280,6 +354,7 @@ impl Desktop {
             self.state.close_page();
             self.scroll = screen::transcript();
             self.input = None;
+            self.row_action = None;
             self.selected = Some((h, i));
             self.sidebar_open = false;
             // 「登録しました」は次の操作まで。登録できなかった理由は、会話を開いても残す。
@@ -301,6 +376,7 @@ impl Desktop {
         }
         self.input = None;
         self.composing = false;
+        self.slash_hidden = false;
         let Some(key) = key else { return };
         let value = self.drafts.get(&key).cloned().unwrap_or_default();
         let input = cx.new(|cx| {
@@ -315,6 +391,7 @@ impl Desktop {
                 && this.editor().as_ref() == Some(&shown)
                 && this.input.as_ref().is_some_and(|v| v.1 == state)
             {
+                this.slash_hidden = false;
                 this.drafts
                     .insert(shown.clone(), state.read(cx).value().to_string());
                 cx.notify()
@@ -413,6 +490,7 @@ fn main() {
     }
     Application::new().with_assets(screen::Assets).run(|cx| {
         gpui_component::init(cx);
+        screen::keys::init(cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit()
