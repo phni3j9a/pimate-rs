@@ -111,6 +111,48 @@ class TranscriptTest {
     }
 
     @Test
+    fun answerStartsUnderTheSameThinkingRowAndFreezesItsObservedDuration() {
+        fun row(text: String) =
+            buildRows(
+                    emptyList(),
+                    emptyList(),
+                    true,
+                    text,
+                    "観測",
+                    liveThinkingMs = if (text.isEmpty()) null else 12_000,
+                )
+                .filterIsInstance<ChatRow.Thinking>()
+                .single()
+        val before = row("")
+        val after = row("答え")
+        assertTrue(before.live)
+        assertFalse(after.live)
+        assertEquals(before.expansionKey, after.expansionKey) // 手動の開閉設定がそのまま優先される。
+        assertEquals("Thought for 12s", thinkingLabel(after.live, after.ms))
+        val completed =
+            buildRows(
+                    listOf(Entry("a", "assistant", "答え", thinking = "観測")),
+                    emptyList(),
+                    false,
+                    streamThinking = "次の思考",
+                )
+                .filterIsInstance<ChatRow.Thinking>()
+        assertEquals(after.expansionKey, completed.first().expansionKey)
+        assertNotEquals(after.expansionKey, completed.last().expansionKey)
+    }
+
+    @Test
+    fun waitingDoesNotFoldTheCurrentTurnAndHiddenToolsDoNotChangeVisibleRows() {
+        val history = turn.take(2)
+        val waiting = buildRows(history, emptyList(), false, waiting = true)
+        assertTrue(waiting.none { it is ChatRow.Summary || it.fold != null })
+        for (id in listOf("unseen", "c1")) {
+            val nested = Live(id, "read", "", "running", "hidden", null, true)
+            assertEquals(waiting, buildRows(history, listOf(nested), false, waiting = true))
+        }
+    }
+
+    @Test
     fun turnWithoutToolsIsNotFoldedAndDuplicateIdsDoNotRepeat() {
         val plain = listOf(turn[0], Entry("2", "assistant", "答え", thinking = "考える"))
         assertTrue(buildRows(plain, emptyList(), false).all { it.fold == null })

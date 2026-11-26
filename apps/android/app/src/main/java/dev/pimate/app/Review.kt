@@ -118,10 +118,39 @@ private fun pathKey(path: String, cwd: String): String {
     return (if (full.startsWith('/')) "/" else "./") + parts.joinToString("/")
 }
 
+internal fun resultPiece(name: String, result: JSONObject): Piece? {
+    if (name !in listOf("write", "edit") || result.optBoolean("isError")) return null
+    val details = result.optJSONObject("details")
+    val write =
+        details?.optJSONObject("pimate")?.takeIf {
+            name == "write" && it.str("kind") == "write_diff"
+        }
+    val patch = (if (name == "edit") details else write)?.opt("patch") as? String
+    val reason = if (result.optBoolean("detailsOmitted")) "too_large" else write?.str("omitted")
+    return Piece(
+        result.str("toolCallId"),
+        write?.opt("existed") == false && reason != "concurrent",
+        patch,
+        patch?.let(::parsePatch),
+        null,
+        if (patch == null) reason?.ifEmpty { null } ?: "no_diff" else null,
+    )
+}
+
+internal fun Piece.withWriteContent(content: String?): Piece =
+    if (content == null || patch != null || omitted in listOf("binary", "too_large")) this
+    else copy(content = content, omitted = if (omitted == "no_diff") "unknown_before" else omitted)
+
 /** Scope calls by the initiating turn; a result can arrive in a later turn. */
 internal fun review(entries: List<JSONObject>, cwd: String, turn: String? = null): Review {
-    val results =
-        entries.filter { it.str("kind") == "tool_result" }.associateBy { it.str("toolCallId") }
+    // Match the result to the most recent unmatched call, not every call sharing its ID.
+    val pending = mutableMapOf<String, JSONObject>()
+    val results = mutableMapOf<JSONObject, JSONObject>()
+    for (entry in entries) when (entry.str("kind")) {
+        "assistant" ->
+            entry.optJSONArray("toolCalls").objects().forEach { pending[it.str("id")] = it }
+        "tool_result" -> pending.remove(entry.str("toolCallId"))?.let { results[it] = entry }
+    }
     val files = linkedMapOf<String, Pair<String, MutableList<Piece>>>()
     var latest: String? = null
     var current: String? = null
@@ -129,48 +158,28 @@ internal fun review(entries: List<JSONObject>, cwd: String, turn: String? = null
         if (entry.str("kind") == "user") current = entry.str("entryId")
         if (entry.str("kind") != "assistant" || turn != null && turn != current) continue
         for (c in entry.optJSONArray("toolCalls").objects()) {
-            val id = c.str("id")
             val name = c.str("name")
-            val r = results[id] ?: continue
-            if (name !in listOf("edit", "write") || r.optBoolean("isError")) continue
-            latest = current
+            val result = results[c] ?: continue
             val args = c.optJSONObject("args")
-            val details = r.optJSONObject("details")
-            val write =
-                details?.optJSONObject("pimate")?.takeIf {
-                    name == "write" && it.str("kind") == "write_diff"
-                }
-            val patch = (if (name == "edit") details else write)?.opt("patch") as? String
-            val diff = patch?.let(::parsePatch)
+            val piece =
+                resultPiece(name, result)
+                    ?.withWriteContent(
+                        if (name == "write") args?.opt("content") as? String else null
+                    ) ?: continue
+            latest = current
             val path =
                 (args
                         ?.str("path")
                         .orEmpty()
                         .ifEmpty { args?.str("file_path").orEmpty() }
-                        .ifEmpty { diff?.path ?: "（不明なファイル）" })
+                        .ifEmpty { piece.diff?.path ?: "（不明なファイル）" })
                     .removePrefix("@")
-            val reason = if (r.optBoolean("detailsOmitted")) "too_large" else write?.str("omitted")
-            val content =
-                if (name == "write" && patch == null && reason !in listOf("binary", "too_large"))
-                    args?.opt("content") as? String
-                else null
             files
                 .getOrPut(pathKey(path, cwd)) {
                     (if (cwd.isEmpty()) path else path.removePrefix(cwd.trimEnd('/') + "/")) to
                         mutableListOf()
                 }
-                .second +=
-                Piece(
-                    id,
-                    write?.opt("existed") == false && reason != "concurrent",
-                    patch,
-                    diff,
-                    content,
-                    if (patch != null) null
-                    else
-                        reason?.ifEmpty { null }
-                            ?: if (content == null) "no_diff" else "unknown_before",
-                )
+                .second += piece
         }
     }
     return Review(files.values.map { ReviewFile(it.first, it.second) }, turn, latest)

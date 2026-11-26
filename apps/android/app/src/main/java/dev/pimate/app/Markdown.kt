@@ -312,15 +312,26 @@ private fun TaskMark(checked: Boolean) {
     }
 }
 
+// Leave space in the shared 1 MiB Binder buffer for ClipData metadata and other transactions.
+internal const val CLIPBOARD_CHARS = 480 * 1024
+
 @Composable
 internal fun CopyAction(
-    source: String,
+    source: String?,
     label: String,
     modifier: Modifier = Modifier,
     size: Dp = 16.dp,
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember(source) { mutableStateOf(false) }
+    var copyError by remember(source) { mutableStateOf(false) }
+    if (copyError)
+        AlertDialog(
+            onDismissRequest = { copyError = false },
+            title = { Text("コピーできませんでした") },
+            text = { Text("端末のクリップボードに全文を保存できません。長い場合は範囲を選択してコピーしてください。") },
+            confirmButton = { TextButton(onClick = { copyError = false }) { Text("閉じる") } },
+        )
     LaunchedEffect(copied) {
         if (copied) {
             delay(1500)
@@ -331,8 +342,17 @@ internal fun CopyAction(
         if (copied) Icons.Check else Icons.Copy,
         if (copied) "コピーしました" else label,
         {
-            clipboard.setText(AnnotatedString(source))
-            copied = true
+            if (source == null || source.length > CLIPBOARD_CHARS) {
+                copied = false
+                copyError = true
+            } else
+                try {
+                    clipboard.setText(AnnotatedString(source))
+                    copied = true
+                } catch (_: Exception) {
+                    copied = false
+                    copyError = true
+                }
         },
         modifier,
         size = size,

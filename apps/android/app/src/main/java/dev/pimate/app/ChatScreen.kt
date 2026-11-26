@@ -138,14 +138,20 @@ internal fun ChatScreen(
         remember(groups["thinkingMs"]) {
             groups["thinkingMs"].orEmpty().associate { it.id to (it.json.toLongOrNull() ?: 0) }
         }
+    fun clock(id: String) = groups["stream"].orEmpty().find { it.id == id }?.json?.toLongOrNull()
+    val duration = clock("thinkingSince")?.let { since -> clock("thinkingUntil")?.minus(since) }
+    val waiting =
+        questions.isNotEmpty() ||
+            view["status"] == "\"waiting_input\"" ||
+            view["pcPrompt"]?.let { it != "null" } == true
     val rows =
-        remember(entries, tools, active, text, thinking, thinkingMs) {
-            buildRows(entries, tools, active, text, thinking, thinkingMs)
+        remember(entries, tools, active, text, thinking, thinkingMs, duration, waiting) {
+            buildRows(entries, tools, active, text, thinking, thinkingMs, duration, waiting)
         }
     // 利用者が開閉した行: 「+key」は開いた、「-key」は閉じた。回転では保ち、Pi を切り替えたら忘れる。
     val open =
         rememberSaveable(
-            m.selected,
+            editor,
             saver =
                 listSaver<SnapshotStateList<String>, String>(
                     { it.toList() },
@@ -157,17 +163,17 @@ internal fun ChatScreen(
     // 実行中のツールと、考えている途中の内容は開いておく（終わると閉じる）。利用者が開閉したら、それに従う。
     fun isOpen(row: ChatRow) =
         when {
-            "+${row.key}" in open -> true
-            "-${row.key}" in open -> false
+            "+${row.expansionKey}" in open -> true
+            "-${row.expansionKey}" in open -> false
             else ->
                 row is ChatRow.Tool && row.state == ToolState.Running ||
                     row is ChatRow.Thinking && row.live && row.text.isNotBlank()
         }
     val toggle = { row: ChatRow ->
         val was = isOpen(row)
-        open.remove("+${row.key}")
-        open.remove("-${row.key}")
-        open.add((if (was) "-" else "+") + row.key)
+        open.remove("+${row.expansionKey}")
+        open.remove("-${row.expansionKey}")
+        open.add((if (was) "-" else "+") + row.expansionKey)
         Unit
     }
 
@@ -329,6 +335,13 @@ internal fun ChatScreen(
                     val list = key(editor) { rememberLazyListState() }
                     val scope = rememberCoroutineScope()
                     var follow by rememberSaveable(editor) { mutableStateOf(true) }
+                    fun holdPosition() {
+                        follow = false
+                        list.requestScrollToItem(
+                            list.firstVisibleItemIndex,
+                            list.firstVisibleItemScrollOffset,
+                        )
+                    }
                     val drag =
                         remember(list) {
                             object : NestedScrollConnection {
@@ -377,17 +390,13 @@ internal fun ChatScreen(
                                         row,
                                         if (row is ChatRow.Summary) "+${row.key}" in open
                                         else isOpen(row),
+                                        onExpandDiff = ::holdPosition,
                                         review =
                                             { id: String -> show("review:$id") }.takeIf {
                                                 key != null
                                             },
                                     ) {
-                                        // 手で行を開閉したレイアウトだけは末尾へ寄せない。
-                                        follow = false
-                                        list.requestScrollToItem(
-                                            list.firstVisibleItemIndex,
-                                            list.firstVisibleItemScrollOffset,
-                                        )
+                                        holdPosition()
                                         if (row is ChatRow.Summary) {
                                             if (!open.remove("+${row.key}")) open.add("+${row.key}")
                                         } else if (runLinks.containsKey(row.key) && key != null)
@@ -717,6 +726,7 @@ internal fun RowView(
     row: ChatRow,
     open: Boolean,
     review: ((String) -> Unit)? = null,
+    onExpandDiff: () -> Unit = {},
     toggle: () -> Unit,
 ) {
     when (row) {
@@ -781,7 +791,7 @@ internal fun RowView(
             }
         is ChatRow.Tool ->
             Column {
-                ToolRow(row, open, toggle)
+                ToolRow(row, open, toggle, onExpandDiff)
                 // ツールが返した画像は、出力を畳んでいても見える。
                 if (row.pics.size > 0)
                     PicGrid(row.pics, Modifier.padding(start = 22.dp, top = 4.dp, bottom = 6.dp))
@@ -826,7 +836,12 @@ private fun Expander(
 
 /** ツール呼び出しの簡潔な行（32dp）。タップで出力を開く。 */
 @Composable
-private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
+private fun ToolRow(
+    row: ChatRow.Tool,
+    open: Boolean,
+    onClick: () -> Unit,
+    onExpandDiff: () -> Unit,
+) {
     val output =
         remember(row.output) {
             row.output
@@ -896,7 +911,7 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                     pi.textSecondary,
                 )
         }
-        if (open && row.change != null) ChangeDiff(row.change)
+        if (open && row.change != null) ChangeDiff(row.change, onExpandDiff)
         else if (open && canOpen)
             SelectionContainer {
                 Text(

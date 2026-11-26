@@ -63,15 +63,8 @@ internal fun ReviewPage(
                 }
         }
         data?.let { r ->
-            val patch =
-                remember(r) {
-                    r.files
-                        .flatMap { it.pieces }
-                        .mapNotNull { it.patch }
-                        .filter { it.isNotEmpty() }
-                        .joinToString("") { if (it.endsWith("\n")) it else "$it\n" }
-                }
-            if (patch.isNotEmpty()) CopyAction(patch, "差分をコピー")
+            val patch = remember(r) { clipboardPatch(r.files) }
+            if (patch != "") CopyAction(patch, "差分をコピー")
             if (r.files.isEmpty()) Hint("変更はありません")
             r.files.forEachIndexed { index, file ->
                 key(file.path) {
@@ -106,8 +99,21 @@ internal fun ReviewPage(
     }
 }
 
+/**
+ * Empty if there are no patches, null if the complete selection would exceed the clipboard budget.
+ */
+internal fun clipboardPatch(files: List<ReviewFile>): String? = buildString {
+    for (file in files) for (piece in file.pieces) {
+        val patch = piece.patch?.takeIf { it.isNotEmpty() } ?: continue
+        val newline = !patch.endsWith('\n')
+        if (patch.length > CLIPBOARD_CHARS - length - (if (newline) 1 else 0)) return null
+        append(patch)
+        if (newline) append('\n')
+    }
+}
+
 @Composable
-internal fun ChangeDiff(piece: Piece) {
+internal fun ChangeDiff(piece: Piece, onExpand: () -> Unit = {}) {
     SelectionContainer {
         Column(
             Modifier.fillMaxWidth()
@@ -129,7 +135,13 @@ internal fun ChangeDiff(piece: Piece) {
                         )
                     }
                     if (h.lines.size > limit)
-                        TextAction("続きを表示（残り ${h.lines.size-limit} 行）", { limit += 120 })
+                        TextAction(
+                            "続きを表示（残り ${h.lines.size-limit} 行）",
+                            {
+                                onExpand()
+                                limit += 120
+                            },
+                        )
                 }
             else {
                 Hint(

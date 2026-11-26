@@ -41,6 +41,56 @@ class ChatReviewContract {
     }
 
     @Test
+    fun clipboardFailureExplainsItWithoutReportingSuccess() {
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    val clipboard = androidx.compose.ui.platform.LocalClipboardManager
+                    val failing =
+                        object :
+                            androidx.compose.ui.platform.ClipboardManager by clipboard.current {
+                            override fun setText(
+                                annotatedString: androidx.compose.ui.text.AnnotatedString
+                            ) {
+                                throw android.os.TransactionTooLargeException()
+                            }
+                        }
+                    CompositionLocalProvider(clipboard provides failing) {
+                        CopyAction("full text", "差分をコピー")
+                    }
+                }
+            }
+        }
+        ui.onNodeWithContentDescription("差分をコピー").performClick()
+        ui.onNodeWithText("コピーできませんでした").assertIsDisplayed()
+        ui.onNodeWithContentDescription("コピーしました").assertDoesNotExist()
+        ui.onNodeWithText("閉じる").performClick()
+        ui.onNodeWithContentDescription("差分をコピー").assertExists()
+    }
+
+    @Test
+    fun showingMoreDiffLinesNotifiesTheChatBeforeGrowing() {
+        val source = "@@ -0,0 +1,125 @@\n" + (1..125).joinToString("\n") { "+line $it" }
+        val piece = Piece("id", false, source, parsePatch(source), null, null)
+        var holds = 0
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    Column(Modifier.height(360.dp).verticalScroll(rememberScrollState(Int.MAX_VALUE))) {
+                        ChangeDiff(piece) { holds++ }
+                    }
+                }
+            }
+        }
+        val more = ui.onNodeWithText("続きを表示（残り 5 行）")
+        ui.waitForIdle()
+        more.assertIsDisplayed()
+        more.performClick()
+        ui.runOnIdle { assertEquals(1, holds) }
+        ui.onNodeWithText("line 125", substring = true).assertExists()
+    }
+
+    @Test
     fun swipeDownOnlyClosesAtFitScale() {
         ui.runOnUiThread {
             ui.activity.setContent {

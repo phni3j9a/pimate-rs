@@ -11,7 +11,12 @@ import uniffi.pimate_ffi.ImageKind
 
 // 状態の層（Rows）の JSON を画面の行にする。組み立ては JSON を知らない buildRows が行う。
 
-internal data class Call(val id: String, val name: String, val subject: String)
+internal data class Call(
+    val id: String,
+    val name: String,
+    val subject: String,
+    val writeContent: String? = null,
+)
 
 /** 表示する画像の出どころ。id はメモリ内のキャッシュの名前（空ならキャッシュしない）。 */
 internal sealed interface Pic {
@@ -129,6 +134,9 @@ internal enum class ToolState(val label: String) {
 
 internal sealed interface ChatRow {
     val key: String
+    val expansionKey: String
+        get() = key
+
     /** 畳まれるターンの要約行の key。開かれるまで表示しない。 */
     val fold: String?
 
@@ -158,6 +166,7 @@ internal sealed interface ChatRow {
         override val fold: String? = null,
         /** 考えた時間。この端末が見ていた発言だけ分かる。 */
         val ms: Long? = null,
+        override val expansionKey: String = key,
     ) : ChatRow
 
     data class Text(override val key: String, val text: String, override val fold: String? = null) :
@@ -228,6 +237,8 @@ internal fun buildRows(
     streamText: String = "",
     streamThinking: String = "",
     thinkingMs: Map<String, Long> = emptyMap(),
+    liveThinkingMs: Long? = null,
+    waiting: Boolean = false,
 ): List<ChatRow> {
     // 結果は、同じ ID でまだ結果のない直前の呼び出しに対応付ける（ID がターンをまたいで重なる履歴でも取り違えない）。
     val results = HashMap<Pair<String, String>, Entry>() // (呼び出し元 entry, call ID) → 結果
@@ -248,7 +259,7 @@ internal fun buildRows(
                 }
         }
     }
-    val running = live.associateBy { it.id }
+    val running = live.filterNot { it.nested }.associateBy { it.id }
     val out = mutableListOf<ChatRow>()
     var turn = mutableListOf<ChatRow>()
     var turnId: String? = null
@@ -256,7 +267,14 @@ internal fun buildRows(
     var ended: Long? = null
     var finalKey: String? = null
 
-    fun tool(key: String, name: String, subject: String, result: Entry?, now: Live?): ChatRow.Tool {
+    fun tool(
+        key: String,
+        name: String,
+        subject: String,
+        result: Entry?,
+        now: Live?,
+        writeContent: String? = null,
+    ): ChatRow.Tool {
         val state =
             when {
                 result != null -> if (result.isError) ToolState.Failed else ToolState.Done
@@ -265,7 +283,7 @@ internal fun buildRows(
                 else -> ToolState.Done
             }
         val shownName = name.ifEmpty { now?.name ?: "tool" }
-        val piece = result?.change?.takeIf { state == ToolState.Done }
+        val piece = result?.change?.withWriteContent(writeContent)
         val diff = piece?.diff
         val meta =
             when {
@@ -344,6 +362,7 @@ internal fun buildRows(
                             e.thinking,
                             false,
                             ms = thinkingMs[e.id],
+                            expansionKey = "thinkingAfter:${entries.getOrNull(i - 1)?.id.orEmpty()}",
                         )
                 if (e.text.isNotBlank()) {
                     turn += ChatRow.Text("${e.id}:text", e.text)
@@ -357,6 +376,7 @@ internal fun buildRows(
                             it.subject,
                             results[e.id to it.id],
                             running[it.id]?.takeIf { _ -> caller[it.id] == e.id },
+                            it.writeContent,
                         )
                 }
                 if (e.aborted) turn += ChatRow.Note("${e.id}:aborted", "中断しました")
@@ -375,12 +395,20 @@ internal fun buildRows(
             }
         }
     }
-    close(active)
+    close(active || waiting)
     // 途中から開いたときなど、発言より先に届いた実行中のツール。サブエージェントの中のツールは出さない。
-    live
-        .filter { it.id !in caller && !it.nested }
+    running.values
+        .filter { it.id !in caller }
         .forEach { out += tool("running:${it.id}", it.name, it.subject, null, it) }
-    if (streamThinking.isNotBlank()) out += ChatRow.Thinking("live:thinking", streamThinking, true)
+    if (streamThinking.isNotBlank())
+        out +=
+            ChatRow.Thinking(
+                "live:thinking",
+                streamThinking,
+                streamText.isEmpty(),
+                ms = liveThinkingMs,
+                expansionKey = "thinkingAfter:${entries.lastOrNull()?.id.orEmpty()}",
+            )
     if (streamText.isNotEmpty()) out += ChatRow.Text("live:text", streamText)
     // 同じ ID が重なる壊れた履歴でも、リストの key の重複で落とさない。
     return out.distinctBy { it.key }
@@ -522,6 +550,9 @@ internal fun entry(o: JSONObject): Entry {
                         c.str("id"),
                         c.str("name"),
                         subject(c.str("name"), c.optJSONObject("args")),
+                        if (c.str("name") == "write")
+                            c.optJSONObject("args")?.opt("content") as? String
+                        else null,
                     )
                 },
                 final = stop != "toolUse",
@@ -535,14 +566,6 @@ internal fun entry(o: JSONObject): Entry {
             )
         }
         "tool_result" -> {
-            val details = o.optJSONObject("details")
-            val name = o.str("toolName")
-            val write =
-                details?.optJSONObject("pimate")?.takeIf {
-                    name == "write" && it.str("kind") == "write_diff"
-                }
-            val patch = (if (name == "edit") details else write)?.opt("patch") as? String
-            val omitted = if (o.optBoolean("detailsOmitted")) "too_large" else write?.str("omitted")
             Entry(
                 id,
                 kind,
@@ -550,17 +573,7 @@ internal fun entry(o: JSONObject): Entry {
                 callId = o.str("toolCallId"),
                 name = o.str("toolName"),
                 isError = o.optBoolean("isError"),
-                change =
-                    if (name in listOf("write", "edit") && !o.optBoolean("isError"))
-                        Piece(
-                            o.str("toolCallId"),
-                            write?.opt("existed") == false,
-                            patch,
-                            patch?.let(::parsePatch),
-                            null,
-                            omitted,
-                        )
-                    else null,
+                change = resultPiece(o.str("toolName"), o),
                 time = time,
                 pics = pics(id, o),
             )
