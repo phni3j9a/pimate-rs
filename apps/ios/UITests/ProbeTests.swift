@@ -135,6 +135,9 @@ final class ProbeTests: XCTestCase {
         let cell = app.buttons["確認結果"]
         XCTAssertTrue(cell.waitForExistence(timeout: 8)); cell.tap()
         XCTAssertTrue(app.images["確認結果"].waitForExistence(timeout: 30)); XCTAssertTrue(app.staticTexts["3 / 4"].exists)
+        app.buttons["次の画像"].tap()
+        XCTAssertTrue(app.staticTexts["画像を表示できません"].waitForExistence(timeout: 30))
+        app.swipeRight(); XCTAssertTrue(app.images["確認結果"].waitForExistence(timeout: 30))
         app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正後の画面"].waitForExistence(timeout: 30))
         app.buttons["前の画像"].tap(); XCTAssertTrue(app.images["修正前の画面"].waitForExistence(timeout: 30))
         app.buttons["画像を閉じる"].tap(); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8)); shot("Table")
