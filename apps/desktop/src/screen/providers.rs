@@ -53,10 +53,13 @@ fn device_code(flow: &str, code: &str, w: &mut Window, cx: &mut App) -> Div {
         })
 }
 impl settings::Nav {
+    fn show_login_result(&self, flow: &Value) -> bool {
+        !flow.is_null() && self.note.is_empty() && !self.providers.pending
+    }
     fn logout_ack(&mut self, result: Result<Value, Error>) -> bool {
         self.note = match result {
             Ok(v) if v["refreshRequired"] == true => {
-                "削除済みです。PC の Pi を /reload してください。"
+                "保存した認証情報を削除しました。反映するには PC の Pi で /reload または再起動してください。"
             }
             Ok(_) => "ログアウトしました。起動中の Pi には /reload または再起動後に反映されます。",
             Err(_) => {
@@ -295,20 +298,20 @@ impl Desktop {
             });
         }
         v = v.child(p.caption("認証情報は PC のログイン専用の Pi で保存します。作業中の Pi に反映するには /reload または再起動が必要です。"));
-        if !flow.is_null() && n.read(cx).note.is_empty() && !busy {
+        if n.read(cx).show_login_result(flow) {
             v = v.child(p.caption(match Outcome::from_flow(flow) {
                 Outcome::Saved => {
                     "ログインしました。起動中の Pi には /reload または再起動後に反映されます。"
                 }
                 Outcome::NeedsReload => {
-                    "資格情報は保存済みです。PC の Pi を /reload してください。再入力は不要です。"
+                    "認証情報は保存されました。反映するには PC の Pi で /reload または再起動してください。再入力は不要です。"
                 }
                 Outcome::StorageUnknown => {
-                    "資格情報の保存結果は不明です。再入力する前にログイン状態を再確認してください。"
+                    "認証情報が保存されたか不明です。再入力する前にプロバイダーの一覧を確認してください。"
                 }
-                Outcome::Failed => "ログインできませんでした。",
-                Outcome::Expired => "ログインの期限が切れました。",
-                _ => "ログイン操作は終了しました。",
+                Outcome::Failed => "ログインできませんでした",
+                Outcome::Expired => "期限が切れました",
+                _ => "ログイン操作は終了しました",
             }));
         }
         if let Some((provider, name)) = &n.read(cx).providers.logout {
@@ -458,18 +461,25 @@ mod tests {
         use crate::screen::settings::Nav;
         use pimate_core::Error;
         let mut nav = Nav::default();
+        let previous = serde_json::json!({"status":"succeeded"});
+        assert!(nav.show_login_result(&previous));
         nav.providers.pending = true;
         assert!(nav.logout_ack(Ok(serde_json::json!({"refreshRequired":true}))));
         assert!(nav.note.contains("/reload") && nav.providers.pending);
+        nav.logout_list(Ok(serde_json::Value::Null));
+        assert!(!nav.show_login_result(&previous));
         nav.logout_list(Err(Error::Timeout));
         assert!(
             !nav.providers.pending
-                && nav.note.contains("削除済み")
+                && nav.note.contains("保存した認証情報を削除しました")
                 && nav.note.contains("/reload")
                 && nav.note.contains("再取得に失敗")
         );
         assert!(!nav.logout_ack(Err(Error::OutcomeUnknown)));
-        assert!(nav.note.contains("削除結果は不明") && !nav.note.contains("削除済み"));
+        assert!(
+            nav.note.contains("削除結果は不明")
+                && !nav.note.contains("保存した認証情報を削除しました")
+        );
     }
     #[test]
     fn vendors_keep_member_methods_and_ids_separate() {
