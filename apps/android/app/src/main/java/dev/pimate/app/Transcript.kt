@@ -112,6 +112,7 @@ internal data class Entry(
     val time: Long? = null,
     /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
     val pics: ImageSlots = ImageSlots.Empty,
+    val truncated: Boolean = false,
 )
 
 /** 実行中のツール（"tool" の行）。履歴に結果が載るまでの表示に使う。 */
@@ -184,7 +185,11 @@ internal sealed interface ChatRow {
         /** 実行中のツールの開始時刻（epoch ms）。分からなければ秒数を出さない。 */
         val since: Long? = null,
         val change: Piece? = null,
-    ) : ChatRow
+        val truncated: Boolean = false,
+    ) : ChatRow {
+        val outputCopyLabel: String
+            get() = if (truncated) "取得済みの出力をコピー" else "出力をコピー"
+    }
 
     /** 会話の切り替え（PC の /resume など）。履歴にはない行で、切り替えを見た位置に置く。 */
     data class Switch(val reason: String, val byPhone: Boolean, val from: String, val to: String) :
@@ -309,6 +314,7 @@ internal fun buildRows(
             result?.text ?: now?.output.orEmpty(),
             meta,
             change = piece,
+            truncated = result?.truncated == true,
             pics = result?.pics ?: ImageSlots.Empty,
             since = now?.startedAt?.takeIf { state == ToolState.Running },
         )
@@ -585,6 +591,7 @@ internal fun entry(o: JSONObject): Entry {
                 name = o.str("toolName"),
                 isError = o.optBoolean("isError"),
                 change = resultPiece(o.str("toolName"), o),
+                truncated = o.optBoolean("truncated"),
                 time = time,
                 pics = pics(id, o),
             )

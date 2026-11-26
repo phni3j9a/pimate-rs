@@ -111,6 +111,7 @@ class ChatReviewContract {
                 "編集しました。",
                 "+1 −1",
                 change = Piece("c", false, patch, parsePatch(patch), null, null),
+                truncated = true,
             )
         ui.runOnUiThread {
             ui.activity.setContent {
@@ -124,6 +125,9 @@ class ChatReviewContract {
         ui.onNodeWithText("edit").performClick()
         ui.onNodeWithText(tool.output).assertIsDisplayed()
         ui.onNodeWithText("+ new", substring = true).assertIsDisplayed()
+        ui.onNodeWithText("出力の末尾は省略されています。").assertIsDisplayed()
+        ui.onNodeWithContentDescription("取得済みの出力をコピー").performClick()
+        ui.onNodeWithContentDescription("コピーしました").assertExists()
     }
 
     @Test

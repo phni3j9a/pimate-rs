@@ -844,7 +844,7 @@ private fun ToolRow(
     onExpandDiff: () -> Unit,
 ) {
     val output = remember(row.output, row.state) { row.expandedOutput() }
-    val canOpen = row.change != null || output != null
+    val canOpen = row.change != null || output != null || row.truncated
     // 実行中は、始まってからの秒数を右に出す（開始時刻が分かるときだけ）。
     val running by
         produceState("", row.since) {
@@ -904,6 +904,17 @@ private fun ToolRow(
                     Modifier.size(14.dp),
                     pi.textSecondary,
                 )
+        }
+        if (open && (row.output.isNotEmpty() || row.truncated)) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 22.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (row.truncated)
+                    Text("出力の末尾は省略されています。", color = pi.textSecondary, style = Type.caption)
+                Spacer(Modifier.weight(1f))
+                if (row.output.isNotEmpty()) CopyAction(row.output, row.outputCopyLabel)
+            }
         }
         if (open && output != null)
             SelectionContainer {

@@ -62,6 +62,29 @@ class TranscriptTest {
     }
 
     @Test
+    fun onlyRcTruncationMarksOutputAsPartialRegardlessOfPreviewLength() {
+        val text = (1..42).joinToString("\n") { "行 $it" } + "\n"
+        for (flag in listOf(true, false, null)) {
+            val result =
+                org.json
+                    .JSONObject()
+                    .put("kind", "tool_result")
+                    .put("entryId", "r")
+                    .put("text", text)
+                    .put("detailsOmitted", true)
+                    .put("truncated", flag)
+            val tool =
+                buildRows(listOf(entry(result)), emptyList(), false)
+                    .filterIsInstance<ChatRow.Tool>()
+                    .single()
+            assertEquals(flag == true, tool.truncated)
+            assertEquals(if (flag == true) "取得済みの出力をコピー" else "出力をコピー", tool.outputCopyLabel)
+            assertTrue(tool.expandedOutput()!!.startsWith("…\n"))
+            assertEquals(text, tool.output) // Copy the received text, not the 40-line preview.
+        }
+    }
+
+    @Test
     fun completedTurnFoldsWorkButKeepsTheAnswer() {
         val rows = buildRows(turn, emptyList(), active = false)
         assertEquals(
