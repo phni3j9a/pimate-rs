@@ -696,13 +696,6 @@ internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
         is ChatRow.Text ->
             Column {
                 Markdown(row.text, live = row.key == "live:text")
-                if (row.meta.isNotEmpty())
-                    Text(
-                        row.meta,
-                        Modifier.padding(top = 6.dp),
-                        pi.textSecondary,
-                        style = Type.meta,
-                    )
             }
         is ChatRow.Tool ->
             Column {
