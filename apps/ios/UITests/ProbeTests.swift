@@ -287,7 +287,14 @@ extension ProbeTests {
             app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["新しい Pi"].tap(); tap(app.buttons["起動"])
             XCTAssertTrue(field.waitForExistence(timeout: 30)); return
         }
-        shot("First-Step"); app.buttons["一覧を開く"].tap(); XCTAssertTrue(app.buttons["新しい Pi"].waitForExistence(timeout: 8)); shot("Drawer"); app.buttons["設定"].tap()
+        shot("First-Step"); app.buttons["一覧を開く"].tap(); XCTAssertTrue(app.buttons["新しい Pi"].waitForExistence(timeout: 8)); shot("Drawer")
+        if env["PIMATE_DEMO_DRAWER_BOT"] == "1" {
+            let bot = app.buttons["pi-images"]
+            for _ in 0..<5 where !bot.isHittable { app.swipeUp() }
+            XCTAssertTrue(bot.isHittable); XCTAssertTrue(bot.label.contains("サブエージェント 2 実行中")); shot("Drawer-Bot")
+            for _ in 0..<5 where !app.buttons["pi-waiting"].isHittable { app.swipeDown() }
+        }
+        app.buttons["設定"].tap()
         let machine = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'machine-'")).firstMatch
         XCTAssertTrue(machine.waitForExistence(timeout: 8)); shot("Settings"); machine.tap()
         let update = app.buttons["実行時の最新版に更新…"]
@@ -312,7 +319,8 @@ extension ProbeTests {
         path.tap(); path.typeText("/s"); let suggestion = app.buttons["src/"]
         XCTAssertTrue(suggestion.waitForExistence(timeout: 8)); tap(suggestion)
         XCTAssertEqual(path.value as? String, "/home/demo/code/demo/src/")
-        tap(app.buttons["spawn-model"])
+        path.typeText("\n")
+        tap(app.descendants(matching: .any)["spawn-model"].firstMatch)
         XCTAssertTrue(button("Claude Opus 5.5 · medium").waitForExistence(timeout: 10)); shot("Spawn-Models")
         app.buttons["すべて"].tap(); let search = app.textFields["モデルを検索"]; search.tap(); search.typeText("gemini")
         XCTAssertTrue(button("google/gemini-3-pro").exists); XCTAssertFalse(button("anthropic/claude-opus").exists)

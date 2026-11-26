@@ -76,6 +76,10 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 			authed = true;
 			m.host.hostRestart = true;
 		}
+		if (process.env.PIMATE_DEMO_DRAWER_BOT === "1" && m.type === "instances") {
+			const bot = m.instances.find((pi) => pi.instanceId === "images");
+			if (bot) Object.assign(bot, { origin: "grok-bot", subagents: { active: 2, waiting: 0, paused: 0, failed: 0 } });
+		}
 		if (process.argv[3] === "empty" && m.type === "instances") m.instances = [];
 		send(m);
 	});

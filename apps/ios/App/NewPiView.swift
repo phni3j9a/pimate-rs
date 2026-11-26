@@ -56,7 +56,7 @@ private struct SpawnFields<HostPicker: View>: View {
         Form {
             hostPicker()
             Section {
-                TextField("フォルダのパス", text: Binding(get: { form.cwd }, set: choose)).focused($editingPath).autocorrectionDisabled().textInputAutocapitalization(.never)
+                TextField("フォルダのパス", text: Binding(get: { form.cwd }, set: choose)).focused($editingPath).submitLabel(.done).onSubmit { editingPath = false }.autocorrectionDisabled().textInputAutocapitalization(.never)
                 if loading { ProgressView("候補を取得中…") }
                 ForEach(folders.prefix(8).indices, id: \.self) { i in Button(folders[i].str("path")) { choose(folders[i].str("path")) } }
                 if let split, fetchedParent.utf8.elementsEqual(split.parent.utf8) {

@@ -36,7 +36,7 @@ struct Drawer: View {
             }
             if !model.message.isEmpty { Text(model.message).foregroundStyle(PiTheme.failure) }
         }.listStyle(.plain).scrollContentBackground(.hidden).background(PiTheme.background)
-            .navigationTitle("Pi 一覧").searchable(text: $query, prompt: "名前・フォルダで検索")
+            .navigationTitle("Pi 一覧").searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "名前・フォルダで検索")
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 18) {
                     Button { settings = true } label: { mark("lucide-settings", 22).frame(width: 44, height: 44) }.accessibilityLabel("設定")
