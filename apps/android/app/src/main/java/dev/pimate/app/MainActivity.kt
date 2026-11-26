@@ -289,10 +289,9 @@ private fun DrawerContent(
                 item("host:${host.id}") {
                     val connection = state["connection"]
                     GroupHeader(
-                        if (state["info"]?.contains("\"darwin\"") == true) Icons.Laptop
-                        else Icons.Server,
+                        Icons.Monitor,
                         host.name,
-                        pi.textSecondary,
+                        pi.text,
                     ) {
                         when (connection) {
                             "\"connected\"" -> {
@@ -327,15 +326,10 @@ private fun DrawerContent(
                 }
                 if (bots.isNotEmpty())
                     item("bots:${host.id}") {
-                        Text(
-                            "Grok Bot",
-                            Modifier.padding(start = 36.dp, top = 10.dp, bottom = 2.dp).semantics {
-                                heading()
-                            },
-                            pi.textSecondary,
-                            style = Type.meta,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                        Row(Modifier.padding(start = 12.dp, top = 12.dp).heightIn(min = 28.dp).semantics(mergeDescendants = true) { heading(); contentDescription = "${host.name}: Grok Bot" }, Arrangement.spacedBy(10.dp), Alignment.CenterVertically) {
+                            Icon(Icons.GrokBot, null, Modifier.size(14.dp), pi.text)
+                            Text("Grok Bot", color = pi.textSecondary, style = Type.caption, fontWeight = FontWeight.SemiBold)
+                        }
                     }
                 items(bots, key = { "b:${it.first.id}:${it.second}" }) { (h, id, o) ->
                     InstanceRow(
@@ -457,7 +451,7 @@ private fun OtherHost(host: Host, enabled: Boolean, onClick: () -> Unit) {
         Arrangement.spacedBy(6.dp),
         Alignment.CenterVertically,
     ) {
-        Icon(Icons.Server, null, Modifier.size(15.dp), pi.textSecondary)
+        Icon(Icons.Monitor, null, Modifier.size(15.dp), pi.textSecondary)
         Text(
             host.name,
             Modifier.weight(1f),
@@ -523,7 +517,7 @@ internal fun InstanceRow(
                 )
             if (attention != null)
                 Text(
-                    attention,
+                    if (o.str("origin") == "grok-bot") "Grok Bot · $attention" else attention,
                     Modifier.padding(top = 1.dp),
                     pi.waitingText,
                     style = Type.caption,
