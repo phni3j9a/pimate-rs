@@ -415,9 +415,9 @@ impl Desktop {
                                 p.text_button("composer-model", p.secondary, cx)
                                     .max_w(rems(10.))
                                     .child(div().truncate().child(model))
-                                    .on_click(cx.listener(move |app, e, w, cx| {
+                                    .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
                                         if pg.visible(app)
-                                            && !app.background_click(e)
+                                            && (e.is_keyboard() || !app.pointer_down_on_overlay)
                                             && !app.overlay_open(w, cx)
                                         {
                                             app.show_sheet(state::SheetPage::Model, cx)
@@ -438,9 +438,9 @@ impl Desktop {
                                                 .outer_radius(7.),
                                         )
                                     }))
-                                    .on_click(cx.listener(move |app, e, w, cx| {
+                                    .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
                                         if usage_page.visible(app)
-                                            && !app.background_click(e)
+                                            && (e.is_keyboard() || !app.pointer_down_on_overlay)
                                             && !app.overlay_open(w, cx)
                                         {
                                             app.show_sheet(state::SheetPage::Usage, cx)

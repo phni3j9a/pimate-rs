@@ -221,6 +221,7 @@ impl Desktop {
                         let id = SharedString::from(format!("answer:{i}:{j}"));
                         let opt = if multiple {
                             gpui_component::checkbox::Checkbox::new(id)
+                                .tab_stop(false)
                                 .checked(checked)
                                 .small()
                                 .label(label)

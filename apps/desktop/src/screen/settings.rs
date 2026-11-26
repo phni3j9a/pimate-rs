@@ -72,7 +72,9 @@ impl Desktop {
         };
         if self.size != size {
             self.size = size;
-            self.scroll.reset(self.scroll.item_count());
+            if let Some(h) = &self.history {
+                h.scroll.reset(h.scroll.item_count());
+            }
         }
         let dark = match self.state.settings.appearance {
             Appearance::System => matches!(

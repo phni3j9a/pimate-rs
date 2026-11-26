@@ -178,6 +178,24 @@ impl LayoutRows {
         layout
     }
 }
+// Both the virtual rows and their measured scroll position belong to the editor, not a panel.
+pub(crate) struct History {
+    pub(super) key: EditorKey,
+    pub(super) scroll: ListState,
+    conversation: Entity<Conversation>,
+    _observe: Subscription,
+}
+impl History {
+    pub(super) fn new(key: EditorKey, cx: &mut Context<Desktop>) -> Self {
+        let conversation = cx.new(|_| Conversation::default());
+        Self {
+            key,
+            scroll: transcript(),
+            _observe: cx.observe(&conversation, |_, _, cx| cx.notify()),
+            conversation,
+        }
+    }
+}
 #[derive(Default)]
 struct Conversation {
     documents: markdown::Messages,
@@ -425,15 +443,16 @@ impl Desktop {
                 .as_str()
                 .is_some_and(|s| !s.is_empty())
         });
-        let conversation = w.use_keyed_state(
-            SharedString::from(format!("documents:{key:?}")),
-            cx,
-            |_, _| Conversation::default(),
-        );
+        let history = self
+            .history
+            .as_ref()
+            .expect("history is bound before rendering chat");
+        let conversation = history.conversation.clone();
+        let scroll = &history.scroll;
         let reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
         let stream_reader = w.use_state(cx, |_, cx| cx.focus_handle()).read(cx).clone();
-        let old_count = self.scroll.item_count();
-        let at_end = at_tail(&self.scroll);
+        let old_count = scroll.item_count();
+        let at_end = at_tail(scroll);
         let (live, tools) = parent_tools(rows, &conversation.read(cx).expanded);
         let content = (
             rows.entry_revision,
@@ -443,11 +462,11 @@ impl Desktop {
         );
         let new_content = old_count == 0 || conversation.read(cx).last_content != Some(content);
         let stream_focused = stream_reader.contains_focused(w, cx);
-        let scroll_top = self.scroll.logical_scroll_top();
+        let scroll_top = scroll.logical_scroll_top();
         let before = conversation.read(cx).stream_tail.as_ref().map(|p| p.0);
         let running = rows.agent_active();
         let follow = conversation.read(cx).follow.wants(
-            &self.scroll,
+            scroll,
             new_content,
             at_end,
             conversation.read(cx).manual,
@@ -462,7 +481,7 @@ impl Desktop {
             c.prepare(
                 entries,
                 streaming,
-                &self.scroll,
+                scroll,
                 running,
                 rows.entry_revision,
                 live.len(),
@@ -473,7 +492,7 @@ impl Desktop {
             conversation.entity_id().as_u64(),
             conversation.read(cx).stream_generation
         );
-        let n = self.scroll.item_count();
+        let n = scroll.item_count();
         if stream_focused
             && let Some(before) = before
             && before < entries.len()
@@ -493,7 +512,7 @@ impl Desktop {
                         .position(|v| *v == before + i)
                 })
                 .unwrap_or(n.saturating_sub(1));
-            self.scroll.scroll_to(ListOffset {
+            scroll.scroll_to(ListOffset {
                 item_ix: row,
                 offset_in_item: if scroll_top.item_ix == old_count.saturating_sub(1) {
                     scroll_top.offset_in_item
@@ -502,7 +521,7 @@ impl Desktop {
                 },
             });
         } else if follow {
-            conversation.update(cx, |c, _| c.follow.pin(&self.scroll));
+            conversation.update(cx, |c, _| c.follow.pin(scroll));
         }
         if n == 0 {
             return div()
@@ -511,14 +530,14 @@ impl Desktop {
                 .child(p.caption("まだメッセージはありません"))
                 .into_any_element();
         }
-        let latest = self.scroll.clone();
+        let latest = scroll.clone();
         let after = latest.clone();
         let measured = conversation.clone();
         let resume = conversation.clone();
         let p = *p;
         let desktop = cx.entity();
         let k = key.clone();
-        let list = list(self.scroll.clone(), move |i, w, cx| {
+        let list = list(scroll.clone(), move |i, w, cx| {
             let item = desktop.update(cx, |this, cx| {
                 let data = &this.machines[&k.host].rows;
                 let entries = data.group("entry");
@@ -925,7 +944,7 @@ impl Desktop {
                 measured.update(cx, |c, _| c.follow.measured(&after))
             })
             .child(list)
-            .vertical_scrollbar(&self.scroll)
+            .vertical_scrollbar(scroll)
             .when(!at_end, |d| {
                 d.child(
                     div().absolute().bottom_2().right_4().child(
@@ -1016,7 +1035,7 @@ mod tests {
         };
         delta(2, 1, w);
         delta(3, 50, w);
-        let list = app.read_with(w, |d, _| d.scroll.clone());
+        let list = app.read_with(w, |d, _| d.history.as_ref().unwrap().scroll.clone());
         assert!(list.max_offset_for_scrollbar().height > px(150.));
         assert!(super::at_tail(&list));
         list.scroll_by(px(-90.));

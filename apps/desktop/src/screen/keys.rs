@@ -476,11 +476,11 @@ impl Desktop {
                     self.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
                 }
             }
-            PageUp | PageDown if home => self
+            PageUp | PageDown if home && let Some(h) = &self.history => h
                 .scroll
                 .scroll_by(w.viewport_size().height * if c == PageUp { -0.75 } else { 0.75 }),
-            End if home => self.scroll.scroll_to(ListOffset {
-                item_ix: self.scroll.item_count(),
+            End if home && let Some(h) = &self.history => h.scroll.scroll_to(ListOffset {
+                item_ix: h.scroll.item_count(),
                 offset_in_item: px(0.),
             }),
             Larger | Smaller | ResetSize => {
