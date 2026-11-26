@@ -86,6 +86,7 @@ struct Composer: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(PiTheme.waiting.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             }
             if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).font(.caption).foregroundStyle(PiTheme.failure) }
+            UsageRings(model: model, key: key, rows: rows)
             if blocked { HStack { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10); Spacer(); stop } }
             else {
                 if rows.field("slashCommands") == "true", !input.marked, draft.text.hasPrefix("/"), !draft.text.contains(where: { $0.isWhitespace }) {

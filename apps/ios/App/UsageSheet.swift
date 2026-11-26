@@ -1,6 +1,38 @@
 import SwiftUI
 
+struct UsageRings: View {
+    let model: SessionModel, key: EditorKey, rows: Rows
+    @State private var failed = false
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { tick in
+            let allowances = model.allowances(key, nowMs: UInt64(tick.date.timeIntervalSince1970 * 1000))
+            let context = rows.groups["view"]?.first { $0.id == "context" }?.object["percent"] as? Double
+            Button {
+                do { _ = try model.openSheet(key, page: .usage) } catch { failed = true }
+            } label: {
+                HStack(spacing: 8) {
+                    ring("コンテキスト", "text.alignleft", context)
+                    ring("Claude", "sun.max", allowances.first { $0.source == "claude" }?.gauge)
+                    ring("Codex", "terminal", allowances.first { $0.source == "codex" }?.gauge)
+                }.frame(minHeight: 44).contentShape(Rectangle())
+            }.accessibilityElement(children: .combine).accessibilityHint("使用状況を開く")
+        }.alert("会話が変わりました。操作を選び直してください。", isPresented: $failed) { Button("閉じる") {} }
+    }
+    private func ring(_ name: String, _ icon: String, _ percent: Double?) -> some View {
+        ZStack {
+            Circle().stroke(PiTheme.secondary.opacity(0.35), lineWidth: 2)
+            if let percent { Circle().trim(from: 0, to: min(1, max(0, percent / 100))).stroke(PiTheme.accent, lineWidth: 2).rotationEffect(.degrees(-90)) }
+            SwiftUI.Image(systemName: icon).font(.system(size: 11))
+        }.frame(width: 23, height: 23).accessibilityElement(children: .ignore).accessibilityLabel(name).accessibilityValue(percent.map { "\($0.formatted(.number.precision(.fractionLength(0))))%" } ?? "不明")
+    }
+}
 struct UsageSheet: View {
+    static func timeLeft(_ ms: UInt64) -> String {
+        let minutes = ms / 60_000 + (ms.isMultiple(of: 60_000) ? 0 : 1), days = minutes / 1440, hours = minutes % 1440 / 60, rest = minutes % 60
+        if days > 0 { return "あと\(days)日" + (hours > 0 ? "\(hours)時間" : "") }
+        if hours > 0 { return "あと\(hours)時間" + (rest > 0 ? "\(rest)分" : "") }
+        return "あと\(rest)分"
+    }
     let panel: PiSheetPanel
     private func clock(_ ms: UInt64) -> String {
         Date(timeIntervalSince1970: Double(ms) / 1000).formatted(date: .abbreviated, time: .shortened)
@@ -31,7 +63,7 @@ struct UsageSheet: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 UsageMeter(label: windowName(window.minutes), percent: window.usedPercent)
                                 if let reset = window.resetsAt {
-                                    Text(reset <= now ? "リセット済み · 次の応答で更新" : "\(clock(reset)) にリセット").font(.caption).foregroundStyle(.secondary)
+                                    Text(reset <= now ? "リセット済み · 次の応答で更新" : "\(clock(reset)) にリセット（\(Self.timeLeft(reset - now))）").font(.caption).foregroundStyle(.secondary)
                                 }
                             }.padding(.vertical, 3).accessibilityElement(children: .combine)
                         }
