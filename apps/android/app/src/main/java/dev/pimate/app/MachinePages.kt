@@ -458,6 +458,8 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
     var check by remember(online) { mutableStateOf<JSONObject?>(null) }
     var gh by remember(online) { mutableStateOf<JSONObject?>(null) }
     var devices by remember(online) { mutableStateOf<List<JSONObject>?>(null) }
+    // 読み込みに失敗した欄。失敗した欄を「確認中…」のままにしない。
+    var unloaded by remember(online) { mutableStateOf(emptySet<String>()) }
     var retry by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
@@ -467,22 +469,34 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
     suspend fun request(op: Operation) = JSONObject(m.machineRequest(id, op))
     LaunchedEffect(id, online, retry, caps.toString()) {
         error = ""
+        unloaded = emptySet()
+        // 読み直す間は「確認中…」に戻す（端末の一覧は、取り消しのあとも並びを保つ）。
+        check = null
+        gh = null
+        suspend fun load(part: String, task: suspend () -> Unit) =
+            checked(
+                {
+                    error = it
+                    unloaded += part
+                },
+                task,
+            )
         if (online)
             coroutineScope {
                 if (caps.optBoolean("pairedDevices"))
                     launch {
-                        checked({ error = it }) {
+                        load("devices") {
                             devices = request(Operation.Devices).getJSONArray("devices").objects()
                         }
                     }
                 if (caps.optBoolean("githubStatus"))
                     launch {
-                        checked({ error = it }) {
+                        load("github") {
                             gh = request(Operation.GithubStatus).getJSONObject("status")
                         }
                     }
                 if (caps.optBoolean("packageUpdate"))
-                    launch { checked({ error = it }) { check = request(Operation.UpdateCheck) } }
+                    launch { load("update") { check = request(Operation.UpdateCheck) } }
             }
     }
     fun operate(action: suspend () -> Unit) {
@@ -528,20 +542,23 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         Label("PC の PiMate", bottom = 0.dp)
         val current = check?.str("current").orEmpty().ifEmpty { caps.str("version") }
         val latest = check?.str("latest").orEmpty()
-        val newer = latest != "" && latest != current
+        // 公開版のほうが新しいときだけ案内する（開発中の版が公開版より先でも「更新できます」と出さない）。
+        val available = newer(latest, current)
+        // Host は公開版を照会できないと、失敗にせず latest のない結果を返す。これも読み直しの対象にする。
+        val unchecked = check != null && latest == ""
         val canUpdate =
-            online && newer && caps.optBoolean("packageUpdate") &&
+            online && available && caps.optBoolean("packageUpdate") &&
                 check?.optBoolean("canUpdate") == true
         // Host が自分では更新できない（常駐サービスでない・公開パッケージでない）。PC で操作してもらう。
-        val manual = check?.str("reason").orEmpty().takeIf { online && (newer || latest == "") }
+        val manual = check?.str("reason").orEmpty().takeIf { online && (available || unchecked) }
         ListRow(
             if (current.isEmpty()) "PiMate" else "現在 $current",
             when {
                 !online -> "接続していません"
                 !caps.optBoolean("packageUpdate") -> "PC の PiMate を更新すると使えます"
-                check == null -> if (error.isEmpty()) "確認中…" else "確認できませんでした"
-                latest == "" -> "最新版を確認できませんでした"
-                newer -> "$latest に更新できます"
+                check == null -> if ("update" in unloaded) "確認できませんでした" else "確認中…"
+                unchecked -> "最新版を確認できませんでした"
+                available -> "$latest に更新できます"
                 else -> "最新です"
             },
             trailing =
@@ -612,13 +629,14 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         if (online && caps.optBoolean("githubStatus")) {
             Label("GitHub", bottom = 0.dp)
             val status = gh
-            ListRow(githubStatusText(status))
+            ListRow(githubStatusText(status, "github" in unloaded))
             if (status != null && status.optBoolean("installed") && !status.optBoolean("loggedIn"))
                 CommandPill("gh auth login", Modifier.padding(bottom = 8.dp))
         }
         if (online && caps.optBoolean("pairedDevices")) {
             Label("ペアリング済みの端末", bottom = 0.dp)
-            if (devices == null) Hint(if (error.isEmpty()) "確認中…" else "端末一覧は未確認です")
+            if (devices == null)
+                Hint(if ("devices" in unloaded) "端末の一覧を確認できませんでした" else "確認中…")
             devices.orEmpty().forEach { d ->
                 val seen = d.optLong("lastSeenAt").takeIf { it > 0 }?.let { "最終接続 ${day(it)}" }
                 val self = d.optBoolean("current")
@@ -654,7 +672,8 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
         SheetError(error)
         if (note.isNotEmpty()) Hint(note)
         Spacer(Modifier.height(28.dp))
-        if (error.isNotEmpty())
+        // 読み込みや操作に失敗したとき、公開版を照会できなかったときに出す。
+        if (error.isNotEmpty() || unloaded.isNotEmpty() || unchecked)
             TextAction(
                 "状態を再読み込み",
                 { retry++ },
@@ -680,9 +699,9 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
     }
 }
 
-internal fun githubStatusText(gh: JSONObject?): String =
+internal fun githubStatusText(gh: JSONObject?, failed: Boolean = false): String =
     when {
-        gh == null -> "確認中…"
+        gh == null -> if (failed) "確認できませんでした" else "確認中…"
         !gh.optBoolean("installed") -> "PC に gh が入っていません"
         gh.optBoolean("loggedIn") -> "${gh.str("login").ifEmpty { "GitHub" }} でログイン中"
         else -> "ログインしていません。PC で実行してください"

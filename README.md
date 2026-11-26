@@ -301,7 +301,7 @@ scripts/android-demo.py
 | `ログイン画面の改修` | `Chat-Waiting` の状態。要対応に入り、選択肢つきの質問が出る |
 | `認証まわりのレビュー`・`README の整理` | `Drawer` の補足（サブエージェント 2 実行中・スマホで起動） |
 
-Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面は `PairScreen.kt`（最初の画面）、`MainActivity.kt`（ドロワーと、設定・新しい Pi の入口）、`ChatScreen.kt`（見出し・会話の行・入力欄）、`QuestionCard.kt`、`Markdown.kt`（表・コード・選択とコピー）。色・文字・余白は `Theme.kt`、アイコンと共通の部品は `Parts.kt`、履歴を行に組み立てて完了したターンを畳む処理は `Transcript.kt`（JVM の単体試験 `TranscriptTest`）。通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。等幅の JetBrains Mono（SIL OFL 1.1、`assets/licenses`）を同梱しています。
+Rust 版のデザインの正本は [docs/design](docs/design) と [docs/SPEC.md](docs/SPEC.md)。画面は `PairScreen.kt`（最初の画面）、`MainActivity.kt`（ドロワーと、設定・新しい Pi の入口）、`ChatScreen.kt`（見出し・会話の行・入力欄）、`QuestionCard.kt`、`Markdown.kt`（表・コード・選択とコピー）。色・文字・余白は `Theme.kt`、アイコンと共通の部品は `Parts.kt`、履歴を行に組み立てて完了したターンを畳む処理は `Transcript.kt`（JVM の単体試験 `TranscriptTest`）。通信の境界は `SessionModel.kt` と `EncryptedStore.kt`。生成された Kotlin・.so は編集しません。等幅の JetBrains Mono（SIL OFL 1.1）と、ドロワーの設定の歯車に使う Lucide の `settings`（ISC）のライセンスを `assets/licenses` に同梱しています。
 
 端末試験は `apps/android/app/src/androidTest`。`StoreContract` はランダムな試験用 Host だけで Keystore の置き換えを検査します。`UiContract` はドロワーの幅・会話内の表のリンク・Markdown の解析を UI スレッドの外で行うことを検査します（模擬 Host 不要）。`DemoJourney` は初回ペアリング画面からの試験用です（アプリのデータが空で、模擬 Host を起動し直した直後に実行します）。debug APK と `assembleDebugAndroidTest` の APK を試験端末に入れ、上記の reverse 後、模擬リンクを標準入力で `adb -s SERIAL shell "run-as dev.pimate.app.rs.debug sh -c 'mkdir -p cache; cat > cache/demo-link'"` へ渡します（履歴やログに残さない）。`adb -s SERIAL shell am instrument -w dev.pimate.app.rs.debug.test/androidx.test.runner.AndroidJUnitRunner` で実行できます。リンクがなければ会話試験はスキップします。
 
