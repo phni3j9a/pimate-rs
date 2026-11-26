@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>設定 — マシン詳細</title></head><body>
+<div class="win"><script>titlebar('設定 — PiMate')</script><div class="app">
+<script>sidebar({settings:true})</script>
+<div class="page">
+<div class="subnav">
+	<div class="row" style="padding:2px 10px 12px"><span class="ib" style="margin-left:-8px"><script>W(I('left'))</script></span><b style="font-size:15px">設定</b></div>
+	<div class="lab">マシン</div>
+	<div class="mi sel"><span class="dot done" style="margin:0"></span>MacBook</div>
+	<div class="mi"><span class="dot done" style="margin:0"></span>server-Macmini</div>
+	<div class="mi ink"><script>W(I('plus'))</script>マシンを追加</div>
+	<div class="sep"></div>
+	<div class="mi">通知</div>
+	<div class="mi">新しい Pi の既定</div>
+	<div class="mi">表示</div>
+	<div class="mi">キーボード</div>
+	<div class="mi">情報</div>
+</div>
+<div class="pane"><div style="max-width:620px">
+	<h2>MacBook</h2>
+	<div class="cap">接続中 · macOS · Pi 4 件　　<span class="mono">100.64.0.12:47800</span> · 11/20 にペアリング</div>
+	<div class="sec">PC の PiMate</div>
+	<div class="line">バージョン<span class="v">0.2.0 · <span class="ink">0.2.1 に更新できます</span></span><span class="tbtn">更新…</span></div>
+	<div class="line">Host<span class="v">常駐（systemd）</span><span class="tbtn">再起動…</span></div>
+	<div class="sec">プロバイダーのログイン</div>
+	<div class="line">Anthropic<span class="v">ログイン中</span><span class="tbtn plain">ログアウト</span></div>
+	<div class="line">OpenAI<span class="v">未ログイン</span><span class="tbtn">ログイン</span></div>
+	<div class="line">GitHub<span class="v">demo でログイン中</span><span class="tbtn plain">再確認</span></div>
+	<div class="sec">ペアリング済みの端末</div>
+	<div class="line">PiMate Desktop<span class="v">この端末</span></div>
+	<div class="line">Pixel 9<span class="v">11/18</span><span class="tbtn danger">取り消し…</span></div>
+	<div class="sec"></div>
+	<div class="tbtn danger" style="padding-left:0">このマシンを削除…</div>
+</div></div>
+</div>
+</div></div>
+<script>notes('設定 — 左に項目、右に内容（マシン詳細もここに入れる）', [
+'<b>開く:</b> サイドバー左下の「設定」、<kbd>Ctrl ,</kbd>。戻るのは ‹・<kbd>Esc</kbd>・サイドバーの Pi をクリック。Pi の一覧は出したまま。',
+'<b>項目:</b> スマホと同じ順（マシン・通知・新しい Pi の既定・表示・情報）に、デスクトップだけの「キーボード」（送信キー・ショートカット一覧）を足す。',
+'<b>マシン詳細:</b> スマホでは別画面。デスクトップでは左でマシンを選ぶと右に出る。状態は1行にまとめる。',
+'<b>操作:</b> 行の右端に文字のボタン。更新・再起動・取り消し・削除は確認のダイアログを出す（… が付く）。赤は取り消しと削除だけ。',
+'<b>通知・表示:</b> 「オフ / 要対応 / すべて」「システム / ライト / ダーク」「小 / 標準 / 大」はセグメント。即時に反映。',
+'<b>マシンを追加:</b> ペアリングのダイアログ（リンクの貼り付けと接続先の確認）を開く。'])</script>
+</body></html>

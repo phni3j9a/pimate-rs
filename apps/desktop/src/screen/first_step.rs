@@ -135,11 +135,22 @@ impl Desktop {
                 list = list.child(
                     Button::new(SharedString::from(format!("first-{i}")))
                         .justify_start()
-                        .label(format!(
+                        .when(v["working"] == true, |row| {
+                            row.child(self.working_spinner(p.accent))
+                        })
+                        .child(div().flex_1().truncate().child(format!(
                             "{}　·　{}",
                             pi_title(v, &i),
                             v["cwd"].as_str().unwrap_or("")
-                        ))
+                        )))
+                        .when(v["working"] == true, |row| row.child(p.caption("作業中")))
+                        .when(v["section"] == "waiting", |row| {
+                            row.child(p.caption(if v["failureText"].is_string() {
+                                "失敗"
+                            } else {
+                                "入力待ち"
+                            }))
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.navigate(&nav, Route::Home, cx);
                             this.select(id.clone(), i.clone(), cx);

@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>変更レビュー — インスペクター</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout'})</script>
+<div class="main"><script>chat({on:'diff'})</script></div>
+<aside class="insp">
+	<div class="head" style="padding:0 8px 0 16px"><span class="seg"><span class="on">変更</span><span>サブエージェント</span><span>GitHub</span></span><span class="grow"></span><span class="ib"><script>W(I('x'))</script></span></div>
+	<div class="row" style="padding:4px 16px 10px"><span class="seg"><span>セッション全体</span><span>ターン 1</span><span class="on">ターン 2</span></span><span class="grow"></span><span class="cap"><span class="add">+24</span> <span class="del">−2</span></span></div>
+	<div class="file sel"><script>W(I('down',12))</script><span class="grow">src/greet.ts</span><span class="add">+6</span><span class="del">−2</span></div>
+	<div class="diff"><div class="h">@@ -1,4 +1,8 @@</div><div class="d">-export function greet(name: string) {</div><div class="d">-  return `Hello, ${name}`;</div><div class="a">+export function greet(name: string,</div><div class="a">+    shout = false) {</div><div class="a">+  const text = `Hello, ${name}`;</div><div class="a">+  return shout ? text.toUpperCase() : text;</div><div> }</div><div class="a">+</div><div class="a">+export const DEFAULT = 'world';</div></div>
+	<div class="file"><script>W(I('right',12))</script><span class="grow">src/greet.test.ts</span><span class="muted" style="font-family:inherit">新規</span><span class="add">+18</span></div>
+	<div class="grow"></div>
+	<div style="padding:12px 16px 16px"><div class="field area" style="min-height:56px"><span class="ph muted">この変更について依頼…（選んだ行を引用）</span></div>
+	<div class="row" style="justify-content:flex-end;margin-top:8px"><span class="tbtn">依頼を入力欄へ <kbd>Ctrl Enter</kbd></span></div></div>
+</aside>
+</div></div>
+<script>notes('変更レビュー — 右のインスペクター（会話を隠さない）', [
+'<b>開く:</b> ヘッダーの差分アイコン、ツール行の「差分を開く」、<kbd>Ctrl Shift D</kbd>。閉じるのは ×・<kbd>Esc</kbd>・同じアイコン。',
+'<b>幅:</b> 400px。会話との境目をドラッグして 320〜640px に変えられる。ウィンドウ幅が 1080px 未満なら会話の上に重ねる。',
+'<b>範囲:</b> セッション全体 / ターンごと。ファイルの行で折りたたみ、<kbd>↑</kbd><kbd>↓</kbd> でファイルを移動。差分は等幅。',
+'<b>依頼:</b> 差分の行をドラッグで選ぶと下の欄に引用。「依頼を入力欄へ」は文字だけのボタン（この画面の塗りボタンは送信だけ）。',
+'<b>タブ:</b> 変更 / サブエージェント / GitHub を同じ場所で切り替える。開いていたタブは Pi ごとに覚える。',
+'モーダルにしないので、差分を見ながら会話を読み、入力できる。'])</script>
+</body></html>

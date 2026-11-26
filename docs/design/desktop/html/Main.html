@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html lang="ja"><head><meta charset="utf-8"><link rel="stylesheet" href="desktop.css"><script src="parts.js"></script><title>チャット — 作業中</title></head><body>
+<div class="win"><script>titlebar('--shout フラグを追加 — PiMate')</script><div class="app">
+<script>sidebar({sel:'shout', hover:'api'})</script>
+<div class="main"><script>chat({text:'テストは vitest に合わせて<span class="caret"></span>', hover:true, focus:true})</script></div>
+</div></div>
+<script>notes('チャット — 作業中（既定の2ペイン）', [
+'<b>左:</b> 実行中の Pi の一覧。常に見える。上から「要対応」→ マシンごと。クリックで切り替え、<kbd>Ctrl 1</kbd>〜<kbd>9</kbd> で上から順に選ぶ。行のホバーは一段濃い面、選択は選択色。',
+'<b>ヘッダー:</b> セッション名（ダブルクリックで名前変更）・フォルダ・マシン、状態。右のアイコンは 変更・サブエージェント・GitHub のインスペクター、⋯ はセッションのメニュー。',
+'<b>会話:</b> 幅 720px までの列を中央に置く（最大化しても行が長くならない）。ツールは1行ずつ。ホバーで「差分を開く」「コピー」が出る。クリックで出力を開閉。',
+'<b>入力欄:</b> 起動時からフォーカス。<kbd>Enter</kbd> 送信、<kbd>Shift Enter</kbd> 改行（変換中の Enter は確定だけ）。作業中は「割り込む / 完了後に送信」を選べ、<kbd>Esc</kbd> か停止ボタンで止める。',
+'<b>送信待ち:</b> 入力欄のすぐ上に1行。鉛筆で入力欄に戻し、× で取り消す。',
+'<b>塗りの主ボタン</b>は送信の丸ボタンと「新しい Pi」だけ。ほかは文字かアイコン。'])</script>
+</body></html>

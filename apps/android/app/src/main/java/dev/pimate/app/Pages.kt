@@ -255,7 +255,12 @@ internal fun FirstPage(
                         InstanceRow(
                             o,
                             false,
-                            if (o.str("status") == "waiting_input") "入力待ち" else null,
+                            when {
+                                o.has("failureText") -> "失敗: ${o.str("failureText")}"
+                                o.str("status") == "waiting_input" -> "入力待ち"
+                                o.str("section") == "waiting" -> "サブエージェントの確認が必要です"
+                                else -> null
+                            },
                             ago(o.optLong("updatedAt"), System.currentTimeMillis()),
                         ) {
                             select(it.id)

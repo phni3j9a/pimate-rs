@@ -22,11 +22,7 @@ struct FirstStepView: View {
                     Section("起動中の Pi") {
                         ForEach(model.rows[host.id]?.groups["instance"] ?? [], id: \.id) { item in
                             Button { select(host.id, item.id) } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(item.object.piTitle.isEmpty ? item.id : item.object.piTitle).modifier(PiFont(.sheet)).fontWeight(.semibold)
-                                    Text(item.object.str("cwd")).modifier(PiFont(.caption)).fontDesign(.monospaced).foregroundStyle(.secondary)
-                                    if item.object.str("status") == "waiting_input" { Text("入力待ち").foregroundStyle(PiTheme.waiting) }
-                                }.frame(minHeight: 44)
+                                InstanceRowLabel(item: item)
                             }.accessibilityIdentifier("pi-\(item.id)")
                         }
                     }
