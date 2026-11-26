@@ -103,6 +103,46 @@ private final class MachineCore: Core, @unchecked Sendable {
         do { try await late.value; XCTFail() } catch is CancellationError {}
         XCTAssertEqual(model.editor?.host, "a"); XCTAssertEqual(core.b.calls.count, 1)
     }
+    func testUsageResetRoundsUpAndDropsSmallerUnits() {
+        XCTAssertEqual(UsageSheet.timeLeft(1), "あと1分"); XCTAssertEqual(UsageSheet.timeLeft(3_600_001), "あと1時間1分")
+        XCTAssertEqual(UsageSheet.timeLeft(90_060_000), "あと1日1時間")
+    }
+    func testReviewUsesRCTruncationFlagNotOutputLengthOrOmittedPatch() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
+        // At the RC limit the retained prefix and a complete result may have identical lengths.
+        let text = String(repeating: "🌱", count: 16_384)
+        let entries: [Object] = [["kind":"assistant", "toolCalls":[["id":"a", "name":"edit"], ["id":"b", "name":"edit"]]],
+            ["kind":"tool_result", "toolCallId":"a", "text":text, "truncated":true],
+            ["kind":"tool_result", "toolCallId":"b", "text":text, "detailsOmitted":true]]
+        let items = try entries.enumerated().map { item("entry", String($0.offset), try jsonString($0.element)) }
+        let pieces = ChangeReview(key: key, entries: items, cwd: "", turn: nil).files.flatMap(\.pieces)
+        XCTAssertEqual(pieces.map(\.truncated), [true, false]); XCTAssertEqual(pieces.map(\.output), [text, text])
+    }
+    func testBeginningReviewRetainsOmittedResultWithoutIncludingLaterCalls() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
+        func change(_ path: String) -> [Object] { [
+            ["kind":"assistant", "toolCalls":[["id":"edit", "name":"edit", "args":["path":path]]]],
+            ["kind":"tool_result", "toolCallId":"edit", "text":"updated " + path, "detailsOmitted":true]] }
+        let history = change("before") + [["kind":"user", "entryId":"user"]] + change("after")
+        let items = try history.enumerated().map { item("entry", String($0.offset), try jsonString($0.element)) }
+        let all = ChangeReview(key: key, entries: items, cwd: "", turn: nil)
+        XCTAssertEqual(all.files.map(\.path), ["before", "after"])
+        let first = ChangeReview(key: key, entries: items, cwd: "", turn: ChatTurn.beginning)
+        XCTAssertEqual(first.files.map(\.path), ["before"]); XCTAssertTrue(first.reference.hasPrefix("このターン"))
+        XCTAssertEqual(first.files.first?.pieces.first?.output, "updated before")
+    }
+    func testReviewMatchesReusedCallIDByOccurrence() throws {
+        let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
+        let entries: [Object] = [
+            ["kind":"user", "entryId":"first"], ["kind":"assistant", "toolCalls":[["id":"c", "name":"write", "args":["content":"first body"]]]],
+            ["kind":"user", "entryId":"second"], ["kind":"tool_result", "toolCallId":"c"],
+            ["kind":"assistant", "toolCalls":[["id":"c", "name":"write"]]], ["kind":"tool_result", "toolCallId":"c", "isError":true]]
+        let items = try entries.enumerated().map { item("entry", String($0.offset), try jsonString($0.element)) }
+        let review = ChangeReview(key: key, entries: items, cwd: "", turn: nil)
+        XCTAssertEqual(review.files.first?.pieces.map(\.lineID), ["1:0"])
+        XCTAssertEqual(review.files.first?.pieces.first?.content, "first body")
+        XCTAssertEqual(review.latestChangedTurn, "first")
+    }
     func testReviewKeepsCanonicallyEquivalentLinuxPathsSeparate() throws {
         let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil)), paths = ["が.txt", "か\u{3099}.txt"]
         let calls = paths.enumerated().map { ["id": String($0.offset), "name": "edit", "args": ["path": $0.element]] as Object }

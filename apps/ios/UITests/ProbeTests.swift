@@ -70,7 +70,7 @@ final class ProbeTests: XCTestCase {
         openSheet("モデル・Thinking")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入り")).firstMatch.waitForExistence(timeout: 12)); shot("Sheet-Model")
         app.buttons["sheet-close"].tap()
-        openSheet("使用状況")
+        app.buttons["usage-rings"].tap()
         XCTAssertTrue(app.buttons["コンテキストを圧縮"].waitForExistence(timeout: 8)); shot("Sheet-Usage")
         app.buttons["sheet-close"].tap()
         openSheet("セッション")
@@ -123,7 +123,7 @@ final class ProbeTests: XCTestCase {
 
         let field = app.textViews["message"]
         func openVisibleTable() {
-            let tables = app.buttons.matching(NSPredicate(format: "label == %@", "表を開く"))
+            let tables = app.buttons.matching(identifier: "table-cell")
             // Hittable includes partially obscured buttons. Keep the entire label between the header and the composer.
             let top = app.navigationBars.firstMatch.frame.maxY + 44, bottom = field.frame.minY - 20
             func visibleTable() -> XCUIElement? {
@@ -165,7 +165,7 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
         XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
         try openPi("demo")
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "表を開く")).firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons.matching(identifier: "table-cell").firstMatch.waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["メッセージを送信"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch.exists)
         openVisibleTable()
@@ -227,6 +227,9 @@ extension ProbeTests {
         XCTAssertTrue(main.waitForExistence(timeout: 15)); main.tap()
         func open(_ title: String) { app.buttons["chat-options"].tap(); app.buttons[title].tap() }
         open("モデル・Thinking")
+        // Before the catalog arrives the empty picker already selects “all”; tapping it then does nothing.
+        let favorite = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入りから外す")).firstMatch
+        XCTAssertTrue(favorite.waitForExistence(timeout: 12))
         app.buttons["すべて"].tap()
         let search = app.textFields["モデルを検索"]
         search.tap(); search.typeText("absent\n"); app.buttons["お気に入り"].tap()
@@ -339,7 +342,7 @@ extension ProbeTests {
         if env["PIMATE_DEMO_GITHUB_TABLES"] == "1" {
             for (title, note, route) in [("チェック未提供", "CI チェックの内訳は未提供です", "PR #56"), ("空のチェック一覧", "チェックはありません", "PR #57")] {
                 tap(button(title)); XCTAssertTrue(app.staticTexts[note].waitForExistence(timeout: 10))
-                tap(app.buttons["表を開く"]); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8))
+                tap(app.buttons.matching(identifier: "table-cell").firstMatch); XCTAssertTrue(app.buttons["表をコピー"].waitForExistence(timeout: 8))
                 // Untrusted GitHub images stay text, not tiles that fetch from the web or the PC.
                 XCTAssertTrue(app.staticTexts["外部の画像"].exists); XCTAssertFalse(app.buttons["外部の画像"].exists); XCTAssertFalse(app.buttons["PC の画像"].exists)
                 app.buttons["表を閉じる"].tap(); try popSheetRoute(app, from: route, to: "GitHub")

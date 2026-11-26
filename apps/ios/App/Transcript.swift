@@ -5,6 +5,8 @@ struct WorkLine: Identifiable, Equatable {
     var output: String, state: String
     var images: HistoryImages?
     var callID: String?
+    var changeCall = false
+    var hasChange: Bool { changeCall && state == "完了" }
     var isThought: Bool { state.isEmpty }
     static func streamThought(_ stream: [Item], hasAnswer: Bool) -> (automatic: Bool, title: String) {
         func timestamp(_ id: String) -> UInt64? { stream.first { $0.id == id }.flatMap { UInt64($0.json) } }
@@ -21,6 +23,7 @@ struct WorkLine: Identifiable, Equatable {
     }
 }
 struct ChatTurn: Identifiable, Equatable {
+    static let beginning = "begin"
     let id: String
     var prompt = ""
     var images: HistoryImages?
@@ -37,7 +40,7 @@ struct ChatTurn: Identifiable, Equatable {
         guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; w.images = images; lines[index] = .work(w)
     }
     var start: Int?, end: Int?
-    struct Reply: Identifiable, Equatable { let id: String, text: String }
+    struct Reply: Identifiable, Equatable { let id: String, text: String; var notice = "" }
     var summary: String {
         let calls = work.filter { !$0.isThought }.count
         let elapsed = start.flatMap { a in end.map { max(0, ($0 - a) / 1000) } } ?? 0
@@ -45,9 +48,9 @@ struct ChatTurn: Identifiable, Equatable {
     }
     static func read(_ entries: [Item], live: [Item], timing: [Item] = []) -> [Self] {
         let thinkingMs = Dictionary(uniqueKeysWithValues: timing.map { ($0.id, Int($0.json)) })
-        var turns = [Self(id: "begin")], pending: [String: (Int, Int)] = [:]
-        func line(_ id: String, _ o: Object, _ name: String, callID: String) -> WorkLine {
-            let args = o.obj("args"); return WorkLine(id: id, name: name, subject: args.str("path").isEmpty ? args.str("command") : args.str("path"), output: "", state: "未完了", callID: callID)
+        var turns = [Self(id: Self.beginning)], pending: [String: (Int, Int)] = [:]
+        func line(_ id: String, _ o: Object, _ name: String, callID: String, changeCall: Bool = false) -> WorkLine {
+            let args = o.obj("args"); return WorkLine(id: id, name: name, subject: args.str("path").isEmpty ? args.str("command") : args.str("path"), output: "", state: "未完了", callID: callID, changeCall: changeCall)
         }
         for item in entries {
             if Task.isCancelled { return [] }
@@ -65,10 +68,15 @@ struct ChatTurn: Identifiable, Equatable {
             } else {
                 if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: WorkLine.thoughtTitle(thinkingMs[item.id] ?? nil), subject: "", output: o.str("thinking"), state: ""))) }
                 let error = o.str("errorMessage")
-                if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n")))) }
+                let stop = o.str("stopReason")
+                // Older RCs may not have normalized the abort error yet. Match the RC's whole-message rule.
+                let aborted = stop == "aborted" || ((stop.isEmpty || stop == "error") && !error.isEmpty &&
+                    error.trimmingCharacters(in: .whitespacesAndNewlines).range(of: #"\A(?:AbortError:\s*)?(?:This operation was aborted|The operation was aborted|The user aborted a request|Request (?:was )?aborted|Aborted)[.!]?\z"#, options: [.regularExpression, .caseInsensitive]) != nil)
+                let notice = aborted ? "中断しました" : error
+                if !text.isEmpty || !notice.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: text, notice: notice))) }
                 for (n, c) in o.list("toolCalls").enumerated() {
                     pending[c.str("id")] = (i, turns[i].lines.count)
-                    turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"), callID: c.str("id"))))
+                    turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"), callID: c.str("id"), changeCall: ["write", "edit"].contains(c.str("name")))))
                 }
             }
         }

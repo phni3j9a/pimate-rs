@@ -64,7 +64,7 @@ struct PiSheetPanel: View {
         if let error = live?.error { Text(problem(error)).foregroundStyle(PiTheme.failure).accessibilityIdentifier("sheet-error") }
         else if live?.loading == true { ProgressView("応答を待っています…") }
         if tracksCompletion, let receipt = model.receipt, receipt.id != receiptAtStart {
-            Text("この Pi の直近の操作結果").font(.caption).foregroundStyle(.secondary)
+            Text("この Pi の直近の操作結果").modifier(PiFont(.caption)).foregroundStyle(.secondary)
             ReceiptNote(receipt: receipt) { tracksCompletion = false; acknowledged = false; model.dismissReceipt(host: opened.key.host, receipt) }
         } else if acknowledged && live?.error == nil && live?.loading == false { Label(tracksCompletion ? "要求を受け付けました。完了は未確認です。" : "要求を受け付けました", systemImage: "tray.and.arrow.down") }
     }
@@ -82,7 +82,7 @@ struct PiSheetPanel: View {
                 }
             }.toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { model.closeSheet(opened) }.accessibilityIdentifier("sheet-close") } }
         }.safeAreaInset(edge: .bottom) {
-            VStack(alignment: .leading, spacing: 0) { feedback }.font(.callout).padding(.horizontal)
+            VStack(alignment: .leading, spacing: 0) { feedback }.modifier(PiFont(.lead)).padding(.horizontal)
                 .frame(maxWidth: .infinity, alignment: .leading).background(.bar)
         }.tint(PiTheme.accent)
     }
@@ -113,7 +113,7 @@ private struct ModelSettings: View {
                     HStack {
                         Button { if current != m { panel.act(.select(m)) } } label: {
                             HStack {
-                                VStack(alignment: .leading) { Text(verbatim: name).foregroundStyle(.primary); Text(verbatim: "\(m.provider)/\(m.id)").font(.caption).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading) { Text(verbatim: name).foregroundStyle(.primary); Text(verbatim: "\(m.provider)/\(m.id)").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
                                 Spacer(); if current == m { SwiftUI.Image(systemName: "checkmark") }
                             }.frame(minHeight: 44).contentShape(Rectangle())
                         }.accessibilityAddTraits(current == m ? .isSelected : [])

@@ -15,7 +15,7 @@ struct AgentSummary: View {
                 HStack { Label("サブエージェント", systemImage: "person.2"); Spacer()
                     Text(["running", "waiting", "paused", "failed", "complete", "stopped"].compactMap { s in counts[s].map { "\($0) \(agentState(s))" } }.joined(separator: " · ")).foregroundStyle(.secondary)
                     SwiftUI.Image(systemName: "chevron.forward").accessibilityHidden(true)
-                }.font(.subheadline).frame(minHeight: 44).padding(.horizontal).contentShape(Rectangle())
+                }.modifier(PiFont(.lead)).frame(minHeight: 44).padding(.horizontal).contentShape(Rectangle())
             }.buttonStyle(.plain).accessibilityIdentifier("agents-summary")
         }
     }
@@ -35,21 +35,21 @@ struct AgentsView: View {
                         Section(open ? "実行中・再開可能" : "以前の実行") {
                             ForEach(group, id: \.selfID) { run in
                                 VStack(alignment: .leading, spacing: 4) {
-                                    Text(verbatim: [run.str("backend"), run.str("mode")].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                                    Text(verbatim: [run.str("backend"), run.str("mode")].filter { !$0.isEmpty }.joined(separator: " · ")).modifier(PiFont(.caption)).foregroundStyle(.secondary)
                                     if run.list("children").isEmpty { Text(agentState(run.str("state"))) }
                                 }
                                 ForEach(run.list("children"), id: \.selfID) { c in
                                     NavigationLink(value: AgentRoute(run: run.str("id"), child: c.str("id"))) {
                                         VStack(alignment: .leading, spacing: 4) {
                                             HStack(alignment: .firstTextBaseline) {
-                                                Text(verbatim: c.str("title").isEmpty ? c.str("agent") : c.str("title")).font(.headline)
+                                                Text(verbatim: c.str("title").isEmpty ? c.str("agent") : c.str("title")).modifier(PiFont(.sheet)).fontWeight(.semibold)
                                                 if let ms = c["startedAt"] as? Double, ms > 0 {
                                                     Spacer(); let start = Date(timeIntervalSince1970: ms / 1000)
-                                                    if let end = c["endedAt"] as? Double { Text(Duration.seconds(max(0, (end - ms) / 1000)).formatted(.time(pattern: .minuteSecond))).font(.caption.monospacedDigit()) }
-                                                    else { Text(start, style: .timer).font(.caption.monospacedDigit()).multilineTextAlignment(.trailing) }
+                                                    if let end = c["endedAt"] as? Double { Text(Duration.seconds(max(0, (end - ms) / 1000)).formatted(.time(pattern: .minuteSecond))).modifier(PiFont(.caption)).monospacedDigit() }
+                                                    else { Text(start, style: .timer).modifier(PiFont(.caption)).monospacedDigit().multilineTextAlignment(.trailing) }
                                                 }
                                             }
-                                            Text(verbatim: [agentState(c.str("state")), c.str("agent"), c.obj("activity").str("tool"), c.obj("activity").str("args")].filter { !$0.isEmpty }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                                            Text(verbatim: [agentState(c.str("state")), c.str("agent"), c.obj("activity").str("tool"), c.obj("activity").str("args")].filter { !$0.isEmpty }.joined(separator: " · ")).modifier(PiFont(.caption)).foregroundStyle(.secondary)
                                         }.padding(.vertical, 4)
                                     }.accessibilityIdentifier("agent-\(run.str("id"))-\(c.str("id"))")
                                 }
@@ -60,7 +60,7 @@ struct AgentsView: View {
                 }
             }.listStyle(.insetGrouped).navigationTitle("サブエージェント").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } } }
-                .navigationDestination(for: AgentRoute.self) { route in AgentDetailView(model: model, key: key, route: route) { path = [$0] }.id(route) }
+                .navigationDestination(for: AgentRoute.self) { route in AgentDetailView(model: model, key: key, route: route, close: { dismiss() }) { path = [$0] }.id(route) }
         }.onAppear {
             if let run = sheet.run, let children = runs.first?.list("children"), children.count == 1 { path = [.init(run: run, child: children[0].str("id"))] }
         }.tint(PiTheme.accent).presentationDetents([.large]).presentationDragIndicator(.visible)

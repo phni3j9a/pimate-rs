@@ -24,7 +24,7 @@ import PhotosUI
 }
 private struct MessageField: UIViewRepresentable {
     let text: String, input: MessageInput, changed: (String) -> Void
-    @ScaledMetric(relativeTo: .body) var points: CGFloat = 16
+    @ScaledMetric(relativeTo: .body) var points: CGFloat = 15
     @AppStorage("typeSize") var size = TypeSize.standard
     func makeUIView(context: Context) -> UITextView {
         let v = UITextView(); v.backgroundColor = .clear; v.accessibilityLabel = "メッセージ"; v.accessibilityIdentifier = "message"; v.textContainer.lineFragmentPadding = 0; return v
@@ -40,6 +40,7 @@ private struct MessageField: UIViewRepresentable {
 struct Composer: View {
     let model: SessionModel, key: EditorKey, rows: Rows, running: Bool, blocked: Bool
     @State private var sendError = ""
+    @State private var unavailablePhotos = false
     @State private var selection: [PhotosPickerItem] = []
     @StateObject private var input = MessageInput()
     static func submit(_ model: SessionModel, key: EditorKey, sent: RestoredDraft) async throws -> String {
@@ -79,14 +80,14 @@ struct Composer: View {
             DraftList(rows: rows, instance: key.target.instance, model: model, key: key)
             if model.needsMoveConfirmation, let move = model.move {
                 VStack(alignment: .leading, spacing: 3) {
-                    Label("送信先が変わりました", systemImage: "arrow.triangle.swap").font(.subheadline.bold())
+                    Label("送信先が変わりました", systemImage: "arrow.triangle.swap").modifier(PiFont(.lead)).fontWeight(.semibold)
                     let name = move.notice.obj("to").str("name")
-                    Text(name.isEmpty ? "前の会話に下書きが残っています。" : "前の下書きは移動しません。これからの送信先は「\(name)」です。").font(.caption)
+                    Text(name.isEmpty ? "前の会話に下書きが残っています。" : "前の下書きは移動しません。これからの送信先は「\(name)」です。").modifier(PiFont(.caption))
                     Button("新しい送信先を確認") { model.confirmMove(key, id: move.id) }.frame(minHeight: 44)
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(PiTheme.waiting.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             }
-            if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).font(.caption).foregroundStyle(PiTheme.failure) }
-            if blocked { HStack { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10); Spacer(); stop } }
+            if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).modifier(PiFont(.caption)).foregroundStyle(PiTheme.failure) }
+            if blocked { HStack { UsageRings(model: model, key: key, rows: rows); Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10); Spacer(); stop } }
             else {
                 if rows.field("slashCommands") == "true", !input.marked, draft.text.hasPrefix("/"), !draft.text.contains(where: { $0.isWhitespace }) {
                     CommandPalette(model: model, key: key, text: draft.text, commands: rows.groups["command"] ?? [])
@@ -108,7 +109,11 @@ struct Composer: View {
                                 SwiftUI.Image(systemName: "photo.on.rectangle").frame(minWidth: 44, minHeight: 44)
                             }.accessibilityLabel("画像を添付").disabled(remaining <= 0 || !selection.isEmpty || model.submissionBlocked)
                         }
+                        if rows.field("promptImages") != "true" {
+                            Button { unavailablePhotos = true } label: { SwiftUI.Image(systemName: "photo.badge.exclamationmark").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("画像を添付できない理由")
+                        }
                         if !selection.isEmpty { ProgressView().accessibilityLabel("画像を準備中") }
+                        UsageRings(model: model, key: key, rows: rows)
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         stop
                         Button { guard let sent = input.submission(draft) else { return }; Task {
@@ -123,6 +128,7 @@ struct Composer: View {
                 }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 20))
             }
         }.padding(.horizontal, 12).padding(.vertical, 4).background(PiTheme.background)
+        .alert("この Pi は画像の添付に対応していません", isPresented: $unavailablePhotos) { Button("閉じる") {} } message: { Text("PC の PiMate RC を更新し、Pi を起動し直してください。") }
         .task(id: selection) {
             guard !selection.isEmpty else { return }
             var files: [URL] = []
@@ -169,11 +175,11 @@ struct DraftList: View {
     private func content(_ notices: [Notice]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(notices) { n in
-                Text(n.status == "queued" ? "割り込み待ち" : n.status == "sending" ? "送信中" : "届いたか未確認 · 履歴を確認してください").font(.caption.bold())
-                if n.imageCount > 0 { Label("画像 \(n.imageCount) 枚", systemImage: "photo").font(.caption) }
+                Text(n.status == "queued" ? "割り込み待ち" : n.status == "sending" ? "送信中" : "届いたか未確認 · 履歴を確認してください").modifier(PiFont(.caption)).fontWeight(.semibold)
+                if n.imageCount > 0 { Label("画像 \(n.imageCount) 枚", systemImage: "photo").modifier(PiFont(.caption)) }
                 if !n.text.isEmpty { Text(verbatim: n.text).lineLimit(2) }
                 if n.status == "unconfirmed" {
-                    Text("自動で再送しません。").font(.caption).foregroundStyle(PiTheme.secondary)
+                    Text(key == nil ? "再接続したら確認します（自動で再送しません）。" : "PC の入力欄に戻っている場合があります。履歴を確認してください。自動で再送しません。").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                     Button("下書きへ戻す") {
                         guard let key else { return }
                         do { try model.restore(key, id: n.id); error = "" } catch { self.error = "下書きを復元できません" }

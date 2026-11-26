@@ -1,5 +1,14 @@
 import SwiftUI
 
+struct HorizontalRegions: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) { value += nextValue() }
+}
+private extension View {
+    func keepsHorizontalDrag() -> some View {
+        background(GeometryReader { geo in Color.clear.preference(key: HorizontalRegions.self, value: [geo.frame(in: .named("transcript"))]) })
+    }
+}
 private actor MarkdownParser {
     static let shared = MarkdownParser()
     func blocks(_ source: String, files: Bool) throws -> ([Block], [MarkdownImage]) {
@@ -15,12 +24,22 @@ struct MarkdownBody: View {
     @Environment(\.photoContext) private var photos
     @State private var blocks: [Block] = []
     @State private var gallery: [MarkdownImage] = []
+    var copyAnswer = false
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             ForEach(blocks, id: \.id) { MarkdownBlock(block: $0, answer: answer) }
+            if copyAnswer { CopyText(text: source, label: "回答全文をコピー（Markdown）") }
         }.environment(\.markdownGallery, gallery).task(id: [source, photos?.files == true ? "file" : ""]) {
             if let result = try? await MarkdownParser.shared.blocks(source, files: photos?.files == true), !Task.isCancelled { (blocks, gallery) = result }
         }
+    }
+}
+struct CopyText: View {
+    let text: String, label: String
+    var body: some View {
+        Button { UIPasteboard.general.string = text; UIAccessibility.post(notification: .announcement, argument: "コピーしました") } label: {
+            Label(label, systemImage: "doc.on.doc").modifier(PiFont(.caption)).frame(minHeight: 44)
+        }.buttonStyle(.borderless)
     }
 }
 // UITextView exposes the native range-selection handles, unlike SwiftUI Text on iOS 17.
@@ -72,8 +91,8 @@ private struct MarkdownBlock: View {
         case .rule: Divider()
         case .code(let language, let text):
             VStack(alignment: .leading, spacing: 4) {
-                HStack { Text(language ?? "コード").font(.caption.monospaced()); Spacer(); Button("コードをコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44) }
-                ScrollView(.horizontal) { Text(verbatim: text).font(.system(.callout, design: .monospaced)).textSelection(.enabled).fixedSize() }
+                HStack { Text(language ?? "コード").modifier(PiFont(.caption)).fontDesign(.monospaced); Spacer(); Button("コードをコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44) }
+                ScrollView(.horizontal) { Text(verbatim: text).modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled).fixedSize() }.keepsHorizontalDrag()
             }.padding(.horizontal, 12).padding(.bottom, 12).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 12))
         case .quote(let children): HStack { Rectangle().fill(PiTheme.secondary).frame(width: 2); nested(children) }
         case .blockList(let start, let items):
@@ -105,6 +124,13 @@ struct MarkdownTable: View {
     @State private var width: CGFloat = 300
     @ScaledMetric(relativeTo: .body) private var ratio: CGFloat = 1
     @AppStorage("typeSize") private var size = TypeSize.standard
+    private func showTable() { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
+    private static func interactive(_ cell: [Inline]) -> Bool {
+        cell.contains { span in
+            switch span { case .image: true; case .text(_, let style): style.href != nil }
+        }
+    }
+    static func needsOpenButton(_ table: Table) -> Bool { ([table.header] + table.rows).allSatisfy { $0.allSatisfy(interactive) } }
     private func grid(full: Bool) -> some View {
         let rows = [table.header] + table.rows
         let natural = (0..<(rows.map(\.count).max() ?? 0)).map { c in rows.compactMap { c < $0.count ? cellWidth(cell: $0[c]) : nil }.max() ?? 0 }
@@ -113,8 +139,14 @@ struct MarkdownTable: View {
             VStack(alignment: .leading, spacing: 0) { ForEach(rows.indices, id: \.self) { i in
                 HStack(alignment: .top, spacing: 0) { ForEach(rows[i].indices, id: \.self) { j in
                     VStack(alignment: .leading, spacing: 6) {
-                        if full { PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0) }
-                        else { Selectable(spans: rows[i][j], heading: i == 0, links: false).allowsHitTesting(false) }
+                        if full || Self.interactive(rows[i][j]) {
+                            PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0)
+                        } else {
+                            Button(action: showTable) {
+                                Selectable(spans: rows[i][j], heading: i == 0).allowsHitTesting(false)
+                                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain).accessibilityLabel("表を開く: " + rows[i][j].compactMap { if case .text(let value, _) = $0 { value } else { nil } }.joined()).accessibilityIdentifier("table-cell")
+                        }
                     }.padding(8).frame(width: widths[j], alignment: .leading)
                 } }.background(i == 0 ? PiTheme.surface : PiTheme.background); Divider()
             } }
@@ -122,13 +154,12 @@ struct MarkdownTable: View {
     }
     var body: some View {
         if full { grid(full: true) }
-        else { VStack(alignment: .trailing, spacing: 0) {
-            grid(full: false).contentShape(Rectangle()).onTapGesture { open(OpenTable(table: table, answer: answer, gallery: gallery)) }
-            Button { open(OpenTable(table: table, answer: answer, gallery: gallery)) } label: {
-                Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right")
-                    .font(.caption).frame(minHeight: 44).contentShape(Rectangle())
+        else {
+            grid(full: false).keepsHorizontalDrag().accessibilityAction(named: "表を開く", showTable)
+            if Self.needsOpenButton(table) {
+                Button(action: showTable) { Label("表を開く", systemImage: "arrow.up.left.and.arrow.down.right").frame(minHeight: 44) }
             }
-        } }
+        }
     }
 }
 
