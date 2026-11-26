@@ -1,10 +1,127 @@
 use super::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+fn tool_subject(name: &str, args: &Value, details: &Value) -> String {
+    let subject = match name {
+        "bash" => args["command"].as_str(),
+        "edit" | "write" | "read" => args["path"].as_str().or(args["file_path"].as_str()),
+        _ => None,
+    }
+    .unwrap_or("")
+    .lines()
+    .next()
+    .unwrap_or("")
+    .chars()
+    .take(100)
+    .collect::<String>();
+    let patch = if name == "edit" {
+        &details["patch"]
+    } else if name == "write" {
+        &details["pimate"]["patch"]
+    } else {
+        &Value::Null
+    };
+    if let Some(patch) = patch.as_str() {
+        let patch = state::review::Patch::parse(patch);
+        if !patch.hunks.is_empty() {
+            return format!("{subject} +{} −{}", patch.added, patch.removed);
+        }
+    }
+    subject
+}
+fn work_summary(start: Option<u64>, end: Option<u64>, calls: usize) -> String {
+    let secs = start
+        .zip(end)
+        .map_or(0, |(a, b)| b.saturating_sub(a) / 1000);
+    let mut label = if secs > 0 {
+        format!("{secs}秒 作業")
+    } else {
+        "作業".into()
+    };
+    if calls > 0 {
+        label.push_str(&format!(" · ツール {calls} 回"));
+    }
+    label
+}
+fn thought_label(active: bool, ms: Option<u64>) -> String {
+    if active {
+        "Thinking…".into()
+    } else if let Some(ms) = ms.filter(|ms| *ms >= 1000) {
+        format!("Thought for {}s", ms.saturating_add(500) / 1000)
+    } else {
+        "Thought".into()
+    }
+}
+
+// Keep the virtual list: opening a turn mounts only the work rows in the viewport.
+#[derive(Default)]
+struct LayoutRows {
+    indices: Vec<usize>,
+    summaries: HashMap<usize, String>,
+    results: HashSet<String>,
+    calls: HashMap<String, (usize, usize, usize)>,
+}
+impl LayoutRows {
+    fn new(entries: &[(String, Value)], running: bool, expanded: &HashSet<String>) -> Self {
+        let mut layout = Self::default();
+        let mut begin = 0;
+        while begin < entries.len() {
+            let end = begin
+                + 1
+                + entries[begin + 1..]
+                    .iter()
+                    .take_while(|(_, v)| v["kind"] != "user")
+                    .count();
+            let mut calls = 0;
+            let mut work = false;
+            for (ix, (_, v)) in entries[begin..end].iter().enumerate() {
+                for (j, c) in v["toolCalls"].as_array().into_iter().flatten().enumerate() {
+                    calls += 1;
+                    if let Some(id) = c["id"].as_str() {
+                        layout.calls.insert(id.into(), (begin + ix, j, begin));
+                    }
+                }
+                if let Some(id) = v["toolCallId"].as_str() {
+                    layout.results.insert(id.into());
+                }
+                work |= v["kind"] == "tool_result"
+                    || v["thinking"].as_str().is_some_and(|t| !t.is_empty());
+            }
+            let (id, first) = &entries[begin];
+            let summary =
+                first["kind"] == "user" && (work || calls > 0) && (end < entries.len() || !running);
+            if summary {
+                layout.summaries.insert(
+                    begin,
+                    work_summary(
+                        first["timestamp"].as_u64(),
+                        entries[end - 1].1["timestamp"].as_u64(),
+                        calls,
+                    ),
+                );
+            }
+            let show = !summary || expanded.contains(id);
+            layout.indices.extend((begin..end).filter(|&i| {
+                let v = &entries[i].1;
+                show || !(v["kind"] == "tool_result"
+                    || v["kind"] == "assistant"
+                        && v["text"].as_str().unwrap_or("").is_empty()
+                        && v["errorMessage"].is_null())
+            }));
+            begin = end;
+        }
+        layout
+    }
+}
 #[derive(Default)]
 struct Conversation {
     documents: markdown::Messages,
     expanded: HashSet<String>,
+    turns: HashSet<String>,
+    thought: HashMap<String, bool>,
+    manual: bool,
+    layout: LayoutRows,
+    layout_version: Option<(u64, bool)>,
     // The append boundary from the last time we saw a live answer, even if its row was offscreen.
     // Increment at completion/replacement, not on deltas or an intervening user row.
     stream_generation: u64,
@@ -16,25 +133,22 @@ impl Conversation {
         entries: &[(String, Value)],
         streaming: bool,
         list: &ListState,
-        stream_focused: bool,
+        running: bool,
+        revision: u64,
     ) {
         self.documents.begin_frame();
         if let Some((old, last)) = &self.stream_tail {
             if *old <= entries.len() && old.checked_sub(1).map(|i| &entries[i].0) == last.as_ref() {
                 let added = &entries[*old..];
                 let done = added.iter().position(|(_, v)| v["kind"] == "assistant");
-                let inserted = done.unwrap_or(added.len());
-                if inserted > 0 && list.item_count() == old + 1 {
-                    // Interruptions are inserted *before* the streamed row, not after it.
-                    list.splice(*old..*old, inserted);
-                    if stream_focused && list.logical_scroll_top().item_ix < *old + inserted {
-                        list.scroll_to(ListOffset {
-                            item_ix: *old + inserted,
-                            offset_in_item: px(0.),
-                        });
-                    }
-                }
                 if done.is_some() || !streaming {
+                    if let Some(i) = done
+                        && let Some(open) = self
+                            .thought
+                            .remove(&format!("stream:{}", self.stream_generation))
+                    {
+                        self.thought.insert(format!("entry:{}", added[i].0), open);
+                    }
                     self.stream_generation += 1;
                     self.documents
                         .finish_stream(done.map(|i| added[i].0.as_str()));
@@ -54,7 +168,31 @@ impl Conversation {
         } else {
             self.stream_tail = None;
         }
-        let n = entries.len() + usize::from(streaming);
+        if self.layout_version != Some((revision, running)) {
+            self.layout_version = Some((revision, running));
+            let next = LayoutRows::new(entries, running, &self.turns);
+            let prefix = self
+                .layout
+                .indices
+                .iter()
+                .zip(&next.indices)
+                .take_while(|(a, b)| a == b)
+                .count();
+            let suffix = self.layout.indices[prefix..]
+                .iter()
+                .rev()
+                .zip(next.indices[prefix..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            if list.item_count() >= self.layout.indices.len() {
+                list.splice(
+                    prefix..self.layout.indices.len() - suffix,
+                    next.indices.len() - prefix - suffix,
+                );
+            }
+            self.layout = next;
+        }
+        let n = self.layout.indices.len() + usize::from(streaming);
         let old = list.item_count();
         if old != n {
             list.splice(old.min(n)..old, n.saturating_sub(old));
@@ -67,7 +205,9 @@ fn tool_result(
     p: &Colors,
     id: String,
     v: &Value,
-    review: Option<(Entity<super::Inspector>, state::Page)>,
+    review: Option<(Entity<super::Inspector>, state::Page, Option<String>)>,
+    subject: String,
+    duration: Option<u64>,
     w: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -77,15 +217,23 @@ fn tool_result(
     let tool = id.clone();
     let expanded = open.read(cx).expanded.contains(&tool);
     let summary = format!(
-        "{}　{name} · {}",
+        "{}　{name} {subject} · {} · {}行{}",
         if expanded { "▾" } else { "▸" },
         if v["isError"] == true {
             "失敗"
         } else {
             "完了"
-        }
+        },
+        text.lines().count(),
+        duration
+            .map(|ms| format!(" · {:.1}秒", ms as f64 / 1000.))
+            .unwrap_or_default()
     );
+    let hover_review = review.clone();
+    let copied = text.to_owned();
     let panel = div()
+        .group("tool")
+        .relative()
         .px_4()
         .py_1()
         .child(
@@ -96,11 +244,45 @@ fn tool_result(
                 .label(summary)
                 .on_click(move |_, _, cx| {
                     open.update(cx, |c, cx| {
+                        c.manual = true;
                         if !c.expanded.remove(&tool) {
                             c.expanded.insert(tool.clone());
                         }
                         cx.notify()
                     })
+                }),
+        )
+        .child(
+            div()
+                .invisible()
+                .absolute()
+                .right_1()
+                .top_0()
+                .bg(p.bg)
+                .group_hover("tool", |s| s.visible())
+                .flex()
+                .gap_1()
+                .child(
+                    Button::new(SharedString::from(format!("copy:{id}")))
+                        .ghost()
+                        .small()
+                        .label("コピー")
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copied.clone()))
+                        }),
+                )
+                .when_some(hover_review, |d, (ins, page, turn)| {
+                    d.child(
+                        Button::new(SharedString::from(format!("diff:{id}")))
+                            .ghost()
+                            .small()
+                            .label("差分を開く")
+                            .on_click(move |_, _, cx| {
+                                ins.update(cx, |s, cx| {
+                                    s.load(page.clone(), turn.clone(), false, cx)
+                                })
+                            }),
+                    )
                 }),
         )
         .when(expanded, |panel| {
@@ -111,11 +293,11 @@ fn tool_result(
     let output = text.to_owned();
     context::on_right_click(panel, move |m| {
         m.item(context::copy("出力をコピー", output.clone()))
-            .when_some(review.clone(), |m, (ins, page)| {
+            .when_some(review.clone(), |m, (ins, page, turn)| {
                 m.item(
                     gpui_component::menu::PopupMenuItem::new("変更をレビュー").on_click(
                         move |_, _, cx| {
-                            ins.update(cx, |s, cx| s.load(page.clone(), None, true, cx))
+                            ins.update(cx, |s, cx| s.load(page.clone(), turn.clone(), false, cx))
                         },
                     ),
                 )
@@ -136,10 +318,11 @@ impl Desktop {
     ) -> AnyElement {
         let rows = &self.machines[&key.host].rows;
         let entries = rows.group("entry");
-        let streaming = rows
-            .get("stream", "text")
-            .as_str()
-            .is_some_and(|s| !s.is_empty());
+        let streaming = ["text", "thinking"].iter().any(|k| {
+            rows.get("stream", k)
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        });
         let conversation = w.use_keyed_state(
             SharedString::from(format!("documents:{key:?}")),
             cx,
@@ -150,9 +333,17 @@ impl Desktop {
         let at_end = self.scroll.max_offset_for_scrollbar().height
             + self.scroll.scroll_px_offset_for_scrollbar().y
             < px(2.);
-        let focused = stream_reader.contains_focused(w, cx);
+        let running = rows.get("view", "status") != "idle";
+        let manual = conversation.read(cx).manual;
         conversation.update(cx, |c, _| {
-            c.prepare(entries, streaming, &self.scroll, focused)
+            c.manual = false;
+            c.prepare(
+                entries,
+                streaming,
+                &self.scroll,
+                running,
+                rows.entry_revision,
+            )
         });
         let stream_answer = format!(
             "stream:{}:{}",
@@ -160,7 +351,7 @@ impl Desktop {
             conversation.read(cx).stream_generation
         );
         let n = self.scroll.item_count();
-        if at_end && !reader.contains_focused(w, cx) {
+        if !manual && at_end && !reader.contains_focused(w, cx) {
             self.scroll.scroll_to(ListOffset {
                 item_ix: n,
                 offset_in_item: px(0.),
@@ -180,7 +371,14 @@ impl Desktop {
             let item = desktop.update(cx, |this, cx| {
                 let data = &this.machines[&k.host].rows;
                 let entries = data.group("entry");
-                let row = entries.get(i);
+                let index = conversation
+                    .read(cx)
+                    .layout
+                    .indices
+                    .get(i)
+                    .copied()
+                    .unwrap_or(entries.len());
+                let row = entries.get(index);
                 let v = row.map(|(_, v)| v).unwrap_or(&Value::Null);
                 let stream = row.is_none();
                 let role = match v["kind"].as_str() {
@@ -217,14 +415,32 @@ impl Desktop {
                     )
                 };
                 if v["kind"] == "tool_result" {
-                    let run = v["toolCallId"].as_str().and_then(open_run);
+                    let cid = v["toolCallId"].as_str().unwrap_or("");
+                    let call = conversation.read(cx).layout.calls.get(cid).copied();
+                    let live = data.get("tool", cid);
+                    let args =
+                        call.map_or(
+                            &live["args"],
+                            |(ix, j, _)| &entries[ix].1["toolCalls"][j]["args"],
+                        );
+                    let subject =
+                        tool_subject(v["toolName"].as_str().unwrap_or(""), args, &v["details"]);
+                    let run = open_run(cid);
                     return div()
                         .child(tool_result(
                             &conversation,
                             &p,
                             id,
                             v,
-                            Some((inspector.clone(), media.page.clone())),
+                            matches!(v["toolName"].as_str(), Some("edit" | "write")).then(|| {
+                                (
+                                    inspector.clone(),
+                                    media.page.clone(),
+                                    call.map(|(_, _, start)| entries[start].0.clone()),
+                                )
+                            }),
+                            subject,
+                            live["durationMs"].as_u64(),
                             w,
                             cx,
                         ))
@@ -240,18 +456,78 @@ impl Desktop {
                         })
                         .into_any_element();
                 }
-                if text.is_empty()
-                    && let Some(calls) = v["toolCalls"].as_array().filter(|a| !a.is_empty())
-                {
-                    return div()
-                        .px_4()
-                        .pt_2()
-                        .child(p.caption(format!("Pi · {} 件のツールを使用", calls.len())))
-                        .children(calls.iter().filter_map(|c| open_run(c["id"].as_str()?)))
-                        .into_any_element();
-                }
+                let thinking = if stream {
+                    data.get("stream", "thinking")
+                } else {
+                    &v["thinking"]
+                };
+                let thought = thinking.as_str().filter(|s| !s.is_empty()).map(|t| {
+                    let active =
+                        stream && text.is_empty() && data.get("stream", "thinkingUntil").is_null();
+                    let ms = if stream {
+                        data.get("stream", "thinkingUntil")
+                            .as_u64()
+                            .zip(data.get("stream", "thinkingSince").as_u64())
+                            .map(|(a, b)| a.saturating_sub(b))
+                    } else {
+                        data.get("thinkingMs", &row.unwrap().0).as_u64()
+                    };
+                    let tid = if stream {
+                        format!("stream:{}", conversation.read(cx).stream_generation)
+                    } else {
+                        id.clone()
+                    };
+                    let open = conversation
+                        .read(cx)
+                        .thought
+                        .get(&tid)
+                        .copied()
+                        .unwrap_or(active);
+                    let c = conversation.clone();
+                    div()
+                        .child(
+                            Button::new(SharedString::from(format!("thought:{id}")))
+                                .ghost()
+                                .small()
+                                .label(format!(
+                                    "{} {}",
+                                    if open { "▾" } else { "▸" },
+                                    thought_label(active, ms)
+                                ))
+                                .on_click(move |_, _, cx| {
+                                    c.update(cx, |s, cx| {
+                                        s.manual = true;
+                                        s.thought.insert(tid.clone(), !open);
+                                        cx.notify()
+                                    })
+                                }),
+                        )
+                        .when(open, |d| d.child(p.caption(t.to_owned())))
+                });
+                let summary = conversation.read(cx).layout.summaries.get(&index).map(|s| {
+                    let uid = entries[index].0.clone();
+                    let open = conversation.read(cx).turns.contains(&uid);
+                    let c = conversation.clone();
+                    Button::new(SharedString::from(format!("turn:{id}")))
+                        .ghost()
+                        .small()
+                        .label(format!("{} {s}", if open { "▾" } else { "▸" }))
+                        .on_click(move |_, _, cx| {
+                            c.update(cx, |s, cx| {
+                                s.manual = true;
+                                s.layout_version = None;
+                                if !s.turns.remove(&uid) {
+                                    s.turns.insert(uid.clone());
+                                }
+                                cx.notify()
+                            })
+                        })
+                });
                 let user = role == "あなた";
+                let copy = text.to_owned();
                 let message = div()
+                    .relative()
+                    .group("message")
                     .debug_selector(|| format!("message-{id}"))
                     .w_full()
                     .when(stream, |d| d.track_focus(&stream_reader))
@@ -260,6 +536,7 @@ impl Desktop {
                     .flex()
                     .flex_col()
                     .when(user, |v| v.items_end())
+                    .children(thought)
                     .child(p.caption(role).mb_1().font_weight(FontWeight::SEMIBOLD))
                     .child(
                         div()
@@ -282,6 +559,75 @@ impl Desktop {
                                 )
                             })),
                     )
+                    .when(!text.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .right_1()
+                                .top_0()
+                                .invisible()
+                                .group_hover("message", |s| s.visible())
+                                .bg(p.bg)
+                                .child(
+                                    Button::new(SharedString::from(format!("copy-message:{id}")))
+                                        .ghost()
+                                        .small()
+                                        .label("コピー")
+                                        .on_click(move |_, _, cx| {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                copy.clone(),
+                                            ))
+                                        }),
+                                ),
+                        )
+                    })
+                    .children(summary)
+                    .children(
+                        v["toolCalls"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter(|c| {
+                                !conversation
+                                    .read(cx)
+                                    .layout
+                                    .results
+                                    .contains(c["id"].as_str().unwrap_or(""))
+                            })
+                            .map(|c| {
+                                div()
+                                    .child(p.caption(format!(
+                                        "{} {}",
+                                        c["name"].as_str().unwrap_or("ツール"),
+                                        tool_subject(
+                                            c["name"].as_str().unwrap_or(""),
+                                            &c["args"],
+                                            &Value::Null
+                                        )
+                                    )))
+                                    .children(c["id"].as_str().and_then(open_run))
+                            }),
+                    )
+                    .when(v["stopReason"] == "aborted", |d| {
+                        d.child(p.caption(
+                            "中断しました。変更は差分で、送信待ちは履歴で確認してください。",
+                        ))
+                    })
+                    .children(v["errorMessage"].as_str().map(|e| p.caption(e.to_owned())))
+                    .when(v["kind"] == "assistant", |d| {
+                        let mut meta = Vec::new();
+                        if let Some(m) = v["model"]["id"].as_str() {
+                            meta.push(m.to_owned())
+                        }
+                        if v["usage"].is_object() {
+                            let tokens = ["input", "output", "cacheRead", "cacheWrite"]
+                                .iter()
+                                .filter_map(|k| v["usage"][k].as_u64())
+                                .fold(0u64, u64::saturating_add);
+                            meta.push(format!("{tokens} トークン"))
+                        }
+                        d.when(!meta.is_empty(), |d| d.child(p.caption(meta.join(" · "))))
+                    })
                     .when(images > 0, |v| {
                         v.child(media.history(
                             &row.unwrap().0,
@@ -371,6 +717,41 @@ impl Desktop {
 mod tests {
     use super::transcript;
     use gpui::{Context, ListOffset, ListState, Window, div, list, point, prelude::*, px, size};
+    #[test]
+    fn tool_subjects_and_turn_caption() {
+        use serde_json::json;
+        for (name, args, details, expected) in [
+            ("read", json!({"path":"a.rs"}), json!({}), "a.rs"),
+            ("read", json!({"file_path":"日本語"}), json!({}), "日本語"),
+            ("bash", json!({"command":"pwd\nls"}), json!({}), "pwd"),
+            ("bash", json!({"path":"x"}), json!({}), ""),
+            (
+                "edit",
+                json!({"path":"a"}),
+                json!({"patch":"@@ -1 +1,2 @@\n-a\n+b\n+c"}),
+                "a +2 −1",
+            ),
+            ("edit", json!({"path":"a"}), json!({"patch":"unknown"}), "a"),
+            ("write", json!({"path":"new"}), json!({}), "new"),
+            ("read", json!(null), json!(null), ""),
+            (
+                "unknown",
+                json!({"password":"secret","path":"secret"}),
+                json!({}),
+                "",
+            ),
+            ("write", json!({"path":42}), json!({}), ""),
+        ] {
+            assert_eq!(super::tool_subject(name, &args, &details), expected);
+        }
+        assert_eq!(
+            super::work_summary(Some(2000), Some(20000), 4),
+            "18秒 作業 · ツール 4 回"
+        );
+        assert_eq!(super::thought_label(true, None), "Thinking…");
+        assert_eq!(super::thought_label(false, Some(500)), "Thought");
+        assert_eq!(super::thought_label(false, Some(1600)), "Thought for 2s");
+    }
     #[gpui::test]
     fn stream_image_identity_survives_interruptions_but_not_the_next_answer(
         _cx: &mut gpui::TestAppContext,
@@ -378,19 +759,19 @@ mod tests {
         let list = transcript();
         let mut c = super::Conversation::default();
         let mut entries = vec![];
-        c.prepare(&entries, true, &list, false);
+        c.prepare(&entries, true, &list, false, entries.len() as u64);
         let first = c.stream_generation;
         entries.push(("interrupt".into(), serde_json::json!({"kind":"user"})));
-        c.prepare(&entries, true, &list, false);
+        c.prepare(&entries, true, &list, false, entries.len() as u64);
         assert_eq!(c.stream_generation, first);
         entries.push(("done".into(), serde_json::json!({"kind":"assistant"})));
-        c.prepare(&entries, true, &list, false);
+        c.prepare(&entries, true, &list, false, entries.len() as u64);
         let second = c.stream_generation;
         assert_ne!(first, second);
-        c.prepare(&entries, true, &list, false);
+        c.prepare(&entries, true, &list, false, entries.len() as u64);
         assert_eq!(second, c.stream_generation);
-        c.prepare(&entries, false, &list, false);
-        c.prepare(&entries, true, &list, false);
+        c.prepare(&entries, false, &list, false, entries.len() as u64);
+        c.prepare(&entries, true, &list, false, entries.len() as u64);
         assert_ne!(second, c.stream_generation);
     }
     #[gpui::test]
@@ -446,6 +827,8 @@ mod tests {
                             &super::Colors::new(false),
                             i.to_string(),
                             &serde_json::json!({"toolName":"read","text":"complete output"}),
+                            None,
+                            String::new(),
                             None,
                             w,
                             cx,

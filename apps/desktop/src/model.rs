@@ -36,6 +36,7 @@ pub struct Rows {
     pub host_life: std::sync::Arc<()>,
     pub view_life: std::sync::Arc<()>,
     revision: u64,
+    pub entry_revision: u64,
     pub receipts: crate::state::receipts::Receipts,
     moves: HashMap<String, (String, String, u64)>,
     groups: HashMap<String, Vec<(String, Value)>>,
@@ -44,6 +45,7 @@ impl Rows {
     pub fn snapshot(s: Snapshot) -> Self {
         let mut rows = Self {
             revision: s.revision,
+            entry_revision: s.revision,
             ..Default::default()
         };
         for i in s.items {
@@ -74,6 +76,7 @@ impl Rows {
                 Change::ResyncRequired => continue,
             };
             match (c.as_str(), id.as_str()) {
+                ("entry", _) => self.entry_revision = rev,
                 ("host", "connection") => host_changed = true,
                 ("view", "instanceId" | "startedAt" | "phase") => view_changed = true,
                 ("view", "session") => {
