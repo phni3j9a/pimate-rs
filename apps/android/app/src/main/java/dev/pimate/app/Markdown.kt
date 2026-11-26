@@ -63,14 +63,17 @@ private val LocalDocPics = compositionLocalOf<List<Pic>> { emptyList() }
 
 /** 回答の本文。長押しで OS の選択になり、範囲を広げてコピーできる（選択は 1 つの回答の中）。 解析は UI スレッドの外で行い、live（逐次表示）は前の表示を残したまま差し替える。 */
 @Composable
-internal fun Markdown(source: String, modifier: Modifier = Modifier, live: Boolean = false) {
+internal fun Markdown(source: String, modifier: Modifier = Modifier, live: Boolean = false, answer: String? = null) {
     val files = LocalPics.current.files
     val shown by
         produceState(initial(source, files), source, files) {
             value = cached(source, files) ?: withContext(Dispatchers.Default) { doc(source, files) }
             if (live) lastLive = Triple(files, source, value) else parsed.put(files to source, value)
         }
-    CompositionLocalProvider(LocalDocPics provides shown.pics) {
+    val gallery = remember(shown, answer) {
+        if (answer == null) shown.pics else shown.pics.map { if (it is Pic.Shared) it.forAnswer(answer) else it }
+    }
+    CompositionLocalProvider(LocalDocPics provides gallery) {
         SelectionContainer(modifier) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 shown.blocks.forEach { key(it.id) { BlockView(it) } }

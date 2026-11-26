@@ -702,7 +702,7 @@ internal fun RowView(row: ChatRow, open: Boolean, review: ((String) -> Unit)? = 
             }
         is ChatRow.Text ->
             Column {
-                Markdown(row.text, live = row.key == "live:text")
+                Markdown(row.text, live = row.key == "live:text", answer = row.key.takeUnless { it == "live:text" })
                 CopyAction(row.text, "回答全文をコピー（Markdown）")
             }
         is ChatRow.Tool ->

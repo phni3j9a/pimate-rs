@@ -101,11 +101,17 @@ internal class Pics(
     /** 全画面で開く。 */
     val open: (List<Pic>, Int) -> Unit = { _, _ -> },
 ) {
+    private val originals = object : LruCache<Pic, ImageBitmap>(CACHE_BYTES) {
+        override fun sizeOf(key: Pic, value: ImageBitmap) = value.asAndroidBitmap().byteCount
+    }
+
     fun cached(pic: Pic): ImageBitmap? = if (pic.id.isEmpty()) null else tiles["$scope|${pic.id}"]
 
     /** 読めなければ null。tile: 会話に置く縮小版（RC には thumbnail を頼む）。全画面は別に取りに行く。 */
     suspend fun load(pic: Pic, tile: Boolean): ImageBitmap? {
         if (tile) cached(pic)?.let { return it }
+        val original = !tile && (pic is Pic.Entry || pic is Pic.File && pic.answer != null)
+        if (original) originals[pic]?.let { return it }
         val edge = if (tile) TILE_EDGE else FULL_EDGE
         val image =
             try {
@@ -136,6 +142,7 @@ internal class Pics(
                 null
             }
         if (tile && image != null && pic.id.isNotEmpty()) tiles.put("$scope|${pic.id}", image)
+        if (original && image != null) originals.put(pic, image)
         return image
     }
 
@@ -290,6 +297,7 @@ internal fun ImageViewer(all: List<Pic>, start: Int, close: () -> Unit) {
                     all[page],
                     if (all.size > 1) "画像 ${page + 1} / ${all.size}" else "画像",
                     active = page == pager.currentPage,
+                    close = close,
                 ) {
                     if (page == pager.currentPage) zoomed = it
                 }
@@ -314,7 +322,7 @@ internal fun ImageViewer(all: List<Pic>, start: Int, close: () -> Unit) {
 }
 
 @Composable
-private fun ViewerPage(pic: Pic, label: String, active: Boolean, onZoom: (Boolean) -> Unit) {
+private fun ViewerPage(pic: Pic, label: String, active: Boolean, close: () -> Unit, onZoom: (Boolean) -> Unit) {
     val pics = LocalPics.current
     val image by produceState<Any?>(null, pic, pics) { value = pics.load(pic, false) ?: Failed }
     var scale by remember { mutableFloatStateOf(1f) }
@@ -355,17 +363,26 @@ private fun ViewerPage(pic: Pic, label: String, active: Boolean, onZoom: (Boolea
             }
             .pointerInput(shown) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val start = awaitFirstDown(requireUnconsumed = false).position
+                    var dismissible = scale == 1f
+                    var drag = Offset.Zero
                     do {
                         val event = awaitPointerEvent()
                         // 等倍で指 1 本の横送りは、ページの切り替えに渡す。
                         if (event.changes.size > 1 || scale > 1.01f) {
+                            dismissible = false
                             val zoom = event.calculateZoom()
                             val next = (scale * zoom).coerceIn(1f, 4f)
                             settle(next, offset * (next / scale) + event.calculatePan())
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } else if (dismissible) {
+                            val change = event.changes.single()
+                            if (change.isConsumed && change.position != change.previousPosition) dismissible = false
+                            drag = change.position - start
+                            if (drag.y > viewConfiguration.touchSlop && drag.y > kotlin.math.abs(drag.x)) change.consume()
                         }
                     } while (event.changes.any { it.pressed })
+                    if (dismissible && drag.y > size.height * .15f && drag.y > kotlin.math.abs(drag.x)) close()
                     if (scale <= 1.01f) settle(1f, Offset.Zero)
                 }
             },

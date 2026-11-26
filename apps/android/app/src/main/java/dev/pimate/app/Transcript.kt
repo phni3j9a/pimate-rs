@@ -27,7 +27,7 @@ internal sealed interface Pic {
     }
 
     /** PC のファイル。file_image で取りに行く。 */
-    data class File(val path: String) : Pic {
+    data class File(val path: String, val answer: String? = null) : Pic {
         override val id
             get() = "" // PC のファイルは回答間で上書きされる。
     }
@@ -36,15 +36,18 @@ internal sealed interface Pic {
     class Shared(
         private val kind: ImageKind,
         private val source: uniffi.pimate_ffi.SharedTextInterface,
+        private val answer: String? = null,
     ) : Pic {
         override val id = ""
+
+        fun forAnswer(answer: String) = Shared(kind, source, answer)
 
         suspend fun resolve(): Pic =
             withContext(Dispatchers.Default) {
                 val src = source.value()
                 when (kind) {
                     ImageKind.REMOTE -> Web(src)
-                    ImageKind.FILE -> File(src)
+                    ImageKind.FILE -> File(src, answer)
                     ImageKind.DATA ->
                         Inline(
                             "",

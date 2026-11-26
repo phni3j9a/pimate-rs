@@ -94,6 +94,10 @@ class ChatReviewContract {
             )
         repeat(2) { assertNotNull(pics.load(Pic.File("shot.png"), true)) }
         assertEquals(2, requests)
+        repeat(2) { assertNotNull(pics.load(Pic.File("shot.png", "answer1"), false)) }
+        assertEquals(3, requests)
+        assertNotNull(pics.load(Pic.File("shot.png", "answer2"), false))
+        assertEquals(4, requests)
     }
 
     @Test
