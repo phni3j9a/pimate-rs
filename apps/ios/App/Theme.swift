@@ -34,3 +34,7 @@ struct PiPrimary: ButtonStyle {
             .foregroundStyle(PiTheme.background).background(PiTheme.accent, in: Capsule()).opacity(enabled ? (configuration.isPressed ? 0.75 : 1) : 0.45)
     }
 }
+
+func mark(_ name: String, _ size: CGFloat) -> some View {
+    SwiftUI.Image(name).resizable().scaledToFit().frame(width: size, height: size).accessibilityHidden(true)
+}

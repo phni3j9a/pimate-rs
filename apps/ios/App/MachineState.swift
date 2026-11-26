@@ -28,6 +28,17 @@ struct SpawnForm {
     var trust = false, askTool: Bool, message = ""
     var model: Object?, thinking: String?
     init(host: String, askTool: Bool) { self.host = host; self.askTool = askTool }
+    static func sameFolder(_ input: String, known: String, home: String) -> Bool {
+        guard !input.isEmpty, !known.isEmpty else { return false }
+        var expanded = input
+        if !home.isEmpty && (input == "~" || input.hasPrefix("~/")) { expanded = home + input.dropFirst() }
+        func strip(_ path: String) -> Substring {
+            var path = path[...]
+            while path.count > 1 && path.last == "/" { path.removeLast() }
+            return path
+        }
+        return strip(expanded).utf8.elementsEqual(strip(known).utf8)
+    }
     mutating func folder(_ path: String, knownTrusted: Bool = false) { cwd = path; trust = knownTrusted }
     func operation() throws -> Operation {
         guard !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CoreError.BadRequest }
@@ -110,7 +121,7 @@ struct MachineConfirmation: Equatable {
     let host: String, device: String, generation: UUID?, action: Action
     var warning: String {
         switch action {
-        case .update: "このマシンの PiMate を実行時の最新版に更新します。確認時に表示した版と異なる場合があります。"
+        case .update: "このマシンの PiMate を実行時の最新版に更新します。確認時に表示した版と異なる場合があります。接続が一時的に切れ、実行中の Pi は /reload または再起動まで旧版のままです。"
         case .restart: "このマシンの Host を再起動します。接続が一時切断されます。"
         case .revoke: "選んだ端末の登録を PC から取り消します。"
         case .forget: "この端末から接続情報と下書きを削除し、PC 側の登録も取り消します。"

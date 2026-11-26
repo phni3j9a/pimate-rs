@@ -20,6 +20,7 @@ struct Probe: View {
     private struct RepoRoute: Identifiable { let key: EditorKey; var id: EditorKey { key } }
     @State private var repo: RepoRoute?
     @State private var firstHost: String?
+    @State private var newPi = false
     private func select(_ host: String, _ instance: String) {
         do { try model.select(host: host, instance: instance); firstHost = nil; compact = .detail }
         catch { selectionError = true }
@@ -43,7 +44,13 @@ struct Probe: View {
                                     }
                                 }
                             }
-                    } else { ContentUnavailableView("Pi を選んでください", systemImage: "sidebar.left") }
+                    } else {
+                        ContentUnavailableView { Label("Pi を選んでください", systemImage: "sidebar.left") } actions: {
+                            Button("新しい Pi を起動") { newPi = true }
+                        }.sheet(isPresented: $newPi) {
+                            NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
+                        }
+                    }
                 }
             }
         }.sheet(item: $repo) { route in

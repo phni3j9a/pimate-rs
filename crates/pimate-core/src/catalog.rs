@@ -88,7 +88,26 @@ impl State {
             "auth_list" | "auth_begin" | "auth_wait" | "auth_cancel" | "auth_respond" => {
                 let id = instance.as_str().ok_or(Error::InvalidMessage)?;
                 if method == "auth_list" {
-                    self.put("provider", id, body["providers"].clone())
+                    let mut providers = body["providers"].clone();
+                    for p in providers.as_array_mut().into_iter().flatten() {
+                        let (vendor, member) = match p["id"].as_str() {
+                            Some("openai") => ("OpenAI", "API キー"),
+                            Some("openai-codex") => ("OpenAI", "ChatGPT"),
+                            Some("anthropic") => ("Anthropic", ""),
+                            Some("opencode") => ("OpenCode", "Zen"),
+                            Some("opencode-go") => ("OpenCode", "Go"),
+                            Some(other) => (other, ""),
+                            None => continue,
+                        };
+                        p["vendor"] = json!(vendor);
+                        p["member"] = json!(member);
+                        if p["id"] == "openai"
+                            && let Some(methods) = p["methods"].as_array_mut()
+                        {
+                            methods.retain(|m| m != "oauth");
+                        }
+                    }
+                    self.put("provider", id, providers)
                 }
                 let flow = &mut body["flow"];
                 if !safe_url(flow)

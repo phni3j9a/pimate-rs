@@ -42,7 +42,21 @@ final class ProbeTests: XCTestCase {
         XCTAssertTrue(app.buttons["一覧を開く"].waitForExistence(timeout: 15)); app.buttons["一覧を開く"].tap()
         let waiting = app.buttons["pi-waiting"], main = app.buttons["pi-main"]
         XCTAssertTrue(waiting.waitForExistence(timeout: 15)); XCTAssertTrue(waiting.label.contains("デモ PC")); shot("Drawer")
-        main.tap(); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
+        func tapDrawerRow(_ row: XCUIElement, file: StaticString = #filePath, line: UInt = #line) throws {
+            let footer = app.buttons["新しい Pi"], search = app.searchFields.firstMatch
+            // A row can be "hittable" while its center is behind the pinned header or footer at XXXL.
+            func visible() -> Bool {
+                guard row.exists, row.isHittable else { return false }
+                let top = max(app.navigationBars.firstMatch.frame.maxY, search.frame.maxY) + 32
+                return row.frame.midY > top && row.frame.midY < footer.frame.minY - 4
+            }
+            for _ in 0..<6 where !visible() { app.swipeDown(velocity: .slow) }
+            for _ in 0..<8 where !visible() { app.swipeUp(velocity: .slow) }
+            let hit = try XCTUnwrap(visible() ? row : nil, "Row outside the visible list: " + row.identifier, file: file, line: line)
+            hit.tap()
+            XCTAssertTrue(app.scrollViews["transcript"].waitForExistence(timeout: 12), "Row did not open its chat", file: file, line: line)
+        }
+        try tapDrawerRow(main); XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 12)); XCTAssertTrue(app.staticTexts["bash"].waitForExistence(timeout: 8)); shot("Main"); XCTAssertTrue(app.buttons["画像を添付"].exists)
         if variant == "light" {
             let read = app.staticTexts["read"].firstMatch
             XCTAssertTrue(read.isHittable); read.tap()
@@ -73,7 +87,7 @@ final class ProbeTests: XCTestCase {
         app.navigationBars["セッションツリー"].buttons.element(boundBy: 0).tap()
         app.buttons["sheet-close"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(waiting.waitForExistence(timeout: 5)); waiting.tap()
+        try tapDrawerRow(waiting)
         let answer = app.buttons["回答する"]; XCTAssertTrue(answer.waitForExistence(timeout: 10)); shot("Chat-Waiting"); XCTAssertFalse(answer.isEnabled)
         app.buttons.containing(NSPredicate(format: "label CONTAINS %@", "既存の認証 API を拡張")).firstMatch.tap(); XCTAssertTrue(answer.isEnabled)
         // Under XXXL the footer can cover the center XCTest would tap. Scroll the whole card first.
@@ -81,22 +95,16 @@ final class ProbeTests: XCTestCase {
         for _ in 0..<3 where !answer.isHittable || answer.frame.maxY > app.frame.maxY - 110 { scroll.swipeUp() }
         XCTAssertTrue(answer.isHittable); answer.tap()
         XCTAssertTrue(app.textViews["message"].waitForExistence(timeout: 8))
-        func openPi(_ id: String) {
+        func openPi(_ id: String) throws {
             app.navigationBars.buttons.element(boundBy: 0).tap()
-            let row = app.buttons["pi-" + id]
-            // A partially visible row is hittable even when its center lands under the tab bar.
-            func visible() -> Bool { row.isHittable && row.frame.midY > 140 && row.frame.midY < app.frame.maxY - 50 }
-            for _ in 0..<6 where !visible() { app.swipeDown() }
-            for _ in 0..<8 where !visible() { app.swipeUp() }
-            XCTAssertTrue(row.isHittable); row.tap()
-            if row.waitForExistence(timeout: 1), row.isHittable { row.tap() }
+            try tapDrawerRow(app.buttons["pi-" + id])
         }
-        openPi("attach")
+        try openPi("attach")
         let terminal = app.buttons["コマンドをコピー"]
         XCTAssertTrue(terminal.waitForExistence(timeout: 10)); shot("Chat-Attach"); terminal.tap()
         XCTAssertFalse(app.textViews["message"].exists)
 
-        openPi("images")
+        try openPi("images")
         let tile = app.buttons["画像 4 / 5"]
         XCTAssertTrue(tile.waitForExistence(timeout: 10))
         for _ in 0..<5 where !tile.isHittable { scroll.swipeUp() }
@@ -151,12 +159,12 @@ final class ProbeTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["操作が完了しました"].waitForExistence(timeout: 12))
             app.buttons["sheet-close"].tap()
         }
-        openPi("edge")
+        try openPi("edge")
         XCTAssertTrue(field.waitForExistence(timeout: 12)); field.tap(); field.typeText("draft")
         let confirm = app.buttons["新しい送信先を確認"]
         XCTAssertTrue(confirm.waitForExistence(timeout: 18)); shot("Chat-Edge"); field.tap(); field.typeText("next")
         XCTAssertFalse(app.buttons["送信"].isEnabled); confirm.tap(); XCTAssertTrue(app.buttons["送信"].isEnabled)
-        openPi("demo")
+        try openPi("demo")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", "表を開く")).firstMatch.waitForExistence(timeout: 20))
         XCTAssertTrue(app.staticTexts["メッセージを送信"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "210 out")).firstMatch.exists)
@@ -174,7 +182,7 @@ final class ProbeTests: XCTestCase {
             XCTAssertTrue(jump.isHittable); shot("ReadingHistory"); jump.tap()
             XCTAssertTrue(app.buttons["はい"].waitForExistence(timeout: 8))
         }
-        openPi("main")
+        try openPi("main")
         XCTAssertTrue(app.buttons["画像を添付"].waitForExistence(timeout: 12))
         app.buttons["画像を添付"].tap()
         let photos = app.images.matching(identifier: "PXGGridLayout-Info")
@@ -287,7 +295,14 @@ extension ProbeTests {
             app.navigationBars.buttons.element(boundBy: 0).tap(); app.buttons["新しい Pi"].tap(); tap(app.buttons["起動"])
             XCTAssertTrue(field.waitForExistence(timeout: 30)); return
         }
-        shot("First-Step"); app.buttons["一覧を開く"].tap(); app.buttons["設定"].tap()
+        shot("First-Step"); app.buttons["一覧を開く"].tap(); XCTAssertTrue(app.buttons["新しい Pi"].waitForExistence(timeout: 8)); shot("Drawer")
+        if env["PIMATE_DEMO_DRAWER_BOT"] == "1" {
+            let bot = app.buttons["pi-images"]
+            for _ in 0..<5 where !bot.isHittable { app.swipeUp() }
+            XCTAssertTrue(bot.isHittable); XCTAssertTrue(bot.label.contains("サブエージェント 2 実行中")); shot("Drawer-Bot")
+            for _ in 0..<5 where !app.buttons["pi-waiting"].isHittable { app.swipeDown() }
+        }
+        app.buttons["設定"].tap()
         let machine = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'machine-'")).firstMatch
         XCTAssertTrue(machine.waitForExistence(timeout: 8)); shot("Settings"); machine.tap()
         let update = app.buttons["実行時の最新版に更新…"]
@@ -301,13 +316,23 @@ extension ProbeTests {
         if variant == "light" {
             app.buttons["API キーを設定"].tap(); let key = app.secureTextFields["API キー"]
             XCTAssertTrue(key.waitForExistence(timeout: 12)); key.tap(); key.typeText("fixture-only"); tap(app.buttons["送信"])
-            XCTAssertTrue(app.staticTexts["ログインしました。"].waitForExistence(timeout: 12)); tap(app.buttons["ログアウト…"])
+            XCTAssertTrue(app.staticTexts["ログインしました。起動中の Pi には /reload または再起動後に反映されます。"].waitForExistence(timeout: 12)); tap(app.buttons["ログアウト…"])
             app.alerts.buttons["キャンセル"].tap(); tap(app.buttons["ログアウト…"]); app.alerts.buttons["ログアウト"].tap()
             XCTAssertTrue(app.staticTexts["未設定"].waitForExistence(timeout: 12))
         }
         try popSheetRoute(app, from: "プロバイダーのログイン", to: "デモ PC"); try popSheetRoute(app, from: "デモ PC", to: "設定"); app.buttons["完了"].tap()
         app.buttons["新しい Pi"].tap(); let recent = app.buttons["/home/demo/code/demo"]; XCTAssertTrue(recent.waitForExistence(timeout: 12)); shot("New-Pi"); tap(recent)
-        XCTAssertEqual(app.textFields["フォルダのパス"].value as? String, "/home/demo/code/demo"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
+        let path = app.textFields["フォルダのパス"]
+        XCTAssertEqual(path.value as? String, "/home/demo/code/demo")
+        path.tap(); path.typeText("/s"); let suggestion = app.buttons["src/"]
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 8)); tap(suggestion)
+        XCTAssertEqual(path.value as? String, "/home/demo/code/demo/src/")
+        path.typeText("\n")
+        tap(app.descendants(matching: .any)["spawn-model"].firstMatch)
+        XCTAssertTrue(button("Claude Opus 5.5 · medium").waitForExistence(timeout: 10)); shot("Spawn-Models")
+        app.buttons["すべて"].tap(); let search = app.textFields["モデルを検索"]; search.tap(); search.typeText("google/gemini-3-pro")
+        XCTAssertTrue(button("google/gemini-3-pro").exists); XCTAssertFalse(button("anthropic/claude-opus").exists)
+        try popSheetRoute(app, from: "モデル", to: "新しい Pi"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
         XCTAssertTrue(app.buttons["GitHub"].waitForExistence(timeout: 12)); app.buttons["GitHub"].tap()
         let issue = button("Android の残りの画面"); XCTAssertTrue(issue.waitForExistence(timeout: 12)); shot("GitHub"); issue.tap()
         XCTAssertTrue(app.buttons["Pi に依頼"].waitForExistence(timeout: 12)); shot("GitHub-Issue"); try popSheetRoute(app, from: "Issue #20", to: "GitHub"); app.buttons["PR"].tap()
