@@ -8,6 +8,8 @@ final class MachineScreenTests: XCTestCase {
         var rows = Rows(); rows.groups["host"] = [hostRow("connection", "\"connected\"")]
         XCTAssertNil(rows.catalogGeneration)
         rows.groups["host"]?.append(hostRow("listKnown", "true"))
+        XCTAssertNil(rows.catalogGeneration) // A known empty list has no Pi to answer .hostModels.
+        rows.groups["instance"] = [Item(collection: "instance", id: "first", position: 0, json: "{}")]
         let old = SpawnCatalog(generation: rows.connectionGeneration, payload: ["default": "old"])
         XCTAssertEqual(old.value(for: rows.catalogGeneration)?.str("default"), "old")
         rows.apply(1, [.upsert(hostRow("connection", "\"offline\""))]) { fatalError() }

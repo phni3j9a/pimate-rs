@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import PiMate
 
@@ -27,6 +28,28 @@ private final class MachineCore: Core, @unchecked Sendable {
 }
 
 @MainActor final class RemainingStateTests: XCTestCase {
+    func testOpenSpawnFormLoadsModelsWhenFirstPiAppears() async throws {
+        let core = MachineCore(noHandle: .init())
+        core.b.items.append(item("host", "listKnown", "true"))
+        let model = SessionModel(core: core)
+        let opened = expectation(description: "form opened on the empty machine")
+        let fetched = expectation(description: "first Pi supplies the catalog without reopening")
+        core.b.reply = { op in
+            switch op {
+            case .folders: opened.fulfill(); return "{}"
+            case .hostModels(let pi): XCTAssertEqual(pi, "first"); fetched.fulfill(); return #"{"models":[{"provider":"p","id":"m"}]}"#
+            default: return "{}"
+            }
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene); defer { window.isHidden = true }
+        window.rootViewController = UIHostingController(rootView: NewPiView(model: model, initial: "b") { _, _ in })
+        window.isHidden = false
+        await fulfillment(of: [opened], timeout: 5)
+        try XCTUnwrap(core.listeners["b"]).changed(revision: 2, changes: [.upsert(item("instance", "first", "{}"))])
+        await fulfillment(of: [fetched], timeout: 5)
+    }
+
     func testHostRoutingAndTrustScope() async throws {
         let core = MachineCore(noHandle: .init()); core.b.items += [item("instance", "pi", "{\"updatedAt\":1}"), item("instance", "busy", "{\"updatedAt\":9}")]
         let model = SessionModel(core: core); try model.select(host: "a", instance: "pi"); let key = try XCTUnwrap(model.editor)

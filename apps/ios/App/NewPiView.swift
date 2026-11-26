@@ -9,6 +9,10 @@ struct NewPiView: View {
     private var settings = PiSettings()
     private var rows: Rows? { model.rows[host] }
     private var generation: UUID? { rows?.catalogGeneration }
+    private var loadingModels: Bool {
+        if let generation { return loaded?.generation != generation }
+        return rows?.machineOnline == true && rows?.firstStep == .loading
+    }
     init(model: SessionModel, initial: String, select: @escaping (String, String) -> Void) {
         self.model = model; self.select = select; _host = State(initialValue: initial)
     }
@@ -16,7 +20,7 @@ struct NewPiView: View {
         NavigationStack {
             SpawnFields(model: model, form: SpawnForm(host: host, askTool: settings.askTool), busy: $busy,
                         catalog: loaded?.value(for: generation),
-                        loadingModels: rows?.machineOnline == true && (generation == nil || loaded?.generation != generation), select: select) {
+                        loadingModels: loadingModels, select: select) {
                 Section("マシン") {
                     Picker("起動先", selection: $host) {
                         ForEach(model.hosts, id: \.id) { Text($0.displayName(in: model.hosts)).tag($0.id) }
@@ -157,7 +161,7 @@ struct SpawnCatalog {
 
 extension Rows {
     var catalogGeneration: UUID? {
-        machineOnline && groups["host"]?.first(where: { $0.id == "listKnown" })?.json == "true" ? connectionGeneration : nil
+        firstStep == .list ? connectionGeneration : nil
     }
     var machineInfo: Object { groups["host"]?.first { $0.id == "info" }?.object ?? [:] }
     var machineOnline: Bool { groups["host"]?.first { $0.id == "connection" }?.string == "connected" }
