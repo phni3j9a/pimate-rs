@@ -27,6 +27,9 @@ pub struct Settings {
     pub appearance: Appearance,
     pub font_size: FontSize,
     pub ask_tool: bool,
+    /// ドラッグで変えたサイドバーの幅（px）。未設定なら既定の幅。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sidebar_width: Option<f32>,
 }
 impl Settings {
     pub fn path() -> std::io::Result<std::path::PathBuf> {

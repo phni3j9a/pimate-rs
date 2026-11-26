@@ -59,6 +59,7 @@ fn nav(kind: S, page: &Page, cx: &Context<Desktop>) -> Button {
     let pg = page.clone();
     Button::new(label(kind))
         .small()
+        .ghost()
         .label(label(kind))
         .on_click(cx.listener(move |this, _, _, cx| {
             if pg.visible(this) {
@@ -100,9 +101,10 @@ pub(super) fn action(
 }
 impl Desktop {
     pub(super) fn sheet_nav(&self, page: &Page, cx: &Context<Self>) -> Div {
+        // 狭いウィンドウでもヘッダーを1行に保つ（折り返さない）。
         div()
             .flex()
-            .flex_wrap()
+            .flex_none()
             .gap_1()
             .children([S::Model, S::Usage, S::Session].map(|k| nav(k, page, cx)))
     }

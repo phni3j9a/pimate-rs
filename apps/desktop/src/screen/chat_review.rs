@@ -48,13 +48,12 @@ impl Desktop {
         &self,
         ins: &Entity<Inspector>,
         pg: &Page,
+        p: &Colors,
         cx: &Context<Self>,
     ) -> Button {
         let pg = pg.clone();
         let ins = ins.clone();
-        Button::new("review")
-            .small()
-            .label("変更をレビュー")
+        p.icon_button("review", "diff", "変更をレビュー", cx)
             .on_click(cx.listener(move |this, _, _, cx| {
                 if pg.visible(this) {
                     ins.update(cx, |s, cx| s.load(pg.clone(), None, true, cx))

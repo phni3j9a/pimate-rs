@@ -163,7 +163,7 @@ impl Desktop {
         let desktop = cx.entity();
         let k = key.clone();
         let list = list(self.scroll.clone(), move |i, w, cx| {
-            desktop.update(cx, |this, cx| {
+            let item = desktop.update(cx, |this, cx| {
                 let data = &this.machines[&k.host].rows;
                 let entries = data.group("entry");
                 let row = entries.get(i);
@@ -269,7 +269,8 @@ impl Desktop {
                         ))
                     })
                     .into_any_element()
-            })
+            });
+            theme::column(item).into_any_element()
         })
         .size_full();
         div()
