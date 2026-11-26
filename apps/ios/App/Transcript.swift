@@ -39,7 +39,7 @@ struct ChatTurn: Identifiable, Equatable {
         guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; w.images = images; lines[index] = .work(w)
     }
     var start: Int?, end: Int?
-    struct Reply: Identifiable, Equatable { let id: String, text: String }
+    struct Reply: Identifiable, Equatable { let id: String, text: String; var notice = "" }
     var summary: String {
         let calls = work.filter { !$0.isThought }.count
         let elapsed = start.flatMap { a in end.map { max(0, ($0 - a) / 1000) } } ?? 0
@@ -67,7 +67,9 @@ struct ChatTurn: Identifiable, Equatable {
             } else {
                 if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: WorkLine.thoughtTitle(thinkingMs[item.id] ?? nil), subject: "", output: o.str("thinking"), state: ""))) }
                 let error = o.str("errorMessage")
-                if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n")))) }
+                let aborted = o.str("stopReason") == "aborted" || ["operation was aborted", "request was aborted"].contains { error.localizedCaseInsensitiveContains($0) }
+                let notice = aborted ? "中断しました" : error
+                if !text.isEmpty || !notice.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: text, notice: notice))) }
                 for (n, c) in o.list("toolCalls").enumerated() {
                     pending[c.str("id")] = (i, turns[i].lines.count)
                     turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"), callID: c.str("id"), changeCall: ["write", "edit"].contains(c.str("name")))))

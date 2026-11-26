@@ -167,7 +167,8 @@ struct TurnView: View {
             ForEach(turn.lines) { line in
                 switch line {
                 case .reply(let reply):
-                    MarkdownBody(source: reply.text, answer: reply.id, copyAnswer: true)
+                    if !reply.text.isEmpty { MarkdownBody(source: reply.text, answer: reply.id, copyAnswer: true) }
+                    if !reply.notice.isEmpty { Text(verbatim: reply.notice).foregroundStyle(PiTheme.secondary).textSelection(.enabled) }
                 case .work(let w):
                     if folds && w.id == firstWork {
                         Button { didToggle(); expanded.toggle() } label: {

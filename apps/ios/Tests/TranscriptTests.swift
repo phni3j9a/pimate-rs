@@ -21,6 +21,11 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(WorkLine.thoughtTitle(nil), "Thought"); XCTAssertEqual(WorkLine.thoughtTitle(999), "Thought")
         XCTAssertEqual(WorkLine.thoughtTitle(11900), "Thought for 12s"); XCTAssertEqual(WorkLine.thoughtTitle(61500), "Thought for 1m 2s")
     }
+    func testCopySourceExcludesAbortStatus() throws {
+        let md = "# 一部の回答\n", turn = try ChatTurn.read([item("r", ["kind": "assistant", "text": md, "errorMessage": "Request was aborted"])], live: [])
+        guard case .reply(let reply) = turn.first?.lines.first else { return XCTFail("回答がありません") }
+        XCTAssertEqual(reply.text, md); XCTAssertEqual(reply.notice, "中断しました")
+    }
     func testImageOnlyTurnSurvivesBeforeReply() throws {
         for (o, count): (Object, Int) in [(["imageCount": 4], 4), (["images": [["mimeType": "image/png"]]], 1)] {
             let result = try ChatTurn.read([item("user", o.merging(["kind": "user", "text": ""]) { a, _ in a })], live: [])
