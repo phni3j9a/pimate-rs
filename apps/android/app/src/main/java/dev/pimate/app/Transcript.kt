@@ -196,6 +196,13 @@ internal sealed interface ChatRow {
     ) : ChatRow
 }
 
+internal fun thinkingLabel(live: Boolean, ms: Long?): String {
+    if (live) return "Thinking…"
+    if (ms == null || ms < 1000) return "Thought"
+    val s = (ms + 500) / 1000
+    return "Thought for " + if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s"
+}
+
 internal fun seconds(ms: Long): String {
     val s = (ms + 500) / 1000
     return if (s < 60) "${s}秒" else "${s / 60}分${s % 60}秒"

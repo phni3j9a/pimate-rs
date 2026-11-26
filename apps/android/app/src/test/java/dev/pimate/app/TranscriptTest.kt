@@ -4,6 +4,12 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TranscriptTest {
+    @Test fun thinkingLabelsMatchObservedDuration() {
+        assertEquals("Thinking…", thinkingLabel(true, null))
+        assertEquals("Thought", thinkingLabel(false, 999))
+        assertEquals("Thought for 12s", thinkingLabel(false, 12_100))
+        assertEquals("Thought for 1m 0s", thinkingLabel(false, 59_500))
+    }
     private val read = Call("c1", "read", "src/greet.ts")
     private val bash = Call("c2", "bash", "npm test")
     private val turn =

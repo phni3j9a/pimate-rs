@@ -678,11 +678,7 @@ internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
         is ChatRow.Thinking ->
             Column {
                 Expander(
-                    when {
-                        row.live -> "考え中…"
-                        row.ms != null && row.ms >= 1000 -> "${seconds(row.ms)} 考えた"
-                        else -> "考えた"
-                    },
+                    thinkingLabel(row.live, row.ms),
                     open,
                     toggle,
                     Modifier.fillMaxWidth().heightIn(min = 32.dp),
