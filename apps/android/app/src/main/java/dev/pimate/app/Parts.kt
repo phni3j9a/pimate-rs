@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
@@ -281,6 +282,7 @@ internal fun MarkColumn(height: Dp, content: @Composable BoxScope.() -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PiSheet(close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    val density = LocalDensity.current
     ModalBottomSheet(
         close,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -296,11 +298,14 @@ internal fun PiSheet(close: () -> Unit, content: @Composable ColumnScope.() -> U
             )
         },
     ) {
-        Column(
-            Modifier.verticalScroll(rememberScrollState())
-                .padding(start = gutter, end = gutter, bottom = 24.dp),
-            content = content,
-        )
+        // シートも別の窓なので、設定の文字サイズを引き継ぐ。
+        CompositionLocalProvider(LocalDensity provides density) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState())
+                    .padding(start = gutter, end = gutter, bottom = 24.dp),
+                content = content,
+            )
+        }
     }
 }
 
@@ -482,6 +487,8 @@ internal fun FullScreen(
     dark: Boolean = darkPalette,
     content: @Composable () -> Unit,
 ) {
+    // 別の窓の中では密度が端末の値に戻る。設定の文字サイズを引き継ぐ。
+    val density = LocalDensity.current
     Dialog(
         close,
         DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -511,6 +518,6 @@ internal fun FullScreen(
                 }
             }
         }
-        content()
+        CompositionLocalProvider(LocalDensity provides density, content = content)
     }
 }

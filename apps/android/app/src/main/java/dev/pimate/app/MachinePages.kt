@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
@@ -323,20 +324,22 @@ private fun SegmentRow(
     selected: String,
     select: (String) -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 8.dp),
-        Arrangement.spacedBy(12.dp),
-        Alignment.CenterVertically,
-    ) {
-        Text(label, Modifier.weight(1f), style = Type.lead)
-        Segment(
-            options,
-            selected,
-            Modifier.width(192.dp).semantics { contentDescription = label },
-            compact = true,
-            select = select,
-        )
-    }
+    val group = Modifier.semantics { contentDescription = label }
+    // 文字が大きいと 192dp の中で選択肢が切れるので、見出しの下に幅いっぱいで置く。
+    if (LocalDensity.current.fontScale > 1.15f)
+        Column(Modifier.fillMaxWidth().padding(vertical = 8.dp), Arrangement.spacedBy(6.dp)) {
+            Text(label, style = Type.lead)
+            Segment(options, selected, group.fillMaxWidth(), compact = true, select = select)
+        }
+    else
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 8.dp),
+            Arrangement.spacedBy(12.dp),
+            Alignment.CenterVertically,
+        ) {
+            Text(label, Modifier.weight(1f), style = Type.lead)
+            Segment(options, selected, group.width(192.dp), compact = true, select = select)
+        }
 }
 
 // 行の左端・右端にそろえる文字の操作（TextAction の左右の余白 14dp を打ち消す）。
