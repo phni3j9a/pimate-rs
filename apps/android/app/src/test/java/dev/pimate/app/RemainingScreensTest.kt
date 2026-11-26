@@ -8,6 +8,53 @@ import uniffi.pimate_ffi.*
 
 class RemainingScreensTest {
     @Test
+    fun chatAndReviewUseSameWriteFallbackAndNeverExposeOmittedBodies() {
+        for (reason in listOf("", "binary", "too_large")) {
+            val entries =
+                JSONArray(
+                        """[
+              {"kind":"user","entryId":"u"},
+              {"kind":"assistant","entryId":"a","toolCalls":[{"name":"write","id":"c","args":{"path":"f","content":"abc"}}]},
+              {"kind":"tool_result","entryId":"r","toolName":"write","toolCallId":"c","details":{"pimate":{"kind":"write_diff","omitted":"$reason"}}}
+            ]"""
+                    )
+                    .objects()
+            val reviewed = review(entries, "").files.single().pieces.single()
+            assertEquals(if (reason.isEmpty()) "abc" else null, reviewed.content)
+            assertEquals(
+                reviewed,
+                buildRows(entries.map(::entry), emptyList(), false)
+                    .filterIsInstance<ChatRow.Tool>()
+                    .single()
+                    .change,
+            )
+        }
+    }
+
+    @Test
+    fun combinedPatchFollowsCallOccurrenceAndNeverCopiesOnlyAPrefix() {
+        val entries =
+            listOf("one", "two").flatMap { id ->
+                JSONArray(
+                        """[
+            {"kind":"user","entryId":"$id"},
+            {"kind":"assistant","toolCalls":[{"id":"same","name":"edit","args":{"path":"f"}}]},
+            {"kind":"tool_result","toolCallId":"same","details":{"patch":"$id"}}
+        ]"""
+                    )
+                    .objects()
+            }
+        for (id in listOf("one", "two")) assertEquals(
+            "$id\n",
+            clipboardPatch(review(entries, "", id).files),
+        )
+        val files = review(entries, "").files
+        assertEquals("one\ntwo\n", clipboardPatch(files))
+        val large = files.first().pieces.first().copy(patch = "x".repeat(CLIPBOARD_CHARS / 2))
+        assertNull(clipboardPatch(listOf(ReviewFile("f", listOf(large, large)))))
+    }
+
+    @Test
     fun reviewScopesCallsButFindsLateResultsAndNeverCountsUnknownContent() {
         val rows =
             JSONArray(

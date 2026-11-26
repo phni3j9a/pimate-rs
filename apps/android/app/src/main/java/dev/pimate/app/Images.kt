@@ -35,6 +35,8 @@ import java.net.URL
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import uniffi.pimate_ffi.RcMethod
@@ -101,21 +103,31 @@ internal class Pics(
     /** 全画面で開く。 */
     val open: (List<Pic>, Int) -> Unit = { _, _ -> },
 ) {
+    // Keep compressed bytes rather than retaining a second full-size bitmap after dismissal.
+    private val originals =
+        object : LruCache<Pic, ByteArray>(CACHE_BYTES) {
+            override fun sizeOf(key: Pic, value: ByteArray) = value.size
+        }
+    private val originalLoad = Mutex()
+
     fun cached(pic: Pic): ImageBitmap? = if (pic.id.isEmpty()) null else tiles["$scope|${pic.id}"]
 
     /** 読めなければ null。tile: 会話に置く縮小版（RC には thumbnail を頼む）。全画面は別に取りに行く。 */
     suspend fun load(pic: Pic, tile: Boolean): ImageBitmap? {
-        if (tile) cached(pic)?.let { return it }
+        if (tile)
+            cached(pic)?.let {
+                return it
+            }
         val edge = if (tile) TILE_EDGE else FULL_EDGE
         val image =
             try {
                 when (pic) {
                     is Pic.Shared -> load(pic.resolve(), tile)
                     is Pic.Inline -> inline(pic.data, edge)
-                    is Pic.Web ->
-                        withContext(Dispatchers.IO) { decode(fetch(pic.url), edge) }
+                    is Pic.Web -> withContext(Dispatchers.IO) { decode(fetch(pic.url), edge) }
                     is Pic.Entry ->
                         remote(
+                            pic,
                             RcMethod.ENTRY_IMAGE,
                             JSONObject()
                                 .put("entryId", pic.entryId)
@@ -125,6 +137,7 @@ internal class Pics(
                         )
                     is Pic.File ->
                         remote(
+                            pic,
                             RcMethod.FILE_IMAGE,
                             JSONObject().put("path", pic.path).put("thumbnail", tile),
                             edge,
@@ -142,8 +155,27 @@ internal class Pics(
     private suspend fun inline(data: String, edge: Int) =
         withContext(Dispatchers.Default) { decode(Base64.decode(data, Base64.DEFAULT), edge) }
 
-    private suspend fun remote(method: RcMethod, params: JSONObject, edge: Int) =
-        inline(JSONObject(request(method, params)).getJSONObject("image").getString("data"), edge)
+    private suspend fun remote(
+        pic: Pic,
+        method: RcMethod,
+        params: JSONObject,
+        edge: Int,
+    ): ImageBitmap? {
+        suspend fun fetchData() =
+            JSONObject(request(method, params)).getJSONObject("image").getString("data")
+        if (edge != FULL_EDGE || pic is Pic.File && pic.answer == null)
+            return inline(fetchData(), edge)
+        return originalLoad.withLock {
+            val cached = originals[pic]
+            val bytes =
+                cached
+                    ?: fetchData().let { data ->
+                        withContext(Dispatchers.Default) { Base64.decode(data, Base64.DEFAULT) }
+                    }
+            withContext(Dispatchers.Default) { decode(bytes, edge) }
+                ?.also { if (cached == null) originals.put(pic, bytes) }
+        }
+    }
 
     companion object {
         /** 会話の外（添付のプレビューなど）。手元にある画像と Web の画像だけ読める。 */
@@ -290,6 +322,7 @@ internal fun ImageViewer(all: List<Pic>, start: Int, close: () -> Unit) {
                     all[page],
                     if (all.size > 1) "画像 ${page + 1} / ${all.size}" else "画像",
                     active = page == pager.currentPage,
+                    close = close,
                 ) {
                     if (page == pager.currentPage) zoomed = it
                 }
@@ -314,7 +347,13 @@ internal fun ImageViewer(all: List<Pic>, start: Int, close: () -> Unit) {
 }
 
 @Composable
-private fun ViewerPage(pic: Pic, label: String, active: Boolean, onZoom: (Boolean) -> Unit) {
+private fun ViewerPage(
+    pic: Pic,
+    label: String,
+    active: Boolean,
+    close: () -> Unit,
+    onZoom: (Boolean) -> Unit,
+) {
     val pics = LocalPics.current
     val image by produceState<Any?>(null, pic, pics) { value = pics.load(pic, false) ?: Failed }
     var scale by remember { mutableFloatStateOf(1f) }
@@ -355,17 +394,36 @@ private fun ViewerPage(pic: Pic, label: String, active: Boolean, onZoom: (Boolea
             }
             .pointerInput(shown) {
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
+                    val start = awaitFirstDown(requireUnconsumed = false).position
+                    var dismissible = scale == 1f
+                    var drag = Offset.Zero
                     do {
                         val event = awaitPointerEvent()
                         // 等倍で指 1 本の横送りは、ページの切り替えに渡す。
                         if (event.changes.size > 1 || scale > 1.01f) {
+                            dismissible = false
                             val zoom = event.calculateZoom()
                             val next = (scale * zoom).coerceIn(1f, 4f)
                             settle(next, offset * (next / scale) + event.calculatePan())
                             event.changes.forEach { if (it.positionChanged()) it.consume() }
+                        } else if (dismissible) {
+                            val change = event.changes.single()
+                            if (change.isConsumed && change.position != change.previousPosition)
+                                dismissible = false
+                            drag = change.position - start
+                            if (
+                                drag.y > viewConfiguration.touchSlop &&
+                                    drag.y > kotlin.math.abs(drag.x)
+                            )
+                                change.consume()
                         }
                     } while (event.changes.any { it.pressed })
+                    if (
+                        dismissible &&
+                            drag.y > size.height * .15f &&
+                            drag.y > kotlin.math.abs(drag.x)
+                    )
+                        close()
                     if (scale <= 1.01f) settle(1f, Offset.Zero)
                 }
             },

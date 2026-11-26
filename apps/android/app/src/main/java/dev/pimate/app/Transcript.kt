@@ -11,7 +11,12 @@ import uniffi.pimate_ffi.ImageKind
 
 // 状態の層（Rows）の JSON を画面の行にする。組み立ては JSON を知らない buildRows が行う。
 
-internal data class Call(val id: String, val name: String, val subject: String)
+internal data class Call(
+    val id: String,
+    val name: String,
+    val subject: String,
+    val writeContent: String? = null,
+)
 
 /** 表示する画像の出どころ。id はメモリ内のキャッシュの名前（空ならキャッシュしない）。 */
 internal sealed interface Pic {
@@ -27,7 +32,7 @@ internal sealed interface Pic {
     }
 
     /** PC のファイル。file_image で取りに行く。 */
-    data class File(val path: String) : Pic {
+    data class File(val path: String, val answer: String? = null) : Pic {
         override val id
             get() = "" // PC のファイルは回答間で上書きされる。
     }
@@ -36,15 +41,18 @@ internal sealed interface Pic {
     class Shared(
         private val kind: ImageKind,
         private val source: uniffi.pimate_ffi.SharedTextInterface,
+        private val answer: String? = null,
     ) : Pic {
         override val id = ""
+
+        fun forAnswer(answer: String) = Shared(kind, source, answer)
 
         suspend fun resolve(): Pic =
             withContext(Dispatchers.Default) {
                 val src = source.value()
                 when (kind) {
                     ImageKind.REMOTE -> Web(src)
-                    ImageKind.FILE -> File(src)
+                    ImageKind.FILE -> File(src, answer)
                     ImageKind.DATA ->
                         Inline(
                             "",
@@ -97,11 +105,10 @@ internal data class Entry(
     val final: Boolean = true, // assistant: この発言でターンが終わった（stopReason が toolUse 以外）
     val error: String = "",
     val aborted: Boolean = false,
-    val meta: String = "", // モデル・トークン・費用
     val callId: String = "", // tool_result
     val name: String = "",
     val isError: Boolean = false,
-    val change: String = "", // edit / write の「+6 −2」
+    val change: Piece? = null,
     val time: Long? = null,
     /** user / tool_result の画像を元の位置で。プレビューが省かれた位置は Pic.Entry（取りに行く）。 */
     val pics: ImageSlots = ImageSlots.Empty,
@@ -127,6 +134,9 @@ internal enum class ToolState(val label: String) {
 
 internal sealed interface ChatRow {
     val key: String
+    val expansionKey: String
+        get() = key
+
     /** 畳まれるターンの要約行の key。開かれるまで表示しない。 */
     val fold: String?
 
@@ -139,7 +149,12 @@ internal sealed interface ChatRow {
             get() = null
     }
 
-    data class Summary(override val key: String, val text: String) : ChatRow {
+    data class Summary(
+        override val key: String,
+        val text: String,
+        val reviewTurn: String? = null,
+        val reviewLabel: String = "",
+    ) : ChatRow {
         override val fold: String?
             get() = null
     }
@@ -151,14 +166,11 @@ internal sealed interface ChatRow {
         override val fold: String? = null,
         /** 考えた時間。この端末が見ていた発言だけ分かる。 */
         val ms: Long? = null,
+        override val expansionKey: String = key,
     ) : ChatRow
 
-    data class Text(
-        override val key: String,
-        val text: String,
-        val meta: String = "",
-        override val fold: String? = null,
-    ) : ChatRow
+    data class Text(override val key: String, val text: String, override val fold: String? = null) :
+        ChatRow
 
     data class Tool(
         override val key: String,
@@ -171,15 +183,12 @@ internal sealed interface ChatRow {
         val pics: ImageSlots = ImageSlots.Empty,
         /** 実行中のツールの開始時刻（epoch ms）。分からなければ秒数を出さない。 */
         val since: Long? = null,
+        val change: Piece? = null,
     ) : ChatRow
 
     /** 会話の切り替え（PC の /resume など）。履歴にはない行で、切り替えを見た位置に置く。 */
-    data class Switch(
-        val reason: String,
-        val byPhone: Boolean,
-        val from: String,
-        val to: String,
-    ) : ChatRow {
+    data class Switch(val reason: String, val byPhone: Boolean, val from: String, val to: String) :
+        ChatRow {
         override val key
             get() = "switched"
 
@@ -194,6 +203,13 @@ internal sealed interface ChatRow {
         val error: Boolean = false,
         override val fold: String? = null,
     ) : ChatRow
+}
+
+internal fun thinkingLabel(live: Boolean, ms: Long?): String {
+    if (live) return "Thinking…"
+    if (ms == null || ms < 1000) return "Thought"
+    val s = (ms + 500) / 1000
+    return "Thought for " + if (s < 60) "${s}s" else "${s / 60}m ${s % 60}s"
 }
 
 internal fun seconds(ms: Long): String {
@@ -221,6 +237,7 @@ internal fun buildRows(
     streamText: String = "",
     streamThinking: String = "",
     thinkingMs: Map<String, Long> = emptyMap(),
+    liveThinkingMs: Long? = null,
 ): List<ChatRow> {
     // 結果は、同じ ID でまだ結果のない直前の呼び出しに対応付ける（ID がターンをまたいで重なる履歴でも取り違えない）。
     val results = HashMap<Pair<String, String>, Entry>() // (呼び出し元 entry, call ID) → 結果
@@ -241,7 +258,7 @@ internal fun buildRows(
                 }
         }
     }
-    val running = live.associateBy { it.id }
+    val running = live.filterNot { it.nested }.associateBy { it.id }
     val out = mutableListOf<ChatRow>()
     var turn = mutableListOf<ChatRow>()
     var turnId: String? = null
@@ -249,7 +266,14 @@ internal fun buildRows(
     var ended: Long? = null
     var finalKey: String? = null
 
-    fun tool(key: String, name: String, subject: String, result: Entry?, now: Live?): ChatRow.Tool {
+    fun tool(
+        key: String,
+        name: String,
+        subject: String,
+        result: Entry?,
+        now: Live?,
+        writeContent: String? = null,
+    ): ChatRow.Tool {
         val state =
             when {
                 result != null -> if (result.isError) ToolState.Failed else ToolState.Done
@@ -258,11 +282,13 @@ internal fun buildRows(
                 else -> ToolState.Done
             }
         val shownName = name.ifEmpty { now?.name ?: "tool" }
+        val piece = result?.change?.withWriteContent(writeContent)
+        val diff = piece?.diff
         val meta =
             when {
                 state == ToolState.Failed -> "エラー"
                 state == ToolState.Running -> ""
-                result != null && result.change.isNotEmpty() -> result.change
+                diff != null -> "+${diff.add} −${diff.del}"
                 result != null && shownName == "read" -> "${lines(result.text)} 行"
                 now?.durationMs != null && now.durationMs >= 1000 -> seconds(now.durationMs)
                 else -> ""
@@ -274,6 +300,7 @@ internal fun buildRows(
             state,
             result?.text ?: now?.output.orEmpty(),
             meta,
+            change = piece,
             pics = result?.pics ?: ImageSlots.Empty,
             since = now?.startedAt?.takeIf { state == ToolState.Running },
         )
@@ -297,11 +324,16 @@ internal fun buildRows(
                     }
                 if (folded != null && !summarized) {
                     summarized = true
+                    val changes = turn.filterIsInstance<ChatRow.Tool>().filter { it.change != null }
+                    val diffs = changes.mapNotNull { it.change?.diff }
                     out +=
                         ChatRow.Summary(
                             key,
                             listOfNotNull(took?.let { "${seconds(it)} 作業" }, "ツール $tools 回")
                                 .joinToString(" · "),
+                            id.takeIf { changes.isNotEmpty() },
+                            if (diffs.isEmpty()) "${changes.distinctBy { it.subject }.size} ファイル ›"
+                            else "+${diffs.sumOf { it.add }} −${diffs.sumOf { it.del }} ›",
                         )
                 }
                 out += folded ?: row
@@ -324,9 +356,15 @@ internal fun buildRows(
             "assistant" -> {
                 if (e.thinking.isNotBlank())
                     turn +=
-                        ChatRow.Thinking("${e.id}:thinking", e.thinking, false, ms = thinkingMs[e.id])
+                        ChatRow.Thinking(
+                            "${e.id}:thinking",
+                            e.thinking,
+                            false,
+                            ms = thinkingMs[e.id],
+                            expansionKey = "thinkingAfter:${entries.getOrNull(i - 1)?.id.orEmpty()}",
+                        )
                 if (e.text.isNotBlank()) {
-                    turn += ChatRow.Text("${e.id}:text", e.text, if (e.final) e.meta else "")
+                    turn += ChatRow.Text("${e.id}:text", e.text)
                     if (e.final) finalKey = "${e.id}:text"
                 }
                 e.calls.forEach {
@@ -337,6 +375,7 @@ internal fun buildRows(
                             it.subject,
                             results[e.id to it.id],
                             running[it.id]?.takeIf { _ -> caller[it.id] == e.id },
+                            it.writeContent,
                         )
                 }
                 if (e.aborted) turn += ChatRow.Note("${e.id}:aborted", "中断しました")
@@ -355,12 +394,21 @@ internal fun buildRows(
             }
         }
     }
+    // 実行後に PC 拡張が開いた質問は、完了ターンを再び展開する理由にならない。
     close(active)
     // 途中から開いたときなど、発言より先に届いた実行中のツール。サブエージェントの中のツールは出さない。
-    live
-        .filter { it.id !in caller && !it.nested }
+    running.values
+        .filter { it.id !in caller }
         .forEach { out += tool("running:${it.id}", it.name, it.subject, null, it) }
-    if (streamThinking.isNotBlank()) out += ChatRow.Thinking("live:thinking", streamThinking, true)
+    if (streamThinking.isNotBlank())
+        out +=
+            ChatRow.Thinking(
+                "live:thinking",
+                streamThinking,
+                streamText.isEmpty(),
+                ms = liveThinkingMs,
+                expansionKey = "thinkingAfter:${entries.lastOrNull()?.id.orEmpty()}",
+            )
     if (streamText.isNotEmpty()) out += ChatRow.Text("live:text", streamText)
     // 同じ ID が重なる壊れた履歴でも、リストの key の重複で落とさない。
     return out.distinctBy { it.key }
@@ -395,9 +443,9 @@ internal fun placeSwitch(
     val after = if (!known) entries.lastIndex else entries.indexOfFirst { it.id == anchor }
     val order = entries.withIndex().associate { it.value.id to it.index }
     val at =
-        rows.indexOfFirst { it is ChatRow.User && (order[it.key] ?: -1) > after }.let {
-            if (it < 0) rows.size else it
-        }
+        rows
+            .indexOfFirst { it is ChatRow.User && (order[it.key] ?: -1) > after }
+            .let { if (it < 0) rows.size else it }
     return rows.subList(0, at) + note + rows.subList(at, rows.size)
 }
 
@@ -475,9 +523,6 @@ internal fun subject(name: String, args: JSONObject?): String {
     }
 }
 
-private fun change(patch: String): String =
-    parsePatch(patch).run { if (del > 0) "+$add −$del" else "+$add" }
-
 internal fun count(n: Double): String =
     when {
         n < 1000 -> n.toLong().toString()
@@ -492,7 +537,6 @@ internal fun entry(o: JSONObject): Entry {
     return when (val kind = o.str("kind")) {
         "assistant" -> {
             val calls = o.optJSONArray("toolCalls")
-            val usage = o.optJSONObject("usage")
             val stop = o.str("stopReason")
             val error = o.str("errorMessage")
             Entry(
@@ -506,6 +550,9 @@ internal fun entry(o: JSONObject): Entry {
                         c.str("id"),
                         c.str("name"),
                         subject(c.str("name"), c.optJSONObject("args")),
+                        if (c.str("name") == "write")
+                            c.optJSONObject("args")?.opt("content") as? String
+                        else null,
                     )
                 },
                 final = stop != "toolUse",
@@ -515,22 +562,10 @@ internal fun entry(o: JSONObject): Entry {
                     stop == "aborted" ||
                         Regex("(operation|request) was aborted", RegexOption.IGNORE_CASE)
                             .containsMatchIn(error),
-                meta =
-                    listOfNotNull(
-                            o.optJSONObject("model")?.str("id")?.ifEmpty { null },
-                            usage?.let { "${count(it.optDouble("input", 0.0))} in" },
-                            usage?.let { "${count(it.optDouble("output", 0.0))} out" },
-                            usage?.optDouble("cost")?.takeIf { it > 0 }?.let { "$%.2f".format(it) },
-                        )
-                        .joinToString(" · "),
                 time = time,
             )
         }
         "tool_result" -> {
-            val details = o.optJSONObject("details")
-            val patch =
-                (details?.opt("patch") as? String)
-                    ?: (details?.optJSONObject("pimate")?.opt("patch") as? String)
             Entry(
                 id,
                 kind,
@@ -538,7 +573,7 @@ internal fun entry(o: JSONObject): Entry {
                 callId = o.str("toolCallId"),
                 name = o.str("toolName"),
                 isError = o.optBoolean("isError"),
-                change = if (patch != null && !o.optBoolean("isError")) change(patch) else "",
+                change = resultPiece(o.str("toolName"), o),
                 time = time,
                 pics = pics(id, o),
             )
@@ -550,8 +585,8 @@ internal fun entry(o: JSONObject): Entry {
 }
 
 /**
- * プレビューの配列の位置は、元の画像の位置とは限らない（省かれた画像がある）。imageIndices で元の位置に置き、 省かれた位置は取りに行く画像にする（TS 版の
- * imageSlots と同じ）。
+ * プレビューの配列の位置は、元の画像の位置とは限らない（省かれた画像がある）。imageIndices で元の位置に置き、 省かれた位置は取りに行く画像にする（TS 版の imageSlots
+ * と同じ）。
  */
 private fun pics(entryId: String, o: JSONObject): ImageSlots {
     val images = o.optJSONArray("images")

@@ -4,6 +4,20 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class TranscriptTest {
+    @Test
+    fun answeringChildPrefixesExistingDraft() {
+        val child = org.json.JSONObject().put("agent", "reviewer").put("title", "確認")
+        assertEquals("確認（reviewer）の質問への回答: 下書き", childAnswerDraft(child, "下書き"))
+    }
+
+    @Test
+    fun thinkingLabelsMatchObservedDuration() {
+        assertEquals("Thinking…", thinkingLabel(true, null))
+        assertEquals("Thought", thinkingLabel(false, 999))
+        assertEquals("Thought for 12s", thinkingLabel(false, 12_100))
+        assertEquals("Thought for 1m 0s", thinkingLabel(false, 59_500))
+    }
+
     private val read = Call("c1", "read", "src/greet.ts")
     private val bash = Call("c2", "bash", "npm test")
     private val turn =
@@ -19,8 +33,30 @@ class TranscriptTest {
             ),
             Entry("3", "tool_result", "a\nb\n", callId = "c1", name = "read"),
             Entry("4", "tool_result", "失敗", callId = "c2", name = "bash", isError = true),
-            Entry("5", "assistant", "まとめ", meta = "model", time = 19_000),
+            Entry("5", "assistant", "まとめ", time = 19_000),
         )
+
+    @Test
+    fun editRowShowsPatchAndLinksToInitiatingTurn() {
+        val rows =
+            buildRows(
+                listOf(
+                    Entry("u", "user"),
+                    Entry("a", "assistant", calls = listOf(Call("c", "edit", "foo"))),
+                    Entry(
+                        "r",
+                        "tool_result",
+                        "success",
+                        callId = "c",
+                        change = Piece("c", false, "patch", null, null, null),
+                    ),
+                ),
+                emptyList(),
+                false,
+            )
+        assertEquals("u", rows.filterIsInstance<ChatRow.Summary>().single().reviewTurn)
+        assertEquals("patch", rows.filterIsInstance<ChatRow.Tool>().single().change?.patch)
+    }
 
     @Test
     fun completedTurnFoldsWorkButKeepsTheAnswer() {
@@ -39,7 +75,7 @@ class TranscriptTest {
         val (first, second) = rows.filterIsInstance<ChatRow.Tool>()
         assertEquals(ToolState.Done to "2 行", first.state to first.meta)
         assertEquals(ToolState.Failed to "エラー", second.state to second.meta)
-        assertEquals("model", (rows.last() as ChatRow.Text).meta)
+        assertEquals("まとめ", (rows.last() as ChatRow.Text).text)
     }
 
     @Test
@@ -72,6 +108,49 @@ class TranscriptTest {
         )
         val running = rows.filterIsInstance<ChatRow.Tool>().first { it.key == "tool:2:c2" }
         assertEquals(ToolState.Running to "> vitest", running.state to running.output)
+    }
+
+    @Test
+    fun answerStartsUnderTheSameThinkingRowAndFreezesItsObservedDuration() {
+        fun row(text: String) =
+            buildRows(
+                    emptyList(),
+                    emptyList(),
+                    true,
+                    text,
+                    "観測",
+                    liveThinkingMs = if (text.isEmpty()) null else 12_000,
+                )
+                .filterIsInstance<ChatRow.Thinking>()
+                .single()
+        val before = row("")
+        val after = row("答え")
+        assertTrue(before.live)
+        assertFalse(after.live)
+        assertEquals(before.expansionKey, after.expansionKey) // 手動の開閉設定がそのまま優先される。
+        assertEquals("Thought for 12s", thinkingLabel(after.live, after.ms))
+        val completed =
+            buildRows(
+                    listOf(Entry("a", "assistant", "答え", thinking = "観測")),
+                    emptyList(),
+                    false,
+                    streamThinking = "次の思考",
+                )
+                .filterIsInstance<ChatRow.Thinking>()
+        assertEquals(after.expansionKey, completed.first().expansionKey)
+        assertNotEquals(after.expansionKey, completed.last().expansionKey)
+    }
+
+    @Test
+    fun onlyParentActivityKeepsTurnOpenAndHiddenToolsDoNotChangeVisibleRows() {
+        val history = turn.take(2)
+        val running = buildRows(history, emptyList(), active = true)
+        assertTrue(buildRows(history, emptyList(), active = false).any { it is ChatRow.Summary })
+        assertTrue(running.none { it is ChatRow.Summary || it.fold != null })
+        for (id in listOf("unseen", "c1")) {
+            val nested = Live(id, "read", "", "running", "hidden", null, true)
+            assertEquals(running, buildRows(history, listOf(nested), active = true))
+        }
     }
 
     @Test

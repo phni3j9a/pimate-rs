@@ -150,3 +150,9 @@ internal suspend fun SessionModel.control(
         instructions.accepted(ChildKey(key, run, child), action, body)
     return JSONObject(result)
 }
+
+internal fun childAnswerDraft(child: JSONObject, current: String): String {
+    val agent = child.str("agent")
+    val title = child.str("title").trim().ifEmpty { agent }
+    return "${title}（${agent}）の質問への回答: " + current.takeUnless { it.isBlank() }.orEmpty()
+}

@@ -43,8 +43,7 @@ private val parsed = android.util.LruCache<Pair<Boolean, String>, Doc>(64)
 private var lastLive: Triple<Boolean, String, Doc>? = null
 
 private fun cached(source: String, files: Boolean) =
-    parsed[files to source]
-        ?: lastLive?.takeIf { it.first == files && it.second == source }?.third
+    parsed[files to source] ?: lastLive?.takeIf { it.first == files && it.second == source }?.third
 
 // 逐次表示から確定した直後は、解析が済むまで逐次表示の最後の解析を出す（回答が 1 フレーム消えない）。
 private fun initial(source: String, files: Boolean) =
@@ -63,14 +62,25 @@ private val LocalDocPics = compositionLocalOf<List<Pic>> { emptyList() }
 
 /** 回答の本文。長押しで OS の選択になり、範囲を広げてコピーできる（選択は 1 つの回答の中）。 解析は UI スレッドの外で行い、live（逐次表示）は前の表示を残したまま差し替える。 */
 @Composable
-internal fun Markdown(source: String, modifier: Modifier = Modifier, live: Boolean = false) {
+internal fun Markdown(
+    source: String,
+    modifier: Modifier = Modifier,
+    live: Boolean = false,
+    answer: String? = null,
+) {
     val files = LocalPics.current.files
     val shown by
         produceState(initial(source, files), source, files) {
             value = cached(source, files) ?: withContext(Dispatchers.Default) { doc(source, files) }
-            if (live) lastLive = Triple(files, source, value) else parsed.put(files to source, value)
+            if (live) lastLive = Triple(files, source, value)
+            else parsed.put(files to source, value)
         }
-    CompositionLocalProvider(LocalDocPics provides shown.pics) {
+    val gallery =
+        remember(shown, answer) {
+            if (answer == null) shown.pics
+            else shown.pics.map { if (it is Pic.Shared) it.forAnswer(answer) else it }
+        }
+    CompositionLocalProvider(LocalDocPics provides gallery) {
         SelectionContainer(modifier) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 shown.blocks.forEach { key(it.id) { BlockView(it) } }
@@ -302,16 +312,55 @@ private fun TaskMark(checked: Boolean) {
     }
 }
 
+// Leave space in the shared 1 MiB Binder buffer for ClipData metadata and other transactions.
+internal const val CLIPBOARD_CHARS = 480 * 1024
+
 @Composable
-private fun CodeBlock(code: String) {
+internal fun CopyAction(
+    source: String?,
+    label: String,
+    modifier: Modifier = Modifier,
+    size: Dp = 16.dp,
+) {
     val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
+    var copied by remember(source) { mutableStateOf(false) }
+    var copyError by remember(source) { mutableStateOf(false) }
+    if (copyError)
+        AlertDialog(
+            onDismissRequest = { copyError = false },
+            title = { Text("コピーできませんでした") },
+            text = { Text("端末のクリップボードに全文を保存できません。長い場合は範囲を選択してコピーしてください。") },
+            confirmButton = { TextButton(onClick = { copyError = false }) { Text("閉じる") } },
+        )
     LaunchedEffect(copied) {
         if (copied) {
             delay(1500)
             copied = false
         }
     }
+    IconAction(
+        if (copied) Icons.Check else Icons.Copy,
+        if (copied) "コピーしました" else label,
+        {
+            if (source == null || source.length > CLIPBOARD_CHARS) {
+                copied = false
+                copyError = true
+            } else
+                try {
+                    clipboard.setText(AnnotatedString(source))
+                    copied = true
+                } catch (_: Exception) {
+                    copied = false
+                    copyError = true
+                }
+        },
+        modifier,
+        size = size,
+    )
+}
+
+@Composable
+private fun CodeBlock(code: String) {
     Box(Modifier.fillMaxWidth().background(pi.surface, RoundedCornerShape(10.dp))) {
         // タブは半角 2 つで表示する。元のタブが要るときは右上のコピーを使う。
         Text(
@@ -322,13 +371,9 @@ private fun CodeBlock(code: String) {
             style = Type.mono,
             softWrap = false,
         )
-        IconAction(
-            if (copied) Icons.Check else Icons.Copy,
-            if (copied) "コピーしました" else "コードをコピー",
-            {
-                clipboard.setText(AnnotatedString(code))
-                copied = true
-            },
+        CopyAction(
+            code,
+            "コードをコピー",
             Modifier.align(Alignment.TopEnd).background(pi.surface, RoundedCornerShape(10.dp)),
             size = 16.dp,
         )
@@ -361,22 +406,24 @@ private fun TableBody(
             tableWidths(natural, available.value.toDouble(), ratio)
         }
     val total = widths.sum().dp
+    val cell = Type.caption.copy(fontSize = 13.sp, lineHeight = 19.sp)
     // 収まる表は横送りにしない（表の上から右へ送っても一覧を開ける）。
     Column(
-        if (scroll && total > available + .5.dp) modifier.horizontalScroll(rememberScrollState())
-        else modifier
+        modifier
+            .background(pi.surface, RoundedCornerShape(10.dp))
+            .then(
+                if (scroll && total > available + .5.dp)
+                    Modifier.horizontalScroll(rememberScrollState())
+                else Modifier
+            )
     ) {
         (listOf(table.header) + table.rows).forEachIndexed { index, row ->
-            if (index > 1) Box(Modifier.width(total).height(1.dp).background(pi.surface))
-            Row(
-                if (index == 0) Modifier.background(pi.surface, RoundedCornerShape(8.dp))
-                else Modifier
-            ) {
+            if (index > 0) Box(Modifier.width(total).height(1.dp).background(pi.background))
+            Row {
                 widths.forEachIndexed { col, width ->
                     Paragraph(
                         row.getOrElse(col) { emptyList() },
-                        if (index == 0) Type.body.copy(fontWeight = FontWeight.SemiBold)
-                        else Type.body,
+                        if (index == 0) cell.copy(fontWeight = FontWeight.SemiBold) else cell,
                         Modifier.width(width.dp).padding(8.dp),
                         when (table.align.getOrNull(col)) {
                             uniffi.pimate_ffi.Alignment.CENTER -> TextAlign.Center
@@ -402,8 +449,6 @@ private fun TableView(table: Table, modifier: Modifier = Modifier) {
 /** 表の全画面。セルの文字は OS の選択で部分コピーでき、右上で表全体を Markdown としてコピーする。 */
 @Composable
 private fun TableViewer(table: Table, close: () -> Unit) {
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
     FullScreen(close) {
         Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
             Row(
@@ -412,15 +457,7 @@ private fun TableViewer(table: Table, close: () -> Unit) {
             ) {
                 IconAction(Icons.Close, "閉じる", close, tint = pi.text)
                 Text("表", Modifier.weight(1f).semantics { heading() }, style = Type.header)
-                IconAction(
-                    if (copied) Icons.Check else Icons.Copy,
-                    if (copied) "コピーしました" else "表を Markdown でコピー",
-                    {
-                        clipboard.setText(AnnotatedString(table.markdown))
-                        copied = true
-                    },
-                    size = 20.dp,
-                )
+                CopyAction(table.markdown, "表を Markdown でコピー", size = 20.dp)
             }
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
                 val available = maxWidth - gutter * 2

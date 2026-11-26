@@ -166,11 +166,14 @@ class DemoJourney {
         ui.onNode(hasSetTextAction() and hasText(steer)).assertExists()
         shot("restored")
         press(ui.onNodeWithContentDescription("送信"))
-        // 回答を待つ間に履歴を遡っていても、届いた質問のカードへ戻る。
+        // 履歴を読んでいる位置は質問が届いても保つ。「最新へ」で初めてカードに移る。
         val sent = hasText(steer) and !hasSetTextAction()
         ui.waitUntil(15000) { ui.onAllNodes(sent).fetchSemanticsNodes().isNotEmpty() }
         repeat(3) { ui.onNodeWithTag("chat").performTouchInput { swipeDown() } }
         assertTrue(ui.onNode(sent).isNotDisplayed())
+        waitFor("上の質問に回答すると入力できます")
+        assertTrue(ui.onNodeWithText("はい").isNotDisplayed())
+        ui.onNodeWithContentDescription("最新の位置へ").performClick()
         waitFor("作業ディレクトリの差分を確認します。")
         ui.onNodeWithText("はい").assertIsDisplayed()
         shot("question")

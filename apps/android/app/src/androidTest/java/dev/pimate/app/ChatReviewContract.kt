@@ -2,6 +2,7 @@ package dev.pimate.app
 
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
@@ -11,6 +12,7 @@ import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.*
 import org.junit.Assert.*
@@ -21,6 +23,126 @@ class ChatReviewContract {
     @get:Rule val ui = createAndroidComposeRule<MainActivity>()
     private val png =
         "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAFCAIAAADzBuo/AAAAEklEQVR4nGP8z4APMOGVpa00AJ0IAQl63qFDAAAAAElFTkSuQmCC"
+
+    @Test
+    fun jumpIncludesRowsAddedDuringAnimation() {
+        lateinit var list: LazyListState
+        var finished by mutableStateOf(false)
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                list = rememberLazyListState()
+                var count by remember { mutableIntStateOf(30) }
+                LaunchedEffect(Unit) {
+                    snapshotFlow { list.isScrollInProgress }.first { it }
+                    count += 10
+                }
+                LaunchedEffect(Unit) {
+                    snapshotFlow { list.layoutInfo.totalItemsCount }.first { it == 30 }
+                    list.jumpToLatest()
+                    finished = true
+                }
+                LazyColumn(Modifier.height(180.dp), state = list) {
+                    items(count) { Spacer(Modifier.height(48.dp)) }
+                }
+            }
+        }
+        ui.waitUntil(5000) { finished }
+        ui.runOnIdle {
+            assertEquals(40, list.layoutInfo.totalItemsCount)
+            assertFalse(list.canScrollForward)
+        }
+    }
+
+    @Test
+    fun copyAnswerKeepsMarkdownAndWhitespace() {
+        val source = "**太字**\n\n```kt\n\tval n = 1\n```\n"
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) { RowView(ChatRow.Text("answer", source), false) {} }
+            }
+        }
+        ui.onNodeWithContentDescription("回答全文をコピー（Markdown）").performClick()
+        ui.runOnIdle {
+            val clip =
+                ui.activity
+                    .getSystemService(android.content.ClipboardManager::class.java)
+                    .primaryClip
+            assertEquals(source, clip?.getItemAt(0)?.text.toString())
+        }
+    }
+
+    @Test
+    fun clipboardFailureExplainsItWithoutReportingSuccess() {
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    val clipboard = androidx.compose.ui.platform.LocalClipboardManager
+                    val failing =
+                        object :
+                            androidx.compose.ui.platform.ClipboardManager by clipboard.current {
+                            override fun setText(
+                                annotatedString: androidx.compose.ui.text.AnnotatedString
+                            ) {
+                                throw android.os.TransactionTooLargeException()
+                            }
+                        }
+                    CompositionLocalProvider(clipboard provides failing) {
+                        CopyAction("full text", "差分をコピー")
+                    }
+                }
+            }
+        }
+        ui.onNodeWithContentDescription("差分をコピー").performClick()
+        ui.onNodeWithText("コピーできませんでした").assertIsDisplayed()
+        ui.onNodeWithContentDescription("コピーしました").assertDoesNotExist()
+        ui.onNodeWithText("閉じる").performClick()
+        ui.onNodeWithContentDescription("差分をコピー").assertExists()
+    }
+
+    @Test
+    fun showingMoreDiffLinesNotifiesTheChatBeforeGrowing() {
+        val source = "@@ -0,0 +1,125 @@\n" + (1..125).joinToString("\n") { "+line $it" }
+        val piece = Piece("id", false, source, parsePatch(source), null, null)
+        var holds = 0
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    Column(Modifier.height(360.dp).verticalScroll(rememberScrollState(Int.MAX_VALUE))) {
+                        ChangeDiff(piece) { holds++ }
+                    }
+                }
+            }
+        }
+        val more = ui.onNodeWithText("続きを表示（残り 5 行）")
+        ui.waitForIdle()
+        more.assertIsDisplayed()
+        more.performClick()
+        ui.runOnIdle { assertEquals(1, holds) }
+        ui.onNodeWithText("line 125", substring = true).assertExists()
+    }
+
+    @Test
+    fun swipeDownOnlyClosesAtFitScale() {
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    var open by remember { mutableStateOf(true) }
+                    if (open)
+                        ImageViewer(listOf(Pic.Inline("1", "image/png", png)), 0) { open = false }
+                }
+            }
+        }
+        ui.waitUntil(5000) {
+            ui.onAllNodesWithContentDescription("画像").fetchSemanticsNodes().isNotEmpty()
+        }
+        val image = ui.onNodeWithContentDescription("画像")
+        image.performTouchInput { doubleClick() }
+        image.performTouchInput { swipeDown() }
+        image.assertIsDisplayed()
+        image.performTouchInput { doubleClick() }
+        image.performTouchInput { swipeDown() }
+        image.assertDoesNotExist()
+    }
 
     @Test
     fun sharedTextIsReadOnlyForVisibleTiles() {
@@ -94,6 +216,10 @@ class ChatReviewContract {
             )
         repeat(2) { assertNotNull(pics.load(Pic.File("shot.png"), true)) }
         assertEquals(2, requests)
+        repeat(2) { assertNotNull(pics.load(Pic.File("shot.png", "answer1"), false)) }
+        assertEquals(3, requests)
+        assertNotNull(pics.load(Pic.File("shot.png", "answer2"), false))
+        assertEquals(4, requests)
     }
 
     @Test

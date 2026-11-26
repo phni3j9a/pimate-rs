@@ -13,6 +13,8 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.*
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.SpanStyle
@@ -25,8 +27,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import org.json.*
 import uniffi.pimate_ffi.*
+
+/** 移動中に加わった行にも合わせる。ドラッグによるキャンセル時は追従を再開しない。 */
+internal suspend fun LazyListState.jumpToLatest() {
+    animateScrollToItem((layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+    scrollToItem((layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+}
 
 /** JSON の解析を行ごとに 1 回で済ませる（長い履歴に 1 件足すたびに全件を読み直さない）。 */
 private class Parsed<T>(private val parse: (Item) -> T) {
@@ -56,10 +66,11 @@ internal class ChatUi : ViewModel() {
         if (host == null || instance == null || result == null) return
         val id = result.str("id")
         if (receipt?.take(id, instance) == true) received = ReceivedResult(host, instance, result)
-        else resultFor(host, instance)?.let {
-            if (it.result.str("id") == id) it.update(result)
-            else received = null // Host の latest が更新された。古い案内・入力文を適用しない。
-        }
+        else
+            resultFor(host, instance)?.let {
+                if (it.result.str("id") == id) it.update(result)
+                else received = null // Host の latest が更新された。古い案内・入力文を適用しない。
+            }
     }
 
     fun resultFor(host: String?, instance: String?) =
@@ -133,14 +144,16 @@ internal fun ChatScreen(
         remember(groups["thinkingMs"]) {
             groups["thinkingMs"].orEmpty().associate { it.id to (it.json.toLongOrNull() ?: 0) }
         }
+    fun clock(id: String) = groups["stream"].orEmpty().find { it.id == id }?.json?.toLongOrNull()
+    val duration = clock("thinkingSince")?.let { since -> clock("thinkingUntil")?.minus(since) }
     val rows =
-        remember(entries, tools, active, text, thinking, thinkingMs) {
-            buildRows(entries, tools, active, text, thinking, thinkingMs)
+        remember(entries, tools, active, text, thinking, thinkingMs, duration) {
+            buildRows(entries, tools, active, text, thinking, thinkingMs, duration)
         }
     // 利用者が開閉した行: 「+key」は開いた、「-key」は閉じた。回転では保ち、Pi を切り替えたら忘れる。
     val open =
         rememberSaveable(
-            m.selected,
+            editor,
             saver =
                 listSaver<SnapshotStateList<String>, String>(
                     { it.toList() },
@@ -152,17 +165,17 @@ internal fun ChatScreen(
     // 実行中のツールと、考えている途中の内容は開いておく（終わると閉じる）。利用者が開閉したら、それに従う。
     fun isOpen(row: ChatRow) =
         when {
-            "+${row.key}" in open -> true
-            "-${row.key}" in open -> false
+            "+${row.expansionKey}" in open -> true
+            "-${row.expansionKey}" in open -> false
             else ->
                 row is ChatRow.Tool && row.state == ToolState.Running ||
                     row is ChatRow.Thinking && row.live && row.text.isNotBlank()
         }
     val toggle = { row: ChatRow ->
         val was = isOpen(row)
-        open.remove("+${row.key}")
-        open.remove("-${row.key}")
-        open.add((if (was) "-" else "+") + row.key)
+        open.remove("+${row.expansionKey}")
+        open.remove("-${row.expansionKey}")
+        open.add((if (was) "-" else "+") + row.expansionKey)
         Unit
     }
 
@@ -321,63 +334,124 @@ internal fun ChatScreen(
                                 ui.switched?.second,
                                 ui.switched?.first == switchId,
                             )
-                    val list = rememberLazyListState()
-                    // 履歴を遡っている間に届いた質問は画面の外に足される。回答するまで入力できないので、カード（最下段）へ戻す。
-                    val newest = questions.lastOrNull()?.id
-                    LaunchedEffect(newest) { if (newest != null) list.animateScrollToItem(0) }
-                    // 逆順のリスト。先頭（最下段）の固定の項目が見えている間は、増えた行のぶん上へ伸びる。
-                    LazyColumn(
-                        Modifier.weight(1f).testTag("chat"),
-                        list,
-                        reverseLayout = true,
-                        contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
-                    ) {
-                        item("bottom") { Spacer(Modifier.height(10.dp)) }
-                        if (pcPrompt != null && questions.isEmpty())
-                            item("pcPrompt") { PcCard(pcPrompt.str("title"), m.attachCommand()) }
-                        items(questions.asReversed(), key = { "question:${it.id}" }) { item ->
-                            val edit = editor?.let { m.answers[it, item.id] }
-                            if (edit != null && target != null)
-                                Box(Modifier.padding(top = 24.dp)) {
-                                    QuestionCard(
-                                        remember(item.json) { JSONObject(item.json) },
-                                        edit,
-                                        m.can(
-                                            Operation.Answer(
-                                                target,
-                                                JSONObject()
-                                                    .put("requestId", item.id)
-                                                    .put("cancelled", true)
-                                                    .toString(),
-                                            )
-                                        ),
-                                    ) { answer ->
-                                        m.answer(editor, item.id, edit, answer)
+                    val list = key(editor) { rememberLazyListState() }
+                    val scope = rememberCoroutineScope()
+                    var follow by rememberSaveable(editor) { mutableStateOf(true) }
+                    fun holdPosition() {
+                        follow = false
+                        list.requestScrollToItem(
+                            list.firstVisibleItemIndex,
+                            list.firstVisibleItemScrollOffset,
+                        )
+                    }
+                    val drag =
+                        remember(list) {
+                            object : NestedScrollConnection {
+                                override fun onPreScroll(
+                                    available: Offset,
+                                    source: NestedScrollSource,
+                                ): Offset {
+                                    if (available.y != 0f && source == NestedScrollSource.UserInput)
+                                        follow = false
+                                    return Offset.Zero
+                                }
+                            }
+                        }
+                    LaunchedEffect(list) {
+                        snapshotFlow { list.layoutInfo }
+                            .collect { info ->
+                                if (info.totalItemsCount == 0) return@collect
+                                if (!list.canScrollForward) follow = true
+                                else if (follow && !list.isScrollInProgress)
+                                    list.requestScrollToItem(info.totalItemsCount - 1)
+                            }
+                    }
+                    Box(Modifier.weight(1f)) {
+                        LazyColumn(
+                            Modifier.fillMaxSize().nestedScroll(drag).testTag("chat"),
+                            list,
+                            verticalArrangement = Arrangement.Bottom,
+                            contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
+                        ) {
+                            items(
+                                visible.size,
+                                key = {
+                                    val id = visible[it].key
+                                    // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
+                                    if (id == "live:text") "live:${entries.lastOrNull()?.id}"
+                                    else "row:$id"
+                                },
+                            ) { index ->
+                                val row = visible[index]
+                                Box(
+                                    Modifier.padding(
+                                        top = gap(visible.getOrNull(index - 1), row).dp
+                                    )
+                                ) {
+                                    RowView(
+                                        row,
+                                        if (row is ChatRow.Summary) "+${row.key}" in open
+                                        else isOpen(row),
+                                        onExpandDiff = ::holdPosition,
+                                        review =
+                                            { id: String -> show("review:$id") }.takeIf {
+                                                key != null
+                                            },
+                                    ) {
+                                        holdPosition()
+                                        if (row is ChatRow.Summary) {
+                                            if (!open.remove("+${row.key}")) open.add("+${row.key}")
+                                        } else if (runLinks.containsKey(row.key) && key != null)
+                                            show("agents:" + runLinks.getValue(row.key))
+                                        else toggle(row)
                                     }
                                 }
+                            }
+                            if (pcPrompt != null && questions.isEmpty())
+                                item("pcPrompt") {
+                                    PcCard(pcPrompt.str("title"), m.attachCommand())
+                                }
+                            items(questions, key = { "question:${it.id}" }) { item ->
+                                val edit = editor?.let { m.answers[it, item.id] }
+                                if (edit != null && target != null)
+                                    Box(Modifier.padding(top = 24.dp)) {
+                                        QuestionCard(
+                                            remember(item.json) { JSONObject(item.json) },
+                                            edit,
+                                            m.can(
+                                                Operation.Answer(
+                                                    target,
+                                                    JSONObject()
+                                                        .put("requestId", item.id)
+                                                        .put("cancelled", true)
+                                                        .toString(),
+                                                )
+                                            ),
+                                        ) { answer ->
+                                            m.answer(editor, item.id, edit, answer)
+                                        }
+                                    }
+                            }
+                            item("bottom") { Spacer(Modifier.height(10.dp)) }
                         }
-                        items(
-                            visible.size,
-                            key = {
-                                val id = visible[visible.size - 1 - it].key
-                                // 別の逐次回答に切り替われば、同じ PC パスでもタイルを作り直す。
-                                if (id == "live:text") "live:${entries.lastOrNull()?.id}"
-                                else "row:$id"
-                            },
-                        ) { n ->
-                            val index = visible.size - 1 - n
-                            val row = visible[index]
-                            Box(Modifier.padding(top = gap(visible.getOrNull(index - 1), row).dp)) {
-                                RowView(
-                                    row,
-                                    if (row is ChatRow.Summary) "+${row.key}" in open
-                                    else isOpen(row),
+                        if (list.canScrollForward) {
+                            IconButton(
+                                onClick = {
+                                    scope.launch {
+                                        list.jumpToLatest()
+                                        follow = true
+                                    }
+                                },
+                                modifier =
+                                    Modifier.align(Alignment.BottomEnd)
+                                        .padding(end = 16.dp, bottom = 8.dp),
+                            ) {
+                                Box(
+                                    Modifier.size(36.dp)
+                                        .background(pi.surfaceStrong, RoundedCornerShape(50)),
+                                    Alignment.Center,
                                 ) {
-                                    if (row is ChatRow.Summary) {
-                                        if (!open.remove("+${row.key}")) open.add("+${row.key}")
-                                    } else if (runLinks.containsKey(row.key) && key != null)
-                                        show("agents:" + runLinks.getValue(row.key))
-                                    else toggle(row)
+                                    Icon(Icons.Down, "最新の位置へ", Modifier.size(16.dp), pi.text)
                                 }
                             }
                         }
@@ -429,6 +503,8 @@ internal fun ChatScreen(
                 else ->
                     if (name.startsWith("agents:"))
                         AgentsPage(m, at, close, name.removePrefix("agents:"))
+                    else if (name.startsWith("review:"))
+                        ReviewPage(m, at, close, name.removePrefix("review:"))
                     else SessionSheet(m, at, name, { ui.sheet = it to at }, close)
             }
         }
@@ -464,7 +540,21 @@ private fun Header(
         Modifier.height(52.dp).padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconAction(Icons.Menu, "Instance 一覧を開く", openDrawer, tint = pi.text)
+        IconButton(
+            onClick = openDrawer,
+            modifier = Modifier.semantics { contentDescription = "Instance 一覧を開く" },
+        ) {
+            val color = pi.text
+            Canvas(Modifier.size(24.dp)) {
+                for (y in listOf(6.dp, 12.dp, 18.dp)) drawLine(
+                    color,
+                    androidx.compose.ui.geometry.Offset(3.dp.toPx(), y.toPx()),
+                    androidx.compose.ui.geometry.Offset(21.dp.toPx(), y.toPx()),
+                    2.dp.toPx(),
+                    androidx.compose.ui.graphics.StrokeCap.Round,
+                )
+            }
+        }
         Text(
             if (m.selected == null) "PiMate" else title(session, cwd),
             Modifier.weight(1f).padding(start = 2.dp).semantics { heading() },
@@ -518,6 +608,10 @@ private fun Header(
                         style = Type.caption,
                         maxLines = 1,
                     )
+                }
+                else -> {
+                    Dot(pi.textTertiary, 6.dp)
+                    Text("待機", color = pi.textSecondary, style = Type.caption)
                 }
             }
         }
@@ -629,7 +723,13 @@ internal fun PcCard(title: String, command: String?) {
 }
 
 @Composable
-internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
+internal fun RowView(
+    row: ChatRow,
+    open: Boolean,
+    review: ((String) -> Unit)? = null,
+    onExpandDiff: () -> Unit = {},
+    toggle: () -> Unit,
+) {
     when (row) {
         is ChatRow.User ->
             Column(Modifier.fillMaxWidth(), Arrangement.spacedBy(6.dp), Alignment.End) {
@@ -655,15 +755,15 @@ internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
                     }
             }
         is ChatRow.Summary ->
-            Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
+                if (row.reviewTurn != null && review != null)
+                    TextAction(row.reviewLabel, { review(row.reviewTurn) })
+            }
         is ChatRow.Thinking ->
             Column {
                 Expander(
-                    when {
-                        row.live -> "考え中…"
-                        row.ms != null && row.ms >= 1000 -> "${seconds(row.ms)} 考えた"
-                        else -> "考えた"
-                    },
+                    thinkingLabel(row.live, row.ms),
                     open,
                     toggle,
                     Modifier.fillMaxWidth().heightIn(min = 32.dp),
@@ -683,18 +783,16 @@ internal fun RowView(row: ChatRow, open: Boolean, toggle: () -> Unit) {
             }
         is ChatRow.Text ->
             Column {
-                Markdown(row.text, live = row.key == "live:text")
-                if (row.meta.isNotEmpty())
-                    Text(
-                        row.meta,
-                        Modifier.padding(top = 6.dp),
-                        pi.textSecondary,
-                        style = Type.meta,
-                    )
+                Markdown(
+                    row.text,
+                    live = row.key == "live:text",
+                    answer = row.key.takeUnless { it == "live:text" },
+                )
+                CopyAction(row.text, "回答全文をコピー（Markdown）")
             }
         is ChatRow.Tool ->
             Column {
-                ToolRow(row, open, toggle)
+                ToolRow(row, open, toggle, onExpandDiff)
                 // ツールが返した画像は、出力を畳んでいても見える。
                 if (row.pics.size > 0)
                     PicGrid(row.pics, Modifier.padding(start = 22.dp, top = 4.dp, bottom = 6.dp))
@@ -739,7 +837,12 @@ private fun Expander(
 
 /** ツール呼び出しの簡潔な行（32dp）。タップで出力を開く。 */
 @Composable
-private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
+private fun ToolRow(
+    row: ChatRow.Tool,
+    open: Boolean,
+    onClick: () -> Unit,
+    onExpandDiff: () -> Unit,
+) {
     val output =
         remember(row.output) {
             row.output
@@ -748,7 +851,7 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                 .let { if (it.size > 40) listOf("…") + it.takeLast(40) else it }
                 .joinToString("\n")
         }
-    val canOpen = output.isNotEmpty() || row.state == ToolState.Running
+    val canOpen = row.change != null || output.isNotEmpty() || row.state == ToolState.Running
     // 実行中は、始まってからの秒数を右に出す（開始時刻が分かるときだけ）。
     val running by
         produceState("", row.since) {
@@ -809,7 +912,8 @@ private fun ToolRow(row: ChatRow.Tool, open: Boolean, onClick: () -> Unit) {
                     pi.textSecondary,
                 )
         }
-        if (open && canOpen)
+        if (open && row.change != null) ChangeDiff(row.change, onExpandDiff)
+        else if (open && canOpen)
             SelectionContainer {
                 Text(
                     output.ifEmpty { "出力を待っています…" },

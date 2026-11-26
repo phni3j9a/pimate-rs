@@ -503,12 +503,6 @@ internal fun UsageSheet(m: SessionModel, key: EditorKey, close: () -> Unit) {
                 UsageBar(w.usedPercent, "$name $label の利用枠、$reset")
             }
         }
-        Text(
-            "この PC の Pi（バックグラウンドのサブエージェントを含む）の最新の応答から取得します。他の端末での利用は、次の応答まで反映されません",
-            Modifier.padding(top = 20.dp),
-            pi.textTertiary,
-            style = Type.caption,
-        )
     }
 }
 
