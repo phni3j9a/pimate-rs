@@ -44,10 +44,7 @@ struct Drawer: View {
                     Button { newPi = true } label: { HStack(spacing: 4) { mark("lucide-plus", 16); Text("新しい Pi") }.modifier(PiFont(.body)).padding(.horizontal, 14).padding(.vertical, 7).foregroundStyle(PiTheme.background).background(PiTheme.accent, in: Capsule()).frame(minHeight: 44) }.accessibilityLabel("新しい Pi")
                 }.padding(.horizontal, 20).padding(.bottom, 16).background(PiTheme.background)
             }.sheet(isPresented: $newPi) {
-                NavigationStack {
-                    NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
-                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { newPi = false } } }
-                }
+                NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
             }.toolbar {
                 ToolbarItem(placement: .topBarTrailing) { Button("マシンを追加", systemImage: "plus") { pair = true } }
             }.sheet(isPresented: $pair) {

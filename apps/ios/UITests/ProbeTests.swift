@@ -331,7 +331,7 @@ extension ProbeTests {
         path.typeText("\n")
         tap(app.descendants(matching: .any)["spawn-model"].firstMatch)
         XCTAssertTrue(button("Claude Opus 5.5 · medium").waitForExistence(timeout: 10)); shot("Spawn-Models")
-        app.buttons["すべて"].tap(); let search = app.textFields["モデルを検索"]; search.tap(); search.typeText("gemini")
+        app.buttons["すべて"].tap(); let search = app.textFields["モデルを検索"]; search.tap(); search.typeText("google/gemini-3-pro")
         XCTAssertTrue(button("google/gemini-3-pro").exists); XCTAssertFalse(button("anthropic/claude-opus").exists)
         try popSheetRoute(app, from: "モデル", to: "新しい Pi"); app.buttons["閉じる"].tap(); tap(app.buttons["pi-main"])
         XCTAssertTrue(app.buttons["GitHub"].waitForExistence(timeout: 12)); app.buttons["GitHub"].tap()

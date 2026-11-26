@@ -48,10 +48,7 @@ struct Probe: View {
                         ContentUnavailableView { Label("Pi を選んでください", systemImage: "sidebar.left") } actions: {
                             Button("新しい Pi を起動") { newPi = true }
                         }.sheet(isPresented: $newPi) {
-                            NavigationStack {
-                                NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
-                                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { newPi = false } } }
-                            }
+                            NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
                         }
                     }
                 }

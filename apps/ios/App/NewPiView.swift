@@ -4,18 +4,33 @@ struct NewPiView: View {
     let model: SessionModel, select: (String, String) -> Void
     @State private var host: String
     @State private var busy = false
+    @Environment(\.dismiss) private var dismiss
+    @State private var loaded: SpawnCatalog?
     private var settings = PiSettings()
+    private var rows: Rows? { model.rows[host] }
+    private var generation: UUID? { rows?.catalogGeneration }
     init(model: SessionModel, initial: String, select: @escaping (String, String) -> Void) {
         self.model = model; self.select = select; _host = State(initialValue: initial)
     }
     var body: some View {
-        SpawnFields(model: model, form: SpawnForm(host: host, askTool: settings.askTool), busy: $busy, select: select) {
-            Section("マシン") {
-                Picker("起動先", selection: $host) {
-                    ForEach(model.hosts, id: \.id) { Text($0.displayName(in: model.hosts)).tag($0.id) }
-                }.disabled(busy)
-            }
-        }.id(host).navigationTitle("新しい Pi").navigationBarTitleDisplayMode(.inline).interactiveDismissDisabled(busy)
+        NavigationStack {
+            SpawnFields(model: model, form: SpawnForm(host: host, askTool: settings.askTool), busy: $busy,
+                        catalog: loaded?.value(for: generation),
+                        loadingModels: rows?.machineOnline == true && (generation == nil || loaded?.generation != generation), select: select) {
+                Section("マシン") {
+                    Picker("起動先", selection: $host) {
+                        ForEach(model.hosts, id: \.id) { Text($0.displayName(in: model.hosts)).tag($0.id) }
+                    }.disabled(busy)
+                }
+            }.id(host).navigationTitle("新しい Pi").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() }.disabled(busy) } }
+        }.interactiveDismissDisabled(busy).task(id: generation) {
+            loaded = nil
+            guard let generation else { return }
+            let result = try? await model.hostModels(host)
+            guard !Task.isCancelled, generation == self.generation else { return }
+            loaded = SpawnCatalog(generation: generation, payload: result)
+        }
     }
 }
 
@@ -23,20 +38,20 @@ private struct SpawnFields<HostPicker: View>: View {
     let model: SessionModel
     @State var form: SpawnForm
     @Binding var busy: Bool
+    let catalog: Object?, loadingModels: Bool
     let select: (String, String) -> Void
     @ViewBuilder var hostPicker: () -> HostPicker
     @State private var folders: [Object] = []
     @State private var home = ""
-    @State private var catalog: Object = [:]
     @State private var all = false
     @State private var query = ""
     @FocusState private var editingPath: Bool
     @AppStorage("askTool") private var savedAsk = false
-    private var models: [Object] { catalog.list("models") }
+    private var models: [Object] { catalog?.list("models") ?? [] }
     private func same(_ a: Object, _ b: Object?) -> Bool { a.str("provider") == b?.str("provider") && a.str("id") == b?.str("id") }
     private var split: FolderPrefix? { editingPath && rows?.machineOnline == true && rows?.machineInfo["dirs"] as? Bool == true ? splitFolderPath(text: form.cwd) : nil }
     private var defaultLabel: String {
-        let saved = catalog.obj("default"), ref = saved.obj("model"), entry = models.first { same($0, ref) }
+        let saved = catalog?.obj("default") ?? [:], ref = saved.obj("model"), entry = models.first { same($0, ref) }
         let name = entry?.str("name") ?? "", thinking = saved.str("thinking")
         guard !ref.str("id").isEmpty else { return "Pi の既定" }
         let level = thinking.isEmpty || thinking == "off" || (entry?["thinkingLevels"] as? [String])?.count == 1 ? "" : " · " + thinking
@@ -71,15 +86,16 @@ private struct SpawnFields<HostPicker: View>: View {
             Section("モデル") {
                 NavigationLink {
                     List {
-                        let favorites = catalog.list("scoped")
+                        let favorites = catalog?.list("scoped") ?? []
+                        let term = models.count > 6 ? query.trimmingCharacters(in: .whitespacesAndNewlines) : ""
                         if !favorites.isEmpty {
                             Picker("表示するモデル", selection: $all) { Text("お気に入り").tag(false); Text("すべて").tag(true) }.pickerStyle(.segmented)
                         }
                         if models.count > 6 { TextField("モデルを検索", text: $query).textInputAutocapitalization(.never).autocorrectionDisabled() }
-                        if query.isEmpty { Button(defaultLabel) { form.model = nil; form.thinking = nil } }
+                        if term.isEmpty { Button(defaultLabel) { form.model = nil; form.thinking = nil } }
                         let shown = models.indices.filter { i in
                             let m = models[i]
-                            return (favorites.isEmpty || all || favorites.contains { same($0, m) }) && (query.isEmpty || [m.str("provider"), m.str("id"), m.str("name")].joined(separator: " ").localizedCaseInsensitiveContains(query))
+                            return (favorites.isEmpty || all || favorites.contains { same($0, m) }) && (term.isEmpty || (m.str("provider") + "/" + m.str("id") + " " + m.str("name")).localizedCaseInsensitiveContains(term))
                         }
                         ForEach(shown, id: \.self) { i in
                             let m = models[i]
@@ -87,8 +103,10 @@ private struct SpawnFields<HostPicker: View>: View {
                                 HStack { Text(m.str("provider") + "/" + m.str("id")); if same(m, form.model) { SwiftUI.Image(systemName: "checkmark") } }
                             }
                         }
-                        if shown.isEmpty { Text("一致するモデルはありません").foregroundStyle(.secondary) }
-                    }.navigationTitle("モデル")
+                        if loadingModels { ProgressView("モデルを読み込み中…") }
+                        else if catalog == nil { Text("モデル一覧を取得できません。起動時の設定: " + (form.model?.str("id") ?? defaultLabel)).foregroundStyle(.secondary) }
+                        else if shown.isEmpty { Text("一致するモデルはありません").foregroundStyle(.secondary) }
+                    }.navigationTitle("モデル").onChange(of: models.count > 6) { _, searchable in if !searchable { query = "" } }
                 } label: { LabeledContent("モデル", value: form.model?.str("id") ?? defaultLabel) }.accessibilityIdentifier("spawn-model")
                 if let levels = models.first(where: { $0.str("id") == form.model?.str("id") && $0.str("provider") == form.model?.str("provider") })?["thinkingLevels"] as? [String], levels.count > 1 {
                     Picker("Thinking", selection: $form.thinking) { Text("既定").tag(String?.none); ForEach(levels, id: \.self) { Text($0).tag(Optional($0)) } }
@@ -121,8 +139,6 @@ private struct SpawnFields<HostPicker: View>: View {
                 let result = try await model.machineRequest(form.host, .folders); try Task.checkCancellation()
                 home = result.str("home"); folders = result.list("folders"); if form.cwd.isEmpty { choose(home) }
             } catch { if !Task.isCancelled { note = "最近のフォルダを取得できません。パスを直接入力できます。" } }
-            do { let catalog = try await model.hostModels(form.host); try Task.checkCancellation(); self.catalog = catalog ?? [:] }
-            catch { if !Task.isCancelled { note += " モデル一覧を取得できません。PC の既定を利用できます。" } }
         }.task(id: split.map { Data($0.parent.utf8) }) {
             guard let parent = split?.parent else { fetchedParent = ""; return }
             do {
@@ -134,7 +150,15 @@ private struct SpawnFields<HostPicker: View>: View {
     }
 }
 
+struct SpawnCatalog {
+    let generation: UUID, payload: Object?
+    func value(for connection: UUID?) -> Object? { connection == generation ? payload : nil }
+}
+
 extension Rows {
+    var catalogGeneration: UUID? {
+        machineOnline && groups["host"]?.first(where: { $0.id == "listKnown" })?.json == "true" ? connectionGeneration : nil
+    }
     var machineInfo: Object { groups["host"]?.first { $0.id == "info" }?.object ?? [:] }
     var machineOnline: Bool { groups["host"]?.first { $0.id == "connection" }?.string == "connected" }
 }

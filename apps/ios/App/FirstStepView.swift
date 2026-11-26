@@ -35,11 +35,7 @@ struct FirstStepView: View {
                 Button("一覧を開く", action: close).frame(minHeight: 44)
             }.padding(.horizontal, 20).padding(.vertical, 6).background(PiTheme.background)
         }.sheet(isPresented: $newPi) {
-            NavigationStack {
-                NewPiView(model: model, initial: host.id, select: select).toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("閉じる") { newPi = false } }
-                }
-            }
+            NewPiView(model: model, initial: host.id, select: select)
         }
     }
 }
