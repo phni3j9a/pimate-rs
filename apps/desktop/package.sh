@@ -11,7 +11,7 @@ if [[ $# == 0 ]]; then
 else
   cp "$1" "$stage/notices/crates.txt"
 fi
-cp LICENSE "$stage/notices/"
+cp LICENSE apps/ios/App/Lucide-LICENSE.txt "$stage/notices/"
 cp "$(rustc --print sysroot)/share/doc/rust/COPYRIGHT-library.html" "$stage/notices/"
 case $(uname -s) in
 Darwin)

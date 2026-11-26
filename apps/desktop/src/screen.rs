@@ -43,7 +43,21 @@ macro_rules! mobile_mark {
         ))
     };
 }
+// 同名のテーマ資産を差し替え、ブランドとウィンドウ装飾はそのまま使う。
 const MARKS: &[(&str, &[u8])] = &[
+    (
+        "icons/search.svg",
+        include_bytes!("screen/lucide/search.svg"),
+    ),
+    ("icons/bell.svg", include_bytes!("screen/lucide/bell.svg")),
+    ("icons/side.svg", include_bytes!("screen/lucide/side.svg")),
+    ("icons/copy.svg", include_bytes!("screen/lucide/copy.svg")),
+    ("icons/diff.svg", include_bytes!("screen/lucide/diff.svg")),
+    ("icons/x.svg", include_bytes!("screen/lucide/x.svg")),
+    (
+        "icons/circle-x.svg",
+        include_bytes!("screen/lucide/circle-x.svg"),
+    ),
     ("icons/grok-bot.svg", mobile_mark!("grok-bot")),
     ("icons/laptop.svg", mobile_mark!("lucide-monitor")),
     ("icons/gear.svg", mobile_mark!("lucide-settings")),
