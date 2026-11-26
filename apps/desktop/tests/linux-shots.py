@@ -5,12 +5,19 @@
 命令: snap NAME / click X Y / rclick X Y / dclick X Y / move X Y / drag X1 Y1 X2 Y2 / wheel N /
 key ctrl+k / type TEXT / copy TEXT / copylink（ペアリングのリンク）/ gs SCHEMA KEY VALUE / sleep S / sh CMD / quit
 座標は仮想モニター（MONITOR、既定 1280x800）の画素。隔離した GNOME の中だけを操作する。
+OUT は命令（sh を含む）を読む場所なので、自分の所有で権限 700 のディレクトリに限る。
 """
 import os, subprocess, sys, time
 from pathlib import Path
 import dbus
 assert os.environ['XDG_RUNTIME_DIR'] == str(Path.home()/'run')
 out = Path(sys.argv[1])
+# 一時 HOME と名前空間はファイルの権限を隔離しない。ほかの利用者が FIFO を差し替えられる
+# 場所からは命令を読まない。確かめたディレクトリを開いたまま、以後の FIFO はその fd から開く。
+outfd = os.open(out, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+owner = os.fstat(outfd)
+if owner.st_uid != os.getuid() or owner.st_mode & 0o077:
+    sys.exit(f'{out}: must be your own directory with mode 700 (commands are read from it)')
 bus = dbus.SessionBus()
 remote = 'org.gnome.Mutter.RemoteDesktop'
 root = dbus.Interface(bus.get_object(remote, '/org/gnome/Mutter/RemoteDesktop'), remote)
@@ -66,18 +73,23 @@ def run(line):
     elif c == 'sh': subprocess.run(line.split(' ', 1)[1], shell=True)
     elif c == 'quit': raise SystemExit
     else: print('unknown', line, flush=True)
-fifo, ack = out/'cmd', out/'ack'
-for p in (fifo, ack):
-    p.unlink(missing_ok=True); os.mkfifo(p)
-(out/'ready').touch()
+def channel(name, flags):
+    return open(os.open(name, flags, dir_fd=outfd), 'r' if flags == os.O_RDONLY else 'w')
+for name in ('cmd', 'ack'):
+    try: os.unlink(name, dir_fd=outfd)
+    except FileNotFoundError: pass
+    os.mkfifo(name, 0o600, dir_fd=outfd)
+os.close(os.open('ready', os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=outfd))
+def reply(msg):
+    with channel('ack', os.O_WRONLY) as f: f.write(msg + '\n')
 while True:
-    with open(fifo) as f: lines = f.read().splitlines()
+    with channel('cmd', os.O_RDONLY) as f: lines = f.read().splitlines()
     msg = 'ok'
     try:
         for line in lines: run(line)
     except SystemExit:
-        open(ack, 'w').write('bye\n'); break
+        reply('bye'); break
     except Exception as e:
         msg = f'error: {e!r}'
-    open(ack, 'w').write(msg + '\n')
+    reply(msg)
 seat.Stop()

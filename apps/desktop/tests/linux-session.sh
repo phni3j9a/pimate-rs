@@ -12,7 +12,9 @@ if [[ ${1:-} != inner ]]; then
     desktop=$(realpath "$debug/pimate-desktop")
   fi
   host=$(realpath "$debug/pimate"); [[ -x $host && -x $desktop ]]
-  mkdir -p "$2"; out=$(realpath "$2"); home=$(mktemp -d); trap 'rm -rf -- "$home"' EXIT
+  # shots は出力先から命令を読むので、新しく作るときは自分だけのものにする（既存なら linux-shots.py が確かめる）。
+  if [[ $1 == shots ]]; then mkdir -p -m 700 "$2"; else mkdir -p "$2"; fi
+  out=$(realpath "$2"); home=$(mktemp -d); trap 'rm -rf -- "$home"' EXIT
   mkdir -m700 "$home/run" "$home/Desktop" "$home/tmp"
   # shots: 撮影用。OUTPUT_DIRECTORY/cmd に linux-shots.py の命令を書いて操作する（SESSION_SECONDS で長さ）。
   limit=150; [[ $1 != shots ]] || limit=${SESSION_SECONDS:-1800}
@@ -57,9 +59,10 @@ WAYLAND_DEBUG=client "$desktop" --demo >app.log 2>&1 & app=$!
 sleep 4; kill -0 "$app"
 if [[ $mode == shots ]]; then
   cp demo.log "$out/demo.log"
-  python3 "$here/linux-shots.py" "$out" || :
+  # ドライバーが起動できなかったら（D-Bus・出力先の権限など）、ログを残して失敗で終わる。
+  status=0; python3 "$here/linux-shots.py" "$out" || status=$?
   cp app.log "$out/app.log"
-  exit 0
+  exit "$status"
 fi
 python3 "$here/linux-drive.py" "$mode" "$out"
 [[ $mode != package ]] || exit 0

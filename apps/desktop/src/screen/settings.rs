@@ -58,6 +58,8 @@ impl Desktop {
     pub(super) fn init_navigation(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Navigation {
         #[cfg(target_os = "macos")]
         let app = cx.weak_entity();
+        // 設定は起動時に読み終えている（main.rs の load_saved）。
+        let pref_error = self.pref_error;
         w.use_keyed_state("desktop-other-navigation", cx, |_w, _cx| {
             #[cfg(target_os = "macos")]
             {
@@ -76,9 +78,6 @@ impl Desktop {
                 .detach();
             }
 
-            let settings = Settings::path().and_then(|p| Settings::load(&p));
-            let pref_error = settings.is_err();
-            self.state.settings = settings.unwrap_or_default();
             Nav {
                 pref_error,
                 ..Default::default()

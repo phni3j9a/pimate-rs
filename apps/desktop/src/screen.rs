@@ -918,16 +918,30 @@ mod tests {
     }
     #[gpui::test]
     fn panes_follow_the_window_width(cx: &mut gpui::TestAppContext) {
+        use crate::state::{FontSize, Settings};
         let (desktop, w, _socket) = open_chat(cx);
+        // Desktop::new reads no settings file; every text size the user can choose is set here.
+        let fonts: [(&str, fn(&mut Settings)); 3] = [
+            ("small", |s| s.font_size = FontSize::Small),
+            ("standard", |s| s.font_size = FontSize::Standard),
+            ("large", |s| s.font_size = FontSize::Large),
+        ];
         // debug_bounds keeps selectors from earlier frames, so judge by where the header starts.
-        for (width, docked) in [(1280., true), (900., true), (620., false), (480., false)] {
+        for ((font, set), (width, docked)) in fonts.into_iter().flat_map(|font| {
+            [(1280., true), (900., true), (620., false), (480., false)].map(|at| (font, at))
+        }) {
+            desktop.update(w, |d, cx| {
+                set(&mut d.state.settings);
+                cx.notify()
+            });
             w.simulate_resize(size(px(width), px(800.)));
             w.run_until_parked();
+            let at = format!("{font} {width}");
             // The header stays one line: fixed height, nothing wrapped below or cut off.
             let header = w.debug_bounds("chat-header").unwrap();
-            assert_eq!(header.size.height, px(52.), "{width}");
-            assert_eq!(header.left(), px(if docked { 264. } else { 0. }), "{width}");
-            assert_eq!(header.right(), px(width), "{width}");
+            assert_eq!(header.size.height, px(52.), "{at}");
+            assert_eq!(header.left(), px(if docked { 264. } else { 0. }), "{at}");
+            assert_eq!(header.right(), px(width), "{at}");
             let mut parts = vec!["chat-title", "nav-github"];
             if docked {
                 let side = w.debug_bounds("sidebar").unwrap();
@@ -943,20 +957,16 @@ mod tests {
                         && b.left() >= header.left()
                         && b.right() <= header.right()
                         && b.size.width > px(0.),
-                    "{part} at {width}: {b:?}"
+                    "{part} at {at}: {b:?}"
                 );
             }
             // The conversation keeps a 720px column (plus its 16px gutters) in the middle.
             let column = w.debug_bounds("chat-column").unwrap();
-            assert_eq!(
-                column.size.width,
-                header.size.width.min(px(752.)),
-                "{width}"
-            );
+            assert_eq!(column.size.width, header.size.width.min(px(752.)), "{at}");
             assert_eq!(
                 column.left() - header.left(),
                 header.right() - column.right(),
-                "{width}"
+                "{at}"
             );
         }
         // Below 760px the list overlays the conversation; a click outside puts it away.
@@ -972,6 +982,26 @@ mod tests {
                 "(1) a-rather-long-folder-name-for-the-header — PiMate"
             );
         });
+    }
+    #[gpui::test]
+    fn opening_a_chat_keeps_the_reason_a_registration_failed(cx: &mut gpui::TestAppContext) {
+        let (desktop, w, _socket) = open_chat(cx);
+        for (message, kept) in [
+            ("登録できません: expired", true),
+            ("有効なペアリングリンクをコピーしてください", true),
+            (crate::PAIRED, false),
+        ] {
+            desktop.update(w, |d, cx| {
+                d.state.registration.pair_message = message.into();
+                let host = d.hosts[0].id.clone();
+                d.select(host, "pi".into(), cx);
+                assert_eq!(
+                    !d.state.registration.message().is_empty(),
+                    kept,
+                    "{message}"
+                );
+            });
+        }
     }
     #[gpui::test]
     fn dragged_sidebar_width_is_used_within_its_range(cx: &mut gpui::TestAppContext) {

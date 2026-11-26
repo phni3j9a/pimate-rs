@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+const PAIRED: &str = "登録しました";
 struct Machine {
     registration: Host,
     conn: Arc<Connection>,
@@ -44,6 +45,8 @@ struct Desktop {
     sidebar_open: bool,
     /// ドラッグで変えたサイドバーの幅（px）。未設定なら既定の幅。
     sidebar_width: Option<f32>,
+    /// 起動時に設定ファイルを読めなかった（この起動中は既定値で動く）。
+    pref_error: bool,
     search: Option<(Entity<InputState>, Subscription)>,
     title: String,
 }
@@ -75,11 +78,21 @@ impl Desktop {
             scroll: screen::transcript(),
             sidebar_open: false,
             sidebar_width: None,
+            pref_error: false,
             search: None,
             title: String::new(),
         };
         app.reload(cx);
         app
+    }
+    /// 設定と覚えた幅を読む。起動時にだけ呼ぶ（試験は利用者のファイルを読まず、既定値で動く）。
+    fn load_saved(&mut self) {
+        let settings = state::Settings::path().and_then(|p| state::Settings::load(&p));
+        self.pref_error = settings.is_err();
+        self.state.settings = settings.unwrap_or_default();
+        self.sidebar_width = state::layout_path()
+            .ok()
+            .and_then(|p| state::load_sidebar_width(&p));
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.state.registration.listing_known = false;
@@ -241,7 +254,7 @@ impl Desktop {
                     .registration
                     .paired(&h.id, first && self.hosts.is_empty());
                 self.machines.remove(&h.id);
-                self.state.registration.pair_message = "登録しました".into();
+                self.state.registration.pair_message = PAIRED.into();
                 self.reload(cx)
             }
             Err(Error::OutcomeUnknown) => {
@@ -269,8 +282,10 @@ impl Desktop {
             self.input = None;
             self.selected = Some((h, i));
             self.sidebar_open = false;
-            // 「登録しました」は次の操作まで。失敗の知らせ（error・save_unknown）は残す。
-            self.state.registration.pair_message.clear();
+            // 「登録しました」は次の操作まで。登録できなかった理由は、会話を開いても残す。
+            if self.state.registration.pair_message == PAIRED {
+                self.state.registration.pair_message.clear();
+            }
             self.notice.clear();
             cx.notify()
         }
@@ -428,10 +443,7 @@ fn main() {
                 let view = cx.new(|cx| {
                     let mut app =
                         Desktop::new(Arc::new(Core::new(Arc::new(store::Store::open()))), w, cx);
-                    // 覚えた幅はここでだけ読む（試験は利用者のファイルに左右されない）。
-                    app.sidebar_width = state::layout_path()
-                        .ok()
-                        .and_then(|p| state::load_sidebar_width(&p));
+                    app.load_saved();
                     app
                 });
                 cx.new(|cx| Root::new(view, w, cx))
