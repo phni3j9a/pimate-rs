@@ -74,7 +74,11 @@ class RemainingJourney {
         find(hasText("このスマホ", substring = true))
         shot("Machine-Revoke-Detail")
         find(hasText("このマシンを削除") and hasClickAction()).performScrollTo().performClick()
-        find(hasText("キャンセル")).assertIsFocused()
+        find(hasText("キャンセル") and isFocused())
+        inst.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)
+        ui.waitUntil { ui.onAllNodesWithText("キャンセル").fetchSemanticsNodes().isEmpty() }
+        tap("このマシンを削除")
+        find(hasText("キャンセル") and isFocused())
         shot("Machine-Revoke-Confirm")
         tap("削除")
         ui.waitUntil(20000) { model.hosts.isEmpty() }

@@ -10,7 +10,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.InputMode
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInputModeManager
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -109,6 +111,7 @@ internal fun ConfirmAction(
 }
 
 @Composable
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 internal fun ConfirmDialog(
     title: String,
     detail: String,
@@ -125,7 +128,13 @@ internal fun ConfirmDialog(
         dismissButton = {
             val cancel = remember { FocusRequester() }
             TextAction("キャンセル", dismiss, Modifier.focusRequester(cancel))
-            LaunchedEffect(Unit) { cancel.requestFocus() }
+            val input = LocalInputModeManager.current
+            LaunchedEffect(Unit) {
+                // Touch-mode buttons cannot take keyboard focus until the dialog is attached.
+                withFrameNanos {}
+                input.requestInputMode(InputMode.Keyboard)
+                cancel.requestFocus()
+            }
         },
         containerColor = pi.background,
     )
