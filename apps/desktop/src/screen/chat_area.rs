@@ -75,7 +75,7 @@ impl Desktop {
                 |_, _| Default::default(),
             ),
         };
-        let viewer = media
+        let mut viewer = media
             .panel(p, w, cx)
             .map(|panel| (media.viewer.clone(), panel))
             .or_else(|| {
@@ -94,7 +94,13 @@ impl Desktop {
         {
             if shutdown {
                 self.confirm_shutdown(&page, w, cx)
-            } else if viewer.is_none() {
+            } else {
+                if let Some((viewer, _)) = viewer.take() {
+                    viewer.update(cx, |v, cx| {
+                        *v = Default::default();
+                        cx.notify();
+                    });
+                }
                 inspector.update(cx, |s, cx| s.load(page.clone(), None, true, cx));
             }
         }

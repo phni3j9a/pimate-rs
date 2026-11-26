@@ -295,7 +295,7 @@ impl Desktop {
                                     app.select(host.clone(), pi.clone(), cx);
                                 }
                                 if app.selected.as_ref() == Some(&(host.clone(), pi.clone())) {
-                                    app.state.close_page();
+                                    app.state.sheet = None;
                                     app.row_action =
                                         Some((host.clone(), pi.clone(), start, shutdown));
                                     cx.notify();
@@ -1981,19 +1981,56 @@ mod key_tests {
         press(w, "escape");
         assert!(w.update(|w, cx| app.read(cx).front(w, cx).is_none()));
     }
+    fn open_github_table_detail(
+        app: &gpui::Entity<super::Desktop>,
+        w: &mut gpui::VisualTestContext,
+    ) -> super::Navigation {
+        app.update(w, |d, cx| {
+            d.select_github(pimate_protocol::GitHubQuery::Pr { number: 93 }, cx);
+            let github = d.chat_keys.as_ref().unwrap().1.read(cx).github.clone().unwrap();
+            github.update(cx, |n, _| {
+                n.github.loaded = true;
+                n.github.data = Some(serde_json::json!({"item": {"kind":"pr", "number":93, "title":"detail", "body":"| A | B |\n|---|---|\n| 1 | 2 |"}}));
+            });
+            github
+        })
+    }
+    #[gpui::test]
+    fn sidebar_review_replaces_open_github_viewer_without_invalidating_its_page(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        fixture_pi_row(&app, w);
+        w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        let github = open_github_table_detail(&app, w);
+        let table = wait(w, "open-markdown-table");
+        w.simulate_click(table, Default::default());
+        wait(w, "close-media");
+        let row = wait(w, "context-pi-pi");
+        w.simulate_mouse_down(row, gpui::MouseButton::Right, Default::default());
+        press(w, "up up enter"); // The review entry precedes shutdown.
+        assert!(w.update(|w, cx| {
+            let d = app.read(cx);
+            d.front(w, cx) == Some(keys::Overlay::Inspector)
+                && d.chat_keys
+                    .as_ref()
+                    .is_some_and(|(_, ins)| ins.read(cx).tab == Some(super::Tab::Review))
+        }));
+        app.read_with(w, |d, cx| {
+            let n = github.read(cx);
+            assert!(n.page.as_ref().unwrap().visible(d));
+            assert!(n.github.viewer.as_ref().unwrap().read(cx).table.is_none());
+        });
+    }
     #[gpui::test]
     fn new_pi_keeps_github_detail_and_review_target(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| keys::init(cx));
         let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
-        app.update(w, |d, cx| {
-            d.select_github(pimate_protocol::GitHubQuery::Pr { number: 93 }, cx)
-        });
-        let (page, ins, github) = app.read_with(w, |d, cx| {
-            let (p, i) = d.chat_keys.as_ref().unwrap();
-            (p.clone(), i.clone(), i.read(cx).github.clone().unwrap())
-        });
-        app.update(w,|_,cx|{ github.update(cx,|n,_|{ n.github.loaded=true; n.github.data=Some(serde_json::json!({"item":{"kind":"pr","number":93,"title":"detail","body":"| A | B |\n|---|---|\n| 1 | 2 |"}})); });cx.notify(); });
+        let github = open_github_table_detail(&app, w);
+        let (page, ins) = app.read_with(w, |d, _| d.chat_keys.as_ref().unwrap().clone());
         press(w, "secondary-n");
         let modal = app.read_with(w, |d, cx| {
             d.navigation
