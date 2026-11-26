@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.AnnotatedString
@@ -86,16 +87,23 @@ internal object Icons {
     val Laptop = icon(rect(4f, 5f, 16f, 11f, 1.5f) + "M2 19h20", 1.9f)
     val Server =
         icon(rect(3f, 4f, 18f, 7f, 2f) + rect(3f, 13f, 18f, 7f, 2f) + "M7 7.5h.01M7 16.5h.01", 1.9f)
+    // 設定の歯車は TS 版と同じ Lucide 1.72.0 の settings（ISC、assets/licenses）。
     val Gear =
         icon(
             circle(12f, 12f, 3f) +
-                "M12 2.5v3M12 18.5v3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M2.5 12h3M18.5 12h3" +
-                "M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1",
+                "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915" +
+                " 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033" +
+                " 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915" +
+                " 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051" +
+                "a2.34 2.34 0 0 0 3.319-1.915",
             1.8f,
         )
     val Copy = icon(rect(9f, 9f, 11f, 11f, 2f) + "M5 15V6a2 2 0 0 1 2-2h9")
     val Check = icon("M5 12.5l4.5 4.5L19 7.5")
     val Right = icon("M9 6l6 6-6 6")
+    // アプリの外（ブラウザ）で開く印。
+    val External =
+        icon("M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6")
     val More = icon(fill = circle(5f, 12f, 1.6f) + circle(12f, 12f, 1.6f) + circle(19f, 12f, 1.6f))
     val Clock = icon(circle(12f, 12f, 9f) + "M12 7v5l3 2")
     val Swap = icon("M4 7h14l-3-3M20 17H6l3 3")
@@ -136,6 +144,16 @@ internal object Icons {
             "1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 " +
             "2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 " +
             "4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"
+        )
+    // GitHub のマーク（単色のみ）。設定の GitHub へのリンクにだけ置く。
+    val GitHub =
+        icon(
+            fill =
+                "M12 .297" +
+                "c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61" +
+                "C4.422 18.07 3.633 17.7 3.633 17.7" +
+                "c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57" +
+                "C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
         )
     val OpenAI =
         icon(
@@ -226,6 +244,7 @@ internal fun TextAction(
     enabled: Boolean = true,
     color: Color = pi.accentText,
     weight: FontWeight = FontWeight.SemiBold,
+    style: TextStyle = Type.body,
 ) {
     TextButton(
         onClick,
@@ -238,7 +257,7 @@ internal fun TextAction(
             ),
         contentPadding = PaddingValues(horizontal = 14.dp),
     ) {
-        Text(label, style = Type.body.copy(fontWeight = weight))
+        Text(label, style = style.copy(fontWeight = weight))
     }
 }
 
@@ -267,6 +286,7 @@ internal fun MarkColumn(height: Dp, content: @Composable BoxScope.() -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun PiSheet(close: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    val density = LocalDensity.current
     ModalBottomSheet(
         close,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -282,11 +302,14 @@ internal fun PiSheet(close: () -> Unit, content: @Composable ColumnScope.() -> U
             )
         },
     ) {
-        Column(
-            Modifier.verticalScroll(rememberScrollState())
-                .padding(start = gutter, end = gutter, bottom = 24.dp),
-            content = content,
-        )
+        // シートも別の窓なので、設定の文字サイズを引き継ぐ。
+        CompositionLocalProvider(LocalDensity provides density) {
+            Column(
+                Modifier.verticalScroll(rememberScrollState())
+                    .padding(start = gutter, end = gutter, bottom = 24.dp),
+                content = content,
+            )
+        }
     }
 }
 
@@ -307,11 +330,12 @@ internal fun Segment(
     selected: String?,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    // 設定の行の右に置く小さい版（幅は呼び出し側が決める）。
+    compact: Boolean = false,
     select: (String) -> Unit,
 ) {
     Row(
-        modifier
-            .fillMaxWidth()
+        (if (compact) modifier else modifier.fillMaxWidth())
             .background(pi.surfaceStrong, RoundedCornerShape(10.dp))
             .padding(3.dp)
             .selectableGroup()
@@ -320,10 +344,10 @@ internal fun Segment(
             val on = value == selected
             Box(
                 Modifier.weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(if (compact) 7.dp else 8.dp))
                     .background(if (on) pi.background else pi.surfaceStrong)
                     .selectable(on, enabled, Role.RadioButton) { if (!on) select(value) }
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = if (compact) 30.dp else 42.dp)
                     .padding(horizontal = 2.dp),
                 Alignment.Center,
             ) {
@@ -332,7 +356,7 @@ internal fun Segment(
                     color = if (on) pi.text else pi.textSecondary,
                     style =
                         Type.body.copy(
-                            fontSize = 13.sp,
+                            fontSize = if (compact) 12.sp else 13.sp,
                             fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
                         ),
                     maxLines = 1,
@@ -467,6 +491,8 @@ internal fun FullScreen(
     dark: Boolean = darkPalette,
     content: @Composable () -> Unit,
 ) {
+    // 別の窓の中では密度が端末の値に戻る。設定の文字サイズを引き継ぐ。
+    val density = LocalDensity.current
     Dialog(
         close,
         DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
@@ -496,6 +522,6 @@ internal fun FullScreen(
                 }
             }
         }
-        content()
+        CompositionLocalProvider(LocalDensity provides density, content = content)
     }
 }

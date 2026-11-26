@@ -1,0 +1,4 @@
+<resources>
+    <!-- 開発版は公開版（PiMate）と並べて入れるので名前で区別する。 -->
+    <string name="app_name">PiMate RS</string>
+</resources>

@@ -87,11 +87,16 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
     Column(Modifier.fillMaxSize().background(pi.background).safeDrawingPadding()) {
         if (onBack != null)
             Row(
-                Modifier.height(52.dp).padding(horizontal = 2.dp),
+                Modifier.height(52.dp).padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // ほかの画面のヘッダー（Page）と同じ位置・大きさ。
                 IconAction(Icons.Back, "戻る", onBack, tint = pi.text)
-                Text("マシンを追加", Modifier.semantics { heading() }, style = Type.header)
+                Text(
+                    "マシンを追加",
+                    Modifier.offset(x = (-2).dp).semantics { heading() },
+                    style = Type.sheet,
+                )
             }
         else Spacer(Modifier.height(36.dp))
         Column(

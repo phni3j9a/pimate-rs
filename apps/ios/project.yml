@@ -25,7 +25,8 @@ targets:
       PRODUCT_BUNDLE_IDENTIFIER: dev.pimate.app.rs.debug
       MARKETING_VERSION: 0.1.0
       CURRENT_PROJECT_VERSION: 1
-      INFOPLIST_KEY_CFBundleDisplayName: PiMate RS
+      INFOPLIST_KEY_CFBundleDisplayName: PiMate
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       INFOPLIST_KEY_UILaunchScreen_Generation: YES
       INFOPLIST_KEY_NSLocalNetworkUsageDescription: ペアリングしたマシンに接続します。
       INFOPLIST_KEY_NSCameraUsageDescription: PC に表示されたペアリング用 QR コードを読み取ります。
