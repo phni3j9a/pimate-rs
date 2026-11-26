@@ -51,7 +51,7 @@ struct UsageSheet: View {
                     let tokens = (context["tokens"] as? NSNumber)?.int64Value.formatted() ?? "不明"
                     let capacity = (context["contextWindow"] as? NSNumber)?.int64Value.formatted() ?? "不明"
                     UsageMeter(label: "\(tokens) / \(capacity) トークン", percent: context["percent"] as? Double)
-                    if let stats, stats.cost > 0 { Text("このセッションの記録済みコスト · \(stats.cost.formatted(.currency(code: "USD")))").font(.footnote).foregroundStyle(.secondary) }
+                    if let stats, stats.cost > 0 { Text("このセッションの記録済みコスト · \(stats.cost.formatted(.currency(code: "USD")))").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
                     Button("コンテキストを圧縮") { panel.act(.compact) }.disabled(!panel.ready)
                 }
                 ForEach(panel.model.allowances(panel.opened.key, nowMs: now), id: \.source) { allowance in
@@ -63,7 +63,7 @@ struct UsageSheet: View {
                             VStack(alignment: .leading, spacing: 6) {
                                 UsageMeter(label: windowName(window.minutes), percent: window.usedPercent)
                                 if let reset = window.resetsAt {
-                                    Text(reset <= now ? "リセット済み · 次の応答で更新" : "\(clock(reset)) にリセット（\(Self.timeLeft(reset - now))）").font(.caption).foregroundStyle(.secondary)
+                                    Text(reset <= now ? "リセット済み · 次の応答で更新" : "\(clock(reset)) にリセット（\(Self.timeLeft(reset - now))）").modifier(PiFont(.caption)).foregroundStyle(.secondary)
                                 }
                             }.padding(.vertical, 3).accessibilityElement(children: .combine)
                         }
@@ -80,11 +80,11 @@ private struct UsageMeter: View {
     let label: String, percent: Double?
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(verbatim: label).font(.subheadline)
+            Text(verbatim: label).modifier(PiFont(.lead))
             if let percent, percent.isFinite {
-                Text("\(percent.formatted(.number.precision(.fractionLength(0))))% 使用").font(.callout.bold()).monospacedDigit()
+                Text("\(percent.formatted(.number.precision(.fractionLength(0))))% 使用").modifier(PiFont(.lead)).fontWeight(.semibold).monospacedDigit()
                 ProgressView(value: min(100, max(0, percent)), total: 100).accessibilityHidden(true)
-            } else { Text("使用率は不明").font(.callout).foregroundStyle(.secondary) }
+            } else { Text("使用率は不明").modifier(PiFont(.lead)).foregroundStyle(.secondary) }
         }.accessibilityElement(children: .combine)
     }
 }

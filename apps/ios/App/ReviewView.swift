@@ -77,9 +77,9 @@ private struct DiffFile: View {
         } label: {
             HStack {
                 let added = file.pieces.first?.created == true
-                Text(added ? "A" : "M").font(.caption.bold()).padding(5).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 5)).accessibilityLabel(added ? "作成" : "変更")
-                Text(verbatim: file.path).font(.system(.subheadline, design: .monospaced)); Spacer()
-                if !diffs.isEmpty { Text("+\(diffs.reduce(0) { $0 + $1.added }) −\(diffs.reduce(0) { $0 + $1.removed })").font(.caption.monospacedDigit()) }
+                Text(added ? "A" : "M").modifier(PiFont(.caption)).fontWeight(.semibold).padding(5).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 5)).accessibilityLabel(added ? "作成" : "変更")
+                Text(verbatim: file.path).modifier(PiFont(.lead)).fontDesign(.monospaced); Spacer()
+                if !diffs.isEmpty { Text("+\(diffs.reduce(0) { $0 + $1.added }) −\(diffs.reduce(0) { $0 + $1.removed })").modifier(PiFont(.caption)).monospacedDigit() }
             }.frame(minHeight: 44).accessibilityElement(children: .combine)
         }
     }
@@ -88,7 +88,7 @@ private struct ChangeBody: View {
     let text: String
     @State private var limit = 6000
     var body: some View {
-        Text(verbatim: String(text.prefix(limit))).font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+        Text(verbatim: String(text.prefix(limit))).modifier(PiFont(.caption)).fontDesign(.monospaced).textSelection(.enabled)
         if text.dropFirst(limit).first != nil { Button("続きを表示") { limit += 6000 } }
         CopyText(text: text, label: "全文をコピー")
     }
@@ -106,7 +106,7 @@ private struct DiffHunk: View {
                         .foregroundStyle(color).frame(maxWidth: .infinity, alignment: .leading).background(color.opacity(l.old == nil || l.new == nil ? 0.09 : 0))
                     if l.noNewline { Text("末尾に改行なし").foregroundStyle(.secondary) }
                 }
-            }.font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+            }.modifier(PiFont(.caption)).fontDesign(.monospaced).textSelection(.enabled)
         }
         if hunk.lines.count > limit { Button("続きを表示（残り \(hunk.lines.count - limit) 行）") { limit += 120 } }
     }

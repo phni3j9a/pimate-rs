@@ -42,7 +42,7 @@ struct HistoryPhotos: View {
                         .overlay { if i == 3 && images.count > 4 { Text("+\(images.count - 3)").bold().foregroundStyle(.white).padding(6).background(.black.opacity(0.75), in: Capsule()).allowsHitTesting(false).accessibilityHidden(true) } }
                 }
             }.frame(maxWidth: 256)
-            if !context.entries { Text("画像 \(images.count) 枚 · プレビューのみ").font(.caption).foregroundStyle(PiTheme.secondary) }
+            if !context.entries { Text("画像 \(images.count) 枚 · プレビューのみ").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary) }
         }
     }
 }
@@ -130,7 +130,7 @@ struct LoadedPhoto: View {
         }
     }
     @ViewBuilder private var placeholder: some View {
-        if failed { Label("画像を表示できません", systemImage: "photo.badge.exclamationmark").font(.caption).foregroundStyle(PiTheme.secondary) }
+        if failed { Label("画像を表示できません", systemImage: "photo.badge.exclamationmark").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary) }
         else { ProgressView().accessibilityLabel("画像を読み込み中") }
     }
 }

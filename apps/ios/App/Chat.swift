@@ -73,7 +73,7 @@ private struct Conversation: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Circle().fill(questions.isEmpty && !pc ? PiTheme.accent : PiTheme.waiting).frame(width: 6, height: 6)
-                Text(pc && questions.isEmpty ? "PC で操作待ち" : !questions.isEmpty ? "入力待ち" : running ? "作業中" : "待機").font(.caption)
+                Text(pc && questions.isEmpty ? "PC で操作待ち" : !questions.isEmpty ? "入力待ち" : running ? "作業中" : "待機").modifier(PiFont(.caption))
             }.foregroundStyle(PiTheme.secondary).padding(.bottom, 6).accessibilityElement(children: .combine)
             ScrollViewReader { reader in
                 GeometryReader { outer in
@@ -161,7 +161,7 @@ struct TurnView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     if !turn.prompt.isEmpty { Text(verbatim: turn.prompt).textSelection(.enabled) }
                     if let images = turn.images { HistoryPhotos(images: images) }
-                    if let caption { Text(caption).font(.caption).foregroundStyle(.secondary) }
+                    if let caption { Text(caption).modifier(PiFont(.caption)).foregroundStyle(.secondary) }
                 }.padding(.horizontal, 14).padding(.vertical, 10).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 16)).padding(.leading, 30).frame(maxWidth: .infinity, alignment: .trailing)
             }
             ForEach(turn.lines) { line in
@@ -172,7 +172,7 @@ struct TurnView: View {
                     if folds && w.id == firstWork {
                         Button { didToggle(); expanded.toggle() } label: {
                             HStack { Text(turn.summary); Spacer(); SwiftUI.Image(systemName: expanded ? "chevron.down" : "chevron.right") }.frame(minHeight: 44)
-                        }.font(.subheadline).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
+                        }.modifier(PiFont(.lead)).foregroundStyle(PiTheme.secondary).accessibilityValue(expanded ? "展開中" : "折りたたみ")
                         if let openReview, turn.work.contains(where: { $0.hasChange }) { Button("このターンの変更") { openReview(nil) } }
                     }
                     let run = w.callID.flatMap(runForCall)
@@ -190,9 +190,9 @@ struct TurnView: View {
     }
     private func work(_ line: WorkLine) -> some View {
             ActiveDisclosure(automatic: line.state == "実行中", didToggle: didToggle) {
-                Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).font(.system(.caption, design: .monospaced)).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+                Text(verbatim: line.output.isEmpty ? "出力はまだありません" : line.output).modifier(PiFont(.caption)).fontDesign(.monospaced).textSelection(.enabled).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
             } label: {
-                HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.isThought ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).font(.caption2) }.font(.system(.caption, design: .monospaced)).frame(minHeight: 44)
+                HStack(spacing: 8) { SwiftUI.Image(systemName: line.state == "失敗" ? "exclamationmark.circle" : line.state == "実行中" ? "clock" : line.isThought ? "text.bubble" : "checkmark.circle"); Text(line.name).fontWeight(.semibold); Text(line.subject).lineLimit(2); Spacer(); Text(line.state).modifier(PiFont(.meta)) }.modifier(PiFont(.caption)).fontDesign(.monospaced).frame(minHeight: 44)
             }.foregroundStyle(line.state == "失敗" ? PiTheme.failure : PiTheme.secondary)
     }
 }

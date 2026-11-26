@@ -14,14 +14,14 @@ struct SessionSheetView: View {
         let name = session.str("name").isEmpty ? (cwd as NSString).lastPathComponent : session.str("name")
         List {
             Section {
-                Text(verbatim: name.isEmpty ? "このセッション" : name).font(.headline)
-                if !cwd.isEmpty { Text(verbatim: cwd).font(.footnote.monospaced()).foregroundStyle(.secondary) }
+                Text(verbatim: name.isEmpty ? "このセッション" : name).modifier(PiFont(.sheet)).fontWeight(.semibold)
+                if !cwd.isEmpty { Text(verbatim: cwd).modifier(PiFont(.caption)).fontDesign(.monospaced).foregroundStyle(.secondary) }
                 if let stats = panel.model.stats(panel.opened.key) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("メッセージ \(stats.messages.formatted()) 件")
                         if stats.tokens > 0 { Text("記録済みトークン · \(stats.tokens.formatted())") }
                         if stats.cost > 0 { Text("記録済みコスト · \(stats.cost.formatted(.currency(code: "USD")))") }
-                    }.font(.footnote).foregroundStyle(.secondary)
+                    }.modifier(PiFont(.caption)).foregroundStyle(.secondary)
                 }
             }
             Section("会話") {
@@ -37,7 +37,7 @@ struct SessionSheetView: View {
                 if let origin = panel.field("origin")?.string, let label = ["mobile": "スマホ", "pc": "PC", "grok-bot": "Grok Bot"][origin] { LabeledContent("起動元", value: label) }
                 if let command = panel.rows.attachCommand {
                     CopyAttachCommand(command: command)
-                    Text("PC のターミナルで実行すると、同じ Pi に接続できます。").font(.footnote).foregroundStyle(.secondary)
+                    Text("PC のターミナルで実行すると、同じ Pi に接続できます。").modifier(PiFont(.caption)).foregroundStyle(.secondary)
                 }
                 Button("この Pi を終了…", role: .destructive) { confirmExit = true }.disabled(!panel.ready)
                     .confirmationDialog("この Pi を終了しますか？", isPresented: $confirmExit, titleVisibility: .visible) {
@@ -61,8 +61,8 @@ struct ResumeSheet: View {
                 Button { panel.act(.resume(path: path)) } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(verbatim: [o.str("name"), o.str("firstMessage")].first { !$0.isEmpty } ?? "空のセッション")
-                        if let count = o["messageCount"] as? Int { Text("メッセージ \(count) 件").font(.caption).foregroundStyle(.secondary) }
-                        if current { Label("開いています", systemImage: "checkmark").font(.caption) }
+                        if let count = o["messageCount"] as? Int { Text("メッセージ \(count) 件").modifier(PiFont(.caption)).foregroundStyle(.secondary) }
+                        if current { Label("開いています", systemImage: "checkmark").modifier(PiFont(.caption)) }
                     }
                 }.accessibilityIdentifier("resume-" + item.id).disabled(current || !panel.ready || !panel.idle || path.isEmpty || panel.live?.error != nil)
             }
@@ -77,7 +77,7 @@ struct ForkSheet: View {
     var body: some View {
         let entries = (panel.rows.groups["entry"] ?? []).reversed().filter { $0.object.str("kind") == "user" }
         List {
-            Text("選んだメッセージの直前までを新しいセッションに写します。入力欄が空なら、選んだ文が入ります。").font(.footnote).foregroundStyle(.secondary)
+            Text("選んだメッセージの直前までを新しいセッションに写します。入力欄が空なら、選んだ文が入ります。").modifier(PiFont(.caption)).foregroundStyle(.secondary)
             if entries.isEmpty { Text("分岐できるメッセージはありません") }
             ForEach(entries, id: \.id) { entry in
                 let text = entry.object.str("text")

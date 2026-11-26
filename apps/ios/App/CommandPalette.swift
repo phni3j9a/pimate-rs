@@ -8,10 +8,10 @@ struct CommandPalette: View {
     var body: some View {
         let names = model.suggestions(key, text: text)
         VStack(alignment: .leading, spacing: 4) {
-            Text("コマンド候補").font(.caption.bold()).foregroundStyle(PiTheme.secondary).accessibilityAddTraits(.isHeader)
+            Text("コマンド候補").modifier(PiFont(.caption)).fontWeight(.semibold).foregroundStyle(PiTheme.secondary).accessibilityAddTraits(.isHeader)
             if loading && names.isEmpty { ProgressView("一覧を取得中") }
             else if failed { Button("一覧を再取得") { attempt += 1 } }
-            else if names.isEmpty { Text("一致するコマンドはありません").font(.caption) }
+            else if names.isEmpty { Text("一致するコマンドはありません").modifier(PiFont(.caption)) }
             ScrollView(.horizontal) {
                 HStack(spacing: 8) { ForEach(names, id: \.self) { name in
                     let command = commands.first { $0.id == name }?.object ?? [:], source = command.str("source")
@@ -20,9 +20,9 @@ struct CommandPalette: View {
                         model.text("/" + name + " ", for: key)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(verbatim: "/" + name).font(.callout.monospaced())
+                            Text(verbatim: "/" + name).modifier(PiFont(.lead)).fontDesign(.monospaced)
                             if !kind.isEmpty { Text(kind).modifier(PiFont(.meta)) }
-                            if !detail.isEmpty { Text(detail).font(.caption).lineLimit(2).foregroundStyle(PiTheme.secondary) }
+                            if !detail.isEmpty { Text(detail).modifier(PiFont(.caption)).lineLimit(2).foregroundStyle(PiTheme.secondary) }
                         }.padding(.horizontal, 12).frame(minHeight: 44).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(.plain).accessibilityIdentifier("command-" + name).accessibilityHint("入力欄に入れます。送信はしません")
                 } }

@@ -21,8 +21,8 @@ struct QuestionCard: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label("入力待ち", systemImage: "circle.inset.filled").font(.caption.bold()).foregroundStyle(PiTheme.waiting)
-            Text(q.str("title")).font(.headline).accessibilityAddTraits(.isHeader)
+            Label("入力待ち", systemImage: "circle.inset.filled").modifier(PiFont(.caption)).fontWeight(.semibold).foregroundStyle(PiTheme.waiting)
+            Text(q.str("title")).modifier(PiFont(.sheet)).fontWeight(.semibold).accessibilityAddTraits(.isHeader)
             if !q.str("message").isEmpty && kind != "editor" { Text(q.str("message")) }
             switch kind {
             case "select": ForEach(q["options"] as? [String] ?? [], id: \.self) { s in option(s, "", checked: text == s, multi: false) { write(s) } }

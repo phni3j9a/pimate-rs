@@ -34,15 +34,15 @@ struct TreeSheet: View {
         List {
             Section {
                 Picker("表示", selection: $usersOnly) { Text("ユーザーのみ").tag(true); Text("すべて").tag(false) }.pickerStyle(.segmented)
-                if truncated { Text("大きなツリーのため一部を省略しています。全体は PC の /tree で確認できます。").font(.footnote) }
+                if truncated { Text("大きなツリーのため一部を省略しています。全体は PC の /tree で確認できます。").modifier(PiFont(.caption)) }
                 if loaded && nodes.isEmpty { Text("まだ会話がありません").foregroundStyle(.secondary) }
                 ForEach(usersOnly ? nodes.filter { $0.node.str("kind") == "user" } : nodes) { row in
                     NavigationLink { TreeDestination(panel: panel, row: row) } label: {
                         HStack(spacing: 10) {
                             Capsule().fill(row.node["onBranch"] as? Bool == true ? PiTheme.accent : Color.secondary).frame(width: 3).accessibilityHidden(true)
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(verbatim: row.detail).font(.caption).foregroundStyle(.secondary)
-                                if let label = row.node["label"] as? String { Text(verbatim: label).font(.headline) }
+                                Text(verbatim: row.detail).modifier(PiFont(.caption)).foregroundStyle(.secondary)
+                                if let label = row.node["label"] as? String { Text(verbatim: label).modifier(PiFont(.sheet)).fontWeight(.semibold) }
                                 Text(verbatim: row.preview).lineLimit(3)
                             }
                         }.padding(.leading, CGFloat(min(row.depth, 5)) * 10).padding(.vertical, 3)

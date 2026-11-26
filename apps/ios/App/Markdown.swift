@@ -91,8 +91,8 @@ private struct MarkdownBlock: View {
         case .rule: Divider()
         case .code(let language, let text):
             VStack(alignment: .leading, spacing: 4) {
-                HStack { Text(language ?? "コード").font(.caption.monospaced()); Spacer(); Button("コードをコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44) }
-                ScrollView(.horizontal) { Text(verbatim: text).font(.system(.callout, design: .monospaced)).textSelection(.enabled).fixedSize() }.keepsHorizontalDrag()
+                HStack { Text(language ?? "コード").modifier(PiFont(.caption)).fontDesign(.monospaced); Spacer(); Button("コードをコピー", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }.labelStyle(.iconOnly).frame(minWidth: 44, minHeight: 44) }
+                ScrollView(.horizontal) { Text(verbatim: text).modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled).fixedSize() }.keepsHorizontalDrag()
             }.padding(.horizontal, 12).padding(.bottom, 12).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 12))
         case .quote(let children): HStack { Rectangle().fill(PiTheme.secondary).frame(width: 2); nested(children) }
         case .blockList(let start, let items):
