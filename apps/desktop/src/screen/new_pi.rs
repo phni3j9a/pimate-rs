@@ -688,6 +688,100 @@ mod tests {
         ));
     }
     #[gpui::test]
+    fn catalog_and_directory_choices_survive_focus_changes(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        use pimate_core::{Change, Item};
+        let (app, w, _) = super::super::tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        app.update(w, |app, cx| {
+            app.machines.get_mut("fixture").unwrap().rows.apply(
+                (
+                    2,
+                    vec![
+                        Change::Remove {
+                            collection: "instance".into(),
+                            id: "pi".into(),
+                        },
+                        Change::Upsert(Item {
+                            collection: "host".into(),
+                            id: "info".into(),
+                            position: 0,
+                            json: r#"{"dirs":true}"#.into(),
+                        }),
+                    ],
+                ),
+                || unreachable!(),
+            );
+            cx.notify();
+        });
+        w.simulate_keystrokes("secondary-n");
+        let n = app.read_with(w, |app, _| app.navigation.clone().unwrap());
+        let (folder, tasks) = n.read_with(w, |n, _| {
+            (n.spawn.as_ref().unwrap().folder.clone(), n.tasks.len())
+        });
+        w.update(|w, cx| {
+            folder.update(cx, |s, cx| {
+                s.set_value("/tmp/s", w, cx);
+                s.focus(w, cx);
+            })
+        });
+        app.update(w, |app, cx| {
+            app.machines.get_mut("fixture").unwrap().rows.apply(
+                (
+                    3,
+                    vec![Change::Upsert(Item {
+                        collection: "instance".into(),
+                        id: "pi".into(),
+                        position: 0,
+                        json: "{}".into(),
+                    })],
+                ),
+                || unreachable!(),
+            );
+            cx.notify();
+        });
+        w.run_until_parked();
+        n.read_with(w, |n, cx| {
+            assert_eq!(n.tasks.len(), tasks + 1);
+            let f = n.spawn.as_ref().unwrap();
+            assert!(f.folder == folder && f.folder.read(cx).value() == "/tmp/s");
+        });
+        app.update(w, |_, cx| {
+            n.update(cx, |n, _| {
+                n.spawn.as_mut().unwrap().dirs = Some(("/tmp/".into(), vec!["src".into()]))
+            });
+            cx.notify()
+        });
+        w.run_until_parked();
+        // KeyUp belongs to the input, not the candidate reached by Tab.
+        w.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("enter").unwrap(),
+            is_held: false,
+        });
+        w.simulate_keystrokes("tab");
+        for key in ["tab", "enter"] {
+            w.simulate_event(KeyUpEvent {
+                keystroke: Keystroke::parse(key).unwrap(),
+            });
+        }
+        w.run_until_parked();
+        assert!(w.update(|w, cx| {
+            n.read(cx)
+                .spawn
+                .as_ref()
+                .unwrap()
+                .choices
+                .contains_focused(w, cx)
+        }));
+        assert_eq!(folder.read_with(w, |s, _| s.value()), "/tmp/s");
+        w.simulate_keystrokes("enter");
+        w.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("enter").unwrap(),
+        });
+        w.run_until_parked();
+        assert_eq!(folder.read_with(w, |s, _| s.value()), "/tmp/src/");
+    }
+    #[gpui::test]
     fn palette_escape_returns_to_message_field(cx: &mut gpui::TestAppContext) {
         use gpui::Focusable;
         let (app, w, _) = super::super::tests::open_chat(cx);

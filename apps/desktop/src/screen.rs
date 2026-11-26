@@ -1935,11 +1935,11 @@ mod key_tests {
             d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
-    #[gpui::test]
-    fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {
-        let (app, w, _socket) = tests::open_chat(cx);
-        w.update(|_, cx| keys::init(cx));
-        let raw = "**太字** と [リンク](https://example.org)\n\n2 行目";
+    fn fixture_message(
+        app: &gpui::Entity<super::Desktop>,
+        w: &mut gpui::VisualTestContext,
+        raw: &str,
+    ) {
         app.update(w, |d, cx| {
             d.machines.get_mut("fixture").unwrap().rows.apply(
                 (
@@ -1956,6 +1956,29 @@ mod key_tests {
             cx.notify();
         });
         w.run_until_parked();
+    }
+    #[gpui::test]
+    fn model_shortcut_cannot_cover_a_table_viewer(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        fixture_message(&app, w, "| A | B |\n|---|---|\n| 1 | 2 |");
+        let table = wait(w, "open-markdown-table");
+        w.simulate_click(table, Default::default());
+        wait(w, "close-media");
+        press(w, "secondary-shift-m");
+        assert!(w.update(|w, cx| {
+            let d = app.read(cx);
+            d.front(w, cx) == Some(keys::Overlay::Media) && d.active_sheet().is_none()
+        }));
+        press(w, "escape");
+        assert!(w.update(|w, cx| app.read(cx).front(w, cx).is_none()));
+    }
+    #[gpui::test]
+    fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let raw = "**太字** と [リンク](https://example.org)\n\n2 行目";
+        fixture_message(&app, w, raw);
         let bounds = w.debug_bounds("message-entry:msg").unwrap();
         w.simulate_mouse_down(
             bounds.center(),
