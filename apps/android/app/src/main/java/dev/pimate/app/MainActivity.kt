@@ -144,7 +144,14 @@ private fun Screen(m: SessionModel, chat: ChatUi) {
         "machine" ->
             m.hosts
                 .find { it.id == machine }
-                ?.let { key(it.id, it.deviceId) { MachinePage(m, it) { sheet = "settings" } } }
+                ?.let {
+                    key(it.id, it.deviceId) {
+                        MachinePage(m, it, { sheet = "settings" }) {
+                            sheet = ""
+                            m.showPairing(true)
+                        }
+                    }
+                }
         "new" ->
             NewPage(m, firstHost ?: host, { sheet = "" }) { h, id ->
                 first = ""

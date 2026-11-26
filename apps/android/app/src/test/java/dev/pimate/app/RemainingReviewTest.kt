@@ -88,9 +88,9 @@ class RemainingReviewTest {
     @Test
     fun missingCliIsNotALoginInstruction() {
         val status = JSONObject("""{"installed":false,"loggedIn":false}""")
-        assertTrue(githubStatusText(status).contains("インストールされていません"))
+        assertEquals("PC に gh が入っていません", githubStatusText(status))
         status.put("installed", true)
-        assertTrue(githubStatusText(status).contains("gh auth login"))
+        assertTrue(githubStatusText(status).contains("PC で実行"))
         status.put("loggedIn", true).put("login", "demo")
         assertTrue(githubStatusText(status).contains("demo でログイン中"))
     }

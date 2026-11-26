@@ -96,6 +96,9 @@ internal object Icons {
     val Copy = icon(rect(9f, 9f, 11f, 11f, 2f) + "M5 15V6a2 2 0 0 1 2-2h9")
     val Check = icon("M5 12.5l4.5 4.5L19 7.5")
     val Right = icon("M9 6l6 6-6 6")
+    // アプリの外（ブラウザ）で開く印。
+    val External =
+        icon("M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6")
     val More = icon(fill = circle(5f, 12f, 1.6f) + circle(12f, 12f, 1.6f) + circle(19f, 12f, 1.6f))
     val Clock = icon(circle(12f, 12f, 9f) + "M12 7v5l3 2")
     val Swap = icon("M4 7h14l-3-3M20 17H6l3 3")
@@ -136,6 +139,16 @@ internal object Icons {
             "1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 " +
             "2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 " +
             "4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z"
+        )
+    // GitHub のマーク（単色のみ）。設定の GitHub へのリンクにだけ置く。
+    val GitHub =
+        icon(
+            fill =
+                "M12 .297" +
+                "c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61" +
+                "C4.422 18.07 3.633 17.7 3.633 17.7" +
+                "c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57" +
+                "C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
         )
     val OpenAI =
         icon(
@@ -226,6 +239,7 @@ internal fun TextAction(
     enabled: Boolean = true,
     color: Color = pi.accentText,
     weight: FontWeight = FontWeight.SemiBold,
+    style: TextStyle = Type.body,
 ) {
     TextButton(
         onClick,
@@ -238,7 +252,7 @@ internal fun TextAction(
             ),
         contentPadding = PaddingValues(horizontal = 14.dp),
     ) {
-        Text(label, style = Type.body.copy(fontWeight = weight))
+        Text(label, style = style.copy(fontWeight = weight))
     }
 }
 
@@ -307,11 +321,12 @@ internal fun Segment(
     selected: String?,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    // 設定の行の右に置く小さい版（幅は呼び出し側が決める）。
+    compact: Boolean = false,
     select: (String) -> Unit,
 ) {
     Row(
-        modifier
-            .fillMaxWidth()
+        (if (compact) modifier else modifier.fillMaxWidth())
             .background(pi.surfaceStrong, RoundedCornerShape(10.dp))
             .padding(3.dp)
             .selectableGroup()
@@ -320,10 +335,10 @@ internal fun Segment(
             val on = value == selected
             Box(
                 Modifier.weight(1f)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(if (compact) 7.dp else 8.dp))
                     .background(if (on) pi.background else pi.surfaceStrong)
                     .selectable(on, enabled, Role.RadioButton) { if (!on) select(value) }
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = if (compact) 30.dp else 42.dp)
                     .padding(horizontal = 2.dp),
                 Alignment.Center,
             ) {
@@ -332,7 +347,7 @@ internal fun Segment(
                     color = if (on) pi.text else pi.textSecondary,
                     style =
                         Type.body.copy(
-                            fontSize = 13.sp,
+                            fontSize = if (compact) 12.sp else 13.sp,
                             fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal,
                         ),
                     maxLines = 1,

@@ -1,14 +1,26 @@
 package dev.pimate.app
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.*
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import org.json.*
 import uniffi.pimate_ffi.*
@@ -23,7 +35,13 @@ private fun Rows.summary(): String {
         return stopped(connection)?.label ?: if (connection == "\"offline\"") "オフライン" else "接続しています"
     return listOfNotNull(
             "接続中",
-            info().str("platform").ifEmpty { null },
+            when (val p = info().str("platform")) {
+                "" -> null
+                "darwin" -> "macOS"
+                "linux" -> "Linux"
+                "win32" -> "Windows"
+                else -> p
+            },
             if (hostValue("listKnown") == "true") "Pi ${groups["instance"].orEmpty().size} 件"
             else null,
         )
@@ -214,6 +232,97 @@ internal fun NewPage(
     }
 }
 
+/** マシンの状態の印（12dp の列）。色だけに頼らず、隣の文字でも状態を示す。 */
+@Composable
+private fun HostMark(connection: String?, failed: Boolean) {
+    Box(Modifier.width(12.dp), Alignment.Center) {
+        when {
+            failed -> Dot(pi.failed, 8.dp)
+            connection == "\"connected\"" -> Dot(pi.done, 8.dp)
+            connection == "\"offline\"" -> Dot(pi.textSecondary, 8.dp, Modifier.alpha(.5f))
+            else -> Spinner(12.dp)
+        }
+    }
+}
+
+/** 設定・マシン詳細の行。1行は 52dp、補足つきは 60dp（TS 版 0.1.23 の settings.tsx / machine.tsx と同じ寸法）。 */
+@Composable
+private fun ListRow(
+    title: String,
+    sub: String = "",
+    subColor: Color = pi.textSecondary,
+    enabled: Boolean = true,
+    minHeight: Dp = if (sub.isEmpty()) 52.dp else 60.dp,
+    onClick: (() -> Unit)? = null,
+    leading: (@Composable () -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .heightIn(min = minHeight)
+            .then(
+                if (onClick == null) Modifier
+                else
+                    Modifier.clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled, role = Role.Button, onClick = onClick)
+            )
+            // 右の操作はタップ領域が 48dp あるので、その行も 60dp に収まる余白にする。
+            .padding(vertical = 6.dp),
+        Arrangement.spacedBy(12.dp),
+        Alignment.CenterVertically,
+    ) {
+        leading?.invoke()
+        // 名前と補足はひとまとまりで読み上げる（右の操作は別）。
+        Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}) {
+            Text(title, color = if (enabled) pi.text else pi.textSecondary, style = Type.lead)
+            if (sub.isNotEmpty()) Text(sub, color = subColor, style = Type.caption)
+        }
+        trailing?.invoke()
+    }
+}
+
+/** 外のアプリで開く行。右の印で、アプリの外へ出ることを示す。 */
+@Composable
+private fun LinkRow(label: String, url: String, leading: (@Composable () -> Unit)? = null) {
+    val context = LocalContext.current
+    var unavailable by remember { mutableStateOf(false) }
+    ListRow(
+        label,
+        onClick = { unavailable = !openLink(context, url) },
+        leading = leading,
+        trailing = { Icon(Icons.External, null, Modifier.size(14.dp), pi.textSecondary) },
+    )
+    if (unavailable) SheetError("リンクを開けるアプリがありません")
+}
+
+/** 見出しと、右に寄せた3択（テーマ・文字サイズ）。 */
+@Composable
+private fun SegmentRow(
+    label: String,
+    options: List<Pair<String, String>>,
+    selected: String,
+    select: (String) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 8.dp),
+        Arrangement.spacedBy(12.dp),
+        Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.weight(1f), style = Type.lead)
+        Segment(
+            options,
+            selected,
+            Modifier.width(192.dp).semantics { contentDescription = label },
+            compact = true,
+            select = select,
+        )
+    }
+}
+
+// 行の左端・右端にそろえる文字の操作（TextAction の左右の余白 14dp を打ち消す）。
+private val flush = Modifier.offset(x = (-14).dp)
+private val flushEnd = Modifier.offset(x = 14.dp)
+
 @Composable
 internal fun SettingsPage(
     m: SessionModel,
@@ -226,54 +335,98 @@ internal fun SettingsPage(
     val version = remember {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
     }
-    var result by remember { mutableStateOf<AppUpdate?>(null) }
-    var checking by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    Page("設定", close) {
-        Label("マシン")
-        m.hosts.forEach {
-            MenuRow(it.name, m.rowsFor(it.id).summary(), true, next = true) { machine(it.id) }
+    var update by remember { mutableStateOf<AppUpdate?>(null) }
+    LaunchedEffect(version) { update = checkAppUpdate(version) }
+    Page("設定", close, gap = 0.dp) {
+        Label("マシン", top = 8.dp)
+        m.hosts.forEach { h ->
+            val rows = m.rowsFor(h.id)
+            val connection = rows.hostValue("connection")
+            val failed = h.needsPairing || stopped(connection) != null
+            val state = if (h.needsPairing) "再ペアリングが必要" else rows.summary()
+            ListRow(
+                h.name,
+                if (connection == "\"connected\"") state else "$state · ${h.address}",
+                if (failed) pi.failedText else pi.textSecondary,
+                onClick = { machine(h.id) },
+                leading = { HostMark(connection, failed) },
+                trailing = { Icon(Icons.Right, null, Modifier.size(16.dp), pi.textSecondary) },
+            )
         }
-        TextAction("マシンを追加（ペアリング）", pair)
-        Label("新しい Pi の既定")
+        Row(
+            Modifier.fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .clickable(role = Role.Button, onClick = pair),
+            Arrangement.spacedBy(12.dp),
+            Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Plus, null, Modifier.size(16.dp), pi.accentText)
+            Text(
+                if (m.hosts.any { it.needsPairing }) "ペアリングし直す・マシンを追加"
+                else "マシンを追加（ペアリング）",
+                color = pi.accentText,
+                style = Type.lead,
+            )
+        }
+        Label("新しい Pi の既定", bottom = 0.dp)
         Toggle("質問ツール（pimate_ask）", s.askTool, s::chooseAskTool)
-        Label("表示")
-        Text("テーマ")
-        Segment(listOf("SYSTEM" to "システム", "LIGHT" to "ライト", "DARK" to "ダーク"), s.theme.name) {
+        Label("表示", bottom = 0.dp)
+        SegmentRow(
+            "テーマ",
+            listOf("SYSTEM" to "システム", "LIGHT" to "ライト", "DARK" to "ダーク"),
+            s.theme.name,
+        ) {
             s.chooseTheme(ThemeMode.valueOf(it))
         }
-        Text("文字サイズ")
-        Segment(fontScales.map { it.second.toString() to it.first }, s.scale.toString()) {
+        SegmentRow(
+            "文字サイズ",
+            fontScales.map { it.second.toString() to it.first },
+            s.scale.toString(),
+        ) {
             s.chooseScale(it.toFloat())
         }
-        Label("情報")
-        MenuRow("PiMate $version", if (checking) "照会中…" else "更新を確認", !checking) {
-            checking = true
-            scope.launch {
-                try {
-                    result = checkAppUpdate(version)
-                } finally {
-                    checking = false
-                }
-            }
-        }
-        when (val r = result) {
-            AppUpdate.Latest -> Hint("最新です")
-            AppUpdate.Unknown -> Hint("更新を確認できませんでした")
-            is AppUpdate.Available -> External("${r.version} に更新できます", r.url)
-            null -> Unit
-        }
-        External("GitHub", REPO)
-        External("不具合を報告", REPORT_ISSUE)
+        Label("情報", bottom = 0.dp)
+        val available = update as? AppUpdate.Available
+        var unavailable by remember { mutableStateOf(false) }
+        ListRow(
+            "PiMate $version",
+            when (update) {
+                null -> "更新を確認中…"
+                AppUpdate.Latest -> "最新です"
+                AppUpdate.Unknown -> "更新を確認できませんでした"
+                is AppUpdate.Available -> "${available?.version} に更新できます"
+            },
+            if (available != null) pi.accentText else pi.textSecondary,
+            onClick = available?.let { { unavailable = !openLink(context, it.url) } },
+            // マークは 1024 の版面の中の 920×816（icon-kit）。20dp の枠に同じ比率で置く。
+            leading = {
+                Image(
+                    painterResource(R.drawable.mark),
+                    null,
+                    Modifier.size(20.dp).padding(horizontal = 1.dp, vertical = 2.dp),
+                )
+            },
+            trailing =
+                available?.let {
+                    { Icon(Icons.External, null, Modifier.size(14.dp), pi.accentText) }
+                },
+        )
+        if (unavailable) SheetError("リンクを開けるアプリがありません")
+        LinkRow("GitHub", REPO) { Icon(Icons.GitHub, null, Modifier.size(20.dp), pi.text) }
+        LinkRow("不具合を報告", REPORT_ISSUE)
     }
 }
 
+private fun day(ms: Long) = android.text.format.DateFormat.format("yyyy/M/d", ms).toString()
+
 @Composable
-internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
+internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: () -> Unit) {
     val id = host.id
     val rows = m.rowsFor(id)
     val caps = rows.info()
-    val online = rows.hostValue("connection") == "\"connected\""
+    val connection = rows.hostValue("connection")
+    val online = connection == "\"connected\""
     var login by rememberSaveable { mutableStateOf(false) }
     if (login) {
         ProviderPage(m, id) { login = false }
@@ -322,88 +475,180 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
             }
         }
     }
-    Page(host.name, close) {
-        Label("状態")
-        Text(rows.summary())
-        Hint(host.address)
-        devices
-            ?.find { it.optBoolean("current") }
-            ?.optLong("createdAt")
-            ?.takeIf { it > 0 }
-            ?.let {
-                Hint(android.text.format.DateFormat.format("yyyy/MM/dd", it).toString() + " にペアリング")
-            }
-        Label("PC の PiMate")
+    Page(host.name, close, gap = 0.dp) {
+        Label("状態", top = 8.dp, bottom = 0.dp)
+        val failed = host.needsPairing || stopped(connection) != null
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = 52.dp),
+            Arrangement.spacedBy(12.dp),
+            Alignment.CenterVertically,
+        ) {
+            HostMark(connection, failed)
+            Text(
+                if (host.needsPairing) "再ペアリングが必要" else rows.summary(),
+                Modifier.weight(1f),
+                if (failed) pi.failedText else pi.text,
+                style = Type.lead,
+            )
+            if (host.needsPairing || stopped(connection)?.repair == true)
+                TextAction("ペアリングし直す", pair, flushEnd, weight = FontWeight.Normal, style = Type.lead)
+        }
+        ListRow(
+            host.address,
+            devices
+                ?.find { it.optBoolean("current") }
+                ?.optLong("createdAt")
+                ?.takeIf { it > 0 }
+                ?.let { "${day(it)} にペアリング" }
+                .orEmpty(),
+        )
+        Label("PC の PiMate", bottom = 0.dp)
         val current = check?.str("current").orEmpty().ifEmpty { caps.str("version") }
-        Text("現在 ${current.ifEmpty { "不明" }}")
         val latest = check?.str("latest").orEmpty()
-        when {
-            check?.str("reason") == "not_package" -> Hint("開発版は PC で更新してください")
-            latest == "" -> Hint("最新版は未確認です")
-            latest == current -> Hint("最新です")
-            online && caps.optBoolean("packageUpdate") && check?.optBoolean("canUpdate") == true ->
-                ConfirmAction(
-                    host to latest,
-                    "更新",
-                    "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。",
-                    button = "最新版に更新…",
-                    enabled = !busy,
-                ) {
-                    operate {
-                        val r = request(Operation.Update)
-                        note = "${r.getString("to")} に更新しました"
-                        retry++
+        val newer = latest != "" && latest != current
+        val canUpdate =
+            online && newer && caps.optBoolean("packageUpdate") &&
+                check?.optBoolean("canUpdate") == true
+        // Host が自分では更新できない（常駐サービスでない・公開パッケージでない）。PC で操作してもらう。
+        val manual = check?.str("reason").orEmpty().takeIf { online && (newer || latest == "") }
+        ListRow(
+            if (current.isEmpty()) "PiMate" else "現在 $current",
+            when {
+                !online -> "接続していません"
+                !caps.optBoolean("packageUpdate") -> "PC の PiMate を更新すると使えます"
+                check == null -> if (error.isEmpty()) "確認中…" else "確認できませんでした"
+                latest == "" -> "最新版を確認できませんでした"
+                newer -> "$latest に更新できます"
+                else -> "最新です"
+            },
+            trailing =
+                if (!canUpdate) null
+                else {
+                    {
+                        ConfirmAction(
+                            host to latest,
+                            "更新",
+                            "${host.name} を実行時の最新版に更新します（確認時点の最新版: $latest）。接続が一時的に切れる場合があります。",
+                            enabled = !busy,
+                            title = "PC の PiMate を更新しますか？",
+                            modifier = flushEnd,
+                            color = pi.accentText,
+                            style = Type.lead,
+                        ) {
+                            operate {
+                                val r = request(Operation.Update)
+                                note = "${r.getString("to")} に更新しました"
+                                retry++
+                            }
+                        }
                     }
-                }
-            else -> {
-                Hint("PC のターミナルで更新してください")
-                CommandPill("pi update npm:@phni3j9a/pimate")
-            }
+                },
+        )
+        if (manual == "not_service") {
+            Hint("PC で実行してください")
+            CommandPill("pi update npm:@phni3j9a/pimate", Modifier.padding(vertical = 8.dp))
+        } else if (!manual.isNullOrEmpty()) {
+            Hint("開発版のため PC で更新してください")
+            Spacer(Modifier.height(8.dp))
         }
         if (online && caps.optBoolean("hostRestart"))
-            ConfirmAction(host, "Host を再起動", "${host.name} との接続が一時的に切れる場合があります。", enabled = !busy) {
+            ConfirmAction(
+                host,
+                "Host を再起動",
+                "${host.name} との接続が一時的に切れる場合があります。",
+                enabled = !busy,
+                modifier = flush,
+                color = pi.accentText,
+                weight = FontWeight.Normal,
+                style = Type.lead,
+            ) {
                 operate {
                     request(Operation.Restart)
                     note = "再起動を受け付けました"
                 }
             }
-        Label("プロバイダー")
-        MenuRow("プロバイダーのログイン", "", online && caps.optBoolean("authSession") && !busy, next = true) {
-            login = true
+        Label("プロバイダー", bottom = 0.dp)
+        val canLogin = online && caps.optBoolean("authSession")
+        ListRow(
+            "プロバイダーのログイン",
+            when {
+                !online -> "接続していません"
+                !canLogin -> "PC の PiMate を更新すると使えます"
+                else -> ""
+            },
+            enabled = canLogin && !busy,
+            minHeight = 60.dp,
+            onClick = { login = true },
+            trailing =
+                if (!canLogin) null
+                else {
+                    { Icon(Icons.Right, null, Modifier.size(16.dp), pi.textSecondary) }
+                },
+        )
+        // 以下の2欄は、接続中で PC が対応しているときだけ出す。
+        if (online && caps.optBoolean("githubStatus")) {
+            Label("GitHub", bottom = 0.dp)
+            val status = gh
+            ListRow(githubStatusText(status))
+            if (status != null && status.optBoolean("installed") && !status.optBoolean("loggedIn"))
+                CommandPill("gh auth login", Modifier.padding(bottom = 8.dp))
         }
-        Label("GitHub")
-        Text(githubStatusText(gh))
-        Label("ペアリング済みの端末")
-        if (devices == null) Hint("端末一覧は未確認です")
-        devices.orEmpty().forEach { d ->
-            Text(d.str("name"))
-            if (d.optLong("lastSeenAt") > 0)
-                Hint(
-                    "最終接続 " +
-                        android.text.format.DateFormat.format("yyyy/MM/dd", d.optLong("lastSeenAt"))
+        if (online && caps.optBoolean("pairedDevices")) {
+            Label("ペアリング済みの端末", bottom = 0.dp)
+            if (devices == null) Hint(if (error.isEmpty()) "確認中…" else "端末一覧は未確認です")
+            devices.orEmpty().forEach { d ->
+                val seen = d.optLong("lastSeenAt").takeIf { it > 0 }?.let { "最終接続 ${day(it)}" }
+                val self = d.optBoolean("current")
+                ListRow(
+                    d.str("name"),
+                    listOfNotNull(if (self) "このスマホ" else null, seen).joinToString(" · "),
+                    trailing =
+                        if (self) null
+                        else {
+                            {
+                                val deviceId = d.getString("deviceId")
+                                ConfirmAction(
+                                    host to deviceId,
+                                    "端末の取り消し",
+                                    "${d.str("name")} はこの PC に接続できなくなります。",
+                                    button = "取り消し",
+                                    enabled = !busy,
+                                    modifier = flushEnd,
+                                    weight = FontWeight.Normal,
+                                    style = Type.lead,
+                                ) {
+                                    operate {
+                                        request(Operation.Revoke(deviceId))
+                                        retry++
+                                        note = "登録を取り消しました"
+                                    }
+                                }
+                            }
+                        },
                 )
-            if (d.optBoolean("current")) Hint("このスマホ")
-            else if (online && caps.optBoolean("pairedDevices")) {
-                val deviceId = d.getString("deviceId")
-                ConfirmAction(
-                    host to deviceId,
-                    "端末の取り消し",
-                    "${d.str("name")} はこの PC に接続できなくなります。",
-                    button = "取り消し",
-                    enabled = !busy,
-                ) {
-                    operate {
-                        request(Operation.Revoke(deviceId))
-                        retry++
-                        note = "登録を取り消しました"
-                    }
-                }
             }
         }
         SheetError(error)
         if (note.isNotEmpty()) Hint(note)
-        TextAction("状態を再読み込み", { retry++ }, enabled = online && !busy)
-        ConfirmAction(host, "このマシンを削除", "このスマホに保存した ${host.name} の登録と下書きを削除します。", enabled = !busy) {
+        Spacer(Modifier.height(28.dp))
+        if (error.isNotEmpty())
+            TextAction(
+                "状態を再読み込み",
+                { retry++ },
+                flush,
+                enabled = online && !busy,
+                weight = FontWeight.Normal,
+                style = Type.lead,
+            )
+        ConfirmAction(
+            host,
+            "このマシンを削除",
+            "このスマホに保存した ${host.name} の登録と下書きを削除します。",
+            enabled = !busy,
+            modifier = flush,
+            weight = FontWeight.Normal,
+            style = Type.lead,
+        ) {
             operate {
                 m.forget(id)
                 close()
@@ -414,10 +659,10 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit) {
 
 internal fun githubStatusText(gh: JSONObject?): String =
     when {
-        gh == null -> "ログイン状態は未確認です"
-        !gh.optBoolean("installed") -> "PC に GitHub CLI（gh）がインストールされていません"
-        gh.optBoolean("loggedIn") -> "${gh.str("login")} でログイン中"
-        else -> "PC で gh auth login を実行してください"
+        gh == null -> "確認中…"
+        !gh.optBoolean("installed") -> "PC に gh が入っていません"
+        gh.optBoolean("loggedIn") -> "${gh.str("login").ifEmpty { "GitHub" }} でログイン中"
+        else -> "ログインしていません。PC で実行してください"
     }
 
 internal fun authResultText(flow: JSONObject): String =

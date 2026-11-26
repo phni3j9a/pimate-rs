@@ -22,6 +22,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CoroutineScope
@@ -645,10 +646,10 @@ internal fun SessionSheet(
 }
 
 @Composable
-internal fun Label(text: String) {
+internal fun Label(text: String, top: Dp = 28.dp, bottom: Dp = 2.dp) {
     Text(
         text,
-        Modifier.padding(top = 28.dp, bottom = 2.dp).semantics { heading() },
+        Modifier.padding(top = top, bottom = bottom).semantics { heading() },
         pi.textSecondary,
         style = Type.caption,
         fontWeight = FontWeight.SemiBold,
