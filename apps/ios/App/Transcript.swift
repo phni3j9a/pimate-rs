@@ -1,6 +1,6 @@
 import Foundation
 
-struct WorkLine: Identifiable {
+struct WorkLine: Identifiable, Equatable {
     let id: String, name: String, subject: String
     var output: String, state: String
     var images: HistoryImages?
@@ -12,13 +12,13 @@ struct WorkLine: Identifiable {
         return sec < 60 ? "Thought for \(sec)s" : "Thought for \(sec / 60)m \(sec % 60)s"
     }
 }
-struct ChatTurn: Identifiable {
+struct ChatTurn: Identifiable, Equatable {
     let id: String
     var prompt = ""
     var images: HistoryImages?
     var imageCount: Int { images?.count ?? 0 }
     var lines: [Line] = []
-    enum Line: Identifiable {
+    enum Line: Identifiable, Equatable {
         case reply(Reply), work(WorkLine)
         var id: String {
             switch self { case .reply(let r): "reply:" + r.id; case .work(let w): "work:" + w.id }
@@ -29,7 +29,7 @@ struct ChatTurn: Identifiable {
         guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; w.images = images; lines[index] = .work(w)
     }
     var start: Int?, end: Int?
-    struct Reply: Identifiable { let id: String, text: String }
+    struct Reply: Identifiable, Equatable { let id: String, text: String }
     var summary: String {
         let calls = work.filter { !$0.isThought }.count
         let elapsed = start.flatMap { a in end.map { max(0, ($0 - a) / 1000) } } ?? 0

@@ -29,7 +29,7 @@ struct ChatScreen: View {
 }
 // Match the rendered content, not a time window: a question can arrive in the same layout pass.
 struct TailContent: Equatable {
-    let turns: Int, stream: [Item], questions: [Item], pc: String?, receipt: String?, move: UUID?
+    let turns: [ChatTurn], stream: [Item], questions: [Item], pc: String?, receipt: String?, move: UUID?
 }
 struct TailMetrics: Equatable {
     let height: CGFloat, viewport: CGRect
@@ -52,7 +52,6 @@ private struct Conversation: View {
     }
     @State private var loaded = false
     @State private var metrics: TailMetrics?
-    @State private var turnRevision = 0
     @State private var manualLayout: TailContent?
     @GestureState private var dragging = false
     private var running: Bool { rows.field("status") == "\"running\"" }
@@ -62,7 +61,7 @@ private struct Conversation: View {
         let timing = groups["thinkingMs"] ?? []
         let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
-        let content = TailContent(turns: turnRevision, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id)
+        let content = TailContent(turns: turns, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id)
         let didToggle = { manualLayout = content }
         VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -129,7 +128,7 @@ private struct Conversation: View {
             .task(id: [entries, tools, timing]) {
                 let task = Task.detached(priority: .userInitiated) { ChatTurn.read(entries, live: tools, timing: timing) }
                 let result = await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
-                if !Task.isCancelled { turns = result; turnRevision += 1; loaded = true }
+                if !Task.isCancelled { turns = result; loaded = true }
             }
     }
 }
