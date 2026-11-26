@@ -41,7 +41,7 @@ pub(crate) fn on_right_click(row: Div, build: impl Fn(PopupMenu) -> PopupMenu + 
         .on_mouse_down(MouseButton::Right, move |e, w, cx| show(e.position, w, cx))
 }
 impl Desktop {
-    fn show_context(
+    pub(super) fn show_context(
         &mut self,
         menu: Entity<PopupMenu>,
         position: Point<Pixels>,

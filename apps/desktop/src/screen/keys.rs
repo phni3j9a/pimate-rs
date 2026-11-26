@@ -122,6 +122,25 @@ pub(crate) fn intercept(w: &mut Window, cx: &mut Context<Desktop>) -> Subscripti
             w.dismiss_tooltip();
         }
         let top = d.front(w, cx);
+        if key == "tab"
+            && let Some(focus) = d.dialog_focus.borrow().as_ref()
+        {
+            d.consumed_keys.insert(key.into(), None);
+            w.cycle_focus_within(focus, e.keystroke.modifiers.shift);
+            cx.stop_propagation();
+            return;
+        }
+        let modal = top == Some(Overlay::Sheet)
+            || top == Some(Overlay::Route)
+                && d.navigation
+                    .as_ref()
+                    .is_some_and(|n| matches!(n.read(cx).route, Route::New(_)));
+        if key == "tab" && modal {
+            d.consumed_keys.insert(key.into(), None);
+            w.cycle_focus_within(&d.modal_focus, e.keystroke.modifiers.shift);
+            cx.stop_propagation();
+            return;
+        }
         let text_space = key == "space" && e.context_stack.iter().any(|c| c.contains("Input"));
         let owns = match key {
             "escape" => true,
@@ -261,7 +280,7 @@ impl Desktop {
                 }
             }
             Some(Overlay::Sidebar) => w.focus(&self.side_focus),
-            None | Some(Overlay::Slash | Overlay::Tooltip) => w.focus(
+            None | Some(Overlay::Slash | Overlay::Tooltip | Overlay::Inspector) => w.focus(
                 &self
                     .input
                     .as_ref()
@@ -273,7 +292,7 @@ impl Desktop {
     }
     pub(super) fn front(&self, w: &Window, cx: &App) -> Option<Overlay> {
         use Overlay::*;
-        if self.dialog_open.get() {
+        if self.dialog_focus.borrow().is_some() {
             Some(Prompt)
         } else if w.tooltip_visible() {
             Some(Tooltip)
@@ -344,8 +363,7 @@ impl Desktop {
         self.confirm_action(
             "このターンを停止しますか？".into(),
             "進行中の処理を停止します。".into(),
-            "停止する",
-            true,
+            ("停止する", true),
             w,
             cx,
             move |app, _, cx| {
@@ -383,6 +401,16 @@ impl Desktop {
     pub(super) fn command(&mut self, c: Command, w: &mut Window, cx: &mut Context<Self>) {
         use Command::*;
         let top = self.front(w, cx);
+        if (top == Some(Overlay::Sheet)
+            || top == Some(Overlay::Route)
+                && self
+                    .navigation
+                    .as_ref()
+                    .is_some_and(|n| matches!(n.read(cx).route, Route::New(_))))
+            && !matches!(c, EscapeTop | Search | Keys)
+        {
+            return;
+        }
         if top == Some(Overlay::Prompt) {
             return;
         }
@@ -424,7 +452,7 @@ impl Desktop {
                     cx.notify();
                 }),
                 Some(Overlay::Sheet) => {
-                    self.state.close_page();
+                    self.state.sheet = None;
                 }
                 Some(Overlay::Inspector) => {
                     self.chat_keys.as_ref().unwrap().1.update(cx, |s, cx| {
@@ -458,7 +486,14 @@ impl Desktop {
             }
             NextPane => {
                 self.keyboard_focus = true;
-                if !self.hosts.is_empty() && !self.side_focus.contains_focused(w, cx) {
+                if self.main_focus.is_focused(w)
+                    && self
+                        .chat_keys
+                        .as_ref()
+                        .is_some_and(|(_, i)| i.read(cx).tab.is_some())
+                {
+                    w.focus(&self.inspector_focus)
+                } else if !self.hosts.is_empty() && !self.side_focus.contains_focused(w, cx) {
                     if narrow {
                         self.sidebar_open = true
                     } else {

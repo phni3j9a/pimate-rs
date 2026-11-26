@@ -182,8 +182,7 @@ impl Desktop {
                             this.confirm_action(
                                 format!("{label}しますか？"),
                                 warning.into(),
-                                label,
-                                true,
+                                (label, true),
                                 w,
                                 cx,
                                 move |app, _, cx| {
@@ -506,24 +505,16 @@ impl Desktop {
                     .border_b_1()
                     .border_color(p.border)
                     .child(title)
-                    .child(
-                        Button::new("back-agents")
-                            .label(if detail {
-                                "一覧に戻る"
-                            } else {
-                                "会話に戻る"
-                            })
-                            .on_click(move |_, _, cx| {
+                    .when(detail, |d| {
+                        d.child(Button::new("back-agents").label("一覧に戻る").on_click(
+                            move |_, _, cx| {
                                 back.update(cx, |s, cx| {
-                                    if detail {
-                                        s.child = None
-                                    } else {
-                                        *s = Inspector::default()
-                                    }
+                                    s.child = None;
                                     cx.notify()
                                 })
-                            }),
-                    ),
+                            },
+                        ))
+                    }),
             )
             .child(body)
     }

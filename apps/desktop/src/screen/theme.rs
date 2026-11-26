@@ -254,6 +254,7 @@ const ICONS: &[(&str, &str)] = &[
         "search",
         r#"<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>"#,
     ),
+    ("x", r#"<path d="m6 6 12 12M18 6 6 18"/>"#),
     ("plus", r#"<path d="M12 5v14M5 12h14"/>"#),
     (
         "gear",

@@ -168,18 +168,25 @@ impl Desktop {
                             let page = pg.clone();
                             let quote = format!("{}\n> {l}", f.path);
                             card = card.child(
-                                div()
-                                    .font_family("monospace")
-                                    .bg(if l.starts_with('+') {
-                                        p.accent.opacity(0.10)
-                                    } else if l.starts_with('-') {
-                                        Hsla::from(rgb(0xd46055)).opacity(0.12)
-                                    } else {
-                                        p.bg
-                                    })
-                                    .child(l.to_owned())
-                                    .id(SharedString::from(format!("quote:{fi}:{i}:{li}")))
-                                    .cursor_pointer()
+                                Button::new(SharedString::from(format!("quote:{fi}:{i}:{li}")))
+                                    .ghost()
+                                    .small()
+                                    .justify_start()
+                                    .px_1()
+                                    .tooltip("この行を下書きに引用")
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .font_family("monospace")
+                                            .bg(if l.starts_with('+') {
+                                                p.add_bg
+                                            } else if l.starts_with('-') {
+                                                p.del_bg
+                                            } else {
+                                                p.bg
+                                            })
+                                            .child(l.to_owned()),
+                                    )
                                     .on_click(cx.listener(move |app, _, w, cx| {
                                         if let Err(e) = page.append_reference(app, &quote, w, cx) {
                                             app.notice = format!("入力欄に追加できません: {e}")
@@ -210,7 +217,6 @@ impl Desktop {
         } else {
             body = body.child("差分を集計中…")
         }
-        let back = ins.clone();
         let ask = ins.clone();
         let page = pg.clone();
         div()
@@ -226,15 +232,7 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child("変更をレビュー")
-                    .child(Button::new("review-back").label("会話に戻る").on_click(
-                        move |_, _, cx| {
-                            back.update(cx, |s, cx| {
-                                *s = Inspector::default();
-                                cx.notify()
-                            })
-                        },
-                    )),
+                    .child("変更をレビュー"),
             )
             .child(
                 div()

@@ -36,12 +36,18 @@ impl Desktop {
             self.bind_editor(w, cx);
         }
         let held = w.use_keyed_state("chat-page", cx, |_, _| None::<state::Page>);
-        let page = if let Some(sheet) = self.active_sheet() {
-            sheet.page.clone()
-        } else if let Some(page) = held.read(cx).clone().filter(|p| p.visible(self)) {
+        let background = self
+            .navigation
+            .as_ref()
+            .is_some_and(|n| matches!(n.read(cx).route, Route::New(_)));
+        let page = if let Some(page) = held.read(cx).clone().filter(|p| p.visible(self)) {
             page
         } else {
-            let Ok(page) = self.open_chat() else {
+            let Some(page) = (if background || self.active_sheet().is_some() {
+                self.background_chat()
+            } else {
+                self.open_chat().ok()
+            }) else {
                 return main;
             };
             held.update(cx, |h, _| *h = Some(page.clone()));
@@ -60,7 +66,9 @@ impl Desktop {
             cx,
             |_, _| super::chat_review::Inspector::default(),
         );
-        self.chat_keys = Some((page.clone(), inspector.clone()));
+        if !background {
+            self.chat_keys = Some((page.clone(), inspector.clone()));
+        }
         if let Some((host, pi, start, shutdown)) = self.row_action.take()
             && key.host == host
             && key.instance == pi
@@ -185,7 +193,7 @@ impl Desktop {
                         }),
                 )
                 .child(self.review_button(&inspector, &page, p, cx))
-                .child(self.sheet_nav(&page, cx))
+                .child(self.session_menu(&page, rows, cx))
                 .children(github),
         );
         if let Some(rev) = movement {
@@ -308,7 +316,11 @@ impl Desktop {
                 .px_4(),
             );
         }
-        let (suggestions, candidates) = self.commands(&key, &page, p, w, cx);
+        let (suggestions, candidates) = if background {
+            (None, None)
+        } else {
+            self.commands(&key, &page, p, w, cx)
+        };
         self.slash_visible = suggestions.is_some();
         main = main.children(suggestions);
         if let Some((_, input, _)) = &self.input {
@@ -469,20 +481,27 @@ impl Desktop {
             );
         }
         let chat = outer.child(theme::column(main).flex_shrink_0());
-        let chat = self.with_inspector(chat, &key, &page, &inspector, p, w, cx);
-        let Some(sheet) = self.active_sheet() else {
-            return chat;
-        };
-        use state::SheetPage::*;
-        let kind = sheet.kind;
-        let pop = matches!(kind, Model | Usage | Session);
-        let focus = w
-            .use_keyed_state("chat-sheet-focus", cx, |_, cx| cx.focus_handle())
-            .read(cx)
-            .clone();
+        let chat = self.with_inspector(chat, &page, &inspector, p, w, cx);
+        if self.active_sheet().is_some_and(|s| s.kind.is_popover()) {
+            chat.child(self.sheet_overlay(&key, p, w, cx))
+        } else {
+            chat
+        }
+    }
+    pub(super) fn sheet_overlay(
+        &self,
+        key: &EditorKey,
+        p: &Colors,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let kind = self.active_sheet().unwrap().kind;
+        let pop = kind.is_popover();
+        let focus = self.modal_focus.clone();
         if !focus.contains_focused(w, cx)
+            && !self.sidebar_open
             && !self.palette_open
-            && !self.dialog_open.get()
+            && !self.dialog_focus.borrow().is_some()
             && self.context_menu.is_none()
         {
             w.focus(&focus);
@@ -491,25 +510,24 @@ impl Desktop {
             .absolute()
             .inset_0()
             .occlude()
-            .when(!pop, |d| d.bg(black().opacity(0.24)))
+            .when(!pop, |d| d.bg(p.scrim))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|app, _, w, cx| {
-                    app.state.close_page();
+                    app.state.sheet = None;
                     app.restore_input(w, cx);
                     cx.notify()
                 }),
             );
-        let panel = self.sheet_panel(&key, p, w, cx);
-        chat.child(scrim).child(
+        let panel = self.sheet_panel(key, p, w, cx);
+        div().absolute().inset_0().child(scrim).child(
             div()
                 .absolute()
                 .inset_0()
                 .flex()
                 .items_center()
                 .justify_center()
-                .when(pop, |d| d.items_end().justify_start().p_3())
-                .when(kind == Session, |d| d.items_start().justify_end())
+                .when(pop, |d| d.items_end().justify_start().p_3().pb(rems(3.2)))
                 .child(
                     div()
                         .id("chat-overlay")

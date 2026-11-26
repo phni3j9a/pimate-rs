@@ -8,6 +8,13 @@ pub(super) enum Tab {
     Github,
 }
 
+#[derive(Clone)]
+struct DragInspector;
+impl Render for DragInspector {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
 impl Desktop {
     pub(super) fn select_github(&mut self, query: GitHubQuery, cx: &mut Context<Self>) {
         let Some((page, ins)) = &self.chat_keys else {
@@ -35,7 +42,6 @@ impl Desktop {
     pub(super) fn with_inspector(
         &mut self,
         chat: Div,
-        key: &EditorKey,
         page: &state::Page,
         ins: &Entity<Inspector>,
         p: &Colors,
@@ -52,6 +58,7 @@ impl Desktop {
         let Some(tab) = ins.read(cx).tab else {
             return row;
         };
+        let Ok(key) = page.editor() else { return row };
         let mut tabs = div().flex().items_center().gap_1().p_2();
         for (t, label) in [
             (Tab::Review, "変更"),
@@ -109,14 +116,12 @@ impl Desktop {
             Tab::Github => {
                 let n = ins.read(cx).github.clone().unwrap();
                 let q = n.read(cx).github.query.clone().unwrap();
-                if let Some(panel) = n
-                    .read(cx)
-                    .github
-                    .viewer
-                    .clone()
+                let viewer = n.read(cx).github.viewer.clone();
+                if let Some(panel) = viewer
                     .as_ref()
                     .and_then(|v| chat_media::Viewer::panel(v, None, p, w, cx))
                 {
+                    self.media_keys = viewer;
                     div().child(panel)
                 } else {
                     let mut body = div().flex().flex_col().min_h_0().flex_1();
@@ -134,24 +139,47 @@ impl Desktop {
                 }
             }
         };
-        row.child(
+        let wide = Layout::of(w.viewport_size().width) == Layout::Wide;
+        row.on_drag_move(cx.listener(|app, e: &DragMoveEvent<DragInspector>, _, cx| {
+            app.inspector_width =
+                f32::from(e.bounds.right() - e.event.position.x).clamp(320., 640.);
+            cx.notify()
+        }))
+        .child(
             div()
                 .id("inspector")
+                .debug_selector(|| "inspector".into())
+                .track_focus(&self.inspector_focus)
                 .occlude()
                 .flex()
                 .flex_col()
                 .flex_none()
-                .w(px(400.))
+                .relative()
+                .w(px(self.inspector_width))
                 .max_w_full()
                 .h_full()
                 .bg(p.bg)
                 .border_l_1()
                 .border_color(p.border)
-                .when(Layout::of(w.viewport_size().width) != Layout::Wide, |d| {
-                    d.absolute().right_0().top_0()
-                })
+                .when(!wide, |d| d.absolute().right_0().top_0())
                 .child(tabs)
-                .child(div().flex().flex_1().min_h_0().child(body)),
+                .child(div().flex().flex_1().min_h_0().child(body))
+                .when(wide, |d| {
+                    d.child(
+                        div()
+                            .id("inspector-resize")
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .h_full()
+                            .w(px(5.))
+                            .cursor_col_resize()
+                            .on_drag(DragInspector, |d, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| d.clone())
+                            }),
+                    )
+                }),
         )
     }
 }

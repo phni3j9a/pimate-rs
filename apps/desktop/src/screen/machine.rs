@@ -12,7 +12,7 @@ pub(super) struct MachineData {
     pending: Option<(Host, String, Decision)>,
 }
 enum Decision {
-    Host(Confirmation),
+    Host(Box<Confirmation>),
     Remove(Option<Arc<Connection>>),
 }
 const LOCAL_WARNING: &str = "この端末からだけ接続情報と下書きを削除しますか？PC 側に登録が残る場合は、PC の Pi の /pimate devices で取り消してください。";
@@ -115,7 +115,7 @@ impl Desktop {
                 },
             );
         }
-        if !self.dialog_open.get()
+        if !self.dialog_focus.borrow().is_some()
             && let Some((fixed, warning, decision)) = n.update(cx, |s, _| s.machine.pending.take())
         {
             let nav = n.clone();
@@ -124,8 +124,7 @@ impl Desktop {
             self.confirm_action(
                 format!("{} · {}", fixed.name, fixed.address),
                 warning,
-                "確認して実行",
-                destructive,
+                ("確認して実行", destructive),
                 w,
                 cx,
                 move |app, w, cx| {
@@ -190,7 +189,7 @@ impl Desktop {
                         page.confirmation(op).map(|c| {
                             (
                                 format!("{} {}", target.as_deref().unwrap_or(""), c.warning()),
-                                Decision::Host(c),
+                                Decision::Host(Box::new(c)),
                             )
                         })
                     }

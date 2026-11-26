@@ -97,6 +97,14 @@ impl Desktop {
         dark
     }
     pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
+        if n.read(cx).spawn.as_ref().is_some_and(|f| f.submitting)
+            && n.read(cx)
+                .page
+                .as_ref()
+                .is_some_and(|page| page.visible(self))
+        {
+            return;
+        }
         self.remember_spawn(n, cx);
         let previous = &n.read(cx).route;
         let back = match (&route, previous) {
@@ -386,6 +394,7 @@ impl Desktop {
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
         };
         let back = n.read(cx).back.clone();
+        let is_new = matches!(r, Route::New(_));
         let header = div()
             .flex()
             .items_center()
@@ -394,8 +403,22 @@ impl Desktop {
             .py_2()
             .border_b_1()
             .border_color(p.border)
-            .child(p.caption("PiMate  /  ワークスペース"))
-            .child(self.nav_button(n, "back", "戻る", back, cx).ghost());
+            .child(p.caption(if is_new {
+                title
+            } else {
+                "PiMate  /  ワークスペース"
+            }))
+            .child(
+                self.nav_button(n, "back", if is_new { "閉じる" } else { "戻る" }, back, cx)
+                    .ghost()
+                    .disabled(
+                        n.read(cx).spawn.as_ref().is_some_and(|f| f.submitting)
+                            && n.read(cx)
+                                .page
+                                .as_ref()
+                                .is_some_and(|page| page.visible(self)),
+                    ),
+            );
         let scroll = n.read(cx).scroll.clone();
         let body = div()
             .mx_auto()
@@ -405,12 +428,14 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(rems(1.55))
-                    .child(title),
-            )
+            .when(!is_new, |d| {
+                d.child(
+                    div()
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(rems(1.55))
+                        .child(title),
+                )
+            })
             .when(n.read(cx).pref_error, |v| {
                 v.child(p.caption("設定ファイルを読み書きできません。この起動中のみ反映します。"))
             })

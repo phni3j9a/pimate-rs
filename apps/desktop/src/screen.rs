@@ -639,7 +639,6 @@ impl Desktop {
         layout: Layout,
         side: Option<Div>,
         main: Div,
-        inspector: Option<Div>,
         p: &Colors,
         cx: &Context<Self>,
     ) -> Div {
@@ -682,20 +681,6 @@ impl Desktop {
             side => overlay = side.filter(|_| self.sidebar_open),
         }
         panes = panes.child(main);
-        // 変更・サブエージェント・GitHub。広ければ並べ、狭ければ会話の上に重ねる。
-        if let Some(inspector) = inspector {
-            panes = panes.child(if layout == Layout::Wide {
-                inspector.flex_none().border_l_1().border_color(p.fill2)
-            } else {
-                inspector
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .h_full()
-                    .bg(p.bg)
-                    .shadow_lg()
-            });
-        }
         if let Some(side) = overlay {
             panes = panes.child(
                 p.scrim()
@@ -806,7 +791,10 @@ impl Render for Desktop {
                     .child(t)
             })
         };
-        if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
+        let is_new = matches!(nav.read(cx).route, Route::New(_));
+        let panel = self.other_panel(&nav, &p, w, cx);
+        let (new_pi, panel) = if is_new { (panel, None) } else { (None, panel) };
+        if let Some(panel) = panel {
             main = main
                 .children(bar(toggle))
                 .child(div().flex().flex_1().min_h_0().child(panel));
@@ -867,6 +855,11 @@ impl Render for Desktop {
                 }
             }),
         );
+        let sheet_dialog = self
+            .active_sheet()
+            .is_some_and(|s| !s.kind.is_popover())
+            .then(|| self.editor().map(|key| self.sheet_overlay(&key, &p, w, cx)))
+            .flatten();
         keys::listeners(root, cx)
             .relative()
             .flex()
@@ -876,7 +869,26 @@ impl Render for Desktop {
             .text_color(p.ink)
             .text_size(rems(0.875))
             .children(titlebar)
-            .child(self.panes(layout, side, main, None, &p, cx))
+            .child(self.panes(layout, side, main, &p, cx))
+            .children(sheet_dialog)
+            .children(new_pi.map(|panel| {
+                p.scrim().items_center().justify_center().child(
+                    div()
+                        .id("new-pi-dialog")
+                        .track_focus(&self.modal_focus)
+                        .occlude()
+                        .flex()
+                        .flex_col()
+                        .w(px(560.))
+                        .max_w_full()
+                        .h(relative(0.86))
+                        .bg(p.surface)
+                        .rounded(px(theme::R_CARD))
+                        .shadow_lg()
+                        .overflow_hidden()
+                        .child(panel),
+                )
+            }))
             .children(self.command_palette(&p, cx))
             .children(self.pair_dialog(&p, w, cx))
             .children(self.context_menu.as_ref().map(context::OpenMenu::layer))
@@ -1495,9 +1507,9 @@ mod key_tests {
             assert!(w.update(|w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Prompt)));
             w.simulate_click(button, Default::default());
         }
-        assert!(w.update(|w, cx| gpui_component::WindowExt::has_active_dialog(w, cx)));
+        assert!(w.update(gpui_component::WindowExt::has_active_dialog));
         press(w, "escape");
-        assert!(!w.update(|w, cx| gpui_component::WindowExt::has_active_dialog(w, cx)));
+        assert!(!w.update(gpui_component::WindowExt::has_active_dialog));
         assert!(wire.try_recv().is_err());
         app.read_with(w, |d, cx| {
             assert!(
@@ -1514,22 +1526,75 @@ mod key_tests {
     ) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| keys::init(cx));
-        let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        let (rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        // この RC fixture は会話行だけを送る。実際のサイドバーと同じ instance 行も置く。
+        app.update(w, |d, cx| {
+            let m = d.machines.get_mut("key-menu").unwrap();
+            m.rows.apply(
+                (
+                    m.conn.snapshot().revision + 1,
+                    vec![pimate_core::Change::Upsert(pimate_core::Item {
+                        collection: "instance".into(),
+                        id: "pi".into(),
+                        position: 0,
+                        json: serde_json::json!({"startedAt":1,"cwd":"/fixture"}).to_string(),
+                    })],
+                ),
+                || panic!(),
+            );
+            cx.notify()
+        });
+        w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        w.run_until_parked();
         for close in ["escape", "enter"] {
-            w.update(|w, cx| {
-                app.update(cx, |d, cx| {
-                    d.consumed_keys.insert("enter".into(), None);
-                    d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
-                })
-            });
+            let row = w.debug_bounds("context-pi-pi").unwrap().center();
+            w.simulate_mouse_down(row, gpui::MouseButton::Right, Default::default());
             w.run_until_parked();
-            assert!(app.read_with(w, |d, _| d.dialog_open.get()));
+            assert!(app.read_with(w, |d, _| d.context_menu.is_some()));
+            w.simulate_keystrokes("up enter");
+            w.run_until_parked();
+            assert!(app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()
+                && d.consumed_keys.contains_key("enter")));
+            w.simulate_keystrokes("enter");
+            assert!(app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()));
             release(w, "enter");
             assert!(!app.read_with(w, |d, _| d.consumed_keys.contains_key("enter")));
             press(w, close);
-            assert!(!app.read_with(w, |d, _| d.dialog_open.get()));
+            assert!(!app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()));
             assert!(wire.try_recv().is_err());
         }
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+            })
+        });
+        w.run_until_parked();
+        // Tab order is window-scoped and the destructive action needs explicit focus.
+        for _ in 0..2 {
+            if w.update(|w, _| {
+                w.context_stack()
+                    .iter()
+                    .any(|c| c.contains("ExplicitConfirmation"))
+            }) {
+                break;
+            }
+            press(w, "tab");
+        }
+        assert!(w.update(|w, _| {
+            w.context_stack()
+                .iter()
+                .any(|c| c.contains("ExplicitConfirmation"))
+        }));
+        press(w, "enter");
+        assert_eq!(
+            rt.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), wire.recv()).await
+            })
+            .unwrap()
+            .as_deref(),
+            Some("shutdown")
+        );
+        assert!(wire.try_recv().is_err());
     }
     #[gpui::test]
     fn inspector_keeps_composer_and_marked_text(cx: &mut gpui::TestAppContext) {
@@ -1551,6 +1616,27 @@ mod key_tests {
             w.update(|w, cx| {
                 input.update(cx, |i, cx| assert!(i.marked_text_range(w, cx).is_some()))
             });
+        }
+    }
+    #[gpui::test]
+    fn inspector_docks_only_at_1080(cx: &mut gpui::TestAppContext) {
+        let (_, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        press(w, "secondary-shift-d");
+        for width in [1080., 1079., 620.] {
+            w.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+            w.run_until_parked();
+            let pane = w.debug_bounds("inspector").unwrap();
+            let header = w.debug_bounds("chat-header").unwrap();
+            assert_eq!(pane.right(), gpui::px(width));
+            assert_eq!(
+                header.right(),
+                if width >= 1080. {
+                    pane.left()
+                } else {
+                    pane.right()
+                }
+            );
         }
     }
     #[gpui::test]
