@@ -62,8 +62,9 @@ impl Desktop {
             |_, _| super::chat_review::Inspector::default(),
         );
         self.chat_keys = Some((page.clone(), inspector.clone()));
-        if let Some((epoch, start, shutdown)) = self.row_action.take()
-            && self.epoch == epoch
+        if let Some((host, pi, start, shutdown)) = self.row_action.take()
+            && key.host == host
+            && key.instance == pi
             && rows.get("view", "startedAt").as_u64() == Some(start)
         {
             if shutdown {
@@ -318,6 +319,7 @@ impl Desktop {
             );
         }
         let (suggestions, candidates) = self.commands(&key, &page, p, w, cx);
+        self.slash_visible = suggestions.is_some();
         main = main.children(suggestions);
         if let Some((_, input, _)) = &self.input {
             let has_photos = !self.state.attachments.images(&key).is_empty();
@@ -344,25 +346,34 @@ impl Desktop {
                         b.child(self.attachments(&key, &page, w, cx))
                     })
                     .child(
-                        div()
-                            .key_context("Composer")
-                            .when_some(candidates, |div, c| c.bind(div, cx))
-                            .on_action(cx.listener(|this, _: &keys::Newline, w, cx| {
-                                if !this.composing
-                                    && let Some((_, input, _)) = &this.input
+                        super::context::editor(
+                            div().debug_selector(|| "composer-input".into()),
+                            input.clone(),
+                            false,
+                        )
+                        .key_context("Composer")
+                        .when_some(candidates, |div, c| c.bind(div, cx))
+                        .on_action(cx.listener(|this, _: &keys::Newline, w, cx| {
+                            if !this.composing
+                                && let Some((_, input, _)) = &this.input
+                            {
+                                input.update(cx, |s, cx| s.replace("\n", w, cx));
+                            }
+                        }))
+                        .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
+                            if e.secondary == this.ctrl_enter {
+                                if !disabled
+                                    && !this.slash_visible
+                                    && this.confirmation.is_none()
+                                    && this.context_menu.is_none()
+                                    && !this.palette_open
                                 {
-                                    input.update(cx, |s, cx| s.replace("\n", w, cx));
+                                    this.submit_chat(&key_page, w, cx);
                                 }
-                            }))
-                            .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
-                                if e.secondary == this.ctrl_enter {
-                                    if !disabled {
-                                        this.submit_chat(&key_page, w, cx);
-                                    }
-                                    cx.stop_propagation();
-                                }
-                            }))
-                            .child(Input::new(input).appearance(false).h(rems(4.))),
+                                cx.stop_propagation();
+                            }
+                        }))
+                        .child(Input::new(input).appearance(false).h(rems(4.))),
                     )
                     .child(
                         div()

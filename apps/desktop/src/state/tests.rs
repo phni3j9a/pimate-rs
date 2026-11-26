@@ -298,7 +298,10 @@ pub(crate) async fn fixture(
                     }
                     started = true;
                     let mut snapshot = snapshot("pi", 1);
-                    if id == "abort-test" {
+                    if id == "key-menu" {
+                        snapshot["pendingUI"] = json!([]);
+                    }
+                    if matches!(id, "abort-test" | "key-menu") {
                         snapshot["agentActive"] = json!(true);
                     }
                     json!({"type":"subscribed","instanceId":"pi","snapshot":snapshot,"history":{"session":{"id":"same"},"items":[]}})
@@ -332,7 +335,7 @@ pub(crate) async fn fixture(
                             ws.send(Message::text(json!({"type":"event","instanceId":"pi","sessionId":"same","seq":2,"event":{"type":"session_changed","reason":"new","session":{"id":"next"}}}).to_string())).await.unwrap();
                             json!({})
                         }
-                        "abort" if id == "abort-test" => json!({}),
+                        "abort" if matches!(id, "abort-test" | "key-menu") => json!({}),
                         "commands" => json!({"commands":[]}),
                         "file_image" => {
                             files += 1;

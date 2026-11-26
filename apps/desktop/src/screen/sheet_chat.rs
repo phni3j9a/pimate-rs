@@ -363,7 +363,7 @@ impl Desktop {
                                     })
                                 }),
                         )
-                        .child(div().flex_1().child(Input::new(&search))),
+                        .child(div().flex_1().child(context::field(&search, false))),
                 );
                 let mut matched = false;
                 let mut thinking = div().flex().flex_wrap().gap_1();

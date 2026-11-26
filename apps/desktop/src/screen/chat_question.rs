@@ -163,12 +163,12 @@ impl Desktop {
                         );
                     }
                     if custom {
-                        card = card.child(Input::new(&field).disabled(form.read(cx).busy));
+                        card = card.child(context::field(&field, form.read(cx).busy));
                     }
                 }
             }
             "input" | "editor" => {
-                card = card.child(Input::new(&form.read(cx).values[0]).disabled(form.read(cx).busy))
+                card = card.child(context::field(&form.read(cx).values[0], form.read(cx).busy))
             }
             "confirm" => {}
             _ => {

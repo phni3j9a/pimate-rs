@@ -395,6 +395,7 @@ impl Desktop {
             self.state.attachments.forget(&host.id);
             self.state.instructions.forget(&host.id);
             if self.selected.as_ref().is_some_and(|(h, _)| h == &host.id) {
+                self.row_action = None;
                 self.selected = None;
                 self.input = None;
                 self.epoch += 1;

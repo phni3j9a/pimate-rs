@@ -48,7 +48,9 @@ struct Desktop {
     keyboard_focus: bool,
     navigation: Option<screen::Navigation>,
     chat_keys: Option<(state::Page, Entity<screen::Inspector>)>,
-    row_action: Option<(u64, u64, bool)>,
+    row_action: Option<(String, String, u64, bool)>,
+    slash_hidden: bool,
+    slash_visible: bool,
     context_menu: Option<screen::context::OpenMenu>,
     palette_return: Option<FocusHandle>,
     media_keys: Option<Entity<screen::chat_media::Viewer>>,
@@ -74,6 +76,8 @@ impl Desktop {
             cx.notify()
         })
         .detach();
+        cx.on_focus_lost(w, |app, w, _| w.focus(&app.main_focus))
+            .detach();
         let window = w.window_handle().window_id();
         cx.observe_keystrokes(move |app, e, w, cx| {
             if w.window_handle().window_id() == window
@@ -112,6 +116,8 @@ impl Desktop {
             navigation: None,
             chat_keys: None,
             row_action: None,
+            slash_hidden: false,
+            slash_visible: false,
             context_menu: None,
             palette_return: None,
             media_keys: None,
@@ -207,6 +213,7 @@ impl Desktop {
             .as_ref()
             .is_some_and(|(host, _)| !self.machines.contains_key(host))
         {
+            self.row_action = None;
             self.selected = None;
             self.epoch += 1;
             self.input = None;
@@ -334,6 +341,7 @@ impl Desktop {
             self.state.close_page();
             self.scroll = screen::transcript();
             self.input = None;
+            self.row_action = None;
             self.selected = Some((h, i));
             self.sidebar_open = false;
             // 「登録しました」は次の操作まで。登録できなかった理由は、会話を開いても残す。
@@ -355,6 +363,7 @@ impl Desktop {
         }
         self.input = None;
         self.composing = false;
+        self.slash_hidden = false;
         let Some(key) = key else { return };
         let value = self.drafts.get(&key).cloned().unwrap_or_default();
         let input = cx.new(|cx| {
@@ -369,6 +378,7 @@ impl Desktop {
                 && this.editor().as_ref() == Some(&shown)
                 && this.input.as_ref().is_some_and(|v| v.1 == state)
             {
+                this.slash_hidden = false;
                 this.drafts
                     .insert(shown.clone(), state.read(cx).value().to_string());
                 cx.notify()

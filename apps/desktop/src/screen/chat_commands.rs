@@ -38,16 +38,24 @@ impl Candidates {
             && let Some((_, input, _)) = &app.input
         {
             input.update(cx, |s, cx| {
-                s.set_value(format!("/{name} "), w, cx);
-                s.focus(w, cx)
+                let value = format!("/{name} ");
+                let end = gpui_component::input::Position::new(0, value.chars().count() as u32);
+                s.set_value(value, w, cx);
+                s.set_cursor_position(end, w, cx);
             });
         }
     }
     pub(super) fn bind(self, div: Div, cx: &Context<Desktop>) -> Div {
+        let enter = self.clone();
         let up = self.active.clone();
         let down = up.clone();
         let n = self.names.len();
         div.key_context("Composer Picker")
+            .on_action(cx.listener(move |app, _: &keys::PickEnter, w, cx| {
+                if let Some(name) = enter.names.get(*enter.active.read(cx)) {
+                    enter.accept(app, name, w, cx)
+                }
+            }))
             .on_action(cx.listener(move |_, _: &keys::PickUp, _, cx| {
                 up.update(cx, |v, _| *v = v.saturating_sub(1));
                 cx.notify();
@@ -72,6 +80,9 @@ impl Desktop {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Option<Stateful<Div>>, Option<Candidates>) {
+        if self.slash_hidden {
+            return (None, None);
+        }
         let Some(text) = self.drafts.get(key).filter(|t| {
             t.strip_prefix('/')
                 .is_some_and(|s| !s.chars().any(char::is_whitespace))

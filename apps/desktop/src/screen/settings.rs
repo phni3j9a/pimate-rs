@@ -25,6 +25,7 @@ pub(crate) struct Nav {
     pub(super) providers: super::providers::ProviderData,
     pub(super) github: super::github::Github,
     pub(super) initial_folder: Option<String>,
+    pub(super) spawn_drafts: HashMap<String, super::new_pi::SpawnDraft>,
     pub(super) spawn: Option<super::new_pi::Fields>,
     pub(super) back: Route,
     pub(super) generation: Arc<()>,
@@ -95,6 +96,7 @@ impl Desktop {
         dark
     }
     pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
+        self.remember_spawn(n, cx);
         let previous = &n.read(cx).route;
         let back = match (&route, previous) {
             (Route::New(_), Route::First(_))
@@ -110,6 +112,7 @@ impl Desktop {
             (Route::SetupPc, _) => Route::Tailscale,
             _ => Route::Home,
         };
+        self.row_action = None;
         self.state.close_page();
         let page = match &route {
             Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
@@ -124,6 +127,7 @@ impl Desktop {
                 back,
                 page,
                 pref_error: s.pref_error,
+                spawn_drafts: std::mem::take(&mut s.spawn_drafts),
                 ..Default::default()
             }
         });

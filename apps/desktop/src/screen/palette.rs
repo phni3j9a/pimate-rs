@@ -192,7 +192,10 @@ impl Desktop {
                                 app.choose(choice, w, cx);
                             }
                         }))
-                        .child(Input::new(input).appearance(false))
+                        .child(
+                            super::context::editor(div(), input.clone(), false)
+                                .child(Input::new(input).appearance(false)),
+                        )
                         .child(list)
                         .when(n == 0, |d| d.child(p.caption("一致する項目はありません")))
                         .child(p.caption("↑↓ 選ぶ　 Enter 実行　 Esc 閉じる")),

@@ -6,7 +6,7 @@ actions!(pimate, [Quit]);
 // The same command table drives shortcuts, macOS menus and the command palette.
 macro_rules! commands {
     ($($name:ident => ($key:literal, $label:literal)),* $(,)?) => {
-        actions!(pimate, [$($name,)* Newline, PickUp, PickDown, PickTab, PickEnter, OpenContext]);
+        actions!(pimate, [$($name,)* Newline, PickUp, PickDown, PickTab, PickEnter, OpenContext, PairTab, PairEnter]);
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub(super) enum Command { $($name,)* }
         pub(super) const SHORTCUTS: &[(Command, &str, &str)] = &[$((Command::$name, $key, $label)),*];
@@ -16,6 +16,9 @@ macro_rules! commands {
             // documented app shortcuts in the composer without changing other inputs.
             cx.bind_keys([$(KeyBinding::new($key,$name,Some("Composer > Input")),)*]);
             cx.bind_keys([
+                KeyBinding::new("enter", PairEnter, Some("PairDialog")),
+                KeyBinding::new("tab", PairTab, Some("PairDialog")),
+                KeyBinding::new("shift-tab", PairTab, Some("PairDialog")),
                 KeyBinding::new("menu", OpenContext, Some("ContextTarget")),
                 KeyBinding::new("shift-f10", OpenContext, Some("ContextTarget")),
                 KeyBinding::new("shift-enter", Newline, Some("Composer > Input")),
@@ -24,7 +27,7 @@ macro_rules! commands {
                 KeyBinding::new("tab", PickTab, Some("Picker > Input")),
                 KeyBinding::new("tab", PickDown, Some("Palette > Input")),
                 KeyBinding::new("shift-tab", PickUp, Some("Palette > Input")),
-                KeyBinding::new("enter", PickEnter, Some("Palette > Input")),
+                KeyBinding::new("enter", PickEnter, Some("Picker > Input")),
             ]);
             #[cfg(target_os="macos")]
             {
@@ -139,6 +142,8 @@ impl Desktop {
                 } else if self.confirmation.take().is_some() {
                 } else if self.sidebar_open {
                     self.sidebar_open = false;
+                } else if self.slash_visible {
+                    self.slash_hidden = true;
                 } else if !home {
                     let back = nav.read(cx).back.clone();
                     self.navigate(&nav, back, cx);
