@@ -391,11 +391,15 @@ impl Desktop {
                                 }
                                 app.removed(&target, cx);
                             }
-                            Ok(false) if same && app.hosts.contains(&target) => {
+                            Ok(false) | Err(Error::OutcomeUnknown) if same && app.hosts.contains(&target) => {
                                 nav.update(cx, |s, _| {
                                     s.machine.removing = false;
                                     s.machine.busy = false;
-                                    s.note = "PC 側の登録を取り消せませんでした。".into();
+                                    s.note = if result.is_err() {
+                                        "取消の結果を確認できません。PC の端末一覧で確かめてください。"
+                                    } else {
+                                        "PC 側の登録を取り消せませんでした。"
+                                    }.into();
                                     s.machine.pending = Some((
                                         target.clone(),
                                         LOCAL_WARNING.into(),

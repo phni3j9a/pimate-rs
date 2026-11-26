@@ -124,10 +124,15 @@ struct MachineDetailView: View {
                 case .revoke: note = "端末の登録を取り消しました。"
                 }; refresh += 1
             } catch RemovalError.notRevoked {
-                guard !Task.isCancelled, let local = try? model.confirmation(host: fixed.host, .forgetLocal), local.device == fixed.device else { return }
-                title = "PC 側の登録を取り消せませんでした"; confirmation = local
+                offerLocalRemoval(fixed, title: "PC 側の登録を取り消せませんでした")
+            } catch CoreError.OutcomeUnknown where fixed.action == .forget {
+                offerLocalRemoval(fixed, title: "取消の結果を確認できません。PC の端末一覧で確かめてください。")
             } catch { if !Task.isCancelled { self.error = "操作結果を確認できません。再実行の前に状態を確認してください。" } }
         }
+    }
+    private func offerLocalRemoval(_ fixed: MachineConfirmation, title: String) {
+        guard !Task.isCancelled, let local = try? model.confirmation(host: fixed.host, .forgetLocal), local.device == fixed.device else { return }
+        self.title = title; confirmation = local
     }
     private func load() async {
         devices = nil; check = nil; github = .unknown; error = ""; if confirmation?.action != .forget && confirmation?.action != .forgetLocal { confirmation = nil }

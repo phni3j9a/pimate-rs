@@ -86,7 +86,8 @@ impl Core {
     pub fn forget(&self, id: String) -> Result<(), Error> {
         self.store.forget(id)
     }
-    /// False: revoke was not acknowledged; prompt before offering local-only deletion.
+    /// False: revoke was not sent or was refused. OutcomeUnknown: it may have succeeded.
+    /// Both keep the local registration until the user confirms local-only deletion.
     pub async fn revoke_and_forget(
         &self,
         connection: Arc<Connection>,
@@ -112,14 +113,15 @@ impl Core {
         {
             return Ok(false);
         }
-        if connection
+        match connection
             .perform(Operation::Revoke {
                 device_id: device.clone(),
             })
             .await
-            .is_err()
         {
-            return Ok(false);
+            Ok(_) => (),
+            Err(Error::OutcomeUnknown) => return Err(Error::OutcomeUnknown),
+            Err(_) => return Ok(false),
         }
         let store = self.store.clone();
         runtime()

@@ -355,3 +355,50 @@ async fn paired_core_recovers_without_replaying_prompt() -> Result<()> {
     assert!(core.hosts()?.is_empty());
     Ok(())
 }
+
+#[tokio::test]
+async fn lost_self_revoke_reply_keeps_local_registration() -> Result<()> {
+    let server = Server::start().await?;
+    let paired = server.paired().await?;
+    let proxy = TcpListener::bind("127.0.0.1:0").await?;
+    let h = Host {
+        id: paired["hostId"].as_str().unwrap().into(),
+        device_id: paired["deviceId"].as_str().unwrap().into(),
+        name: "test".into(),
+        address: proxy.local_addr()?.to_string(),
+        needs_pairing: false,
+    };
+    let store = Arc::new(Storage::default());
+    store.save(h.clone(), paired["token"].as_str().unwrap().into())?;
+    let core = Core::new(store);
+    let mut host = server.ws().await?;
+    // Drop only the revoke acknowledgement: the real Host has already removed the device.
+    let relay = tokio::spawn(async move {
+        let mut client = tokio_tungstenite::accept_async(proxy.accept().await?.0).await?;
+        loop {
+            tokio::select! {
+                frame = client.next() => host.send(frame.context("client closed early")??).await?,
+                frame = host.next() => {
+                    let frame = frame.context("Host closed early")??;
+                    let v: Value = serde_json::from_str(frame.to_text()?)?;
+                    if v["type"] == "device_revoke_result" {
+                        ensure!(v["ok"] == true);
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    client.send(frame).await?;
+                }
+            }
+        }
+    });
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let c = core.connect(h.id.clone(), Arc::new(Changes(tx)))?;
+    until(&mut rx, "host", "connection", Some("connected")).await?;
+    assert_eq!(
+        core.revoke_and_forget(c, h.id.clone(), h.device_id.clone())
+            .await,
+        Err(Error::OutcomeUnknown)
+    );
+    relay.await??;
+    assert_eq!(core.hosts()?, vec![h]);
+    Ok(())
+}
