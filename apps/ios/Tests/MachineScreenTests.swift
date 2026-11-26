@@ -3,6 +3,12 @@ import XCTest
 @testable import PiMate
 
 final class MachineScreenTests: XCTestCase {
+    func testPackageUpdateRequiresANewerRelease() {
+        XCTAssertTrue(AppUpdate.newerPackage("0.1.10", than: "0.1.9"))
+        XCTAssertFalse(AppUpdate.newerPackage("0.1.9", than: "0.1.10"))
+        XCTAssertFalse(AppUpdate.newerPackage("0.1.01", than: "0.1.1"))
+        XCTAssertFalse(AppUpdate.newerPackage("0.2.0", than: "dev"))
+    }
     func testSameNamedDestinationsIncludeTheExactAddress() {
         let a = Host(id: "a", name: "Mac", address: "127.0.0.1:1234", deviceId: "1", needsPairing: false)
         let b = Host(id: "b", name: "Mac", address: "127.0.0.1:2345", deviceId: "2", needsPairing: false)

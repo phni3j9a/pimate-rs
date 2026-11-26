@@ -57,14 +57,17 @@ private struct ProviderConnection: View {
             } else if let login = page.login {
                 if !flow.isEmpty { Text(resultText) }
                 if providers.isEmpty { Text("プロバイダーの一覧がありません。") }
-                ForEach(providers.indices, id: \.self) { i in
-                    let p = providers[i], id = p.str("id")
-                    Section(id) {
+                ForEach(Array(Set(providers.map { $0.str("vendor") })).sorted(), id: \.self) { vendor in
+                    Section(vendor) {
+                      ForEach(providers.indices.filter { providers[$0].str("vendor") == vendor }, id: \.self) { i in
+                        let p = providers[i], id = p.str("id")
+                        if !p.str("member").isEmpty { Text(p.str("member")).fontWeight(.semibold) }
                         Text(p["configured"] as? Bool == true ? "設定済み" : "未設定").foregroundStyle(.secondary)
                         ForEach(p["methods"] as? [String] ?? [], id: \.self) { method in
                             Button(method == "oauth" ? "ブラウザでログイン" : "API キーを設定") { send(login, .authBegin, ["provider": id, "method": method]) }
                         }
                         if !p.str("stored").isEmpty { Button("ログアウト…", role: .destructive) { logout = id } }
+                      }
                     }
                 }
             }
@@ -87,7 +90,7 @@ private struct ProviderConnection: View {
     }
     private var resultText: String {
         switch CredentialOutcome(flow) {
-        case .saved: "ログインしました。"
+        case .saved: "ログインしました。起動中の Pi には /reload または再起動後に反映されます。"
         case .savedNeedsReload: "認証情報は保存済みです。PC の Pi を /reload または再起動してください。再入力は不要です。"
         case .storageUnknown: "資格情報の保存結果は不明です。再入力する前にログイン状態を再確認してください。"
         case .failed: "ログインできませんでした。"
@@ -101,7 +104,7 @@ private struct ProviderConnection: View {
             defer { pending = nil }
             do {
                 let result = try await login.request(method, fields)
-                if method == .authLogout { note = result["refreshRequired"] as? Bool == true ? "削除済みです。PC の Pi を /reload してください。" : "ログアウトしました。" }
+                if method == .authLogout { note = result["refreshRequired"] as? Bool == true ? "削除済みです。PC の Pi を /reload してください。" : "ログアウトしました。起動中の Pi には /reload または再起動後に反映されます。" }
                 _ = try await login.request(.authList)
             } catch { if !Task.isCancelled { self.error = "資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。" } }
         }

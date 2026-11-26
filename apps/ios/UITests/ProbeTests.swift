@@ -301,7 +301,7 @@ extension ProbeTests {
         if variant == "light" {
             app.buttons["API キーを設定"].tap(); let key = app.secureTextFields["API キー"]
             XCTAssertTrue(key.waitForExistence(timeout: 12)); key.tap(); key.typeText("fixture-only"); tap(app.buttons["送信"])
-            XCTAssertTrue(app.staticTexts["ログインしました。"].waitForExistence(timeout: 12)); tap(app.buttons["ログアウト…"])
+            XCTAssertTrue(app.staticTexts["ログインしました。起動中の Pi には /reload または再起動後に反映されます。"].waitForExistence(timeout: 12)); tap(app.buttons["ログアウト…"])
             app.alerts.buttons["キャンセル"].tap(); tap(app.buttons["ログアウト…"]); app.alerts.buttons["ログアウト"].tap()
             XCTAssertTrue(app.staticTexts["未設定"].waitForExistence(timeout: 12))
         }

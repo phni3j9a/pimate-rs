@@ -209,6 +209,18 @@ fn commands_prefer_local_and_do_not_turn_unknown_commands_into_prompts() {
     assert!(s.drafts.is_empty());
 }
 #[test]
+fn legacy_openai_methods_share_a_vendor_but_not_oauth() {
+    let mut s = view();
+    let mut body = json!({"providers":[{"id":"openai","methods":["api_key","oauth"],"stored":"api_key"},{"id":"openai-codex","methods":["oauth"]}]});
+    s.receipt("auth_list", &json!("login"), &mut body).unwrap();
+    let rows = s.get("provider", "login");
+    assert_eq!(rows[0]["methods"], json!(["api_key"]));
+    assert_eq!(rows[0]["stored"], "api_key");
+    assert_eq!(rows[0]["vendor"], rows[1]["vendor"]);
+    assert_eq!(rows[1]["methods"], json!(["oauth"]));
+}
+
+#[test]
 fn auth_strips_untrusted_url_and_ignores_late_revision() {
     let mut s = view();
     for (rev, url, valid) in [

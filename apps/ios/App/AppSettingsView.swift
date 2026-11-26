@@ -27,7 +27,7 @@ struct AppSettingsView: View {
                 Picker("文字サイズ", selection: settings.$typeSize) { ForEach(TypeSize.allCases, id: \.self) { Text($0.rawValue) } }
             }
             Section("情報") {
-                LabeledContent("PiMate", value: PiSettings.version ?? "版は未確認")
+                LabeledContent { Text(PiSettings.version ?? "版は未確認") } label: { Label { Text("PiMate") } icon: { mark("Mark", 22) } }
                 Button("更新を確認") {
                     guard check == nil else { return }; update = nil
                     check = Task { let result = await AppUpdate.check(); if !Task.isCancelled { update = result }; check = nil }
@@ -39,7 +39,7 @@ struct AppSettingsView: View {
                 case .available(let version, let url): Link("\(version) に更新できます", destination: url)
                 case nil: EmptyView()
                 }
-                Link("GitHub", destination: URL(string: "https://github.com/phni3j9a/pimate-rs")!); Link("不具合を報告", destination: PiSettings.issueURL)
+                Link(destination: URL(string: "https://github.com/phni3j9a/pimate-rs")!) { Label { Text("GitHub") } icon: { mark("github-mark", 20) } }; Link("不具合を報告", destination: PiSettings.issueURL)
             }
         }.navigationTitle("設定").navigationBarTitleDisplayMode(.inline).navigationDestination(isPresented: $pair) { PairScreen(model: model) { pair = false } }
         .onDisappear { check?.cancel() }

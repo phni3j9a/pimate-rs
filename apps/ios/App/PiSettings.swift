@@ -11,6 +11,16 @@ struct PiSettings: DynamicProperty {
 
 enum AppUpdate: Equatable {
     case unknown, latest, available(String, URL)
+    static func newerPackage(_ latest: String, than current: String) -> Bool {
+        func parts(_ version: String) -> [Substring]? {
+            let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 3, parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy { $0.isASCII && $0.isNumber } }) else { return nil }
+            return parts.map { $0.drop(while: { $0 == "0" }) }
+        }
+        guard let a = parts(latest), let b = parts(current) else { return false }
+        for (x, y) in zip(a, b) where x != y { return x.count == y.count ? x > y : x.count > y.count }
+        return false
+    }
     static func lookup(version: String, bundle: String, result: Object) -> Self {
         func parts(_ text: String) -> [Int]? {
             let ns = text.split(separator: ".", omittingEmptySubsequences: false)
