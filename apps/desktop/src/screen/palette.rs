@@ -8,6 +8,7 @@ enum Choice {
 }
 impl Desktop {
     pub(super) fn open_palette(&mut self, shortcuts: bool, w: &mut Window, cx: &mut Context<Self>) {
+        self.palette_return = w.focused(cx);
         self.palette_open = true;
         self.palette_index = 0;
         if let Some((s, _)) = &self.search {
@@ -35,9 +36,17 @@ impl Desktop {
         }
         cx.notify();
     }
-    fn choose(&mut self, choice: &Choice, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_palette(&mut self, w: &mut Window) {
         self.palette_open = false;
-        w.focus(&self.root_focus);
+        w.focus(
+            self.palette_return
+                .take()
+                .as_ref()
+                .unwrap_or(&self.root_focus),
+        );
+    }
+    fn choose(&mut self, choice: &Choice, w: &mut Window, cx: &mut Context<Self>) {
+        self.close_palette(w);
         match choice {
             Choice::Pi(h, i) => {
                 if let Some(nav) = self.navigation.clone() {
@@ -47,12 +56,18 @@ impl Desktop {
             }
             Choice::App(c) => self.command(*c, w, cx),
             Choice::Slash(pg, name) if pg.visible(self) => {
-                if let Some((_, s, _)) = &self.input {
-                    s.update(cx, |s, cx| {
-                        s.insert(format!("/{name} "), w, cx);
-                        s.focus(w, cx);
-                    });
+                if self.sending {
+                    return;
                 }
+                let t = match pg.command_ticket(name) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.finish_send_notice(Err(e));
+                        cx.notify();
+                        return;
+                    }
+                };
+                self.run_submission(pg, t, false, w, cx);
             }
             _ => {}
         }
@@ -71,9 +86,10 @@ impl Desktop {
             for (h, i, _) in self.pi_order() {
                 let data = self.machines[&h].rows.get("instance", &i);
                 let label = format!(
-                    "{}　{}",
+                    "{}　{} · {}",
                     pi_title(data, &i),
-                    data["cwd"].as_str().unwrap_or("")
+                    data["cwd"].as_str().unwrap_or(""),
+                    self.machines[&h].registration.name
                 );
                 items.push(("Pi", label, Choice::Pi(h, i)));
             }
@@ -113,13 +129,18 @@ impl Desktop {
         let mut list = div()
             .id("palette-list")
             .overflow_y_scroll()
-            .max_h(rems(22.));
-        // Keep the active row visible even when navigating a long list with the keyboard.
-        let first = ix.saturating_sub(7);
-        for (i, (section, label, choice)) in items.iter().enumerate().skip(first) {
+            .max_h(rems(22.))
+            .track_scroll(&self.palette_scroll);
+        let mut active_row = ix;
+        let mut section_count = 0;
+        for (i, (section, label, choice)) in items.iter().enumerate() {
             if *section != group {
                 group = section;
+                section_count += 1;
                 list = list.child(p.caption(*section));
+            }
+            if i == ix {
+                active_row = ix + section_count;
             }
             let choice = choice.clone();
             list = list.child(
@@ -136,8 +157,7 @@ impl Desktop {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|app, _, w, cx| {
-                        app.palette_open = false;
-                        w.focus(&app.root_focus);
+                        app.close_palette(w);
                         cx.notify();
                     }),
                 )
@@ -145,19 +165,23 @@ impl Desktop {
                     p.card()
                         .id("palette")
                         .debug_selector(|| "command-palette".into())
-                        .w(rems(32.))
+                        .w(px(600.))
+                        .shadow_lg()
                         .max_w(relative(0.95))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .key_context("Palette Picker")
                         .on_action(cx.listener(move |app, _: &keys::PickUp, w, cx| {
                             if !input_marked(app, w, cx) {
                                 app.palette_index = ix.saturating_sub(1);
+                                app.palette_scroll
+                                    .scroll_to_item(active_row.saturating_sub(1));
                                 cx.notify();
                             }
                         }))
                         .on_action(cx.listener(move |app, _: &keys::PickDown, w, cx| {
                             if !input_marked(app, w, cx) {
                                 app.palette_index = (ix + 1).min(n.saturating_sub(1));
+                                app.palette_scroll.scroll_to_item(active_row + 1);
                                 cx.notify();
                             }
                         }))

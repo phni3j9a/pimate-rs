@@ -100,6 +100,48 @@ pub(super) fn action(
         }))
 }
 impl Desktop {
+    pub(super) fn confirm_shutdown(&self, page: &Page, w: &mut Window, cx: &mut Context<Self>) {
+        if !page.visible(self) {
+            return;
+        }
+        let Ok(stop) = page.shutdown_confirmation() else {
+            return;
+        };
+        let pg = page.clone();
+        let Some(key) = self.editor() else { return };
+        let rows = &self.machines[&key.host].rows;
+        let title = pi_title(rows.get("instance", &key.instance), &key.instance);
+        let saved = rows.get("view", "session")["file"]
+            .as_str()
+            .is_some_and(|s| !s.trim().is_empty());
+        let detail = if saved {
+            "処理が止まります。保存済みの履歴は一覧から開き直せます。"
+        } else {
+            "処理が止まります。保存先が不明なため履歴が失われる可能性があります。"
+        };
+        let confirm = w.prompt(
+            PromptLevel::Critical,
+            &format!("{title} を終了しますか？"),
+            Some(detail),
+            &[
+                PromptButton::cancel("キャンセル"),
+                PromptButton::new("終了する"),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if confirm.await == Ok(1) {
+                let r = stop.confirm().await;
+                let _ = this.update(cx, |this, cx| {
+                    if pg.visible(this) {
+                        this.finish_send_notice(r.map(|_| String::new()));
+                        cx.notify()
+                    }
+                });
+            }
+        })
+        .detach();
+    }
     pub(super) fn sheet_nav(&self, page: &Page, cx: &Context<Self>) -> Div {
         // 狭いウィンドウでもヘッダーを1行に保つ（折り返さない）。
         div()
@@ -226,11 +268,17 @@ impl Desktop {
                         )),
                 );
                 let page = pg.clone();
-                let title = pi_title(rows.get("instance", &key.instance), &key.instance).to_owned();
-                let saved = view("session")["file"]
-                    .as_str()
-                    .is_some_and(|s| !s.trim().is_empty());
-                body=body.child(section("この Pi",p).children(copy_attach(rows)).child(Button::new("shutdown").danger().label("この Pi を終了…").disabled(busy).on_click(cx.listener(move|this,_,w,cx|{if !page.visible(this){return}let Ok(stop)=page.shutdown_confirmation() else{return}; let pg=page.clone();let detail=if saved{"処理が止まります。保存済みの履歴は一覧から開き直せます。"}else{"処理が止まります。保存先が不明なため履歴が失われる可能性があります。"};let confirm=w.prompt(PromptLevel::Critical,&format!("{title} を終了しますか？"),Some(detail),&[PromptButton::cancel("キャンセル"),PromptButton::new("終了する")],cx);cx.spawn(async move|this,cx|{if confirm.await==Ok(1){let r=stop.confirm().await;let _=this.update(cx,|this,cx|if pg.visible(this){this.finish_send_notice(r.map(|_|String::new()));cx.notify()});}}).detach();}))))
+                body = body.child(
+                    section("この Pi", p).children(copy_attach(rows)).child(
+                        Button::new("shutdown")
+                            .danger()
+                            .label("この Pi を終了…")
+                            .disabled(busy)
+                            .on_click(cx.listener(move |this, _, w, cx| {
+                                this.confirm_shutdown(&page, w, cx)
+                            })),
+                    ),
+                );
             }
             S::Tree => body = body.child(self.tree(key, pg, p, w, cx)),
             S::Resume | S::Fork => {

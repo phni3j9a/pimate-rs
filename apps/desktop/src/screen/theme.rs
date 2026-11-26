@@ -41,6 +41,7 @@ impl Layout {
 #[derive(Clone, Copy)]
 #[allow(dead_code)] // 差分・リング・完了の色は段階3・4の画面で使う。
 pub(super) struct Colors {
+    pub keyboard_focus: bool,
     pub bg: Hsla,
     /// 塗り（サイドバー・入力欄・カード）。
     pub surface: Hsla,
@@ -72,6 +73,7 @@ impl Colors {
         let c = |light, d| -> Hsla { rgb(if dark { d } else { light }).into() };
         let fill2 = c(0xe6e9eb, 0x293035);
         Self {
+            keyboard_focus: false,
             bg: c(0xffffff, 0x131618),
             surface: c(0xf1f3f4, 0x1e2326),
             fill2,
@@ -109,6 +111,9 @@ impl Colors {
     /// 塗りの主ボタン（カプセル型）。1画面に1つ。
     pub(super) fn primary(&self, id: &'static str, cx: &App) -> Button {
         Button::new(id)
+            .when(self.keyboard_focus, |b| {
+                b.focus(|s| s.border_2().border_color(self.accent))
+            })
             .custom(
                 ButtonCustomVariant::new(cx)
                     .color(self.accent)
@@ -125,6 +130,9 @@ impl Colors {
     /// 文字ボタン。`danger` は終了・削除・停止・取り消し。
     pub(super) fn text_button(&self, id: impl Into<ElementId>, color: Hsla, cx: &App) -> Button {
         Button::new(id)
+            .when(self.keyboard_focus, |b| {
+                b.focus(|s| s.border_2().border_color(self.accent))
+            })
             .custom(self.variant(gpui::transparent_black(), color, self.fill2, cx))
             .small()
             .rounded(px(R_CONTROL))
@@ -153,6 +161,9 @@ impl Colors {
         };
         let hover = if selected { self.bubble } else { self.fill2 };
         Button::new(id)
+            .when(self.keyboard_focus, |b| {
+                b.focus(|s| s.border_2().border_color(self.accent))
+            })
             .custom(self.variant(bg, self.ink, hover, cx))
             .small()
             .rounded(px(R_ROW))

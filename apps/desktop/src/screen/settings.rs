@@ -24,6 +24,7 @@ pub(crate) struct Nav {
     pub(super) machine: super::machine::MachineData,
     pub(super) providers: super::providers::ProviderData,
     pub(super) github: super::github::Github,
+    pub(super) initial_folder: Option<String>,
     pub(super) spawn: Option<super::new_pi::Fields>,
     pub(super) back: Route,
     pub(super) generation: Arc<()>,
@@ -204,9 +205,10 @@ impl Desktop {
             .selected(selected)
             .on_click(cx.listener(move |this, _, _, cx| {
                 apply(&mut this.state.settings);
-                let failed = Settings::path()
-                    .and_then(|p| this.state.settings.save(&p))
-                    .is_err();
+                let failed = this
+                    .settings_path
+                    .as_ref()
+                    .is_none_or(|p| this.state.settings.save(p).is_err());
                 n.update(cx, |s, _| s.pref_error = failed);
                 cx.notify();
             }))
@@ -258,11 +260,11 @@ impl Desktop {
                             )),
                     ),
             )
-            .child(group("キーボード", p).child({
+            .child(group("キーボード", p).child(p.text_button("shortcut-list",p.accent_ink,cx).label("ショートカット一覧").on_click(cx.listener(|app,_,w,cx|app.open_palette(true,w,cx)))).child({
                 let n = n.clone();
                 Button::new("send-key").label(if cfg!(target_os="macos") {"⌘+Enter で送信"} else {"Ctrl+Enter で送信"}).selected(self.ctrl_enter).on_click(cx.listener(move |this, _, _, cx| {
                     this.ctrl_enter = !this.ctrl_enter;
-                    let failed = Settings::path().and_then(|p| state::save_send_key(&p,this.ctrl_enter)).is_err();
+                    let failed = this.settings_path.as_ref().is_none_or(|p|state::save_send_key(p,this.ctrl_enter).is_err());
                     n.update(cx, |s,_| s.pref_error = failed);
                     cx.notify();
                 }))

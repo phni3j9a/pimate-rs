@@ -68,7 +68,12 @@ impl Desktop {
             return v.child("起動先に接続してからマシンを選んでください。");
         };
         if n.read(cx).spawn.is_none() {
-            let folder = cx.new(|cx| InputState::new(w, cx).placeholder("/path/to/project"));
+            let path = n.read(cx).initial_folder.clone().unwrap_or_default();
+            let folder = cx.new(|cx| {
+                InputState::new(w, cx)
+                    .placeholder("/path/to/project")
+                    .default_value(path)
+            });
             let message = cx.new(|cx| first_message(w, cx));
             let nav = n.downgrade();
             let watch = cx.subscribe(&folder, move |_, input, event, cx| {

@@ -67,6 +67,7 @@ fn tool_result(
     p: &Colors,
     id: String,
     v: &Value,
+    review: Option<(Entity<super::Inspector>, state::Page)>,
     w: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
@@ -84,7 +85,7 @@ fn tool_result(
             "完了"
         }
     );
-    div()
+    let panel = div()
         .px_4()
         .py_1()
         .child(
@@ -106,8 +107,21 @@ fn tool_result(
             panel.child(div().rounded_md().p_2().bg(p.surface).child(
                 conversation.update(cx, |c, cx| c.documents.view(id, text, false, None, w, cx)),
             ))
-        })
-        .into_any_element()
+        });
+    let output = text.to_owned();
+    context::on_right_click(panel, move |m| {
+        m.item(context::copy("出力をコピー", output.clone()))
+            .when_some(review.clone(), |m, (ins, page)| {
+                m.item(
+                    gpui_component::menu::PopupMenuItem::new("変更をレビュー").on_click(
+                        move |_, _, cx| {
+                            ins.update(cx, |s, cx| s.load(page.clone(), None, true, cx))
+                        },
+                    ),
+                )
+            })
+    })
+    .into_any_element()
 }
 
 impl Desktop {
@@ -205,7 +219,15 @@ impl Desktop {
                 if v["kind"] == "tool_result" {
                     let run = v["toolCallId"].as_str().and_then(open_run);
                     return div()
-                        .child(tool_result(&conversation, &p, id, v, w, cx))
+                        .child(tool_result(
+                            &conversation,
+                            &p,
+                            id,
+                            v,
+                            Some((inspector.clone(), media.page.clone())),
+                            w,
+                            cx,
+                        ))
                         .children(run)
                         .when(images > 0, |b| {
                             b.child(media.history(
@@ -229,7 +251,7 @@ impl Desktop {
                         .into_any_element();
                 }
                 let user = role == "あなた";
-                div()
+                let message = div()
                     .w_full()
                     .when(stream, |d| d.track_focus(&stream_reader))
                     .px_4()
@@ -267,8 +289,68 @@ impl Desktop {
                             w,
                             cx,
                         ))
-                    })
-                    .into_any_element()
+                    });
+                let raw = text.to_owned();
+                let pg = media.page.clone();
+                let app = cx.weak_entity();
+                let fork = row
+                    .filter(|_| user && data.get("view", "status") == "idle")
+                    .map(|(id, _)| id.clone());
+                context::on_right_click(message, move |m| {
+                    let owner = app.clone();
+                    let source = pg.clone();
+                    let pg = pg.clone();
+                    let app = app.clone();
+                    let quoted = raw.clone();
+                    m.item(context::copy("メッセージ全文をコピー", raw.clone()))
+                        .item(
+                            gpui_component::menu::PopupMenuItem::new("引用して返信").on_click(
+                                move |_, w, cx| {
+                                    let _ = app.update(cx, |app, cx| {
+                                        if pg.visible(app)
+                                            && !app.composing
+                                            && let Some((_, input, _)) = &app.input
+                                        {
+                                            input.update(cx, |s, cx| {
+                                                s.insert(
+                                                    format!(
+                                                        "{}\n",
+                                                        quoted
+                                                            .lines()
+                                                            .map(|s| format!("> {s}"))
+                                                            .collect::<Vec<_>>()
+                                                            .join("\n")
+                                                    ),
+                                                    w,
+                                                    cx,
+                                                );
+                                                s.focus(w, cx)
+                                            });
+                                        }
+                                    });
+                                },
+                            ),
+                        )
+                        .when_some(fork.clone(), |m, id| {
+                            m.item(
+                                gpui_component::menu::PopupMenuItem::new("ここから分岐").on_click(
+                                    move |_, _, cx| {
+                                        let _ = owner.update(cx, |app, cx| {
+                                            if source.visible(app)
+                                                && app.open_sheet(state::SheetPage::Fork).is_ok()
+                                            {
+                                                app.sheet_action(
+                                                    state::SheetAction::Fork(id.clone()),
+                                                    cx,
+                                                );
+                                            }
+                                        });
+                                    },
+                                ),
+                            )
+                        })
+                })
+                .into_any_element()
             });
             theme::column(item).into_any_element()
         })
@@ -363,6 +445,7 @@ mod tests {
                             &super::Colors::new(false),
                             i.to_string(),
                             &serde_json::json!({"toolName":"read","text":"complete output"}),
+                            None,
                             w,
                             cx,
                         ))

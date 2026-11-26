@@ -62,6 +62,19 @@ impl Desktop {
             |_, _| super::chat_review::Inspector::default(),
         );
         self.chat_keys = Some((page.clone(), inspector.clone()));
+        if let Some((epoch, start, shutdown)) = self.row_action.take()
+            && self.epoch == epoch
+            && rows.get("view", "startedAt").as_u64() == Some(start)
+        {
+            if shutdown {
+                self.confirm_shutdown(&page, w, cx)
+            } else {
+                inspector.update(cx, |s, cx| {
+                    s.agents = false;
+                    s.load(page.clone(), None, true, cx)
+                });
+            }
+        }
         if inspector.read(cx).agents {
             return main.child(self.agent_panel(&key, &page, &inspector, p, w, cx));
         }
@@ -78,6 +91,7 @@ impl Desktop {
             ),
         };
         if let Some(viewer) = media.panel(p, w, cx) {
+            self.media_keys = Some(media.viewer.clone());
             return main.child(viewer);
         }
         let movement = rows.pending_move(&key, &self.drafts).or_else(|| {
@@ -303,7 +317,8 @@ impl Desktop {
                 .px_4(),
             );
         }
-        main = main.children(self.commands(&key, &page, p, w, cx));
+        let (suggestions, candidates) = self.commands(&key, &page, p, w, cx);
+        main = main.children(suggestions);
         if let Some((_, input, _)) = &self.input {
             let has_photos = !self.state.attachments.images(&key).is_empty();
             let movement = movement.is_some();
@@ -331,11 +346,12 @@ impl Desktop {
                     .child(
                         div()
                             .key_context("Composer")
+                            .when_some(candidates, |div, c| c.bind(div, cx))
                             .on_action(cx.listener(|this, _: &keys::Newline, w, cx| {
                                 if !this.composing
                                     && let Some((_, input, _)) = &this.input
                                 {
-                                    input.update(cx, |s, cx| s.insert("\n", w, cx));
+                                    input.update(cx, |s, cx| s.replace("\n", w, cx));
                                 }
                             }))
                             .capture_action(cx.listener(move |this, e: &Enter, w, cx| {
@@ -369,6 +385,7 @@ impl Desktop {
                                 row.child(
                                     p.text_button("abort", p.fail_ink, cx)
                                         .label("停止")
+                                        .debug_selector(|| "abort-turn".into())
                                         .disabled(self.stopping)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.stop_chat(&stop_page, cx)
@@ -400,6 +417,16 @@ impl Desktop {
                 return;
             }
         };
+        self.run_submission(page, t, true, w, cx);
+    }
+    pub(super) fn run_submission(
+        &mut self,
+        page: &state::Page,
+        t: state::Submission,
+        from_input: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.sending = true;
         self.notice.clear();
         let page = page.clone();
@@ -409,7 +436,13 @@ impl Desktop {
                 this.sending = false;
                 match result {
                     Ok(ack) => {
-                        let open = ack.finish(this, w, cx);
+                        let open = if from_input {
+                            ack.finish(this, w, cx)
+                        } else if page.visible(this) {
+                            ack.opened_sheet()
+                        } else {
+                            None
+                        };
                         if let Some(name) = open {
                             use state::SheetPage::*;
                             this.show_sheet(

@@ -1,16 +1,42 @@
 use super::*;
 
+#[cfg(target_os = "macos")]
+actions!(pimate, [Quit]);
+
 // The same command table drives shortcuts, macOS menus and the command palette.
 macro_rules! commands {
     ($($name:ident => ($key:literal, $label:literal)),* $(,)?) => {
-        actions!(pimate, [$($name,)* Newline, PickUp, PickDown, PickTab, PickEnter]);
+        actions!(pimate, [$($name,)* Newline, PickUp, PickDown, PickTab, PickEnter, OpenContext]);
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub(super) enum Command { $($name,)* }
         pub(super) const SHORTCUTS: &[(Command, &str, &str)] = &[$((Command::$name, $key, $label)),*];
         pub(crate) fn init(cx: &mut App) {
-            cx.bind_keys([$(KeyBinding::new($key, $name, Some("PiMate")),)* KeyBinding::new("shift-enter",Newline,Some("Composer > Input")), KeyBinding::new("up",PickUp,Some("Picker > Input")),KeyBinding::new("down",PickDown,Some("Picker > Input")),KeyBinding::new("tab",PickTab,Some("Picker > Input")),KeyBinding::new("enter",PickEnter,Some("Palette > Input"))]);
+            cx.bind_keys([$(KeyBinding::new($key, $name, Some("PiMate")),)*]);
+            // Text inputs have their own Ctrl+Up/Down and Ctrl+End bindings. Keep the
+            // documented app shortcuts in the composer without changing other inputs.
+            cx.bind_keys([$(KeyBinding::new($key,$name,Some("Composer > Input")),)*]);
+            cx.bind_keys([
+                KeyBinding::new("menu", OpenContext, Some("ContextTarget")),
+                KeyBinding::new("shift-f10", OpenContext, Some("ContextTarget")),
+                KeyBinding::new("shift-enter", Newline, Some("Composer > Input")),
+                KeyBinding::new("up", PickUp, Some("Picker > Input")),
+                KeyBinding::new("down", PickDown, Some("Picker > Input")),
+                KeyBinding::new("tab", PickTab, Some("Picker > Input")),
+                KeyBinding::new("tab", PickDown, Some("Palette > Input")),
+                KeyBinding::new("shift-tab", PickUp, Some("Palette > Input")),
+                KeyBinding::new("enter", PickEnter, Some("Palette > Input")),
+            ]);
             #[cfg(target_os="macos")]
-            cx.set_menus(vec![Menu {name:"PiMate".into(),items:vec![$(MenuItem::action($label,$name)),*]}]);
+            {
+                use gpui_component::input;
+                cx.bind_keys([KeyBinding::new("cmd-q",Quit,None)]);
+                cx.on_action(|_:&Quit,cx|cx.quit());
+                cx.set_menus(vec![
+                    Menu{name:"PiMate".into(),items:vec![MenuItem::action("設定…",Preferences),MenuItem::action("PiMate を終了",Quit)]},
+                    Menu{name:"編集".into(),items:vec![MenuItem::os_action("元に戻す",input::Undo,OsAction::Undo),MenuItem::os_action("やり直す",input::Redo,OsAction::Redo),MenuItem::separator(),MenuItem::os_action("切り取り",input::Cut,OsAction::Cut),MenuItem::os_action("コピー",input::Copy,OsAction::Copy),MenuItem::os_action("貼り付け",input::Paste,OsAction::Paste),MenuItem::os_action("すべてを選択",input::SelectAll,OsAction::SelectAll)]},
+                    Menu{name:"操作".into(),items:vec![$(MenuItem::action($label,$name)),*]},
+                ]);
+            }
         }
         pub(super) fn listeners(root: Div, cx: &Context<Desktop>) -> Div {
             root.key_context("PiMate")$(.on_action(cx.listener(|app,_:&$name,w,cx| app.command(Command::$name,w,cx))))*
@@ -97,25 +123,30 @@ impl Desktop {
         let Some(nav) = self.navigation.clone() else {
             return;
         };
-        if (self.confirmation.is_some() || self.palette_open) && c != EscapeTop {
+        if (self.confirmation.is_some() || self.palette_open || self.context_menu.is_some())
+            && c != EscapeTop
+        {
             return;
         }
         let narrow = Layout::of(w.viewport_size().width) == Layout::Narrow;
         let home = nav.read(cx).route == Route::Home;
         match c {
             EscapeTop => {
-                if self.composing {
-                    return;
-                }
-                if self.palette_open {
-                    self.palette_open = false;
+                if self.context_menu.take().is_some() {
                     w.focus(&self.root_focus);
+                } else if self.palette_open {
+                    self.close_palette(w);
                 } else if self.confirmation.take().is_some() {
                 } else if self.sidebar_open {
                     self.sidebar_open = false;
                 } else if !home {
                     let back = nav.read(cx).back.clone();
                     self.navigate(&nav, back, cx);
+                } else if let Some(viewer) = self.media_keys.take() {
+                    viewer.update(cx, |s, cx| {
+                        s.close();
+                        cx.notify();
+                    });
                 } else if self.active_sheet().is_some() {
                     self.state.close_page();
                 } else if let Some((page, ins)) = self.chat_keys.clone()
@@ -126,7 +157,7 @@ impl Desktop {
                             *s = Default::default();
                             cx.notify()
                         });
-                    } else {
+                    } else if !self.composing {
                         self.stop_chat(&page, cx)
                     }
                 }
@@ -202,9 +233,10 @@ impl Desktop {
                     (Smaller, Small | Standard) => Small,
                     _ => Standard,
                 };
-                let failed = state::Settings::path()
-                    .and_then(|p| self.state.settings.save(&p))
-                    .is_err();
+                let failed = self
+                    .settings_path
+                    .as_ref()
+                    .is_none_or(|p| self.state.settings.save(p).is_err());
                 nav.update(cx, |n, _| n.pref_error = failed);
             }
             Previous | Next | Attention | First | Second | Third | Fourth | Fifth | Sixth
@@ -232,7 +264,12 @@ impl Desktop {
                         };
                         ix
                     }
-                    _ => c as usize - First as usize,
+                    _ => [
+                        First, Second, Third, Fourth, Fifth, Sixth, Seventh, Eighth, Ninth,
+                    ]
+                    .iter()
+                    .position(|key| *key == c)
+                    .unwrap(),
                 };
                 if let Some((h, i, _)) = rows.get(ix) {
                     if !home {

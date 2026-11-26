@@ -87,6 +87,21 @@ impl Page {
         })
         .await
     }
+    pub fn command_ticket(&self, name: &str) -> Result<Submission, Error> {
+        let r = self.current()?;
+        if r.get("command", name).is_null() {
+            return Err(Error::StaleTarget);
+        }
+        let text = format!("/{name}");
+        let kind = submission_kind(&r, &text, false)?;
+        Ok(Submission {
+            page: self.clone(),
+            text,
+            images: vec![],
+            kind,
+            _lock: Arc::new(()),
+        })
+    }
     pub fn suggestions(&self, text: String) -> Result<Vec<String>, Error> {
         self.current()?;
         Ok(self.live()?.command_suggestions(text))
@@ -362,6 +377,9 @@ impl Submission {
     }
 }
 impl Accepted {
+    pub fn opened_sheet(self) -> Option<String> {
+        self.open
+    }
     pub fn finish(
         self,
         app: &mut Desktop,
@@ -567,6 +585,9 @@ impl Page {
         })
     }
     pub async fn abort(&self) -> Result<Value, Error> {
+        if !self.current()?.can_stop() {
+            return Err(Error::Blocked);
+        }
         self.perform(Operation::Abort {
             target: self.editor()?.target(),
         })

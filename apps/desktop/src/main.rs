@@ -40,6 +40,7 @@ struct Desktop {
     sending: bool,
     stopping: bool,
     ctrl_enter: bool,
+    settings_path: Option<std::path::PathBuf>,
     root_focus: FocusHandle,
     sidebar_hidden: bool,
     side_focus: FocusHandle,
@@ -47,6 +48,11 @@ struct Desktop {
     keyboard_focus: bool,
     navigation: Option<screen::Navigation>,
     chat_keys: Option<(state::Page, Entity<screen::Inspector>)>,
+    row_action: Option<(u64, u64, bool)>,
+    context_menu: Option<screen::context::OpenMenu>,
+    palette_return: Option<FocusHandle>,
+    media_keys: Option<Entity<screen::chat_media::Viewer>>,
+    palette_scroll: ScrollHandle,
     palette_open: bool,
     palette_index: usize,
     epoch: u64,
@@ -68,6 +74,17 @@ impl Desktop {
             cx.notify()
         })
         .detach();
+        let window = w.window_handle().window_id();
+        cx.observe_keystrokes(move |app, e, w, cx| {
+            if w.window_handle().window_id() == window
+                && matches!(e.keystroke.key.as_str(), "tab" | "f6" | "up" | "down")
+                && !app.keyboard_focus
+            {
+                app.keyboard_focus = true;
+                cx.notify();
+            }
+        })
+        .detach();
         let mut app = Self {
             core,
             state: Default::default(),
@@ -86,6 +103,7 @@ impl Desktop {
             sending: false,
             stopping: false,
             ctrl_enter: false,
+            settings_path: None,
             root_focus: cx.focus_handle(),
             sidebar_hidden: false,
             side_focus: cx.focus_handle(),
@@ -93,6 +111,11 @@ impl Desktop {
             keyboard_focus: false,
             navigation: None,
             chat_keys: None,
+            row_action: None,
+            context_menu: None,
+            palette_return: None,
+            media_keys: None,
+            palette_scroll: ScrollHandle::new(),
             palette_open: false,
             palette_index: 0,
             epoch: 0,
@@ -109,11 +132,14 @@ impl Desktop {
     }
     /// 設定と覚えた幅を読む。起動時にだけ呼ぶ（試験は利用者のファイルを読まず、既定値で動く）。
     fn load_saved(&mut self) {
-        let settings = state::Settings::path().and_then(|p| state::Settings::load(&p));
-        self.pref_error = settings.is_err();
-        self.state.settings = settings.unwrap_or_default();
-        if let Ok(path) = state::Settings::path() {
-            match state::load_send_key(&path) {
+        self.settings_path = state::Settings::path().ok();
+        self.pref_error = self.settings_path.is_none();
+        if let Some(path) = &self.settings_path {
+            match state::Settings::load(path) {
+                Ok(s) => self.state.settings = s,
+                Err(_) => self.pref_error = true,
+            }
+            match state::load_send_key(path) {
                 Ok(v) => self.ctrl_enter = v,
                 Err(_) => self.pref_error = true,
             }

@@ -4,6 +4,7 @@ mod chat_commands;
 pub(crate) mod chat_media;
 mod chat_question;
 mod chat_review;
+pub(crate) mod context;
 mod conversation;
 mod first_step;
 mod github;
@@ -155,7 +156,7 @@ impl Desktop {
         nav: &Navigation,
         p: &Colors,
         cx: &Context<Self>,
-    ) -> Button {
+    ) -> Div {
         let (host, pi) = (h.id.clone(), id.to_owned());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -197,7 +198,26 @@ impl Desktop {
             })
             .mt(px(7.))
         };
-        p.row(SharedString::from(format!("pi-{host}-{pi}")), selected, cx)
+        let row_host = host.clone();
+        let row_pi = pi.clone();
+        let start = v["startedAt"].as_u64();
+        let new_nav = nav.clone();
+        let open = cx.listener(move |this, _: &ClickEvent, _, cx| {
+            if nav.read(cx).route != Route::Home {
+                this.navigate(&nav, Route::Home, cx);
+            }
+            this.select(host.clone(), pi.clone(), cx);
+        });
+        let open = std::rc::Rc::new(open);
+        let click = open.clone();
+        let folder = v["cwd"].as_str().map(str::to_owned);
+        let attach = v["abducoSession"].as_str().and_then(state::attach_command);
+        let row = p
+            .row(
+                SharedString::from(format!("pi-{}-{id}", h.id)),
+                selected,
+                cx,
+            )
             .h(px(theme::ROW))
             .px_3()
             .tooltip(format!("{} · {cwd}", self.host_label(h)))
@@ -236,12 +256,67 @@ impl Desktop {
                         .text_size(rems(0.69)),
                     ),
             )
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if nav.read(cx).route != Route::Home {
-                    this.navigate(&nav, Route::Home, cx);
-                }
-                this.select(host.clone(), pi.clone(), cx)
-            }))
+            .on_click(move |e, w, cx| click(e, w, cx));
+        let app = cx.weak_entity();
+        context::on_right_click(div().child(row), move |m| {
+            let open = open.clone();
+            let owner = app.clone();
+            let host = row_host.clone();
+            let n = new_nav.clone();
+            let on_row = |label, shutdown| {
+                let owner = app.clone();
+                let host = row_host.clone();
+                let pi = row_pi.clone();
+                let nav = new_nav.clone();
+                gpui_component::menu::PopupMenuItem::new(label)
+                    .disabled(start.is_none())
+                    .on_click(move |_, _, cx| {
+                        let _ = owner.update(cx, |app, cx| {
+                            let Some(start) = start else { return };
+                            if app.machines.get(&host).is_none_or(|m| {
+                                m.rows.get("instance", &pi)["startedAt"].as_u64() != Some(start)
+                            }) {
+                                return;
+                            }
+                            if nav.read(cx).route != Route::Home {
+                                app.navigate(&nav, Route::Home, cx);
+                            }
+                            if app.selected.as_ref() != Some(&(host.clone(), pi.clone())) {
+                                app.select(host.clone(), pi.clone(), cx);
+                            }
+                            if app.selected.as_ref() == Some(&(host.clone(), pi.clone())) {
+                                app.state.close_page();
+                                app.row_action = Some((app.epoch, start, shutdown));
+                                cx.notify();
+                            }
+                        });
+                    })
+            };
+            m.item(
+                gpui_component::menu::PopupMenuItem::new("開く")
+                    .on_click(move |e, w, cx| open(e, w, cx)),
+            )
+            .when_some(folder.clone(), |m, path| {
+                m.item(context::copy("フォルダのパスをコピー", path))
+            })
+            .when_some(attach.clone(), |m, cmd| {
+                m.item(context::copy("pimate attach をコピー", cmd))
+            })
+            .when_some(folder.clone(), |m, path| {
+                m.item(
+                    gpui_component::menu::PopupMenuItem::new("同じフォルダで新しい Pi…").on_click(
+                        move |_, _, cx| {
+                            let _ = owner.update(cx, |d, cx| {
+                                d.navigate(&n, Route::New(host.clone()), cx);
+                                n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
+                            });
+                        },
+                    ),
+                )
+            })
+            .item(on_row("変更をレビュー", false))
+            .item(on_row("この Pi を終了…", true))
+        })
     }
     /// サイドバー: 検索欄・要対応・マシンごと・最下段（設定／＋新しい Pi）。
     fn sidebar(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
@@ -602,7 +677,10 @@ impl Render for Desktop {
         }
         let dark = self.palette(w, cx);
         w.set_rem_size(px(self.size));
-        let p = Colors::new(dark);
+        let p = Colors {
+            keyboard_focus: self.keyboard_focus,
+            ..Colors::new(dark)
+        };
         self.sync_title(w);
         let layout = Layout::of(w.viewport_size().width);
         if self.search.is_none() {
@@ -617,6 +695,7 @@ impl Render for Desktop {
         }
         self.navigation = Some(nav.clone());
         self.chat_keys = None;
+        self.media_keys = None;
         // マシンが1台もないうちは、並べる Pi がないのでサイドバーを出さない。
         let side = (!self.hosts.is_empty() && (layout == Layout::Narrow || !self.sidebar_hidden))
             .then(|| {
@@ -747,6 +826,7 @@ impl Render for Desktop {
             .child(self.panes(layout, side, main, None, &p, cx))
             .children(self.command_palette(&p, cx))
             .children(self.pair_dialog(&p, cx))
+            .children(self.context_menu.as_ref().map(context::OpenMenu::layer))
     }
 }
 
@@ -844,7 +924,7 @@ mod tests {
         });
     }
     /// 1台のマシンと、質問待ちの会話を開いた状態。
-    fn open_chat(
+    pub(super) fn open_chat(
         cx: &mut gpui::TestAppContext,
     ) -> (
         gpui::Entity<super::Desktop>,
@@ -1204,5 +1284,150 @@ mod tests {
                 && restore.bottom() + scroller.offset().y <= area.bottom() + px(1.)
         );
         assert_eq!(editor, w.debug_bounds("editor").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::{Route, keys, state, tests};
+    #[gpui::test]
+    fn shortcuts_dispatch_and_palette_stacks_over_inspector(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        let record = seen.clone();
+        w.update(|_, cx| {
+            cx.observe_keystrokes(move |e, _, _| {
+                *record.borrow_mut() = e
+                    .action
+                    .as_ref()
+                    .map(|a| a.name().to_string())
+                    .unwrap_or_default();
+            })
+            .detach()
+        });
+        for &(command, key, _) in keys::SHORTCUTS {
+            w.update(|w, cx| {
+                app.update(cx, |d, cx| {
+                    let nav = d.navigation.clone().unwrap();
+                    d.navigate(&nav, Route::Home, cx);
+                    d.palette_open = false;
+                    w.focus(&d.root_focus);
+                })
+            });
+            w.run_until_parked();
+            w.simulate_keystrokes(key);
+            assert_eq!(*seen.borrow(), format!("pimate::{command:?}"), "{key}");
+        }
+        app.update(w, |d, cx| {
+            d.selected = None;
+            cx.notify()
+        });
+        w.simulate_keystrokes("secondary-1");
+        assert_eq!(
+            app.read_with(w, |d, _| d.selected.clone()),
+            Some(("fixture".into(), "pi".into()))
+        );
+        w.simulate_keystrokes("f6");
+        assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
+        w.simulate_keystrokes("f6");
+        assert!(w.update(|w, cx| app.read(cx).main_focus.is_focused(w)));
+        w.simulate_keystrokes("secondary-shift-d secondary-k");
+        assert!(app.read_with(w, |d, _| d.palette_open));
+        w.simulate_keystrokes("down");
+        assert_eq!(app.read_with(w, |d, _| d.palette_index), 1);
+        w.simulate_keystrokes("escape");
+        assert!(app.read_with(w, |d, cx| !d.palette_open
+            && d.chat_keys.as_ref().unwrap().1.read(cx).review_open));
+        w.simulate_keystrokes("escape");
+        assert!(!app.read_with(w, |d, cx| {
+            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+        }));
+    }
+    #[gpui::test]
+    fn active_turn_stops_once_and_commands_retry_into_keyboard_picker(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut m, rx, mut wire, server) = rt.block_on(state::fixture("abort-test"));
+        m.conn.subscribe(Some("pi".into())).unwrap();
+        rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !m.rows.can_stop() {
+                    m.rows.apply(rx.recv().await.unwrap(), || m.conn.snapshot());
+                }
+            })
+            .await
+            .unwrap();
+        });
+        app.update(w, |d, cx| {
+            d.hosts = vec![m.registration.clone()];
+            d.selected = Some((m.registration.id.clone(), "pi".into()));
+            d.machines.insert(m.registration.id.clone(), m);
+            cx.notify();
+        });
+        w.run_until_parked();
+        w.simulate_keystrokes("escape");
+        let first = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
+                .await
+                .unwrap()
+        });
+        assert_eq!(first.as_deref(), Some("abort"));
+        w.run_until_parked();
+        assert!(wire.try_recv().is_err());
+        let wait = |w: &mut gpui::VisualTestContext, selector: &'static str| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            loop {
+                w.run_until_parked();
+                if let Some(b) = w.debug_bounds(selector) {
+                    break b.center();
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{selector} did not appear"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        // The button and Esc use the same guard and must each generate one request.
+        let stop = wait(w, "abort-turn");
+        w.simulate_click(stop, gpui::Modifiers::none());
+        let second = rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
+                .await
+                .unwrap()
+        });
+        assert_eq!(second.as_deref(), Some("abort"));
+        w.simulate_keystrokes("secondary-l shift-enter");
+        assert_eq!(
+            app.read_with(w, |d, cx| d
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .to_string()),
+            "\n"
+        );
+        w.simulate_keystrokes("backspace /");
+        let retry = wait(w, "retry-commands");
+        w.simulate_click(retry, gpui::Modifiers::none());
+        wait(w, "command-choice-0");
+        w.simulate_keystrokes("secondary-l down up down tab");
+        let value = app.read_with(w, |d, cx| {
+            d.input.as_ref().unwrap().1.read(cx).value().to_string()
+        });
+        assert!(
+            value.starts_with('/') && value.ends_with(' ') && value.trim().len() > 1,
+            "{value:?}"
+        );
+        assert_eq!(wire.try_recv().as_deref(), Ok("commands"));
+        assert_eq!(wire.try_recv().as_deref(), Ok("commands"));
+        assert!(wire.try_recv().is_err());
+        server.abort();
     }
 }
