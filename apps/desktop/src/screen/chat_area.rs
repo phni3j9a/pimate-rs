@@ -110,8 +110,22 @@ impl Desktop {
                     this.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
                 }))
         });
-        // 760px 未満では状態を印だけにする（文字サイズ「大」の 480px でも右のボタンが切れないように）。
+        // 760px 未満では状態の文字を置く幅がない（文字サイズ「大」の 480px で右のボタンが切れる）。
+        // 色だけに頼らないよう、印の形を変え（入力待ち＝ベル・作業中＝輪・待機＝丸）、状態名を
+        // ツールチップに出す。
         let narrow = toggle.is_some();
+        let mark = if running && !blocked {
+            self.working_spinner(p.secondary).into_any_element()
+        } else if blocked && narrow {
+            icon("bell", 13., p.waiting).into_any_element()
+        } else {
+            p.dot(if blocked {
+                p.wait
+            } else {
+                p.secondary.opacity(0.55)
+            })
+            .into_any_element()
+        };
         main = main.child(
             div()
                 .debug_selector(|| "chat-header".into())
@@ -122,7 +136,7 @@ impl Desktop {
                 .gap_2()
                 .pl_5()
                 .pr_3()
-                .when(toggle.is_some(), |d| d.pl_3())
+                .when(narrow, |d| d.pl_3().gap_1())
                 .children(toggle)
                 .child(
                     div()
@@ -142,22 +156,26 @@ impl Desktop {
                 )
                 .child(
                     div()
+                        // 状態ごとの id: 開いたツールチップは作り直されないので、状態が変わったら閉じる。
+                        .id(status)
+                        .debug_selector(|| "chat-status".into())
                         .flex()
                         .flex_none()
                         .items_center()
+                        .justify_center()
                         .gap_1p5()
                         .text_size(rems(0.75))
                         .text_color(if blocked { p.waiting } else { p.secondary })
-                        .child(if running && !blocked {
-                            self.working_spinner(p.secondary)
-                        } else {
-                            p.dot(if blocked {
-                                p.wait
+                        .child(mark)
+                        .map(|d| {
+                            if narrow {
+                                d.size(px(20.)).tooltip(move |w, cx| {
+                                    gpui_component::tooltip::Tooltip::new(status).build(w, cx)
+                                })
                             } else {
-                                p.secondary.opacity(0.55)
-                            })
-                        })
-                        .when(!narrow, |d| d.child(status)),
+                                d.child(status)
+                            }
+                        }),
                 )
                 .child(self.review_button(&inspector, &page, p, cx))
                 .child(self.sheet_nav(&page, cx))

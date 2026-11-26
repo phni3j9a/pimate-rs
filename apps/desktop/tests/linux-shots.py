@@ -1,23 +1,18 @@
-"""撮影用のドライバー。`linux-session.sh shots OUT` の中で動き、OUT/cmd（FIFO）に書かれた命令を1行ずつ実行する。
+"""撮影用のドライバー。`linux-session.sh shots` の中で動く。shots は毎回、自分だけの新しい
+ディレクトリ OUT（mktemp -d、権限 700）を作ってパスを表示し、命令の FIFO・ログ・画像をすべてそこに置く。
+既存のディレクトリは使わないので、既存のファイルを消すことも、リンクをたどることもない。
 
     printf 'copylink\nclick 640 500\nsnap 01-first\n' > OUT/cmd; cat OUT/ack
 
 命令: snap NAME / click X Y / rclick X Y / dclick X Y / move X Y / drag X1 Y1 X2 Y2 / wheel N /
 key ctrl+k / type TEXT / copy TEXT / copylink（ペアリングのリンク）/ gs SCHEMA KEY VALUE / sleep S / sh CMD / quit
 座標は仮想モニター（MONITOR、既定 1280x800）の画素。隔離した GNOME の中だけを操作する。
-OUT は命令（sh を含む）を読む場所なので、自分の所有で権限 700 のディレクトリに限る。
 """
 import os, subprocess, sys, time
 from pathlib import Path
 import dbus
 assert os.environ['XDG_RUNTIME_DIR'] == str(Path.home()/'run')
 out = Path(sys.argv[1])
-# 一時 HOME と名前空間はファイルの権限を隔離しない。ほかの利用者が FIFO を差し替えられる
-# 場所からは命令を読まない。確かめたディレクトリを開いたまま、以後の FIFO はその fd から開く。
-outfd = os.open(out, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-owner = os.fstat(outfd)
-if owner.st_uid != os.getuid() or owner.st_mode & 0o077:
-    sys.exit(f'{out}: must be your own directory with mode 700 (commands are read from it)')
 bus = dbus.SessionBus()
 remote = 'org.gnome.Mutter.RemoteDesktop'
 root = dbus.Interface(bus.get_object(remote, '/org/gnome/Mutter/RemoteDesktop'), remote)
@@ -42,7 +37,7 @@ def run(line):
     if not a: return
     c = a[0]
     if c == 'snap':
-        path = (out/(a[1] + '.png')).resolve(); path.unlink(missing_ok=True)
+        path = out/(a[1] + '.png'); path.unlink(missing_ok=True)  # 同じ名前で撮り直すとき、この回の前の1枚だけを置き換える
         ok, _ = shot.Screenshot(False, False, str(path)); assert ok
     elif c == 'click': button(272, int(a[1]), int(a[2]))
     elif c == 'rclick': button(273, int(a[1]), int(a[2]))
@@ -73,23 +68,17 @@ def run(line):
     elif c == 'sh': subprocess.run(line.split(' ', 1)[1], shell=True)
     elif c == 'quit': raise SystemExit
     else: print('unknown', line, flush=True)
-def channel(name, flags):
-    return open(os.open(name, flags, dir_fd=outfd), 'r' if flags == os.O_RDONLY else 'w')
-for name in ('cmd', 'ack'):
-    try: os.unlink(name, dir_fd=outfd)
-    except FileNotFoundError: pass
-    os.mkfifo(name, 0o600, dir_fd=outfd)
-os.close(os.open('ready', os.O_WRONLY | os.O_CREAT, 0o600, dir_fd=outfd))
-def reply(msg):
-    with channel('ack', os.O_WRONLY) as f: f.write(msg + '\n')
+fifo, ack = out/'cmd', out/'ack'
+for p in (fifo, ack): os.mkfifo(p)  # 新しいディレクトリなので、同じ名前のものはない（あれば何も消さずに止まる）
+(out/'ready').touch()
 while True:
-    with channel('cmd', os.O_RDONLY) as f: lines = f.read().splitlines()
+    with open(fifo) as f: lines = f.read().splitlines()
     msg = 'ok'
     try:
         for line in lines: run(line)
     except SystemExit:
-        reply('bye'); break
+        open(ack, 'w').write('bye\n'); break
     except Exception as e:
         msg = f'error: {e!r}'
-    reply(msg)
+    open(ack, 'w').write(msg + '\n')
 seat.Stop()

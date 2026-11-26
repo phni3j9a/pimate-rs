@@ -947,7 +947,8 @@ mod tests {
                 let side = w.debug_bounds("sidebar").unwrap();
                 assert_eq!((side.left(), side.right()), (px(0.), header.left()));
             } else {
-                parts.push("sidebar-toggle");
+                // Without room for its text, the state keeps a mark with a tooltip to hover.
+                parts.extend(["sidebar-toggle", "chat-status"]);
             }
             for part in parts {
                 let b = w.debug_bounds(part).unwrap();

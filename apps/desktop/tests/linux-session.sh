@@ -3,7 +3,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd); root=$(realpath "$here/../../..")
 if [[ ${1:-} != inner ]]; then
-  [[ ${1:-} == check || ${1:-} == hotplug || ${1:-} == package || ${1:-} == shots ]] || { echo "usage: $0 check|hotplug|shots OUTPUT_DIRECTORY, or package OUTPUT_DIRECTORY EXTRACTED_BIN" >&2; exit 2; }
+  [[ ${1:-} == check || ${1:-} == hotplug || ${1:-} == package || ${1:-} == shots ]] || { echo "usage: $0 check|hotplug OUTPUT_DIRECTORY, package OUTPUT_DIRECTORY EXTRACTED_BIN, or shots" >&2; exit 2; }
   debug=${CARGO_TARGET_DIR:-$root/target}/debug
   if [[ $1 == package ]]; then
     desktop=$(realpath "${3:?pass the extracted bin/pimate-desktop}")
@@ -12,11 +12,17 @@ if [[ ${1:-} != inner ]]; then
     desktop=$(realpath "$debug/pimate-desktop")
   fi
   host=$(realpath "$debug/pimate"); [[ -x $host && -x $desktop ]]
-  # shots は出力先から命令を読むので、新しく作るときは自分だけのものにする（既存なら linux-shots.py が確かめる）。
-  if [[ $1 == shots ]]; then mkdir -p -m 700 "$2"; else mkdir -p "$2"; fi
-  out=$(realpath "$2"); home=$(mktemp -d); trap 'rm -rf -- "$home"' EXIT
+  if [[ $1 == shots ]]; then
+    # 撮影用。出力先から命令（sh を含む）を読むので、既存のディレクトリは受け付けない。毎回、自分だけの
+    # 新しいディレクトリ（権限 700）を作ってパスを表示し、FIFO・ログ・画像をすべてそこに置く。
+    [[ $# == 1 ]] || { echo 'shots takes no directory: it makes a new one and prints its path' >&2; exit 2; }
+    out=$(realpath "$(mktemp -d "${TMPDIR:-/tmp}/pimate-shots.XXXXXX")"); echo "$out"
+  else
+    mkdir -p "$2"; out=$(realpath "$2")
+  fi
+  home=$(mktemp -d); trap 'rm -rf -- "$home"' EXIT
   mkdir -m700 "$home/run" "$home/Desktop" "$home/tmp"
-  # shots: 撮影用。OUTPUT_DIRECTORY/cmd に linux-shots.py の命令を書いて操作する（SESSION_SECONDS で長さ）。
+  # shots は表示したディレクトリの cmd に linux-shots.py の命令を書いて操作する（SESSION_SECONDS で長さ）。
   limit=150; [[ $1 != shots ]] || limit=${SESSION_SECONDS:-1800}
   timeout -k 5 "$limit" unshare --user --map-current-user --pid --fork --kill-child --mount-proc \
     env -i TMPDIR="$home/tmp" HOME="$home" PATH=/usr/bin:/bin USER="$(id -un)" LANG=C.UTF-8 XDG_RUNTIME_DIR="$home/run" \
@@ -59,7 +65,7 @@ WAYLAND_DEBUG=client "$desktop" --demo >app.log 2>&1 & app=$!
 sleep 4; kill -0 "$app"
 if [[ $mode == shots ]]; then
   cp demo.log "$out/demo.log"
-  # ドライバーが起動できなかったら（D-Bus・出力先の権限など）、ログを残して失敗で終わる。
+  # ドライバーが起動できなかったら（D-Bus など）、ログを残して失敗で終わる。
   status=0; python3 "$here/linux-shots.py" "$out" || status=$?
   cp app.log "$out/app.log"
   exit "$status"
