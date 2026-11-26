@@ -134,7 +134,7 @@ internal object Type {
     val sheet = base.copy(fontSize = 17.sp, lineHeight = 25.5.sp, fontWeight = FontWeight.SemiBold)
     val header = base.copy(fontSize = 15.sp, lineHeight = 22.sp, fontWeight = FontWeight.SemiBold)
     val lead = base.copy(fontSize = 15.sp, lineHeight = 22.sp)
-    val body = base.copy(fontSize = 14.sp, lineHeight = 21.sp)
+    val body = base.copy(fontSize = 15.sp, lineHeight = 23.sp)
     val caption = base.copy(fontSize = 12.sp, lineHeight = 18.sp)
     val meta = base.copy(fontSize = 11.sp, lineHeight = 16.5.sp)
     val mono = base.copy(fontSize = 12.sp, lineHeight = 18.sp, fontFamily = Mono)
