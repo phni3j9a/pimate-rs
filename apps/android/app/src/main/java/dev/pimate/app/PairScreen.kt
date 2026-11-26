@@ -118,8 +118,7 @@ internal fun PairScreen(m: SessionModel, onBack: (() -> Unit)? = null) {
                 // TS 版の残りのデータは消さないので、案内は最初のペアリングだけに出す。
                 val fromTs =
                     remember(context) {
-                        onBack == null &&
-                            File(context.dataDir, "shared_prefs/SecureStore.xml").isFile
+                        File(context.dataDir, "shared_prefs/SecureStore.xml").isFile
                     }
                 Text(
                     if (fromTs) "以前の接続は引き継がれません。PC とペアリングし直してください。"

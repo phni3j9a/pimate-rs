@@ -155,11 +155,7 @@ internal fun NewPage(
                     },
                     Modifier.fillMaxWidth(),
                     enabled =
-                        h != null &&
-                            online &&
-                            form.cwd.isNotBlank() &&
-                            !busy &&
-                            outcome.isEmpty(),
+                        h != null && online && form.cwd.isNotBlank() && !busy && outcome.isEmpty(),
                 )
             },
         ) {
@@ -267,13 +263,20 @@ internal fun NewPage(
                 enabled = online && !busy,
                 onClick = { modelPicker = true },
                 trailing = {
-                    Text(value, color = pi.textSecondary, style = Type.caption)
+                    Text(value, color = pi.textSecondary, style = Type.body)
                     Icon(Icons.Right, null, Modifier.size(14.dp), pi.textSecondary)
                 },
             )
             if (modelPicker)
                 PiSheet({ modelPicker = false }) {
-                    SheetTitle("モデル")
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        Arrangement.SpaceBetween,
+                        Alignment.CenterVertically,
+                    ) {
+                        SheetTitle("モデル")
+                        TextAction("完了", { modelPicker = false })
+                    }
                     val favorites = models?.optJSONArray("scoped").objects()
                     var query by remember { mutableStateOf("") }
                     var all by remember(favorites.isEmpty()) { mutableStateOf(favorites.isEmpty()) }
@@ -287,15 +290,17 @@ internal fun NewPage(
                         ) {
                             all = it == "all"
                         }
-                    SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
-                    TextAction(
-                        "Pi の既定",
-                        {
-                            form.model = null
-                            form.thinking = null
-                            modelPicker = false
-                        },
-                    )
+                    if (catalog.size > 6)
+                        SpawnInput(query, { query = it }, "モデルを検索", "モデルを検索", true, path = true)
+                    if (query.isBlank())
+                        ListRow(
+                            "Pi の既定",
+                            if (form.model == null && label != null) label else "PC の Pi の設定に従います",
+                            onClick = {
+                                form.model = null
+                                form.thinking = null
+                            },
+                        )
                     val shown =
                         catalog.filter { model ->
                             (all || favorites.any { same(it, model) }) &&
@@ -307,31 +312,56 @@ internal fun NewPage(
                             if (catalog.isEmpty()) "モデル一覧を取得できません。Pi の既定で起動します。"
                             else "一致するモデルはありません"
                         )
-                    shown.forEach { model ->
-                        MenuRow(
-                            model.str("name").ifEmpty { model.str("id") },
-                            (if (favorites.any { same(it, model) }) "★ " else "") +
-                                model.str("provider"),
-                            !busy,
-                        ) {
-                            form.model =
-                                JSONObject()
-                                    .put("provider", model.str("provider"))
-                                    .put("id", model.str("id"))
-                            form.thinking = null
-                            modelPicker = false
+                    shown
+                        .groupBy { it.str("provider") }
+                        .forEach { (provider, list) ->
+                            Label(providerName(provider), top = 12.dp)
+                            list.forEach { model ->
+                                ListRow(
+                                    model.str("name").ifEmpty { model.str("id") },
+                                    "$provider/${model.str("id")}",
+                                    onClick = {
+                                        form.model =
+                                            JSONObject()
+                                                .put("provider", provider)
+                                                .put("id", model.str("id"))
+                                        form.thinking =
+                                            form.thinking?.takeIf {
+                                                it in model.optJSONArray("thinkingLevels").strings()
+                                            }
+                                    },
+                                    trailing = {
+                                        if (same(model, form.model))
+                                            Icon(
+                                                Icons.Check,
+                                                "選択中",
+                                                Modifier.size(16.dp),
+                                                pi.accentText,
+                                            )
+                                    },
+                                )
+                            }
                         }
-                    }
-                }
-            models
-                ?.optJSONArray("models")
-                .objects()
-                .find { same(it, form.model) }
-                ?.optJSONArray("thinkingLevels")
-                .strings()
-                .forEach { level ->
-                    MenuRow(level, if (form.thinking == level) "選択中" else "", !busy) {
-                        form.thinking = level
+                    val levels =
+                        catalog
+                            .find { same(it, form.model) }
+                            ?.optJSONArray("thinkingLevels")
+                            .strings()
+                    if (levels.size > 1) {
+                        Label("Thinking", top = 16.dp)
+                        Segment(levels.map { it to thinkingShort(it) }, form.thinking) {
+                            form.thinking = it
+                        }
+                        TextAction(
+                            "Pi の既定のレベル" +
+                                saved
+                                    ?.str("thinking")
+                                    .orEmpty()
+                                    .takeIf { it.isNotBlank() }
+                                    ?.let { "（$it）" }
+                                    .orEmpty(),
+                            { form.thinking = null },
+                        )
                     }
                 }
             Label("最初のメッセージ（任意）", top = 20.dp, bottom = 8.dp)

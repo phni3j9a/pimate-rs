@@ -311,7 +311,7 @@ internal fun FirstPage(
                             when {
                                 o.has("failureText") -> "失敗: ${o.str("failureText")}"
                                 o.str("status") == "waiting_input" ->
-                                    "入力待ち: ${o.str("questionTitle").ifEmpty { "Pi が回答を待っています" }}"
+                                    "入力待ち: Pi が回答を待っています"
                                 o.str("section") == "waiting" -> "サブエージェントの確認が必要です"
                                 else -> null
                             },

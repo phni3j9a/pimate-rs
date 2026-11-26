@@ -89,6 +89,50 @@ class RemainingJourney {
         find(hasText("API キーを設定"))
     }
 
+    /** `android-demo.py` の list fixture。起動はせず、選択・補完・保存だけを見る。 */
+    @Test
+    fun newPiAndDrawer() {
+        pair(link("new-pi-link"))
+        find(hasText("選ぶとチャットを開きます。"))
+        shot("Parity-First")
+        tap("ログイン画面の改修")
+        icon("Instance 一覧を開く")
+        find(hasText("要対応"))
+        shot("Parity-Drawer")
+        icon("新しい Pi を起動")
+        find(hasText("Pi の既定（Opus 5.5 · medium）"))
+        ui.onNodeWithText("起動").assertIsNotEnabled()
+        shot("Parity-New")
+        tap("モデル")
+        find(hasText("お気に入り 3"))
+        ui.onAllNodesWithText("Grok 5").assertCountEquals(0)
+        tap("すべて 8")
+        find(hasContentDescription("モデルを検索")).performTextInput("gRoK")
+        find(hasText("Grok 5"))
+        ui.onAllNodesWithText("Claude Opus 5.5").assertCountEquals(0)
+        tap("Grok 5")
+        tap("high")
+        tap("完了")
+        find(hasText("Grok 5 · high"))
+        val path = find(hasContentDescription("フォルダのパス"))
+        path.performTextInput("~/S")
+        tap("src/")
+        path.assertTextContains("~/src/")
+        find(hasText("test/"))
+        val toggle = find(hasContentDescription("質問ツールを使う"))
+        toggle.assertIsOff().performSemanticsAction(SemanticsActions.OnClick)
+        icon("閉じる")
+        icon("Instance 一覧を開く")
+        icon("新しい Pi を起動")
+        find(hasContentDescription("質問ツールを使う")).assertIsOn()
+        icon("閉じる")
+        icon("Instance 一覧を開く")
+        icon("設定")
+        tap("マシンを追加（ペアリング）")
+        find(hasText("PC の準備"))
+        shot("Parity-Pair")
+    }
+
     @Test
     fun firstEmpty() {
         pair(link("empty-link"))

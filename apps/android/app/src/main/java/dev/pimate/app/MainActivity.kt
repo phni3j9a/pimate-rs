@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.*
@@ -166,7 +167,7 @@ private fun Screen(m: SessionModel, chat: ChatUi) {
 internal fun DrawerSheet(content: @Composable ColumnScope.() -> Unit) {
     BoxWithConstraints {
         ModalDrawerSheet(
-            Modifier.width(min(maxWidth * .846f, 360.dp)),
+            Modifier.width(min((maxWidth.value * .846f).roundToInt().dp, 360.dp)),
             drawerShape = RectangleShape,
             drawerContainerColor = pi.background,
             drawerTonalElevation = 0.dp,
@@ -257,7 +258,7 @@ private fun DrawerContent(
                 },
             )
         }
-        LazyColumn(Modifier.weight(1f).padding(top = 10.dp)) {
+        LazyColumn(Modifier.weight(1f).padding(top = 4.dp)) {
             val (waiting, rest) = shown.partition { it.third.str("section") == "waiting" }
             if (waiting.isNotEmpty()) {
                 item("attention") { GroupHeader(Icons.Bell, "要対応", pi.waitingText) }
