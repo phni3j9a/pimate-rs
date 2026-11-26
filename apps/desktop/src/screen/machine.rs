@@ -1,6 +1,6 @@
 use super::*;
 use settings::{group, line};
-use state::{Confirmation, Forget, MachineQuery, Maintenance};
+use state::{Confirmation, MachineQuery, Maintenance};
 #[derive(Default)]
 pub(super) struct MachineData {
     loaded: bool,
@@ -8,12 +8,14 @@ pub(super) struct MachineData {
     devices: Value,
     github: Value,
     busy: bool,
+    removing: bool,
     pending: Option<(Host, String, Decision)>,
 }
 enum Decision {
     Host(Confirmation),
-    Local(Forget),
+    Remove(Option<Arc<Connection>>),
 }
+const LOCAL_WARNING: &str = "この端末からだけ接続情報と下書きを削除しますか？PC 側に登録が残る場合は、PC の Pi の /pimate devices で取り消してください。";
 fn github_status(v: &Value) -> String {
     match (v["installed"].as_bool(), v["loggedIn"].as_bool()) {
         (Some(false), _) => "PC に GitHub CLI（gh）がありません".into(),
@@ -39,7 +41,12 @@ impl Desktop {
         let Some(h) = self.hosts.iter().find(|h| h.id == id).cloned() else {
             return div().child("このマシンは登録されていません。");
         };
-        if n.read(cx).page.as_ref().is_some_and(|p| !p.visible(self))
+        let keep_removal = n.read(cx).machine.removing
+            || matches!(
+                n.read(cx).machine.pending,
+                Some((_, _, Decision::Remove(_)))
+            );
+        if (!keep_removal && n.read(cx).page.as_ref().is_some_and(|p| !p.visible(self)))
             || n.read(cx)
                 .machine
                 .pending
@@ -147,6 +154,7 @@ impl Desktop {
                 c["latest"].as_str().unwrap_or("未確認")
             )
         }));
+        let conn = self.machines.get(&h.id).map(|m| m.conn.clone());
         let button = |label: &str, op: Option<Maintenance>, target: Option<String>| {
             let label = label.to_string();
             let page = page.clone();
@@ -156,16 +164,41 @@ impl Desktop {
                 "confirm-{label}-{}",
                 target.as_deref().unwrap_or("")
             ));
-            let handler=cx.listener(move|app,_,_: &mut Window,cx:&mut Context<Self>|{
-                if !app.hosts.contains(&h){return;}
-                let fixed=match &op {
-                    None=>app.forget_confirmation(&h.id).map(|f| ("この端末の登録と、このマシンの下書きを削除します。PC 側の登録は取り消しません。".into(),Decision::Local(f))),
-                    Some(a)=>{let Some(page)=&page else{return;};
-                        let op=match a{Maintenance::UpdateLatest=>Maintenance::UpdateLatest,Maintenance::Restart=>Maintenance::Restart,Maintenance::Revoke(i)=>Maintenance::Revoke(i.clone())};
-                        page.confirmation(op).map(|c|(format!("{} {}",target.as_deref().unwrap_or(""),c.warning()),Decision::Host(c)))
+            let conn = conn.clone();
+            let handler = cx.listener(move |app, _, _: &mut Window, cx: &mut Context<Self>| {
+                if !app.hosts.contains(&h) {
+                    return;
+                }
+                let fixed = match &op {
+                    None if dev => Ok((
+                        "この端末から接続情報と下書きを削除し、PC 側の登録も取り消します。".into(),
+                        Decision::Remove(conn.clone()),
+                    )),
+                    None => Ok((LOCAL_WARNING.into(), Decision::Remove(None))),
+                    Some(a) => {
+                        let Some(page) = &page else {
+                            return;
+                        };
+                        let op = match a {
+                            Maintenance::UpdateLatest => Maintenance::UpdateLatest,
+                            Maintenance::Restart => Maintenance::Restart,
+                            Maintenance::Revoke(i) => Maintenance::Revoke(i.clone()),
+                        };
+                        page.confirmation(op).map(|c| {
+                            (
+                                format!("{} {}", target.as_deref().unwrap_or(""), c.warning()),
+                                Decision::Host(c),
+                            )
+                        })
                     }
                 };
-                nav.update(cx,|s,_|match fixed {Ok((warning,decision))=>s.machine.pending=Some((h.clone(),warning,decision)),Err(_)=>s.note="対象が変わりました。マシンを開き直してください。".into()});cx.notify();
+                nav.update(cx, |s, _| match fixed {
+                    Ok((warning, decision)) => {
+                        s.machine.pending = Some((h.clone(), warning, decision))
+                    }
+                    Err(_) => s.note = "対象が変わりました。マシンを開き直してください。".into(),
+                });
+                cx.notify();
             });
             Button::new(id)
                 .danger()
@@ -192,6 +225,16 @@ impl Desktop {
             for d in list {
                 let name = d["name"].as_str().unwrap_or("端末");
                 let mut row = line().justify_between().child(name.to_string());
+                if let Some(date) = d["lastSeenAt"]
+                    .as_i64()
+                    .filter(|t| *t > 0)
+                    .and_then(chrono::DateTime::from_timestamp_millis)
+                {
+                    row = row.child(p.caption(format!(
+                        "最終接続 {}",
+                        date.with_timezone(&chrono::Local).format("%Y/%m/%d")
+                    )));
+                }
                 if d["current"] == true {
                     row = row.child(p.caption("この端末"));
                 } else if let Some(id) = d["deviceId"].as_str().filter(|_| dev) {
@@ -219,15 +262,27 @@ impl Desktop {
                 .map(|r| format!("·　Pi {} 件", r.group("instance").len()))
                 .unwrap_or_default()
         );
+        let status = rows.and_then(|r| r.get("host", "connection").as_str());
+        let mut detail = group(host_label, p)
+            .child(summary)
+            .child(p.caption(h.address.clone()));
+        if h.needs_pairing || matches!(status, Some("auth_failed" | "revoked" | "invalid_token")) {
+            detail =
+                detail.child(self.nav_button(n, "repair", "ペアリングし直す", Route::SetupPc, cx));
+        } else if status == Some("offline")
+            && let Some(conn) = conn.clone()
+        {
+            detail = detail.child(
+                Button::new("retry-now")
+                    .label("今すぐ再接続")
+                    .on_click(move |_, _, _| conn.retry_now()),
+            );
+        }
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                group(host_label, p)
-                    .child(summary)
-                    .child(p.caption(h.address.clone())),
-            )
+            .child(detail)
             .child(maint.child(actions))
             .child(
                 group("プロバイダー", p).child(
@@ -241,11 +296,24 @@ impl Desktop {
                     .disabled(!online || !provider_supported(caps)),
                 ),
             )
-            .child(group("GitHub", p).child(github_status(if online {
-                &m.github
-            } else {
-                &Value::Null
-            })))
+            .child(
+                group("GitHub", p)
+                    .child(github_status(if online { &m.github } else { &Value::Null }))
+                    .when(
+                        gh && m.github["installed"] == true && m.github["loggedIn"] == false,
+                        |v| {
+                            v.child(
+                                Button::new("copy-gh-login")
+                                    .label("gh auth login をコピー")
+                                    .on_click(|_, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            "gh auth login".into(),
+                                        ))
+                                    }),
+                            )
+                        },
+                    ),
+            )
             .child(devices)
             .when(m.busy, |v| v.child(p.caption("応答を確認中…")))
             .child(
@@ -296,34 +364,60 @@ impl Desktop {
                     });
                 },
             ),
-            Decision::Local(forget) => {
+            Decision::Remove(connection) => {
+                n.update(cx, |s, _| s.machine.removing = true);
+                let core = self.core.clone();
                 let nav = n.clone();
                 let generation = nav.read(cx).generation.clone();
                 // Dispatch can outlive this screen. Reconcile storage even if the user navigated away.
                 cx.spawn(async move |app, cx| {
+                    let (id, device) = (target.id.clone(), target.device_id.clone());
                     let result = cx
                         .background_executor()
-                        .spawn(async move { forget.confirm() })
+                        .spawn(async move {
+                            match connection {
+                                Some(conn) => core.revoke_and_forget(conn, id, device).await,
+                                None => core.forget_device(id, device).map(|_| true),
+                            }
+                        })
                         .await;
                     let _ = app.update(cx, |app, cx| {
                         let same = nav.read(cx).route == Route::Machine(target.id.clone())
                             && Arc::ptr_eq(&generation, &nav.read(cx).generation);
                         match result {
-                            Ok(h) => {
+                            Ok(true) => {
                                 if same {
                                     app.navigate(&nav, Route::Settings, cx);
                                 }
-                                app.removed(&h, cx);
+                                app.removed(&target, cx);
+                            }
+                            Ok(false) | Err(Error::OutcomeUnknown) if same && app.hosts.contains(&target) => {
+                                nav.update(cx, |s, _| {
+                                    s.machine.removing = false;
+                                    s.machine.busy = false;
+                                    s.note.clear();
+                                    let reason = if result.is_err() {
+                                        "取消の結果を確認できません。取り消し済みの可能性があります。PC の端末一覧で確かめてください。"
+                                    } else {
+                                        "PC 側の登録を取り消せませんでした。"
+                                    };
+                                    s.machine.pending = Some((
+                                        target.clone(),
+                                        format!("{reason}\n{LOCAL_WARNING}"),
+                                        Decision::Remove(None),
+                                    ));
+                                });
                             }
                             Err(_) if same => {
                                 nav.update(cx, |s, _| {
+                                    s.machine.removing = false;
                                     s.machine.busy = false;
                                     s.note =
                                         "削除結果を確認できません。登録一覧を読み直してください。"
                                             .into();
                                 });
                             }
-                            Err(_) => {}
+                            _ => {}
                         }
                         cx.notify();
                     });

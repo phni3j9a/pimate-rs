@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 async-channel = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+chrono = "0.4"
 base64.workspace = true
 sha2.workspace = true
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }

@@ -120,6 +120,7 @@ impl Desktop {
         let previous = &n.read(cx).route;
         let back = match (&route, previous) {
             (Route::New(_), Route::First(_))
+            | (Route::SetupPc, Route::Machine(_))
             | (Route::SetupPc, Route::Settings)
             | (Route::Tailscale, Route::Settings) => previous.clone(),
             (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
