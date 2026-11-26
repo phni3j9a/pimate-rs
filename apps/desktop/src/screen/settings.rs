@@ -13,7 +13,6 @@ pub(super) enum Route {
     New(String),
     Machine(String),
     Providers(String),
-    Github(pimate_protocol::GitHubQuery),
 }
 #[derive(Default)]
 pub(crate) struct Nav {
@@ -97,7 +96,27 @@ impl Desktop {
         }
         dark
     }
-    pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
+    pub(super) fn navigate(
+        &mut self,
+        n: &Navigation,
+        route: Route,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if n.read(cx).spawn.as_ref().is_some_and(|f| f.submitting)
+            && n.read(cx)
+                .page
+                .as_ref()
+                .is_some_and(|page| page.visible(self))
+        {
+            return false;
+        }
+        if matches!(route, Route::New(_)) {
+            self.sidebar_open = false;
+            self.context_menu = None;
+        }
+        if route != Route::Home {
+            self.push_overlay(keys::Overlay::Route);
+        }
         self.remember_spawn(n, cx);
         let previous = &n.read(cx).route;
         let back = match (&route, previous) {
@@ -106,26 +125,29 @@ impl Desktop {
             | (Route::SetupPc, Route::Settings)
             | (Route::Tailscale, Route::Settings) => previous.clone(),
             (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
-            (Route::Github(q), _) if q != &pimate_protocol::GitHubQuery::List => {
-                Route::Github(pimate_protocol::GitHubQuery::List)
-            }
             (Route::Providers(id), _) => Route::Machine(id.clone()),
             (Route::Machine(_), _) => Route::Settings,
             (Route::SetupPc, _) => Route::Tailscale,
             _ => Route::Home,
         };
         self.row_action = None;
-        self.state.close_page();
-        let page = match &route {
-            Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
-                self.open_machine(id).ok()
+        // A New Pi form overlays Home; it owns its requests, not the conversation's inspector.
+        match (previous, &route) {
+            (Route::Home | Route::New(_), Route::New(_)) | (Route::New(_), Route::Home) => {
+                self.state.sheet = None
             }
-            Route::Github(_) => self.open_chat().ok(),
+            _ => self.state.close_page(),
+        }
+        let generation = Arc::new(());
+        let page = match &route {
+            Route::New(id) => self.modal_machine(id, &generation),
+            Route::Machine(id) | Route::Providers(id) => self.open_machine(id).ok(),
             _ => None,
         };
         n.update(cx, |s, _| {
             *s = Nav {
                 route,
+                generation,
                 back,
                 page,
                 pref_error: s.pref_error,
@@ -134,6 +156,7 @@ impl Desktop {
             }
         });
         cx.notify();
+        true
     }
     pub(super) fn page_task<T: 'static, F: Future<Output = T> + 'static>(
         &self,
@@ -174,7 +197,9 @@ impl Desktop {
         Button::new(id.clone())
             .debug_selector(|| format!("nav-{id}"))
             .label(label)
-            .on_click(cx.listener(move |this, _, _, cx| this.navigate(&n, r.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.navigate(&n, r.clone(), cx);
+            }))
     }
     pub(super) fn host_label(&self, h: &Host) -> String {
         if self.hosts.iter().filter(|x| x.name == h.name).count() > 1 {
@@ -389,20 +414,9 @@ impl Desktop {
             Route::First(id) => ("最初の Pi", self.first_step(n, p, id, cx)),
             Route::Tailscale => ("Tailscale でつなぐ", self.guide(n, p, false, cx)),
             Route::SetupPc => ("PC に PiMate を入れる", self.guide(n, p, true, cx)),
-            Route::Github(q) => {
-                if n.read(cx)
-                    .page
-                    .as_ref()
-                    .is_some_and(|page| page.visible(self))
-                    && let Some(viewer) = n.read(cx).github.viewer.clone()
-                    && let Some(panel) = chat_media::Viewer::panel(&viewer, None, p, w, cx)
-                {
-                    return Some(div().min_w_0().flex_1().child(panel));
-                }
-                ("GitHub", self.github_view(n, p, q, w, cx))
-            }
         };
         let back = n.read(cx).back.clone();
+        let is_new = matches!(r, Route::New(_));
         let header = div()
             .flex()
             .items_center()
@@ -411,8 +425,22 @@ impl Desktop {
             .py_2()
             .border_b_1()
             .border_color(p.border)
-            .child(p.caption("PiMate  /  ワークスペース"))
-            .child(self.nav_button(n, "back", "戻る", back, cx).ghost());
+            .child(p.caption(if is_new {
+                title
+            } else {
+                "PiMate  /  ワークスペース"
+            }))
+            .child(
+                self.nav_button(n, "back", if is_new { "閉じる" } else { "戻る" }, back, cx)
+                    .ghost()
+                    .disabled(
+                        n.read(cx).spawn.as_ref().is_some_and(|f| f.submitting)
+                            && n.read(cx)
+                                .page
+                                .as_ref()
+                                .is_some_and(|page| page.visible(self)),
+                    ),
+            );
         let scroll = n.read(cx).scroll.clone();
         let body = div()
             .mx_auto()
@@ -422,12 +450,14 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .text_size(rems(1.55))
-                    .child(title),
-            )
+            .when(!is_new, |d| {
+                d.child(
+                    div()
+                        .font_weight(FontWeight::BOLD)
+                        .text_size(rems(1.55))
+                        .child(title),
+                )
+            })
             .when(n.read(cx).pref_error, |v| {
                 v.child(p.caption("設定ファイルを読み書きできません。この起動中のみ反映します。"))
             })

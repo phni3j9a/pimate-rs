@@ -20,11 +20,15 @@ pub(super) fn preview(s: &str) -> String {
         .take(80)
         .collect()
 }
+impl S {
+    pub(super) fn is_popover(self) -> bool {
+        matches!(self, S::Model | S::Usage)
+    }
+}
 fn label(kind: S) -> &'static str {
     match kind {
         S::Model => "モデル",
         S::Usage => "使用状況",
-        S::Session => "セッション",
         S::Resume => "過去のセッション",
         S::Fork => "分岐元を選択",
         S::Tree => "セッションツリー",
@@ -55,18 +59,6 @@ fn toggle_favorite(reply: Option<&Value>, model: &ModelRef, was_favorite: bool) 
     }
     Some(A::Favorites(current))
 }
-fn nav(kind: S, page: &Page, cx: &Context<Desktop>) -> Button {
-    let pg = page.clone();
-    Button::new(label(kind))
-        .small()
-        .ghost()
-        .label(label(kind))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            if pg.visible(this) {
-                this.show_sheet(kind, cx)
-            }
-        }))
-}
 fn section(title: &str, p: &Colors) -> Div {
     div()
         .flex()
@@ -93,14 +85,14 @@ pub(super) fn action(
     Button::new(id.into())
         .label(title)
         .disabled(disabled)
-        .on_click(cx.listener(move |this, _, _, cx| {
+        .on_click(cx.listener(move |this, _, w, cx| {
             if pg.visible(this) {
-                this.sheet_action(make(), cx)
+                this.sheet_action(make(), w, cx)
             }
         }))
 }
 impl Desktop {
-    pub(super) fn confirm_shutdown(&self, page: &Page, w: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn confirm_shutdown(&mut self, page: &Page, w: &mut Window, cx: &mut Context<Self>) {
         if !page.visible(self) {
             return;
         }
@@ -119,66 +111,224 @@ impl Desktop {
         } else {
             "処理が止まります。保存先が不明なため履歴が失われる可能性があります。"
         };
-        self.restore_input(w, cx);
-        let confirm = w.prompt(
-            PromptLevel::Critical,
-            &format!("{title} を終了しますか？"),
-            Some(detail),
-            &[
-                PromptButton::cancel("キャンセル"),
-                PromptButton::new("終了する"),
-            ],
+        self.confirm_action(
+            format!("{title} を終了しますか？"),
+            detail.into(),
+            ("終了する", true),
+            w,
             cx,
+            move |app, _, cx| {
+                if !pg.visible(app) {
+                    return;
+                }
+                cx.spawn(async move |app, cx| {
+                    let result = stop.confirm().await;
+                    let _ = app.update(cx, |app, cx| {
+                        if pg.visible(app) {
+                            app.finish_send_notice(result.map(|_| String::new()));
+                            cx.notify()
+                        }
+                    });
+                })
+                .detach();
+            },
         );
-        cx.spawn(async move |this, cx| {
-            if confirm.await == Ok(1) {
-                let r = stop.confirm().await;
-                let _ = this.update(cx, |this, cx| {
-                    if pg.visible(this) {
-                        this.finish_send_notice(r.map(|_| String::new()));
-                        cx.notify()
-                    }
-                });
+    }
+    pub(super) fn confirm_action(
+        &mut self,
+        title: String,
+        detail: String,
+        (label, destructive): (&'static str, bool),
+        w: &mut Window,
+        cx: &mut Context<Self>,
+        run: impl FnOnce(&mut Desktop, &mut Window, &mut Context<Desktop>) + 'static,
+    ) {
+        if self.dialog_focus.borrow().is_some() {
+            return;
+        }
+        self.prepare_dialog(w, cx);
+        let run = std::rc::Rc::new(std::cell::RefCell::new(Some(run)));
+        let open = self.dialog_focus.clone();
+        let app = cx.weak_entity();
+        let perform = std::rc::Rc::new(move |w: &mut Window, cx: &mut App| {
+            if let Some(run) = run.borrow_mut().take() {
+                let _ = app.update(cx, |app, cx| run(app, w, cx));
             }
-        })
-        .detach();
+        });
+        w.open_dialog(cx, move |dialog, _, _| {
+            let yes = open.clone();
+            let open = open.clone();
+            let activate = perform.clone();
+            let click = perform.clone();
+            dialog
+                .title(title.clone())
+                .child(detail.clone())
+                .overlay_closable(false)
+                .close_button(false)
+                .on_ok(move |_, w, cx| {
+                    if w.context_stack()
+                        .iter()
+                        .any(|c| c.contains("ExplicitConfirmation"))
+                    {
+                        activate(w, cx)
+                    }
+                    true
+                })
+                .on_close(move |_, _, _| {
+                    open.borrow_mut().take();
+                })
+                .footer(move |_, cancel, w, cx| {
+                    let click = click.clone();
+                    let open = yes.clone();
+                    vec![
+                        cancel(w, cx),
+                        div()
+                            .key_context("ExplicitConfirmation")
+                            .child(
+                                Button::new("confirm-destructive")
+                                    .debug_selector(|| "confirm-destructive".into())
+                                    .label(label)
+                                    .when(destructive, |b| b.danger())
+                                    .on_click(move |_, w, cx| {
+                                        open.borrow_mut().take();
+                                        w.close_dialog(cx);
+                                        click(w, cx);
+                                    }),
+                            )
+                            .into_any_element(),
+                    ]
+                })
+                .button_props(
+                    gpui_component::dialog::DialogButtonProps::default().cancel_text("キャンセル"),
+                )
+        });
+        if let Some(root) = w.focused(cx) {
+            self.push_overlay(keys::Overlay::Prompt);
+            *self.dialog_focus.borrow_mut() = Some(root.clone());
+            w.on_next_frame(move |w, _| {
+                if root.is_focused(w) {
+                    w.cycle_focus_within(&root, false)
+                }
+            });
+        }
     }
-    pub(super) fn sheet_nav(&self, page: &Page, cx: &Context<Self>) -> Div {
-        // 狭いウィンドウでもヘッダーを1行に保つ（折り返さない）。
-        div()
-            .flex()
-            .flex_none()
-            .gap_1()
-            .children([S::Model, S::Usage, S::Session].map(|k| nav(k, page, cx)))
+    pub(super) fn session_menu(&self, page: &Page, rows: &Rows, cx: &Context<Self>) -> Button {
+        use gpui_component::menu::{PopupMenu, PopupMenuItem};
+        let page = page.clone();
+        let busy = !rows.group("busy").is_empty();
+        let idle = rows.get("view", "status") == "idle" && rows.get("view", "agentActive") != true;
+        let tree = rows.get("view", "sessionTree") == true;
+        let attach = rows
+            .get("view", "abducoSession")
+            .as_str()
+            .and_then(state::attach_command);
+        Button::new("session-menu")
+            .debug_selector(|| "session-menu".into())
+            .small()
+            .ghost()
+            .label("⋯")
+            .tooltip("セッション")
+            .on_click(cx.listener(move |app, e: &ClickEvent, w, cx| {
+                if !page.visible(app) || app.dialog_focus.borrow().is_some() {
+                    return;
+                }
+                let choose = |s| {
+                    let page = page.clone();
+                    PopupMenuItem::new(label(s)).on_click(cx.listener(move |app, _, w, cx| {
+                        if page.visible(app) {
+                            app.show_sheet(s, w, cx)
+                        }
+                    }))
+                };
+                let action = |text, disabled, make: fn() -> A| {
+                    let page = page.clone();
+                    PopupMenuItem::new(text)
+                        .disabled(disabled)
+                        .on_click(cx.listener(move |app, _, _, cx| {
+                            if !page.visible(app) {
+                                return;
+                            };
+                            let page = page.clone();
+                            cx.spawn(async move |app, cx| {
+                                let r = page.sheet(make()).await;
+                                let _ = app.update(cx, |app, cx| {
+                                    if page.visible(app) {
+                                        app.finish_send_notice(r.map(|_| String::new()));
+                                        cx.notify()
+                                    }
+                                });
+                            })
+                            .detach()
+                        }))
+                };
+                let new = action("新しいセッション", busy || !idle, || A::New);
+                let compact = action("コンテキストを圧縮", busy, || A::Compact);
+                let resume = choose(S::Resume);
+                let fork = choose(S::Fork);
+                let tree = tree.then(|| choose(S::Tree));
+                let page = page.clone();
+                let end = PopupMenuItem::new("この Pi を終了…")
+                    .disabled(busy)
+                    .on_click(cx.listener(move |app, _, w, cx| app.confirm_shutdown(&page, w, cx)));
+                let menu = PopupMenu::build(w, cx, |m, _, _| {
+                    m.item(new)
+                        .item(resume)
+                        .item(fork)
+                        .when_some(tree, |m, t| m.item(t))
+                        .item(compact)
+                        .separator()
+                        .when_some(attach.clone(), |m, cmd| {
+                            m.item(context::copy("接続コマンドをコピー", cmd))
+                        })
+                        .item(end)
+                });
+                app.show_context(menu, e.position(), w, cx);
+            }))
     }
-    pub(super) fn show_sheet(&mut self, kind: S, cx: &mut Context<Self>) {
+    pub(super) fn prepare_dialog(&mut self, w: &mut Window, cx: &App) {
+        self.context_menu = None;
+        self.sidebar_open = false;
+        w.dismiss_tooltip();
+        self.restore_input(w, cx);
+    }
+    pub(super) fn show_sheet(&mut self, kind: S, w: &mut Window, cx: &mut Context<Self>) {
+        if self.media_keys.is_some() {
+            return;
+        }
+        self.prepare_dialog(w, cx);
         if self.open_sheet(kind).is_ok() {
             if let Some(a) = load(kind) {
-                self.sheet_action(a, cx)
+                self.sheet_action(a, w, cx)
             }
             cx.notify()
         }
     }
-    pub(super) fn sheet_action(&mut self, action: A, cx: &mut Context<Self>) {
+    pub(super) fn sheet_action(&mut self, action: A, w: &mut Window, cx: &mut Context<Self>) {
         let Some(sheet) = self.state.sheet.as_mut() else {
             return;
         };
         let reload = match action {
             A::Label(_) => Some(A::Tree),
-            A::Select(_) | A::Thinking(_) | A::Default(_) => Some(A::Models),
+            A::Default(_) => Some(A::Models),
             _ => None,
         };
+        let dismiss = matches!(
+            action,
+            A::Select(_) | A::Thinking(_) | A::Resume(_) | A::Fork(_) | A::Move(_, _)
+        );
         let page = sheet.page.clone();
         let Ok(req) = sheet.begin(action) else { return };
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(w, async move |this, cx| {
             let reply = req.run().await;
-            let _ = this.update(cx, |this, cx| {
+            let _ = this.update_in(cx, |this, w, cx| {
                 reply.finish(this);
-                if let Some(refresh) = reload
-                    && page.visible(this)
-                    && this.active_sheet().is_some_and(|s| s.error.is_none())
-                {
-                    this.sheet_action(refresh, cx)
+                if page.visible(this) && this.active_sheet().is_some_and(|s| s.error.is_none()) {
+                    if dismiss {
+                        this.state.sheet = None;
+                        this.restore_input(w, cx)
+                    } else if let Some(refresh) = reload {
+                        this.sheet_action(refresh, w, cx)
+                    }
                 }
                 cx.notify()
             });
@@ -242,45 +392,6 @@ impl Desktop {
             )))
         }
         match kind {
-            S::Session => {
-                body = body.child(
-                    section("会話", p)
-                        .child(p.caption(view("cwd").as_str().unwrap_or("").to_owned()))
-                        .child(action(
-                            "new",
-                            "新しいセッション",
-                            busy || !idle,
-                            pg,
-                            || A::New,
-                            cx,
-                        ))
-                        .child(nav(S::Resume, pg, cx))
-                        .child(nav(S::Fork, pg, cx))
-                        .when(view("sessionTree") == true, |b| {
-                            b.child(nav(S::Tree, pg, cx))
-                        })
-                        .child(action(
-                            "compact",
-                            "コンテキストを圧縮",
-                            busy,
-                            pg,
-                            || A::Compact,
-                            cx,
-                        )),
-                );
-                let page = pg.clone();
-                body = body.child(
-                    section("この Pi", p).children(copy_attach(rows)).child(
-                        Button::new("shutdown")
-                            .danger()
-                            .label("この Pi を終了…")
-                            .disabled(busy)
-                            .on_click(cx.listener(move |this, _, w, cx| {
-                                this.confirm_shutdown(&page, w, cx)
-                            })),
-                    ),
-                );
-            }
             S::Tree => body = body.child(self.tree(key, pg, p, w, cx)),
             S::Resume | S::Fork => {
                 let list = match kind {
@@ -409,7 +520,7 @@ impl Desktop {
                                     Button::new(SharedString::from(format!("fav:{id}")))
                                         .label(if fav { "★ 解除" } else { "☆ 追加" })
                                         .disabled(busy || favorites.is_none())
-                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                        .on_click(cx.listener(move |this, _, w, cx| {
                                             if page.visible(this)
                                                 && let Some(a) = toggle_favorite(
                                                     this.active_sheet()
@@ -418,7 +529,7 @@ impl Desktop {
                                                     fav,
                                                 )
                                             {
-                                                this.sheet_action(a, cx)
+                                                this.sheet_action(a, w, cx)
                                             }
                                         })),
                                 ),
@@ -574,9 +685,10 @@ impl Desktop {
                     .child(
                         Button::new("close-sheet")
                             .label("会話に戻る")
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, w, cx| {
                                 if close.visible(this) {
-                                    this.state.close_page();
+                                    this.state.sheet = None;
+                                    this.restore_input(w, cx);
                                     cx.notify()
                                 }
                             })),

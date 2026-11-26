@@ -12,7 +12,7 @@ pub(super) struct MachineData {
     pending: Option<(Host, String, Decision)>,
 }
 enum Decision {
-    Host(Confirmation),
+    Host(Box<Confirmation>),
     Remove(Option<Arc<Connection>>),
 }
 const LOCAL_WARNING: &str = "この端末からだけ接続情報と下書きを削除しますか？PC 側に登録が残る場合は、PC の Pi の /pimate devices で取り消してください。";
@@ -65,6 +65,25 @@ impl Desktop {
             n.update(cx, |s, _| s.page = Some(page));
         }
         let page = n.read(cx).page.clone().filter(|p| p.visible(self));
+        if !self.dialog_focus.borrow().is_some()
+            && let Some((fixed, warning, decision)) = n.update(cx, |s, _| s.machine.pending.take())
+        {
+            let nav = n.clone();
+            let generation = nav.read(cx).generation.clone();
+            let destructive = !matches!(&decision,Decision::Host(c) if !c.destructive());
+            self.confirm_action(
+                format!("{} · {}", fixed.name, fixed.address),
+                warning,
+                ("確認して実行", destructive),
+                w,
+                cx,
+                move |app, w, cx| {
+                    if Arc::ptr_eq(&generation, &nav.read(cx).generation) {
+                        app.confirm_machine(&nav, fixed, decision, w, cx)
+                    }
+                },
+            );
+        }
         let rows = self.machines.get(id).map(|m| &m.rows);
         let caps = rows.map(|r| r.get("host", "info")).unwrap_or(&Value::Null);
         let online =
@@ -118,24 +137,6 @@ impl Desktop {
         let m = &n.read(cx).machine;
         let id = h.id.clone();
         let host_label = self.host_label(&h);
-        if let Some((fixed, warning, _)) = &m.pending {
-            let cancel = n.clone();
-            let run = n.clone();
-            let cancel = Button::new("cancel-action")
-                .label("キャンセル")
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    cancel.update(cx, |s, _| s.machine.pending = None);
-                    cx.notify();
-                }));
-            let confirm = Button::new("confirm-action")
-                .danger()
-                .label("確認して実行")
-                .on_click(cx.listener(move |app, _, w, cx| app.confirm_machine(&run, w, cx)));
-            return group("操作の確認", p)
-                .child(format!("{}　·　{}", fixed.name, fixed.address))
-                .child(warning.clone())
-                .child(line().child(cancel).child(confirm));
-        }
         let c = &m.check;
         let mut maint = group("PC の PiMate", p).child(format!(
             "現在の版　{}",
@@ -156,6 +157,7 @@ impl Desktop {
         }));
         let conn = self.machines.get(&h.id).map(|m| m.conn.clone());
         let button = |label: &str, op: Option<Maintenance>, target: Option<String>| {
+            let destructive = matches!(&op, None | Some(Maintenance::Revoke(_)));
             let label = label.to_string();
             let page = page.clone();
             let h = h.clone();
@@ -187,7 +189,7 @@ impl Desktop {
                         page.confirmation(op).map(|c| {
                             (
                                 format!("{} {}", target.as_deref().unwrap_or(""), c.warning()),
-                                Decision::Host(c),
+                                Decision::Host(Box::new(c)),
                             )
                         })
                     }
@@ -201,7 +203,7 @@ impl Desktop {
                 cx.notify();
             });
             Button::new(id)
-                .danger()
+                .when(destructive, |b| b.danger())
                 .label(label)
                 .disabled(m.busy)
                 .on_click(handler)
@@ -331,10 +333,14 @@ impl Desktop {
                     .child(button("このマシンを削除…", None, None)),
             )
     }
-    fn confirm_machine(&mut self, n: &Navigation, w: &mut Window, cx: &mut Context<Self>) {
-        let Some((target, _, decision)) = n.update(cx, |s, _| s.machine.pending.take()) else {
-            return;
-        };
+    fn confirm_machine(
+        &mut self,
+        n: &Navigation,
+        target: Host,
+        decision: Decision,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.hosts.contains(&target) {
             self.navigate(n, Route::Settings, cx);
             return;

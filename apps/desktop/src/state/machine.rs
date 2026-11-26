@@ -170,6 +170,9 @@ impl Page {
         self.machine()?;
         Ok(Confirmation(self.clone(), a))
     }
+    pub async fn github_status(&self) -> Result<Value, Error> {
+        self.perform(Operation::GithubStatus).await
+    }
     pub async fn github(&self, q: p::GitHubQuery) -> Result<Value, Error> {
         self.perform(Operation::Github {
             instance: self.editor()?.instance.clone(),
@@ -225,6 +228,9 @@ impl Page {
     }
 }
 impl Confirmation {
+    pub fn destructive(&self) -> bool {
+        matches!(self.1, Maintenance::Revoke(_))
+    }
     pub fn warning(&self) -> &str {
         match self.1 {
             Maintenance::UpdateLatest => "このマシンを実行時の最新版に更新します。",

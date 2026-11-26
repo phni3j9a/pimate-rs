@@ -477,13 +477,13 @@ impl Shutdown {
 pub enum SheetPage {
     Model,
     Usage,
-    Session,
     Resume,
     Fork,
     Tree,
     Commands,
 }
 pub struct Sheet {
+    _life: Arc<()>,
     pub page: Page,
     pub kind: SheetPage,
     pending: Weak<()>,
@@ -497,8 +497,13 @@ pub struct SheetRequest {
 }
 impl Desktop {
     pub fn open_sheet(&mut self, kind: SheetPage) -> Result<Page, Error> {
-        let page = self.open_chat()?;
+        // A sheet has its own lifetime: closing it invalidates its requests, not the inspector behind it.
+        let life = Arc::new(());
+        let mut page = self.background_chat().ok_or(Error::StaleTarget)?;
+        page.page = Arc::downgrade(&life);
+        self.push_overlay(crate::screen::keys::Overlay::Sheet);
         self.state.sheet = Some(Sheet {
+            _life: life,
             page: page.clone(),
             kind,
             pending: Weak::new(),

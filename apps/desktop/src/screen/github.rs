@@ -3,10 +3,92 @@ use pimate_protocol::GitHubQuery;
 use settings::{group, line};
 #[derive(Default)]
 pub(super) struct Github {
-    loaded: bool,
-    data: Option<Value>,
-    docs: markdown::Messages,
+    pub(super) query: Option<GitHubQuery>,
+    pub(super) loaded: bool,
+    pub(super) data: Option<Value>,
+    pub(super) docs: markdown::Messages,
     pub(super) viewer: Option<Entity<chat_media::Viewer>>,
+}
+fn guidance(code: &str) -> &'static str {
+    match code {
+        "gh_missing" => {
+            "PC に GitHub CLI（gh）をインストールし、gh auth login を実行してください。"
+        }
+        "gh_auth" => "PC のターミナルで gh auth login を実行してください。",
+        "not_github" => "GitHub の remote があるフォルダで Pi を開いてください。",
+        "not_found" => {
+            "対象の Pi、Issue または PR が見つかりません。アクセス権も確認してください。"
+        }
+        _ => "PC との接続と Pi の状態を確認してください。",
+    }
+}
+fn summary(v: &Value) -> Vec<String> {
+    let mut lines = Vec::new();
+    let labels = v["labels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" · ");
+    if !labels.is_empty() {
+        lines.push(format!("ラベル: {labels}"))
+    }
+    if v["kind"] == "pr" {
+        lines.push(format!(
+            "レビュー: {}",
+            match v["reviewDecision"].as_str() {
+                Some("APPROVED") => "承認済み",
+                Some("CHANGES_REQUESTED") => "変更依頼",
+                Some("REVIEW_REQUIRED") => "レビュー待ち",
+                Some(s) if !s.is_empty() => s,
+                _ => "未確認",
+            }
+        ));
+        let c = &v["ci"];
+        lines.push(
+            match (
+                c["passed"].as_u64(),
+                c["failed"].as_u64(),
+                c["pending"].as_u64(),
+            ) {
+                (Some(p), Some(f), Some(w)) => format!("CI: 成功 {p} · 失敗 {f} · 待機 {w}"),
+                _ => "CI: 未確認".into(),
+            },
+        );
+    }
+    lines
+}
+async fn load(page: state::Page, query: GitHubQuery) -> Result<Value, &'static str> {
+    let mut reply = match page.github(query.clone()).await {
+        Ok(reply) => reply,
+        Err(Error::Rejected) => {
+            let status = page.github_status().await.unwrap_or(Value::Null);
+            return Err(status_note(&status["status"]));
+        }
+        Err(_) => return Err(guidance("")),
+    };
+    if reply["ok"] == false {
+        return Err(guidance(reply["code"].as_str().unwrap_or_default()));
+    }
+    let data = reply["data"].take();
+    let item = &data["item"];
+    let valid = match query {
+        GitHubQuery::List => data["issues"].is_array() && data["prs"].is_array(),
+        GitHubQuery::Issue { number } => item["kind"] == "issue" && item["number"] == number,
+        GitHubQuery::Pr { number } => item["kind"] == "pr" && item["number"] == number,
+    };
+    valid.then_some(data).ok_or("応答の形式を確認できません。")
+}
+fn status_note(v: &Value) -> &'static str {
+    match (v["installed"].as_bool(), v["loggedIn"].as_bool()) {
+        (Some(false), _) => guidance("gh_missing"),
+        (Some(true), Some(false)) => guidance("gh_auth"),
+        (Some(true), Some(true)) => {
+            "現在の Pi が GitHub のリポジトリで動いているか、閲覧権限があるかを確認してください。"
+        }
+        _ => "GitHub から取得できませんでした。PC の gh の状態は未確認です。",
+    }
 }
 fn check_note(v: &Value) -> Option<&'static str> {
     if v["checksTruncated"] == true {
@@ -35,31 +117,29 @@ impl Desktop {
         if !n.read(cx).github.loaded {
             n.update(cx, |s, _| s.github.loaded = true);
             let query = q.clone();
-            self.page_task(n,w,cx,async move|page|{
-                let mut reply=page.github(query.clone()).await?;
-                let data=reply["data"].take();let item=&data["item"];
-                let valid=match query {
-                    GitHubQuery::List=>data["issues"].is_array() && data["prs"].is_array(),
-                    GitHubQuery::Issue{number}=>item["kind"]=="issue"&&item["number"]==number,
-                    GitHubQuery::Pr{number}=>item["kind"]=="pr"&&item["number"]==number,
-                };
-                valid.then_some(data).ok_or(Error::InvalidMessage)
-            },|_,nav,result,_,cx|{nav.update(cx,|s,_|match result{
-                Ok(data)=>s.github.data=Some(data),
-                Err(_)=>s.note="取得できませんでした。PC の gh のログイン状態・リポジトリ・閲覧権限を確認してください。".into(),
-            });});
+            self.page_task(
+                n,
+                w,
+                cx,
+                move |page| load(page, query),
+                |_, n, result, _, cx| {
+                    n.update(cx, |s, _| match result {
+                        Ok(data) => s.github.data = Some(data),
+                        Err(note) => s.note = note.into(),
+                    })
+                },
+            );
         }
         let Some(data) = n.read(cx).github.data.as_ref() else {
             return if n.read(cx).note.is_empty() {
                 root.child(p.caption("PC から読み込み中…"))
             } else {
-                root.child(self.nav_button(
-                    n,
-                    "github-retry",
-                    "再読み込み",
-                    Route::Github(q.clone()),
-                    cx,
-                ))
+                let q = q.clone();
+                root.child(p.caption(n.read(cx).note.clone())).child(
+                    Button::new("github-retry").label("再読み込み").on_click(
+                        cx.listener(move |app, _, _, cx| app.select_github(q.clone(), cx)),
+                    ),
+                )
             };
         };
         if q == &GitHubQuery::List {
@@ -85,7 +165,7 @@ impl Desktop {
                         } else {
                             GitHubQuery::Pr { number }
                         };
-                        let nav = n.clone();
+
                         let shown = page.clone();
                         let label = format!(
                             "#{number}　{}　·　{}",
@@ -97,10 +177,12 @@ impl Desktop {
                             .justify_start()
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 if shown.visible(app) {
-                                    app.navigate(&nav, Route::Github(query.clone()), cx);
+                                    app.select_github(query.clone(), cx);
                                 }
                             }));
-                        g = g.child(open);
+                        g = g
+                            .child(open)
+                            .children(summary(row).into_iter().map(|text| p.caption(text)));
                     }
                 }
                 root = root.child(g);
@@ -152,7 +234,13 @@ impl Desktop {
         controls = controls.child(Button::new("ask").label("Pi の下書きに追加").on_click(
             cx.listener(move |app, _, w, cx| {
                 if item.ask_about(app, w, cx).is_ok() {
-                    app.navigate(&nav, Route::Home, cx);
+                    if let Some((_, ins)) = &app.chat_keys {
+                        ins.update(cx, |s, cx| {
+                            s.tab = None;
+                            cx.notify();
+                        });
+                    }
+                    app.restore_input(w, cx);
                 } else {
                     nav.update(cx, |s, _| {
                         s.note = "送信先が変わりました。下書きは変更していません。".into()
@@ -164,9 +252,7 @@ impl Desktop {
         if v["isDraft"] == true {
             heading = heading.child(p.caption("ドラフト PR"));
         }
-        if let Some(decision) = v["reviewDecision"].as_str() {
-            heading = heading.child(p.caption(format!("レビュー　{decision}")));
-        }
+        heading = heading.children(summary(v).into_iter().map(|text| p.caption(text)));
         if let (Some(head), Some(base)) = (v["headRefName"].as_str(), v["baseRefName"].as_str()) {
             heading = heading.child(p.caption(format!("{head} → {base}")));
         }
@@ -289,6 +375,26 @@ mod tests {
             Some(TABLE)
         );
         assert!(cx.opened_url().is_none());
+    }
+    #[test]
+    fn pr_summary_and_status_guidance_distinguish_missing_from_zero() {
+        use serde_json::json;
+        let rich = json!({"kind":"pr","labels":["docs"],"reviewDecision":"APPROVED","ci":{"passed":1,"failed":0,"pending":2}});
+        assert_eq!(
+            super::summary(&rich),
+            [
+                "ラベル: docs",
+                "レビュー: 承認済み",
+                "CI: 成功 1 · 失敗 0 · 待機 2"
+            ]
+        );
+        assert!(super::summary(&json!({"kind":"pr"})).contains(&"CI: 未確認".into()));
+        for (status, reason) in [
+            (json!({"installed":false}), "gh_missing"),
+            (json!({"installed":true,"loggedIn":false}), "gh_auth"),
+        ] {
+            assert_eq!(super::status_note(&status), super::guidance(reason));
+        }
     }
     #[test]
     fn missing_checks_are_not_empty() {

@@ -19,3 +19,7 @@ Wayland の XDG portal の `WindowAppearance` を配送するとき、対象ウ�
 ## モーダルとキーボード（#73）
 
 `KeystrokeEvent` に元の `KeyDownEvent::is_held` を渡し、アクション解決前に Esc のリピートを判別できるようにした。`Window::cycle_focus_within` は既存のタブ順から指定ペイン内の移動先だけを選ぶ。Linux のフォールバック確認は背景を occlude し、明示したキャンセルを Esc で選べる。`has_rendered_prompt` はこのウィンドウ内確認の表示をアプリに知らせる（OS が表示するネイティブ確認は含まない）。更新時は desktop の `key_tests` を実行する。
+
+## ウィンドウ単位のキー解放（#84）
+
+`Window::set_key_release_listener` はフォーカス先の dispatch tree より先に KeyUp を通知します。確認の表示でフォーカスが変わっても、背景で消費したキーを離した時点でラッチを解除します。

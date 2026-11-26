@@ -3,10 +3,10 @@ use state::{Page, review::Review};
 #[derive(Default)]
 pub(crate) struct Inspector {
     pub review: Option<Arc<Review>>,
-    pub review_open: bool,
+    pub(super) tab: Option<Tab>,
+    pub(super) github: Option<Navigation>,
     read: Option<Task<()>>,
     error: Option<Error>,
-    pub agents: bool,
     pub child: Option<state::Child>,
     pub run: Option<String>,
 }
@@ -18,7 +18,7 @@ impl Inspector {
         latest: bool,
         cx: &mut Context<Self>,
     ) {
-        self.review_open = true;
+        self.tab = Some(Tab::Review);
         self.review = None;
         self.error = None;
         self.read = Some(cx.spawn(async move |this, cx| {
@@ -54,9 +54,17 @@ impl Desktop {
         let pg = pg.clone();
         let ins = ins.clone();
         p.icon_button("review", "diff", "変更をレビュー", cx)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if pg.visible(this) {
-                    ins.update(cx, |s, cx| s.load(pg.clone(), None, true, cx))
+            .on_click(cx.listener(move |app, _, w, cx| {
+                if pg.visible(app) {
+                    ins.update(cx, |s, cx| {
+                        if s.tab == Some(Tab::Review) {
+                            s.tab = None;
+                            cx.notify()
+                        } else {
+                            s.load(pg.clone(), None, true, cx)
+                        }
+                    });
+                    app.restore_input(w, cx)
                 }
             }))
     }
@@ -121,16 +129,32 @@ impl Desktop {
                 body = body.child(p.caption("この範囲に読み込み済みの変更はありません"))
             }
             for (fi, f) in r.files.iter().enumerate() {
+                let collapsed = w.use_keyed_state(
+                    SharedString::from(format!("collapsed:{}", f.path)),
+                    cx,
+                    |_, _| false,
+                );
+                let closed = *collapsed.read(cx);
                 let mut card = div()
                     .rounded_md()
                     .border_1()
                     .border_color(p.border)
                     .p_3()
                     .child(
-                        div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(f.path.clone()),
+                        Button::new(("toggle-file", fi))
+                            .ghost()
+                            .label(format!("{} {}", if closed { "▸" } else { "▾" }, f.path))
+                            .on_click(move |_, _, cx| {
+                                collapsed.update(cx, |v, cx| {
+                                    *v = !*v;
+                                    cx.notify()
+                                })
+                            }),
                     );
+                if closed {
+                    body = body.child(card);
+                    continue;
+                }
                 for (i, piece) in f.pieces.iter().enumerate() {
                     if let Some(omitted) = &piece.omitted {
                         card = card.child(p.caption(omitted.clone()))
@@ -148,18 +172,35 @@ impl Desktop {
                             "変更内容"
                         }));
                         let mut lines = text.lines();
-                        for l in lines.by_ref().take(n) {
+                        for (li, l) in lines.by_ref().take(n).enumerate() {
+                            let page = pg.clone();
+                            let quote = format!("{}\n> {l}", f.path);
                             card = card.child(
-                                div()
-                                    .font_family("monospace")
-                                    .bg(if l.starts_with('+') {
-                                        p.accent.opacity(0.10)
-                                    } else if l.starts_with('-') {
-                                        Hsla::from(rgb(0xd46055)).opacity(0.12)
-                                    } else {
-                                        p.bg
-                                    })
-                                    .child(l.to_owned()),
+                                Button::new(SharedString::from(format!("quote:{fi}:{i}:{li}")))
+                                    .ghost()
+                                    .small()
+                                    .justify_start()
+                                    .px_1()
+                                    .tooltip("この行を下書きに引用")
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .font_family("monospace")
+                                            .bg(if l.starts_with('+') {
+                                                p.add_bg
+                                            } else if l.starts_with('-') {
+                                                p.del_bg
+                                            } else {
+                                                p.bg
+                                            })
+                                            .child(l.to_owned()),
+                                    )
+                                    .on_click(cx.listener(move |app, _, w, cx| {
+                                        if let Err(e) = page.append_reference(app, &quote, w, cx) {
+                                            app.notice = format!("入力欄に追加できません: {e}")
+                                        };
+                                        cx.notify()
+                                    })),
                             );
                         }
                         if lines.next().is_some() {
@@ -184,7 +225,6 @@ impl Desktop {
         } else {
             body = body.child("差分を集計中…")
         }
-        let back = ins.clone();
         let ask = ins.clone();
         let page = pg.clone();
         div()
@@ -200,15 +240,7 @@ impl Desktop {
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child("変更をレビュー")
-                    .child(Button::new("review-back").label("会話に戻る").on_click(
-                        move |_, _, cx| {
-                            back.update(cx, |s, cx| {
-                                *s = Inspector::default();
-                                cx.notify()
-                            })
-                        },
-                    )),
+                    .child("変更をレビュー"),
             )
             .child(
                 div()
@@ -221,6 +253,7 @@ impl Desktop {
             .child(
                 div().p_3().child(
                     p.primary("ask-changes", cx)
+                        .debug_selector(|| "ask-changes".into())
                         .label("この変更について依頼")
                         .disabled(review.as_ref().is_none_or(|r| r.files.is_empty()))
                         .on_click(cx.listener(move |this, _, w, cx| {

@@ -8,6 +8,8 @@ pub(crate) mod context;
 mod conversation;
 mod first_step;
 mod github;
+mod inspector;
+use inspector::Tab;
 pub(crate) mod keys;
 mod machine;
 mod new_pi;
@@ -21,7 +23,7 @@ use super::*;
 pub(crate) use chat_review::Inspector;
 pub(crate) use conversation::History;
 use gpui_component::{
-    Disableable, Selectable, Sizable, TitleBar,
+    Disableable, Selectable, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     input::{Enter, Input},
     scroll::ScrollableElement,
@@ -204,8 +206,8 @@ impl Desktop {
         let start = v["startedAt"].as_u64();
         let new_nav = nav.clone();
         let open = cx.listener(move |this, _: &ClickEvent, _, cx| {
-            if nav.read(cx).route != Route::Home {
-                this.navigate(&nav, Route::Home, cx);
+            if nav.read(cx).route != Route::Home && !this.navigate(&nav, Route::Home, cx) {
+                return;
             }
             this.select(host.clone(), pi.clone(), cx);
         });
@@ -275,22 +277,25 @@ impl Desktop {
                     let nav = new_nav.clone();
                     gpui_component::menu::PopupMenuItem::new(label)
                         .disabled(start.is_none())
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, w, cx| {
                             let _ = owner.update(cx, |app, cx| {
+                                app.prepare_dialog(w, cx);
                                 let Some(start) = start else { return };
                                 if app.machines.get(&host).is_none_or(|m| {
                                     m.rows.get("instance", &pi)["startedAt"].as_u64() != Some(start)
                                 }) {
                                     return;
                                 }
-                                if nav.read(cx).route != Route::Home {
-                                    app.navigate(&nav, Route::Home, cx);
+                                if nav.read(cx).route != Route::Home
+                                    && !app.navigate(&nav, Route::Home, cx)
+                                {
+                                    return;
                                 }
                                 if app.selected.as_ref() != Some(&(host.clone(), pi.clone())) {
                                     app.select(host.clone(), pi.clone(), cx);
                                 }
                                 if app.selected.as_ref() == Some(&(host.clone(), pi.clone())) {
-                                    app.state.close_page();
+                                    app.state.sheet = None;
                                     app.row_action =
                                         Some((host.clone(), pi.clone(), start, shutdown));
                                     cx.notify();
@@ -311,10 +316,12 @@ impl Desktop {
                 .when_some(folder.clone(), |m, path| {
                     m.item(
                         gpui_component::menu::PopupMenuItem::new("同じフォルダで新しい Pi…")
-                            .on_click(move |_, _, cx| {
+                            .on_click(move |_, w, cx| {
                                 let _ = owner.update(cx, |d, cx| {
-                                    d.navigate(&n, Route::New(host.clone()), cx);
-                                    n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
+                                    d.prepare_dialog(w, cx);
+                                    if d.navigate(&n, Route::New(host.clone()), cx) {
+                                        n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
+                                    }
                                 });
                             }),
                     )
@@ -435,7 +442,7 @@ impl Desktop {
                 .debug_selector(move || format!("nav-{id}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.sidebar_open = false;
-                    this.navigate(&n, route.clone(), cx)
+                    this.navigate(&n, route.clone(), cx);
                 }))
         };
         div()
@@ -637,10 +644,9 @@ impl Desktop {
         layout: Layout,
         side: Option<Div>,
         main: Div,
-        inspector: Option<Div>,
         p: &Colors,
         cx: &Context<Self>,
-    ) -> Div {
+    ) -> (Div, Option<Div>) {
         let (min, max) = theme::SIDEBAR_RANGE;
         let width = self.sidebar_width();
         let side = side.map(|s| s.w(px(width)));
@@ -680,38 +686,22 @@ impl Desktop {
             side => overlay = side.filter(|_| self.sidebar_open),
         }
         panes = panes.child(main);
-        // 変更・サブエージェント・GitHub。広ければ並べ、狭ければ会話の上に重ねる。
-        if let Some(inspector) = inspector {
-            panes = panes.child(if layout == Layout::Wide {
-                inspector.flex_none().border_l_1().border_color(p.fill2)
-            } else {
-                inspector
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .h_full()
-                    .bg(p.bg)
-                    .shadow_lg()
-            });
-        }
-        if let Some(side) = overlay {
-            panes = panes.child(
-                p.scrim()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, w, cx| {
-                            this.sidebar_open = false;
-                            this.restore_input(w, cx);
-                            cx.notify()
-                        }),
-                    )
-                    .child(
-                        side.shadow_lg()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                    ),
-            );
-        }
-        panes
+        let overlay = overlay.map(|side| {
+            p.scrim()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, w, cx| {
+                        this.sidebar_open = false;
+                        this.restore_input(w, cx);
+                        cx.notify()
+                    }),
+                )
+                .child(
+                    side.shadow_lg()
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                )
+        });
+        (panes, overlay)
     }
 }
 impl Render for Desktop {
@@ -804,7 +794,10 @@ impl Render for Desktop {
                     .child(t)
             })
         };
-        if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
+        let is_new = matches!(nav.read(cx).route, Route::New(_));
+        let panel = self.other_panel(&nav, &p, w, cx);
+        let (new_pi, panel) = if is_new { (panel, None) } else { (None, panel) };
+        if let Some(panel) = panel {
             main = main
                 .children(bar(toggle))
                 .child(div().flex().flex_1().min_h_0().child(panel));
@@ -865,7 +858,27 @@ impl Render for Desktop {
                 }
             }),
         );
-        keys::listeners(root, cx)
+        let (panes, mut sidebar) = self.panes(layout, side, main, &p, cx);
+        let mut new_pi = new_pi.map(|panel| {
+            p.scrim().items_center().justify_center().child(
+                div()
+                    .id("new-pi-dialog")
+                    .track_focus(&self.modal_focus)
+                    .occlude()
+                    .flex()
+                    .flex_col()
+                    .w(px(560.))
+                    .max_w_full()
+                    .h(relative(0.86))
+                    .bg(p.surface)
+                    .rounded(px(theme::R_CARD))
+                    .shadow_lg()
+                    .overflow_hidden()
+                    .child(panel),
+            )
+        });
+        let stack = self.overlay_stack(w, cx).clone();
+        let mut root = keys::listeners(root, cx)
             .relative()
             .flex()
             .flex_col()
@@ -874,10 +887,29 @@ impl Render for Desktop {
             .text_color(p.ink)
             .text_size(rems(0.875))
             .children(titlebar)
-            .child(self.panes(layout, side, main, None, &p, cx))
-            .children(self.command_palette(&p, cx))
-            .children(self.pair_dialog(&p, w, cx))
-            .children(self.context_menu.as_ref().map(context::OpenMenu::layer))
+            .child(panes);
+        for layer in stack {
+            use keys::Overlay::*;
+            let panel = match layer {
+                Sheet => self
+                    .editor()
+                    .map(|k| self.sheet_overlay(&k, &p, w, cx).into_any_element()),
+                Sidebar => sidebar.take().map(IntoElement::into_any_element),
+                Route => new_pi.take().map(IntoElement::into_any_element),
+                Palette => self
+                    .command_palette(&p, cx)
+                    .map(IntoElement::into_any_element),
+                Pair => self
+                    .pair_dialog(&p, w, cx)
+                    .map(IntoElement::into_any_element),
+                Menu => self.context_menu.as_ref().map(context::OpenMenu::layer),
+                Prompt => Root::render_dialog_layer(w, cx).map(IntoElement::into_any_element),
+                // Conversation-local controls are in panes; tooltip is painted by Window.
+                Inspector | Media | Slash | Tooltip => None,
+            };
+            root = root.children(panel);
+        }
+        root
     }
 }
 
@@ -1474,18 +1506,17 @@ mod key_tests {
         }));
     }
     #[gpui::test]
-    fn shutdown_prompt_blocks_background_clicks(cx: &mut gpui::TestAppContext) {
+    fn shutdown_dialog_blocks_background_clicks(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| {
             keys::init(cx);
-            cx.set_prompt_builder(gpui::fallback_prompt_renderer);
         });
         let (_rt, mut wire, _server) = attach_active(&app, w, "key-menu");
         w.simulate_keystrokes("secondary-l d");
         let buttons = ["send-message", "abort-turn"].map(|s| w.debug_bounds(s).unwrap().center());
         w.update(|w, cx| {
             app.update(cx, |d, cx| {
-                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0, w, cx)
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0.clone(), w, cx)
             })
         });
         w.run_until_parked();
@@ -1493,9 +1524,9 @@ mod key_tests {
             assert!(w.update(|w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Prompt)));
             w.simulate_click(button, Default::default());
         }
-        assert!(w.update(|w, _| w.has_rendered_prompt()));
+        assert!(w.update(gpui_component::WindowExt::has_active_dialog));
         press(w, "escape");
-        assert!(!w.update(|w, _| w.has_rendered_prompt()));
+        assert!(!w.update(gpui_component::WindowExt::has_active_dialog));
         assert!(wire.try_recv().is_err());
         app.read_with(w, |d, cx| {
             assert!(
@@ -1505,6 +1536,203 @@ mod key_tests {
                     && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "d"
             )
         });
+    }
+    fn fixture_pi_row(app: &gpui::Entity<super::Desktop>, w: &mut gpui::VisualTestContext) {
+        // この RC fixture は会話行だけを送る。実際のサイドバーと同じ instance 行も置く。
+        app.update(w, |d, cx| {
+            let m = d.machines.get_mut("key-menu").unwrap();
+            m.rows.apply(
+                (
+                    m.conn.snapshot().revision + 1,
+                    vec![pimate_core::Change::Upsert(pimate_core::Item {
+                        collection: "instance".into(),
+                        id: "pi".into(),
+                        position: 0,
+                        json: serde_json::json!({"startedAt":1,"cwd":"/fixture"}).to_string(),
+                    })],
+                ),
+                || panic!(),
+            );
+            cx.notify()
+        });
+    }
+    #[gpui::test]
+    fn sidebar_menu_new_pi_tabs_only_in_dialog(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _, _server) = attach_active(&app, w, "key-menu");
+        fixture_pi_row(&app, w);
+        w.simulate_resize(gpui::size(gpui::px(620.), gpui::px(800.)));
+        let button = wait(w, "sidebar-toggle");
+        w.simulate_click(button, Default::default());
+        let row = wait(w, "context-pi-pi");
+        w.simulate_mouse_down(row, gpui::MouseButton::Right, Default::default());
+        // Open, copy path, new Pi (attach is not present on this fixture).
+        press(w, "down down down enter tab");
+        assert!(w.update(|w, cx| {
+            let d = app.read(cx);
+            !d.sidebar_open
+                && d.context_menu.is_none()
+                && d.front(w, cx) == Some(keys::Overlay::Route)
+                && d.modal_focus.contains_focused(w, cx)
+        }));
+        press(w, "escape");
+        assert!(w.update(|w, cx| app.read(cx).front(w, cx).is_none()));
+    }
+    fn focus_explicit(w: &mut gpui::VisualTestContext) {
+        // Tab order is window-scoped and the destructive action needs explicit focus.
+        for _ in 0..2 {
+            if w.update(|w, _| {
+                w.context_stack()
+                    .iter()
+                    .any(|c| c.contains("ExplicitConfirmation"))
+            }) {
+                break;
+            }
+            press(w, "tab");
+        }
+        assert!(w.update(|w, _| {
+            w.context_stack()
+                .iter()
+                .any(|c| c.contains("ExplicitConfirmation"))
+        }));
+    }
+    #[gpui::test]
+    fn stop_confirmation_does_not_follow_the_next_turn(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, mut wire, _server) = attach_active(&app, w, "abort-test");
+        press(w, "escape");
+        wait(w, "confirm-destructive");
+        app.update(w, |d, cx| {
+            let m = d.machines.get_mut("abort-test").unwrap();
+            let changes = [false, true].map(|b| {
+                pimate_core::Change::Upsert(pimate_core::Item {
+                    collection: "view".into(),
+                    id: "agentActive".into(),
+                    position: 0,
+                    json: b.to_string(),
+                })
+            });
+            m.rows.apply(
+                (m.conn.snapshot().revision + 1, changes.into()),
+                || unreachable!(),
+            );
+            cx.notify();
+        });
+        focus_explicit(w);
+        press(w, "enter");
+        assert!(app.read_with(w, |d, _| !d.stopping && d.dialog_focus.borrow().is_none()));
+        assert!(wire.try_recv().is_err());
+    }
+    #[gpui::test]
+    fn release_in_shutdown_dialog_rearms_enter_and_default_is_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (rt, mut wire, _server) = attach_active(&app, w, "key-menu");
+        fixture_pi_row(&app, w);
+        w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        w.run_until_parked();
+        for close in ["escape", "enter"] {
+            let row = w.debug_bounds("context-pi-pi").unwrap().center();
+            w.simulate_mouse_down(row, gpui::MouseButton::Right, Default::default());
+            w.run_until_parked();
+            assert!(app.read_with(w, |d, _| d.context_menu.is_some()));
+            w.simulate_keystrokes("up enter");
+            w.run_until_parked();
+            assert!(app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()
+                && d.consumed_keys.contains_key("enter")));
+            w.simulate_keystrokes("enter");
+            assert!(app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()));
+            release(w, "enter");
+            assert!(!app.read_with(w, |d, _| d.consumed_keys.contains_key("enter")));
+            press(w, close);
+            assert!(!app.read_with(w, |d, _| d.dialog_focus.borrow().is_some()));
+            assert!(wire.try_recv().is_err());
+        }
+        // The session menu closes before the dialog records its return focus.
+        let more = wait(w, "session-menu");
+        w.simulate_click(more, Default::default());
+        press(w, "up enter");
+        wait(w, "confirm-destructive");
+        w.simulate_keystrokes("space");
+        focus_explicit(w);
+        release(w, "space");
+        assert!(w.update(gpui_component::WindowExt::has_active_dialog));
+        assert!(wire.try_recv().is_err());
+        press(w, "escape");
+        assert!(w.update(|w, cx| {
+            use gpui::Focusable;
+            app.read(cx)
+                .input
+                .as_ref()
+                .unwrap()
+                .1
+                .focus_handle(cx)
+                .is_focused(w)
+        }));
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                d.confirm_shutdown(&d.chat_keys.as_ref().unwrap().0.clone(), w, cx)
+            })
+        });
+        w.run_until_parked();
+        focus_explicit(w);
+        press(w, "enter");
+        assert_eq!(
+            rt.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), wire.recv()).await
+            })
+            .unwrap()
+            .as_deref(),
+            Some("shutdown")
+        );
+        assert!(wire.try_recv().is_err());
+    }
+    #[gpui::test]
+    fn inspector_keeps_composer_and_marked_text(cx: &mut gpui::TestAppContext) {
+        use gpui::EntityInputHandler;
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_keystrokes("secondary-l d");
+        let input = app.read_with(w, |d, _| d.input.as_ref().unwrap().1.clone());
+        w.update(|w, cx| {
+            input.update(cx, |i, cx| {
+                i.replace_and_mark_text_in_range(Some(1..1), "に", None, w, cx)
+            })
+        });
+        for key in ["secondary-shift-d", "escape"] {
+            press(w, key);
+            assert!(w.debug_bounds("composer-input").is_some());
+            assert!(app.read_with(w, |d, _| d.input.as_ref().unwrap().1 == input
+                && d.drafts.values().any(|s| s == "d")));
+            w.update(|w, cx| {
+                input.update(cx, |i, cx| assert!(i.marked_text_range(w, cx).is_some()))
+            });
+        }
+    }
+    #[gpui::test]
+    fn inspector_docks_only_at_1080(cx: &mut gpui::TestAppContext) {
+        let (_, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        press(w, "secondary-shift-d");
+        for width in [1080., 1079., 620.] {
+            w.simulate_resize(gpui::size(gpui::px(width), gpui::px(800.)));
+            w.run_until_parked();
+            let pane = w.debug_bounds("inspector").unwrap();
+            let header = w.debug_bounds("chat-header").unwrap();
+            assert_eq!(pane.right(), gpui::px(width));
+            assert_eq!(
+                header.right(),
+                if width >= 1080. {
+                    pane.left()
+                } else {
+                    pane.right()
+                }
+            );
+        }
     }
     #[gpui::test]
     fn narrow_sidebar_owns_focus_and_enter(cx: &mut gpui::TestAppContext) {
@@ -1581,6 +1809,8 @@ mod key_tests {
         assert!(wire.try_recv().is_err());
         assert!(!app.read_with(w, |d, _| d.stopping));
         press(w, "escape");
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         assert_eq!(
             rt.block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv()).await
@@ -1639,10 +1869,10 @@ mod key_tests {
         assert_eq!(app.read_with(w, |d, _| d.palette_index), 1);
         press(w, "escape");
         assert!(app.read_with(w, |d, cx| !d.palette_open
-            && d.chat_keys.as_ref().unwrap().1.read(cx).review_open));
+            && d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)));
         press(w, "escape");
         assert!(!app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
     #[gpui::test]
@@ -1653,7 +1883,7 @@ mod key_tests {
         assert!(w.update(|w, cx| app.read(cx).side_focus.is_focused(w)));
         press(w, "escape");
         assert!(!app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
     #[gpui::test]
@@ -1705,14 +1935,14 @@ mod key_tests {
         });
         w.run_until_parked();
         assert!(app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
     }
-    #[gpui::test]
-    fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {
-        let (app, w, _socket) = tests::open_chat(cx);
-        w.update(|_, cx| keys::init(cx));
-        let raw = "**太字** と [リンク](https://example.org)\n\n2 行目";
+    fn fixture_message(
+        app: &gpui::Entity<super::Desktop>,
+        w: &mut gpui::VisualTestContext,
+        raw: &str,
+    ) {
         app.update(w, |d, cx| {
             d.machines.get_mut("fixture").unwrap().rows.apply(
                 (
@@ -1729,6 +1959,177 @@ mod key_tests {
             cx.notify();
         });
         w.run_until_parked();
+    }
+    #[gpui::test]
+    fn model_and_inspector_shortcuts_cannot_cover_a_table_viewer(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        fixture_message(&app, w, "| A | B |\n|---|---|\n| 1 | 2 |");
+        let table = wait(w, "open-markdown-table");
+        w.simulate_click(table, Default::default());
+        wait(w, "close-media");
+        press(
+            w,
+            "secondary-shift-m secondary-shift-d secondary-shift-s secondary-shift-g",
+        );
+        assert!(w.update(|w, cx| {
+            let d = app.read(cx);
+            d.chat_keys.is_none()
+                && d.front(w, cx) == Some(keys::Overlay::Media)
+                && d.active_sheet().is_none()
+        }));
+        press(w, "escape");
+        assert!(w.update(|w, cx| app.read(cx).front(w, cx).is_none()));
+    }
+    fn open_github_table_detail(
+        app: &gpui::Entity<super::Desktop>,
+        w: &mut gpui::VisualTestContext,
+    ) -> super::Navigation {
+        app.update(w, |d, cx| {
+            d.select_github(pimate_protocol::GitHubQuery::Pr { number: 93 }, cx);
+            let github = d.chat_keys.as_ref().unwrap().1.read(cx).github.clone().unwrap();
+            github.update(cx, |n, _| {
+                n.github.loaded = true;
+                n.github.data = Some(serde_json::json!({"item": {"kind":"pr", "number":93, "title":"detail", "body":"| A | B |\n|---|---|\n| 1 | 2 |"}}));
+            });
+            github
+        })
+    }
+    #[gpui::test]
+    fn sidebar_review_replaces_open_github_viewer_without_invalidating_its_page(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        fixture_pi_row(&app, w);
+        w.simulate_resize(gpui::size(gpui::px(1280.), gpui::px(800.)));
+        let github = open_github_table_detail(&app, w);
+        let table = wait(w, "open-markdown-table");
+        w.simulate_click(table, Default::default());
+        wait(w, "close-media");
+        let row = wait(w, "context-pi-pi");
+        w.simulate_mouse_down(row, gpui::MouseButton::Right, Default::default());
+        press(w, "up up enter"); // The review entry precedes shutdown.
+        assert!(w.update(|w, cx| {
+            let d = app.read(cx);
+            d.front(w, cx) == Some(keys::Overlay::Inspector)
+                && d.chat_keys
+                    .as_ref()
+                    .is_some_and(|(_, ins)| ins.read(cx).tab == Some(super::Tab::Review))
+        }));
+        app.read_with(w, |d, cx| {
+            let n = github.read(cx);
+            assert!(n.page.as_ref().unwrap().visible(d));
+            assert!(n.github.viewer.as_ref().unwrap().read(cx).table.is_none());
+        });
+    }
+    #[gpui::test]
+    fn new_pi_keeps_github_detail_and_review_target(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        let github = open_github_table_detail(&app, w);
+        let (page, ins) = app.read_with(w, |d, _| d.chat_keys.as_ref().unwrap().clone());
+        press(w, "secondary-n");
+        let modal = app.read_with(w, |d, cx| {
+            d.navigation
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .page
+                .clone()
+                .unwrap()
+        });
+        press(w, "escape");
+        app.read_with(w, |d, cx| {
+            assert!(github.read(cx).page.as_ref().unwrap().visible(d) && !modal.visible(d));
+            assert!(ins.read(cx).github.as_ref() == Some(&github));
+        });
+        let table = wait(w, "open-markdown-table");
+        w.simulate_click(table, Default::default());
+        wait(w, "close-media");
+        press(w, "secondary-shift-d escape");
+        assert!(w.update(
+            |w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Inspector)
+                && ins.read(cx).tab == Some(super::Tab::Github)
+        ));
+        let mut review = page.review(None).unwrap();
+        review.files.push(state::review::ChangedFile {
+            path: "review.txt".into(),
+            pieces: vec![],
+        });
+        ins.update(w, |i, cx| {
+            i.tab = Some(super::Tab::Review);
+            i.review = Some(std::sync::Arc::new(review));
+            cx.notify();
+        });
+        press(w, "secondary-n escape");
+        let ask = wait(w, "ask-changes");
+        w.simulate_click(ask, Default::default());
+        w.run_until_parked();
+        assert!(app.read_with(w, |d, cx| {
+            d.input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .contains("review.txt")
+        }));
+    }
+    #[gpui::test]
+    fn pending_spawn_rejects_palette_pi_without_selecting(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        press(w, "secondary-n");
+        let epoch = app.update(w, |d, cx| {
+            d.navigation
+                .as_ref()
+                .unwrap()
+                .update(cx, |n, _| n.spawn.as_mut().unwrap().submitting = true);
+            d.epoch
+        });
+        press(w, "secondary-k enter");
+        assert!(app.read_with(w, |d, cx| {
+            let n = d.navigation.as_ref().unwrap().read(cx);
+            !d.palette_open
+                && d.epoch == epoch
+                && n.spawn.as_ref().unwrap().submitting
+                && n.page.as_ref().unwrap().visible(d)
+        }));
+    }
+    #[gpui::test]
+    fn disconnected_spawn_host_can_tab_to_a_connected_host(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        app.update(w, |d, cx| {
+            let mut missing = d.hosts[0].clone();
+            missing.id = "offline".into();
+            d.hosts.push(missing);
+            let nav = d.navigation.clone().unwrap();
+            d.navigate(&nav, Route::New("offline".into()), cx);
+        });
+        w.run_until_parked();
+        press(w, "tab tab");
+        app.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        assert!(w.update(|w, cx| {
+            let f = &app.read(cx).modal_focus;
+            f.contains_focused(w, cx) && !f.is_focused(w)
+        }));
+        press(w, "enter");
+        assert!(
+            app.read_with(w, |d, cx| d.navigation.as_ref().unwrap().read(cx).route
+                == Route::New("fixture".into()))
+        );
+    }
+    #[gpui::test]
+    fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let raw = "**太字** と [リンク](https://example.org)\n\n2 行目";
+        fixture_message(&app, w, raw);
         let bounds = w.debug_bounds("message-entry:msg").unwrap();
         w.simulate_mouse_down(
             bounds.center(),
@@ -1811,7 +2212,7 @@ mod key_tests {
         assert_eq!(before.item_ix, 23);
         press(w, "secondary-shift-d");
         assert!(app.read_with(w, |d, cx| {
-            d.chat_keys.as_ref().unwrap().1.read(cx).review_open
+            d.chat_keys.as_ref().unwrap().1.read(cx).tab == Some(super::Tab::Review)
         }));
         press(w, "escape");
         assert!(w.debug_bounds("composer-input").is_some());
@@ -2003,6 +2404,8 @@ mod key_tests {
         assert!(app.read_with(w, |d, cx| !d.slash_visible
             && d.input.as_ref().unwrap().1.read(cx).value().as_str() == "/"));
         press(w, "escape");
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         rt.block_on(async {
             for method in ["commands", "abort"] {
                 assert_eq!(
@@ -2025,6 +2428,8 @@ mod key_tests {
         w.update(|_, cx| keys::init(cx));
         let (rt, mut wire, server) = attach_active(&app, w, "abort-test");
         press(w, "escape");
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         let first = rt.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
                 .await
@@ -2036,6 +2441,8 @@ mod key_tests {
         // The button and Esc use the same guard and must each generate one request.
         let stop = wait(w, "abort-turn");
         w.simulate_click(stop, gpui::Modifiers::none());
+        let yes = wait(w, "confirm-destructive");
+        w.simulate_click(yes, Default::default());
         let second = rt.block_on(async {
             tokio::time::timeout(std::time::Duration::from_secs(3), wire.recv())
                 .await

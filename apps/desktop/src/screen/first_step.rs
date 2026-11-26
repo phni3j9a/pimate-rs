@@ -78,7 +78,9 @@ impl Desktop {
             p.text_button(id, p.accent_ink, cx)
                 .label(label)
                 .debug_selector(move || format!("nav-{id}"))
-                .on_click(cx.listener(move |this, _, _, cx| this.navigate(&n, route.clone(), cx)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.navigate(&n, route.clone(), cx);
+                }))
         };
         let warned =
             self.state.registration.error.is_some() || self.state.registration.save_unknown;
@@ -286,8 +288,9 @@ impl Desktop {
                             }))
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.navigate(&nav, Route::Home, cx);
-                            this.select(id.clone(), i.clone(), cx);
+                            if this.navigate(&nav, Route::Home, cx) {
+                                this.select(id.clone(), i.clone(), cx);
+                            }
                         })),
                 );
             }

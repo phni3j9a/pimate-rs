@@ -202,8 +202,8 @@ for _ in range(2):
 deadline = time.monotonic() + 25
 while time.monotonic() < deadline:
     image = snap('committed-row')
-    image.crop((x+860,y+8,x+940,y+44)).resize((320,144)).save('header.png')
-    status = subprocess.check_output(['tesseract','header.png','stdout','-l','jpn','--psm','7'],text=True)
+    image.crop((x+800,y+8,x+1170,y+44)).resize((1110,108)).save('header.png')
+    status = subprocess.check_output(['tesseract','header.png','stdout','-l','jpn','--psm','11'],text=True)
     if '待機' in ''.join(status.split()):
         image.crop((x+400,y+55,x+1140,y+570)).save('transcript.png')
         painted = subprocess.check_output(['tesseract','transcript.png','stdout','--psm','11'],text=True)

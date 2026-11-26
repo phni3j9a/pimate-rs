@@ -130,7 +130,7 @@ impl Desktop {
                 ))
                 .on_click(move |_, _, cx| {
                     ins.update(cx, |s, cx| {
-                        s.agents = true;
+                        s.tab = Some(Tab::Agents);
                         s.run = None;
                         s.child = None;
                         cx.notify()
@@ -143,13 +143,10 @@ impl Desktop {
         id: &str,
         child: Option<&str>,
         action: &str,
-        w: &mut Window,
+        _w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
         let scope = (id, child, action);
-        // An inline confirmation is unmounted as soon as this exact control disappears.
-        // A native OS prompt cannot be withdrawn when the Host changes its scope.
-        let pending = w.use_keyed_state(stop_key(scope), cx, |_, _| None::<state::Stop>);
         let (label, warning) = match action {
             "stop_child" => ("この子を停止", "選択した子だけが対象です。"),
             "abort_parent" => (
@@ -165,58 +162,6 @@ impl Desktop {
         };
         let pg = pg.clone();
         let key = stop_key(scope);
-        if pending.read(cx).is_some() {
-            let cancel = pending.clone();
-            return div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(format!("{label}しますか？ {warning}"))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            Button::new(SharedString::from(format!("cancel:{key}")))
-                                .small()
-                                .label("キャンセル")
-                                .on_click(move |_, _, cx| {
-                                    cancel.update(cx, |s, cx| {
-                                        s.take();
-                                        cx.notify()
-                                    })
-                                }),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("confirm:{key}")))
-                                .danger()
-                                .small()
-                                .label(label)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !pg.visible(this) {
-                                        return;
-                                    }
-                                    let Some(stop) = pending.update(cx, |s, cx| {
-                                        cx.notify();
-                                        s.take()
-                                    }) else {
-                                        return;
-                                    };
-                                    let pg = pg.clone();
-                                    cx.spawn(async move |this, cx| {
-                                        let r = stop.confirm().await;
-                                        let _ = this.update(cx, |this, cx| {
-                                            if pg.visible(this) {
-                                                this.finish_send_notice(r.map(|_| String::new()));
-                                                cx.notify()
-                                            }
-                                        });
-                                    })
-                                    .detach();
-                                })),
-                        ),
-                );
-        }
         let id = id.to_owned();
         let child = child.map(str::to_owned);
         let action = action.to_owned();
@@ -225,7 +170,7 @@ impl Desktop {
                 .danger()
                 .small()
                 .label(format!("{label}…"))
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, w, cx| {
                     if !pg.visible(this) {
                         return;
                     }
@@ -233,10 +178,29 @@ impl Desktop {
                         Ok(stop)
                             if matches_scope((&id, child.as_deref(), &action), stop.scope()) =>
                         {
-                            pending.update(cx, |s, cx| {
-                                *s = Some(stop);
-                                cx.notify()
-                            })
+                            let pg = pg.clone();
+                            this.confirm_action(
+                                format!("{label}しますか？"),
+                                warning.into(),
+                                (label, true),
+                                w,
+                                cx,
+                                move |app, _, cx| {
+                                    if !pg.visible(app) {
+                                        return;
+                                    }
+                                    cx.spawn(async move |app, cx| {
+                                        let r = stop.confirm().await;
+                                        let _ = app.update(cx, |app, cx| {
+                                            if pg.visible(app) {
+                                                app.finish_send_notice(r.map(|_| String::new()));
+                                                cx.notify()
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                                },
+                            );
                         }
                         _ => {
                             this.notice =
@@ -541,24 +505,16 @@ impl Desktop {
                     .border_b_1()
                     .border_color(p.border)
                     .child(title)
-                    .child(
-                        Button::new("back-agents")
-                            .label(if detail {
-                                "一覧に戻る"
-                            } else {
-                                "会話に戻る"
-                            })
-                            .on_click(move |_, _, cx| {
+                    .when(detail, |d| {
+                        d.child(Button::new("back-agents").label("一覧に戻る").on_click(
+                            move |_, _, cx| {
                                 back.update(cx, |s, cx| {
-                                    if detail {
-                                        s.child = None
-                                    } else {
-                                        *s = Inspector::default()
-                                    }
+                                    s.child = None;
                                     cx.notify()
                                 })
-                            }),
-                    ),
+                            },
+                        ))
+                    }),
             )
             .child(body)
     }

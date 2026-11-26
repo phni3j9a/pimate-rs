@@ -41,6 +41,18 @@ impl Desktop {
         let machine = self.machines.get(id).ok_or(Error::StaleTarget)?;
         Ok(self.state.open(id, machine, None))
     }
+    pub(crate) fn modal_machine(&self, id: &str, generation: &Arc<()>) -> Option<Page> {
+        let mut page = self.state.page_for(id, self.machines.get(id)?, None);
+        page.page = Arc::downgrade(generation);
+        Some(page)
+    }
+    pub(crate) fn background_chat(&self) -> Option<Page> {
+        let k = self.editor()?;
+        Some(
+            self.state
+                .page_for(&k.host, &self.machines[&k.host], Some(k.clone())),
+        )
+    }
     pub(crate) fn open_chat(&mut self) -> Result<Page, Error> {
         let k = self.editor().ok_or(Error::StaleTarget)?;
         Ok(self
@@ -55,6 +67,9 @@ impl DesktopState {
     }
     fn open(&mut self, host: &str, m: &Machine, key: Option<EditorKey>) -> Page {
         self.close_page();
+        self.page_for(host, m, key)
+    }
+    fn page_for(&self, host: &str, m: &Machine, key: Option<EditorKey>) -> Page {
         Page {
             host: host.into(),
             images: Default::default(),
@@ -93,7 +108,7 @@ impl Page {
         }
         Ok(r)
     }
-    fn editor(&self) -> Result<&EditorKey, Error> {
+    pub(crate) fn editor(&self) -> Result<&EditorKey, Error> {
         self.key.as_ref().ok_or(Error::StaleTarget)
     }
     async fn perform(&self, op: Operation) -> Result<Value, Error> {

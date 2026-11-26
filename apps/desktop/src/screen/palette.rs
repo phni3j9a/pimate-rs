@@ -15,6 +15,7 @@ impl Desktop {
             && w.context_stack().iter().any(|c| c.contains("Input")))
         .then(|| w.focused(cx).map(|f| f.downgrade()))
         .flatten();
+        self.push_overlay(crate::screen::keys::Overlay::Palette);
         self.palette_open = true;
         self.palette_index = 0;
         if let Some((s, _)) = &self.search {
@@ -60,10 +61,11 @@ impl Desktop {
         self.close_palette(w, cx);
         match choice {
             Choice::Pi(h, i) => {
-                if let Some(nav) = self.navigation.clone() {
-                    self.navigate(&nav, Route::Home, cx);
+                if let Some(nav) = self.navigation.clone()
+                    && self.navigate(&nav, Route::Home, cx)
+                {
+                    self.select(h.clone(), i.clone(), cx);
                 }
-                self.select(h.clone(), i.clone(), cx);
             }
             Choice::App(c) => {
                 if !matches!(c, Command::Sidebar | Command::NextPane) {

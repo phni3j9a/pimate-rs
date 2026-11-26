@@ -86,6 +86,7 @@ impl Desktop {
                                     entry_id: entry.clone(),
                                     label: Some(trimmed.clone()),
                                 }),
+                                w,
                                 cx,
                             )
                         }
