@@ -60,7 +60,7 @@ struct AgentsView: View {
                 }
             }.listStyle(.insetGrouped).navigationTitle("サブエージェント").navigationBarTitleDisplayMode(.inline)
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("閉じる") { dismiss() } } }
-                .navigationDestination(for: AgentRoute.self) { route in AgentDetailView(model: model, key: key, route: route) { path = [$0] }.id(route) }
+                .navigationDestination(for: AgentRoute.self) { route in AgentDetailView(model: model, key: key, route: route, close: { dismiss() }) { path = [$0] }.id(route) }
         }.onAppear {
             if let run = sheet.run, let children = runs.first?.list("children"), children.count == 1 { path = [.init(run: run, child: children[0].str("id"))] }
         }.tint(PiTheme.accent).presentationDetents([.large]).presentationDragIndicator(.visible)

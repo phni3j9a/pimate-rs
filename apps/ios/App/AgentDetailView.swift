@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct AgentDetailView: View {
-    let model: SessionModel, key: EditorKey, route: AgentRoute, navigate: (AgentRoute) -> Void
+    let model: SessionModel, key: EditorKey, route: AgentRoute, close: () -> Void, navigate: (AgentRoute) -> Void
     @Environment(\.dynamicTypeSize) private var typeSize
     @Environment(\.verticalSizeClass) private var heightClass
     @State private var record: WorkRecord?
@@ -39,7 +39,15 @@ struct AgentDetailView: View {
                         if has && (record == nil || record?.loading == true) { ProgressView("読み込み中…") }
                         else { Text(has ? "作業記録はまだありません" : "作業記録は提供されていません").foregroundStyle(.secondary) }
                     }
-                    if !child.str("question").isEmpty { heading("親の Pi に確認中"); Text(verbatim: child.str("question")) }
+                    if child.str("state") == "waiting" {
+                        let question = child.str("question"), agent = child.str("agent"), title = child.str("title").trimmingCharacters(in: .whitespacesAndNewlines)
+                        heading(question.isEmpty ? "確認が必要です" : "親の Pi に質問しています")
+                        if !question.isEmpty { Text(verbatim: question) }
+                        Button(question.isEmpty ? "チャットで確認" : "チャットで回答") {
+                            guard model.editor == key else { return }
+                            model.text("\(title.isEmpty ? agent : title)（\(agent)）の質問への回答: " + model.body(key).text, for: key); close()
+                        }.disabled(model.editor != key)
+                    }
                     if !child.str("error").isEmpty { Text(verbatim: child.str("error")).foregroundStyle(PiTheme.failure) }
                     if record?.truncated == true { Text("記録の一部を省略しています").font(.caption) }
                     if !readError.isEmpty { Text(readError).foregroundStyle(PiTheme.failure) }
