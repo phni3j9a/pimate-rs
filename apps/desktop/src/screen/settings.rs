@@ -15,7 +15,7 @@ pub(super) enum Route {
     Providers(String),
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
-enum Section {
+pub(super) enum Section {
     Add,
     Defaults,
     #[default]
@@ -24,7 +24,7 @@ enum Section {
     About,
 }
 #[derive(Default)]
-enum Release {
+pub(super) enum Release {
     #[default]
     Idle,
     Checking,
@@ -34,18 +34,18 @@ enum Release {
 }
 
 pub(super) fn version_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
-    fn parts(s: &str) -> Option<Vec<(usize, &str)>> {
-        let parts: Vec<_> = s
-            .split('.')
-            .map(|v| {
-                if v.is_empty() || !v.bytes().all(|b| b.is_ascii_digit()) {
-                    return None;
-                }
-                let n = v.trim_start_matches('0');
-                Some((n.len(), n))
-            })
-            .collect::<Option<_>>()?;
-        (parts.len() == 3).then_some(parts)
+    fn parts(s: &str) -> Option<[(usize, &str); 3]> {
+        let mut it = s.split('.');
+        let mut parts = [(0, ""); 3];
+        for part in &mut parts {
+            let raw = it.next()?;
+            if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let n = raw.trim_start_matches('0');
+            *part = (n.len(), n);
+        }
+        it.next().is_none().then_some(parts)
     }
     Some(parts(a)?.cmp(&parts(b)?))
 }
@@ -98,8 +98,8 @@ fn query_release() -> Option<Release> {
 #[derive(Default)]
 pub(crate) struct Nav {
     pub(super) route: Route,
-    section: Section,
-    release: Release,
+    pub(super) section: Section,
+    pub(super) release: Release,
     pub(super) page: Option<Page>,
     pub(super) note: String,
     pub(super) pref_error: bool,
@@ -216,8 +216,6 @@ impl Desktop {
             | (Route::SetupPc, Route::Settings)
             | (Route::Tailscale, Route::Settings) => previous.clone(),
             (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
-            (Route::Providers(_), _) => Route::Home,
-            (Route::Machine(_), _) => Route::Home,
             (Route::SetupPc, _) => Route::Tailscale,
             _ => Route::Home,
         };
@@ -707,7 +705,7 @@ impl Desktop {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{FontSize, Release, desktop_release, version_cmp};
     use std::cmp::Ordering::*;
     #[test]
     fn release_numbers_compare_only_stable_triples() {

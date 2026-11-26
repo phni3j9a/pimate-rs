@@ -127,7 +127,7 @@ impl Desktop {
                         s.machine.check = check;
                         s.machine.devices = devices["devices"].clone();
                         s.machine.github = github["status"].clone();
-                        if error {
+                        if error && s.note.is_empty() {
                             s.note = "PC の状態を一部確認できませんでした。".into();
                         }
                     });
