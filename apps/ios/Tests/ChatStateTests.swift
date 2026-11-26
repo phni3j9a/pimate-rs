@@ -13,8 +13,10 @@ final class ChatStateTests: XCTestCase {
         func metrics(_ y: CGFloat, _ height: CGFloat) -> TailMetrics { TailMetrics(height: height, viewport: CGRect(x: 0, y: y, width: 300, height: 500)) }
         let after = metrics(500, 1300)
         let before = metrics(453, 1000)
-        XCTAssertFalse(after.shouldFollow(after: before, dragging: false, manualResize: true))
-        XCTAssertTrue(after.shouldFollow(after: before, dragging: false, manualResize: false))
+        let manual = TailContent(turns: 1, stream: [], questions: [], pc: nil, receipt: nil, move: nil)
+        let question = TailContent(turns: 1, stream: [], questions: [row("question", "new", "{}")], pc: nil, receipt: nil, move: nil)
+        XCTAssertFalse(after.shouldFollow(after: before, dragging: false, content: manual, manualLayout: manual))
+        XCTAssertTrue(after.shouldFollow(after: before, dragging: false, content: question, manualLayout: manual))
         XCTAssertFalse(after.shouldFollow(after: metrics(452, 1000), dragging: false))
         XCTAssertFalse(after.shouldFollow(after: metrics(500, 1000), dragging: true))
     }

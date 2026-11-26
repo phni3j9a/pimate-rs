@@ -27,13 +27,17 @@ struct ChatScreen: View {
         return ["revoked", "invalid_token", "auth_failed", "offline", "protocol_mismatch"].contains(connection) ? "一覧でマシンの接続と起動状態を確認してください。" : nil
     }
 }
+// Match the rendered content, not a time window: a question can arrive in the same layout pass.
+struct TailContent: Equatable {
+    let turns: Int, stream: [Item], questions: [Item], pc: String?, receipt: String?, move: UUID?
+}
 struct TailMetrics: Equatable {
     let height: CGFloat, viewport: CGRect
     var nearTail: Bool { height - viewport.maxY < 48 }
-    func shouldFollow(after old: Self?, dragging: Bool, manualResize: Bool = false) -> Bool {
+    func shouldFollow(after old: Self?, dragging: Bool, content: TailContent? = nil, manualLayout: TailContent? = nil) -> Bool {
         guard !dragging, !viewport.isEmpty else { return false }
         guard let old, !old.viewport.isEmpty else { return true }
-        return old.nearTail && ((!manualResize && height != old.height) || viewport.height != old.viewport.height)
+        return old.nearTail && (((manualLayout == nil || content != manualLayout) && height != old.height) || viewport.height != old.viewport.height)
     }
 }
 private struct Conversation: View {
@@ -48,12 +52,8 @@ private struct Conversation: View {
     }
     @State private var loaded = false
     @State private var metrics: TailMetrics?
-    // Match the rendered content, not a time window: a question can arrive in the same layout pass.
-    private struct ContentStamp: Equatable {
-        let turns: Int, stream: [Item], questions: [Item], pc: String?, receipt: String?, move: UUID?
-    }
     @State private var turnRevision = 0
-    @State private var manualLayout: ContentStamp?
+    @State private var manualLayout: TailContent?
     @GestureState private var dragging = false
     private var running: Bool { rows.field("status") == "\"running\"" }
     var body: some View {
@@ -62,7 +62,7 @@ private struct Conversation: View {
         let timing = groups["thinkingMs"] ?? []
         let pc = edge?.pcPrompt != nil
         let text = stream.first { $0.id == "text" }?.string ?? "", thinking = stream.first { $0.id == "thinking" }?.string ?? ""
-        let content = ContentStamp(turns: turnRevision, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id)
+        let content = TailContent(turns: turnRevision, stream: stream, questions: questions, pc: rows.field("pcPrompt"), receipt: model.receipt?.id, move: model.move?.id)
         let didToggle = { manualLayout = content }
         VStack(spacing: 0) {
             HStack(spacing: 6) {
@@ -91,7 +91,7 @@ private struct Conversation: View {
                             let top = geometry.frame(in: .named("transcript")).minY
                             return TailMetrics(height: geometry.size.height, viewport: CGRect(x: 0, y: -top, width: outer.size.width, height: outer.size.height))
                         } action: { next in
-                            let follow = next.shouldFollow(after: metrics, dragging: dragging, manualResize: manualLayout == content)
+                            let follow = next.shouldFollow(after: metrics, dragging: dragging, content: content, manualLayout: manualLayout)
                             if next.height != metrics?.height || manualLayout != content { manualLayout = nil }
                             metrics = next
                             if follow { reader.scrollTo("tail", anchor: .bottom) }
