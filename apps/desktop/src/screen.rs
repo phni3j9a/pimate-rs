@@ -918,20 +918,19 @@ mod tests {
     }
     #[gpui::test]
     fn panes_follow_the_window_width(cx: &mut gpui::TestAppContext) {
-        use crate::state::{FontSize, Settings};
+        use crate::state::FontSize;
         let (desktop, w, _socket) = open_chat(cx);
         // Desktop::new reads no settings file; every text size the user can choose is set here.
-        let fonts: [(&str, fn(&mut Settings)); 3] = [
-            ("small", |s| s.font_size = FontSize::Small),
-            ("standard", |s| s.font_size = FontSize::Standard),
-            ("large", |s| s.font_size = FontSize::Large),
-        ];
         // debug_bounds keeps selectors from earlier frames, so judge by where the header starts.
-        for ((font, set), (width, docked)) in fonts.into_iter().flat_map(|font| {
+        for (font, (width, docked)) in ["small", "standard", "large"].into_iter().flat_map(|font| {
             [(1280., true), (900., true), (620., false), (480., false)].map(|at| (font, at))
         }) {
             desktop.update(w, |d, cx| {
-                set(&mut d.state.settings);
+                d.state.settings.font_size = match font {
+                    "small" => FontSize::Small,
+                    "large" => FontSize::Large,
+                    _ => FontSize::Standard,
+                };
                 cx.notify()
             });
             w.simulate_resize(size(px(width), px(800.)));
