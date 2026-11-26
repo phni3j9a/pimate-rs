@@ -80,6 +80,10 @@ private final class MachineCore: Core, @unchecked Sendable {
         do { try await late.value; XCTFail() } catch is CancellationError {}
         XCTAssertEqual(model.editor?.host, "a"); XCTAssertEqual(core.b.calls.count, 1)
     }
+    func testUsageResetRoundsUpAndDropsSmallerUnits() {
+        XCTAssertEqual(UsageSheet.timeLeft(1), "あと1分"); XCTAssertEqual(UsageSheet.timeLeft(3_600_001), "あと1時間1分")
+        XCTAssertEqual(UsageSheet.timeLeft(90_060_000), "あと1日1時間")
+    }
     func testReviewMatchesReusedCallIDByOccurrence() throws {
         let key = EditorKey(host: "h", target: Target(instance: "pi", session: nil))
         let entries: [Object] = [

@@ -51,7 +51,7 @@ struct ReviewView: View {
                     review = nil; error = ""
                     do {
                         let all = try await model.review(key, turn: nil)
-                        if !session, let id = turn ?? all.latestChangedTurn { review = try await model.review(key, turn: id) }
+                        if !session, let id = turn ?? all.latestChangedTurn, id != "begin" { review = try await model.review(key, turn: id) }
                         else { review = all }
                     } catch { if !Task.isCancelled { self.error = "変更を読み込めません。会話を確認してください。" } }
                 }

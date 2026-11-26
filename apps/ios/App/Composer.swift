@@ -87,8 +87,7 @@ struct Composer: View {
                 }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(PiTheme.waiting.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
             }
             if !model.message.isEmpty || !sendError.isEmpty { Text(model.message.isEmpty ? sendError : model.message).modifier(PiFont(.caption)).foregroundStyle(PiTheme.failure) }
-            UsageRings(model: model, key: key, rows: rows)
-            if blocked { HStack { Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10); Spacer(); stop } }
+            if blocked { HStack { UsageRings(model: model, key: key, rows: rows); Label("上の質問や PC の操作を完了すると入力できます", systemImage: "pause.circle").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary).padding(10); Spacer(); stop } }
             else {
                 if rows.field("slashCommands") == "true", !input.marked, draft.text.hasPrefix("/"), !draft.text.contains(where: { $0.isWhitespace }) {
                     CommandPalette(model: model, key: key, text: draft.text, commands: rows.groups["command"] ?? [])
@@ -114,6 +113,7 @@ struct Composer: View {
                             Button { unavailablePhotos = true } label: { SwiftUI.Image(systemName: "photo.badge.exclamationmark").frame(minWidth: 44, minHeight: 44) }.accessibilityLabel("画像を添付できない理由")
                         }
                         if !selection.isEmpty { ProgressView().accessibilityLabel("画像を準備中") }
+                        UsageRings(model: model, key: key, rows: rows)
                         Text(running ? "割り込みで送信" : "メッセージを送信").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary); Spacer()
                         stop
                         Button { guard let sent = input.submission(draft) else { return }; Task {

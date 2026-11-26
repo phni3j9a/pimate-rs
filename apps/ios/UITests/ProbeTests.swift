@@ -56,7 +56,7 @@ final class ProbeTests: XCTestCase {
         openSheet("モデル・Thinking")
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "をお気に入り")).firstMatch.waitForExistence(timeout: 12)); shot("Sheet-Model")
         app.buttons["sheet-close"].tap()
-        openSheet("使用状況")
+        app.buttons["usage-rings"].tap()
         XCTAssertTrue(app.buttons["コンテキストを圧縮"].waitForExistence(timeout: 8)); shot("Sheet-Usage")
         app.buttons["sheet-close"].tap()
         openSheet("セッション")

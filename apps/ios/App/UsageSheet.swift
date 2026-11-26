@@ -15,7 +15,7 @@ struct UsageRings: View {
                     ring("Claude", "sun.max", allowances.first { $0.source == "claude" }?.gauge)
                     ring("Codex", "terminal", allowances.first { $0.source == "codex" }?.gauge)
                 }.frame(minHeight: 44).contentShape(Rectangle())
-            }.accessibilityElement(children: .combine).accessibilityHint("使用状況を開く")
+            }.accessibilityElement(children: .combine).accessibilityHint("使用状況を開く").accessibilityIdentifier("usage-rings")
         }.alert("会話が変わりました。操作を選び直してください。", isPresented: $failed) { Button("閉じる") {} }
     }
     private func ring(_ name: String, _ icon: String, _ percent: Double?) -> some View {
