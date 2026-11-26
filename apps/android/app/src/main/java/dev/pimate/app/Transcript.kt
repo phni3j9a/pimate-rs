@@ -155,6 +155,7 @@ internal sealed interface ChatRow {
         val text: String,
         val reviewTurn: String? = null,
         val reviewLabel: String = "",
+        val expandable: Boolean,
     ) : ChatRow {
         override val fold: String?
             get() = null
@@ -331,16 +332,20 @@ internal fun buildRows(
         else {
             val key = "turn:$id"
             val took = started?.let { s -> ended?.let { it - s } }?.takeIf { it >= 1000 }
-            var summarized = false
-            for (row in turn) {
-                val folded: ChatRow? =
+            val foldedTurn =
+                turn.map { row ->
                     when {
                         row is ChatRow.Thinking -> row.copy(fold = key)
                         row is ChatRow.Tool && row.pics.size == 0 -> row.copy(fold = key)
                         row is ChatRow.Text && row.key != finalKey -> row.copy(fold = key)
-                        else -> null
+                        else -> row
                     }
-                if (!summarized && (folded != null || row is ChatRow.Tool && row.change != null)) {
+                }
+            var summarized = false
+            for (row in foldedTurn) {
+                if (
+                    !summarized && (row.fold != null || row is ChatRow.Tool && row.change != null)
+                ) {
                     summarized = true
                     val diffs = changes.mapNotNull { it.change?.diff }
                     out +=
@@ -351,9 +356,10 @@ internal fun buildRows(
                             id.takeIf { changes.isNotEmpty() },
                             if (diffs.isEmpty()) "${changes.distinctBy { it.subject }.size} ファイル ›"
                             else "+${diffs.sumOf { it.add }} −${diffs.sumOf { it.del }} ›",
+                            expandable = foldedTurn.any { it.fold != null },
                         )
                 }
-                out += folded ?: row
+                out += row
             }
         }
         turn = mutableListOf()

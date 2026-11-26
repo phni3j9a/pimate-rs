@@ -48,7 +48,29 @@ class RemainingReviewTest {
             authResultText(JSONObject("""{"status":"succeeded","refreshRequired":true}"""))
                 .contains("/reload")
         )
-        assertEquals("ログインしました", authResultText(JSONObject("""{"status":"succeeded"}""")))
+        assertTrue(
+            authResultText(JSONObject("""{"status":"succeeded"}""")).contains("起動中の Pi には /reload")
+        )
+    }
+
+    @Test
+    fun githubMetadataUsesTheHostCountsAndLabels() {
+        val pr =
+            JSONObject(
+                """{"state":"OPEN","reviewDecision":"APPROVED","ci":{"passed":3,"failed":1,"pending":2},"labels":["UI","Android"]}"""
+            )
+        assertEquals("オープン · 承認済み · CI 成功 3・失敗 1・待機 2 · ラベル: UI・Android", githubMetadata(pr, true))
+        assertEquals("オープン · ラベル: UI・Android", githubMetadata(pr, false))
+        assertEquals("オープン", githubMetadata(JSONObject("""{"state":"OPEN"}"""), true))
+        assertTrue(githubRejected(JSONObject("""{"installed":false}""")).contains("インストール"))
+        assertTrue(
+            githubRejected(JSONObject("""{"installed":true,"loggedIn":false}"""))
+                .contains("gh auth login")
+        )
+        assertTrue(
+            githubRejected(JSONObject("""{"installed":true,"loggedIn":true}""")).contains("閲覧権限")
+        )
+        assertTrue(githubRejected(null).contains("gh の状態"))
     }
 
     @Test
