@@ -32,6 +32,9 @@ private fun Rows.hostValue(name: String) = groups["host"].orEmpty().find { it.id
 
 private fun Rows.info() = hostValue("info")?.let(::JSONObject) ?: JSONObject()
 
+internal fun Rows.supportsRevoke() =
+    hostValue("connection") == "\"connected\"" && info().optBoolean("pairedDevices")
+
 private fun Rows.summary(): String {
     val connection = hostValue("connection")
     if (connection != "\"connected\"")
@@ -613,6 +616,13 @@ internal fun SettingsPage(
 
 private fun day(ms: Long) = android.text.format.DateFormat.format("yyyy/M/d", ms).toString()
 
+private enum class RemovalPrompt(val title: String?) {
+    REMOTE(null),
+    LOCAL("この端末からだけ削除しますか？"),
+    REFUSED("PC 側の登録を取り消せませんでした"),
+    UNKNOWN("取消の結果を確認できません。PC の端末一覧で確かめてください。"),
+}
+
 @Composable
 internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: () -> Unit) {
     val id = host.id
@@ -633,8 +643,11 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
     var retry by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
+    var operating by remember { mutableStateOf(false) }
+    val result = m.removal(host)
+    val busy = operating || result == Removal.REVOKING
 
+    var removal by remember { mutableStateOf<RemovalPrompt?>(null) }
     val scope = rememberCoroutineScope()
     suspend fun request(op: Operation) = JSONObject(m.machineRequest(id, op))
     LaunchedEffect(id, online, retry, caps.toString()) {
@@ -670,15 +683,20 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
             }
     }
     fun operate(action: suspend () -> Unit) {
-        if (busy || m.hosts.none { it.id == host.id && it.deviceId == host.deviceId }) return
-        busy = true
+        if (
+            operating ||
+                m.removal(host) == Removal.REVOKING ||
+                m.hosts.none { it.id == host.id && it.deviceId == host.deviceId }
+        )
+            return
+        operating = true
         note = ""
         error = ""
         scope.launch {
             try {
                 checked({ error = it }, action)
             } finally {
-                busy = false
+                operating = false
             }
         }
     }
@@ -702,6 +720,16 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                     "ペアリングし直す",
                     pair,
                     flushEnd,
+                    enabled = !busy,
+                    weight = FontWeight.Normal,
+                    style = Type.lead,
+                )
+            else if (connection == "\"offline\"")
+                TextAction(
+                    "今すぐ再接続",
+                    { m.retryNow(id) },
+                    flushEnd,
+                    enabled = !busy,
                     weight = FontWeight.Normal,
                     style = Type.lead,
                 )
@@ -850,6 +878,7 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 )
             }
         }
+        if (result == Removal.FAILED) SheetError("操作結果を確認できません。再実行の前に状態を確認してください。")
         SheetError(error)
         if (note.isNotEmpty()) Hint(note)
         Spacer(Modifier.height(28.dp))
@@ -863,18 +892,42 @@ internal fun MachinePage(m: SessionModel, host: Host, close: () -> Unit, pair: (
                 weight = FontWeight.Normal,
                 style = Type.lead,
             )
-        ConfirmAction(
-            host,
+        TextAction(
             "このマシンを削除",
-            "このスマホに保存した ${host.name} の登録と下書きを削除します。",
+            { removal = if (rows.supportsRevoke()) RemovalPrompt.REMOTE else RemovalPrompt.LOCAL },
+            flush,
             enabled = !busy,
-            modifier = flush,
+            color = pi.failedText,
             weight = FontWeight.Normal,
             style = Type.lead,
-        ) {
-            operate {
-                m.forget(id)
-                close()
+        )
+        val prompt =
+            when (result) {
+                Removal.LOCAL_ONLY -> RemovalPrompt.REFUSED
+                Removal.UNKNOWN -> RemovalPrompt.UNKNOWN
+                else -> removal
+            }
+        prompt?.let { prompt ->
+            val revoke = prompt == RemovalPrompt.REMOTE
+            ConfirmDialog(
+                prompt.title ?: "「${host.name}」を削除しますか？",
+                if (revoke) "この端末から接続情報と下書きを削除し、PC 側の登録も取り消します。"
+                else "この端末からだけ接続情報と下書きを削除しますか？PC 側に登録が残る場合は、PC の Pi の /pimate devices で取り消してください。",
+                if (revoke) "削除" else "この端末から削除",
+                pi.failedText,
+                {
+                    removal = null
+                    m.dismissRemoval(host)
+                },
+            ) {
+                removal = null
+                if (revoke) m.revoke(host)
+                else
+                    operate {
+                        m.dismissRemoval(host)
+                        m.forget(host)
+                        close()
+                    }
             }
         }
     }

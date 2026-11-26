@@ -59,6 +59,53 @@ class RemainingJourney {
         tap("ペアリングする")
     }
 
+    private fun openDisposableMachine(linkFile: String): SessionModel {
+        val secret = link(linkFile)
+        val target = requireNotNull(uniffi.pimate_ffi.previewPair(secret))
+        require(target.address.startsWith("127.0.0.1:"))
+        val model = ui.runOnIdle { ViewModelProvider(ui.activity)[SessionModel::class.java] }
+        require(model.hosts.isEmpty())
+        pair(secret)
+        find(hasText("${target.name} とつながりました"))
+        tap("一覧を開く")
+        icon("設定")
+        tap(target.name)
+        find(hasText("このスマホ", substring = true))
+        return model
+    }
+
+    @Test
+    fun revokeThisDeviceOnDisposableHost() {
+        val model = openDisposableMachine("revoke-link")
+        shot("Machine-Revoke-Detail")
+        find(hasText("このマシンを削除") and hasClickAction()).performScrollTo().performClick()
+        find(hasText("キャンセル") and isFocused())
+        inst.sendKeyDownUpSync(KeyEvent.KEYCODE_ENTER)
+        ui.waitUntil { ui.onAllNodesWithText("キャンセル").fetchSemanticsNodes().isEmpty() }
+        tap("このマシンを削除")
+        find(hasText("キャンセル") and isFocused())
+        shot("Machine-Revoke-Confirm")
+        tap("削除")
+        ui.waitUntil(20000) { model.hosts.isEmpty() }
+    }
+
+    /** `android-screen-fixture.cjs PORT revoke-rotation` drops the successful Host reply. */
+    @Test
+    fun recreateWhileRevokingKeepsPendingAndUnknownResult() {
+        val model = openDisposableMachine("revoke-rotation-link")
+        tap("このマシンを削除")
+        tap("削除")
+        ui.activityRule.scenario.recreate()
+        find(hasText("このマシンを削除")).assertIsNotEnabled()
+        val warning = "取消の結果を確認できません。PC の端末一覧で確かめてください。"
+        find(hasText(warning))
+        ui.activityRule.scenario.recreate()
+        find(hasText(warning))
+        tap("キャンセル")
+        find(hasText("このマシンを削除")).assertIsEnabled()
+        ui.runOnIdle { Assert.assertEquals(1, model.hosts.size) }
+    }
+
     @Test
     fun loginHoldRecoversAfterDisconnect() {
         pair(link("reconnect-link"))

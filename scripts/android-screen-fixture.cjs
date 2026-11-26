@@ -59,10 +59,19 @@ new WS.Server({ server, path: "/ws" }).on("connection", (phone) => {
 	};
 	pc.on("error", () => phone.terminate());
 	phone.on("error", () => pc.terminate());
-	pc.on("close", () => phone.close());
+	let lostRevokeReply = false;
+	pc.on("close", () => {
+		if (lostRevokeReply) setTimeout(() => phone.terminate(), 12000);
+		else phone.close();
+	});
 	phone.on("close", () => pc.close());
 	pc.on("message", (frame) => {
 		const m = JSON.parse(frame);
+		// Let the activity recreate while the real Host has revoked the device but the phone is still waiting.
+		if (process.argv[3] === "revoke-rotation" && m.type === "device_revoke_result" && m.ok) {
+			lostRevokeReply = true;
+			return;
+		}
 		if (m.type === "auth_ok") {
 			authed = true;
 			m.host.hostRestart = true;

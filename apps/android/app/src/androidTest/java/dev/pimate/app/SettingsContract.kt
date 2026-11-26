@@ -73,7 +73,7 @@ class SettingsContract {
                 assertTrue(restored.pairing)
                 assertFalse(restored.openList)
                 restored.showPairing(false)
-                restored.forget(id)
+                restored.forget(host)
                 assertFalse(restored.hosts.any { it.id == id })
                 assertFalse(app.store.hosts().any { it.id == id })
             } finally {

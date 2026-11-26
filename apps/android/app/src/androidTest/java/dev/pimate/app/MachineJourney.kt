@@ -58,7 +58,7 @@ class MachineJourney {
                             m.consumePairedHost()
                             assertNull(m.pairedHostId)
                         } finally {
-                            m.forget(id)
+                            m.forget(m.hosts.single { it.id == id })
                         }
                     }
                 }
