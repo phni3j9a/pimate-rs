@@ -224,7 +224,10 @@ private fun DrawerContent(
                         query.isBlank() ||
                             title(o.optJSONObject("session"), o.str("cwd"))
                                 .contains(query.trim(), true) ||
-                            o.str("cwd").contains(query.trim(), true)
+                            tilde(o.str("cwd")).contains(query.trim(), true) ||
+                            o.str("cwd").contains(query.trim(), true) ||
+                            h.name.contains(query.trim(), true) ||
+                            (o.str("origin") == "grok-bot" && "Grok Bot".contains(query.trim(), true))
                     }
             }
         }
