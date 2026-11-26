@@ -395,14 +395,15 @@ impl Desktop {
                                 nav.update(cx, |s, _| {
                                     s.machine.removing = false;
                                     s.machine.busy = false;
-                                    s.note = if result.is_err() {
-                                        "取消の結果を確認できません。PC の端末一覧で確かめてください。"
+                                    s.note.clear();
+                                    let reason = if result.is_err() {
+                                        "取消の結果を確認できません。取り消し済みの可能性があります。PC の端末一覧で確かめてください。"
                                     } else {
                                         "PC 側の登録を取り消せませんでした。"
-                                    }.into();
+                                    };
                                     s.machine.pending = Some((
                                         target.clone(),
-                                        LOCAL_WARNING.into(),
+                                        format!("{reason}\n{LOCAL_WARNING}"),
                                         Decision::Remove(None),
                                     ));
                                 });
