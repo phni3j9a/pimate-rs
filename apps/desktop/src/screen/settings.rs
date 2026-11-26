@@ -58,6 +58,8 @@ impl Desktop {
     pub(super) fn init_navigation(&mut self, w: &mut Window, cx: &mut Context<Self>) -> Navigation {
         #[cfg(target_os = "macos")]
         let app = cx.weak_entity();
+        // 設定は起動時に読み終えている（main.rs の load_saved）。
+        let pref_error = self.pref_error;
         w.use_keyed_state("desktop-other-navigation", cx, |_w, _cx| {
             #[cfg(target_os = "macos")]
             {
@@ -76,9 +78,6 @@ impl Desktop {
                 .detach();
             }
 
-            let settings = Settings::path().and_then(|p| Settings::load(&p));
-            let pref_error = settings.is_err();
-            self.state.settings = settings.unwrap_or_default();
             Nav {
                 pref_error,
                 ..Default::default()
@@ -260,13 +259,27 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .child(machines.child(self.nav_button(
-                n,
-                "register-machine",
-                "＋ マシンを追加（ペアリング）",
-                Route::Tailscale,
-                cx,
-            )))
+            .child(
+                machines
+                    .child(self.nav_button(
+                        n,
+                        "register-machine",
+                        "＋ マシンを追加（ペアリング）",
+                        Route::Tailscale,
+                        cx,
+                    ))
+                    // 接続できなかったマシンへ、再起動なしでつなぎ直す常設の入口。
+                    .child(
+                        line()
+                            .child(
+                                self.reload_button("settings-reload", "登録を読み直す", p, cx)
+                                    .debug_selector(|| "settings-reload".into()),
+                            )
+                            .child(p.caption(
+                                "一覧を読み直し、接続できなかったマシンにつなぎ直します。",
+                            )),
+                    ),
+            )
             .child(group("新しい Pi の既定", p).child(self.preference(
                 n,
                 "ask",

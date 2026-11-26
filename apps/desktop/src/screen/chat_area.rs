@@ -28,6 +28,10 @@ impl Desktop {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        // 760px 未満ではサイドバーを隠すので、ヘッダーの左に一覧を出すボタンを置く。
+        let toggle = (Layout::of(w.viewport_size().width) == Layout::Narrow)
+            .then(|| self.sidebar_toggle(p, cx));
+        let nav = self.init_navigation(w, cx);
         if self.receive_editor_text(w, cx) {
             self.bind_editor(w, cx);
         }
@@ -88,72 +92,125 @@ impl Desktop {
         } else {
             "待機"
         };
-        let dest = session["name"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or(key.session.as_deref())
-            .unwrap_or("新規セッション");
+        let named = session["name"].as_str().filter(|s| !s.is_empty());
+        let machine = &self.machines[&key.host].registration.name;
+        let mut meta = format!("{} · {machine}", info["cwd"].as_str().unwrap_or_default());
+        if named.is_none() {
+            // 名前のないセッションは見出しがフォルダ名になるので、送り先を添える。
+            meta += &format!(
+                " · 送信先: {}",
+                key.session.as_deref().unwrap_or("新規セッション")
+            );
+        }
+        let github = github_available(rows, &key.host, &key.instance).then(|| {
+            let nav = nav.clone();
+            p.icon_button("github", "github", "GitHub — Issue / PR", cx)
+                .debug_selector(|| "nav-github".into())
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.navigate(&nav, Route::Github(pimate_protocol::GitHubQuery::List), cx)
+                }))
+        });
+        // 760px 未満では状態の文字を置く幅がない（文字サイズ「大」の 480px で右のボタンが切れる）。
+        // 色だけに頼らないよう、印の形を変え（入力待ち＝ベル・作業中＝輪・待機＝丸）、状態名を
+        // ツールチップに出す。
+        let narrow = toggle.is_some();
+        let mark = if running && !blocked {
+            self.working_spinner(p.secondary).into_any_element()
+        } else if blocked && narrow {
+            icon("bell", 13., p.waiting).into_any_element()
+        } else {
+            p.dot(if blocked {
+                p.wait
+            } else {
+                p.secondary.opacity(0.55)
+            })
+            .into_any_element()
+        };
         main = main.child(
             div()
-                .px_4()
-                .py_2()
-                .border_b_1()
-                .border_color(p.border)
+                .debug_selector(|| "chat-header".into())
+                .h(px(theme::HEADER))
+                .flex_none()
                 .flex()
                 .items_center()
-                .justify_between()
                 .gap_2()
+                .pl_5()
+                .pr_3()
+                .when(narrow, |d| d.pl_3().gap_1())
+                .children(toggle)
                 .child(
                     div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
                         .min_w_0()
                         .child(
                             div()
                                 .truncate()
-                                .font_weight(FontWeight::BOLD)
-                                .text_size(rems(1.08))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_size(rems(0.94))
+                                .debug_selector(|| "chat-title".into())
                                 .child(pi_title(info, &key.instance).to_owned()),
                         )
-                        .child(
-                            p.caption(format!(
-                                "{} · 送信先: {dest}",
-                                self.machines[&key.host].registration.name
-                            ))
-                            .truncate(),
-                        ),
+                        .child(p.caption(meta).text_size(rems(0.69)).truncate()),
                 )
                 .child(
                     div()
+                        // 状態ごとの id: 開いたツールチップは作り直されないので、状態が変わったら閉じる。
+                        .id(status)
+                        .debug_selector(|| "chat-status".into())
                         .flex()
-                        .gap_1()
+                        .flex_none()
                         .items_center()
-                        .child(self.review_button(&inspector, &page, cx))
-                        .child(self.sheet_nav(&page, cx)),
+                        .justify_center()
+                        .gap_1p5()
+                        .text_size(rems(0.75))
+                        .text_color(if blocked { p.waiting } else { p.secondary })
+                        .child(mark)
+                        .map(|d| {
+                            if narrow {
+                                d.size(px(20.)).tooltip(move |w, cx| {
+                                    gpui_component::tooltip::Tooltip::new(status).build(w, cx)
+                                })
+                            } else {
+                                d.child(status)
+                            }
+                        }),
                 )
-                .child(
-                    p.caption(status)
-                        .text_color(if blocked { p.waiting } else { p.accent }),
-                ),
+                .child(self.review_button(&inspector, &page, p, cx))
+                .child(self.sheet_nav(&page, cx))
+                .children(github),
         );
         if let Some(rev) = movement {
             let shown = key.clone();
-            main = main
-                .child("別のセッションに移りました。前の下書きは保持しています。")
-                .child(
-                    Button::new("confirm-move")
-                        .label("現在の送信先を確認")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.editor().as_ref() == Some(&shown) {
-                                this.machines
-                                    .get_mut(&shown.host)
-                                    .unwrap()
-                                    .rows
-                                    .confirm_move(&shown, rev);
-                                cx.notify();
-                            }
-                        })),
-                );
+            main = main.child(theme::column(
+                div()
+                    .px_4()
+                    .pb_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child("別のセッションに移りました。前の下書きは保持しています。")
+                    .child(
+                        Button::new("confirm-move")
+                            .label("現在の送信先を確認")
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.editor().as_ref() == Some(&shown) {
+                                    this.machines
+                                        .get_mut(&shown.host)
+                                        .unwrap()
+                                        .rows
+                                        .confirm_move(&shown, rev);
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            ));
         }
         main = main.child(self.conversation(&key, p, media, inspector.clone(), w, cx));
+        // 会話の下の部品も、会話と同じ列にそろえる。
+        let outer = main;
+        let mut main = div().flex().flex_col().min_w_0();
         let pending_scroll = w
             .use_keyed_state(
                 SharedString::from(format!("pending-scroll:{key:?}")),
@@ -257,9 +314,11 @@ impl Desktop {
             let action = if running { "割り込む" } else { "送信" };
             main = main.child(
                 div()
-                    .border_t_1()
-                    .border_color(p.border)
+                    .mx_4()
+                    .mb_3()
                     .p_3()
+                    .rounded(px(theme::R_COMPOSER))
+                    .bg(p.surface)
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -276,7 +335,7 @@ impl Desktop {
                                     cx.stop_propagation();
                                 }
                             }))
-                            .child(Input::new(input).h(rems(4.))),
+                            .child(Input::new(input).appearance(false).h(rems(4.))),
                     )
                     .child(
                         div()
@@ -304,7 +363,7 @@ impl Desktop {
                     ),
             );
         }
-        main
+        outer.child(theme::column(main).flex_shrink_0())
     }
     fn submit_chat(&mut self, page: &state::Page, w: &mut Window, cx: &mut Context<Self>) {
         if !page.visible(self) {

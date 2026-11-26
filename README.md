@@ -402,6 +402,7 @@ Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.
 - macOS の `store.rs` は登録をメタデータ・token 一体の Keychain 項目に格納します。アプリの複数起動時もファイルロックで置換と条件付き失効を直列化します。ロックファイルに資格情報は書きません。`cargo test --locked -p pimate-desktop` は毎回固有の `.test.*` サービスで試験。模擬 Host（前述の `scripts/android-demo.py`）を試すときは `apps/desktop/run-macos.sh --demo`（先に起動中のアプリを終了）で別サービスを使い、使い終えたらアプリ終了後 `security delete-generic-password -s dev.pimate.rs.desktop.demo -a registrations` で模擬登録だけ削除できます。
 - Linux は `cargo run --locked -p pimate-desktop`（開発用の模擬登録は末尾に `-- --demo`）。セッションの Secret Service と解除済みの既定コレクションが必要です。GPUI が既に使う `oo7` の暗号化 D-Bus セッションに直接保存するため、別の依存ツリーやファイルへのフォールバックはありません。macOS と同じ条件付き更新・登録形式を使い、読み取りから置換まで同じコレクションを使います。登録一覧と接続準備は画面スレッドの外で処理し、ロック中・既定コレクションなし・サービス利用不可・書き込み発行前の D-Bus 読み取りの5秒の期限超過は Storage エラーです。登録・保存の確認中も画面は操作できます。`CreateItem` を発行した後は返信まで編集ロックを保ち、5秒で失敗とはみなしません。通信断などで保存結果が不明なら、自動再送せず登録一覧を読み直します。サービスの起動・解除後に「登録を読み直す」で再試行してください。
 - Linux の画面を自動で確かめるには `cargo build --locked -p pimate-host -p pimate-desktop` 後、`apps/desktop/tests/linux-session.sh check /tmp/pi-check` と `apps/desktop/tests/linux-session.sh hotplug /tmp/pi-hotplug`。GNOME Shell（Wayland）・IBus/Mozc・gnome-keyring・wl-clipboard・tesseract（英語）・python3-dbus・python3-pil・PID/user namespace が必要です。各回の一時 HOME・D-Bus・仮想モニターで動かし、縮小 WebP のみを指定先に残します。どちらも 50 ms の連続差分中に見出しの一部を選択し、別の模擬クライアントが割り込んだ後、応答が履歴に変わっても同じ文字列だけをコピーできることを確認します。`check` は応答しない keyring を待つ間も画面を操作できること、`hotplug` は変換中のキーボード喪失とマウス追加を検査し、送信回数は模擬 RC の受信時点で照合します。実機でのスリープ復帰・物理入力機器の着脱・X11 の IME は未検証です。
+- 画面を撮るには `SESSION_SECONDS=900 DEMO_SCREENS=list apps/desktop/tests/linux-session.sh shots &` で同じ隔離 GNOME を起動します。`shots` は毎回、自分だけの新しいディレクトリ（`mktemp -d`、権限 700）を作って最初の行にそのパスを表示し、命令の FIFO・ログ・画像をすべてそこに置きます（既存のディレクトリは受け付けません）。表示されたディレクトリの `cmd` に `tests/linux-shots.py` の命令（`click X Y`・`key ctrl+k`・`snap 名前` など）を書くと、結果は `ack`、画像は同じ場所に PNG で残ります。ドライバーが起動できなければ `shots` は失敗で終わります。
 - 画面担当は `screen.rs` と `markdown.rs` を変更できます。`model.rs` の revision と `main.rs` の接続・編集状態は維持してください。Host ごとの配送スレッド → 有界チャネル → GPUI Entity（UI スレッド）。過負荷・大きな差分は snapshot、再登録前の配送は接続の同一性で破棄。編集本文は Host・Pi・session（null 可）別でメモリだけに保持し、送信時のキーを渡します。RC の受付と履歴は別で、結果不明を成功扱いせず自動再送しません。未確認の復元は対象が一致し、入力が空の明示操作だけです。
 
 ツールの出力は会話内で一度開くと、画面外へスクロールして戻っても開いたままです。送信中・割り込み待ち・未確認の本文が長いときは、入力欄の上の待ち一覧をスクロールしてください。逐次の追記で選択範囲より前の表示が変わらなければ選択を保ち、構文の確定などで前の表示が変わったときは、別の箇所を推測せずに選択を解除します。
@@ -410,7 +411,7 @@ Xcode（Metal Toolchain を含む）と Rust stable で `apps/desktop/run-macos.
 
 変換中は、確定済みの前半があっても送信できません。送信後の ACK は別の接続世代でも送信元の未変更の下書きだけを片付け、追加入力や変換中の編集は捨てません。検証には `PIMATE_DEMO_DESKTOP_REVIEW=1 scripts/android-demo.py`（模擬 RC だけを 50 ms ごと4文字の差分・送信 ACK は3秒待機に変更）を使います。`/demo/android` を選び、終了を待たずに表・本文が成長することを確認。確定済み本文に `nihongo` を変換中のまま追加して送信ボタンを押しても送られず、確定して送信した直後に追加の語を変換しても、受付後まで入力欄に残ります。
 
-「登録を読み直す」は削除・失効・置換された接続を閉じます。PC 側から同じ Pi のセッションが移動したときは、前のセッションに編集本文がある場合、表示された新しい送信先を確認するまで送信できません。購読失敗時は同じ Pi の選び直しで再試行します。
+「登録を読み直す」は削除・失効・置換された接続を閉じ、接続できなかったマシンにつなぎ直します。入口は設定のマシン一覧（常設）、サイドバーの接続できないマシンの「つなぎ直す」、登録を読み出せないときの知らせ、マシンがないときの最初の画面です。サイドバーの幅は、設定（`settings.json`）とは別の `layout.json` に覚えます。PC 側から同じ Pi のセッションが移動したときは、前のセッションに編集本文がある場合、表示された新しい送信先を確認するまで送信できません。購読失敗時は同じ Pi の選び直しで再試行します。
 
 #### デスクトップ画面用の状態 API（#58・designer への申し送り）
 

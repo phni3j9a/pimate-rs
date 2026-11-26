@@ -13,15 +13,18 @@ mod providers;
 mod settings;
 mod sheet_chat;
 mod sheet_tree;
+mod theme;
 use super::*;
 use gpui_component::{
-    Disableable, Selectable, Sizable,
+    Disableable, Selectable, Sizable, TitleBar,
     button::{Button, ButtonCustomVariant, ButtonVariants},
     input::{Enter, Input},
     scroll::ScrollableElement,
 };
 use serde_json::Value;
 use settings::{Navigation, Route};
+pub(crate) use theme::Assets;
+use theme::{Colors, Layout, icon};
 
 pub fn transcript() -> ListState {
     ListState::new(0, ListAlignment::Top, px(100.))
@@ -34,47 +37,6 @@ fn pending_panel(id: SharedString, handle: &ScrollHandle) -> Stateful<Div> {
         .overflow_y_scroll()
         .track_scroll(handle)
         .px_4()
-}
-#[derive(Clone, Copy)]
-struct Colors {
-    bg: Hsla,
-    surface: Hsla,
-    ink: Hsla,
-    secondary: Hsla,
-    border: Hsla,
-    accent: Hsla,
-    bubble: Hsla,
-    waiting: Hsla,
-}
-impl Colors {
-    fn new(dark: bool) -> Self {
-        let c = |light, d| rgb(if dark { d } else { light }).into();
-        Self {
-            bg: c(0xffffff, 0x131618),
-            surface: c(0xf1f3f4, 0x1e2326),
-            ink: c(0x1f2326, 0xe4e8ea),
-            secondary: c(0x5e686d, 0xa8b2b8),
-            border: c(0xd6dde1, 0x353d41),
-            accent: c(0x1b6b91, 0x88c8e6),
-            bubble: c(0xdfe7ec, 0x293a43),
-            waiting: c(0x936000, 0xf1bd68),
-        }
-    }
-    fn primary(&self, id: &'static str, cx: &App) -> Button {
-        Button::new(id).custom(
-            ButtonCustomVariant::new(cx)
-                .color(self.accent)
-                .foreground(self.bg)
-                .hover(self.accent.opacity(0.9))
-                .active(self.accent.opacity(0.8)),
-        )
-    }
-    fn caption(&self, text: impl Into<SharedString>) -> Div {
-        div()
-            .text_size(rems(0.78))
-            .text_color(self.secondary)
-            .child(text.into())
-    }
 }
 fn connection(h: &Host, rows: Option<&Rows>) -> &'static str {
     if h.needs_pairing {
@@ -97,6 +59,32 @@ fn pi_title<'a>(v: &'a Value, id: &'a str) -> &'a str {
 }
 fn github_available(rows: &Rows, host: &str, pi: &str) -> bool {
     rows.get("host", "info")["github"] == true && rows.editor(host, pi).is_some()
+}
+/// 一覧の行の右端に出す、最後の動きからの時間。
+fn ago(now_ms: u64, then_ms: u64) -> String {
+    match now_ms.saturating_sub(then_ms) / 60_000 {
+        0 => "今".into(),
+        m @ 1..60 => format!("{m}分"),
+        m @ 60..1440 => format!("{}時間", m / 60),
+        1440..2880 => "昨日".into(),
+        m => format!("{}日", m / 1440),
+    }
+}
+/// 「<セッション名> — PiMate」。要対応があれば件数を先頭に出す（OS の通知の代わり）。
+fn window_title(name: Option<&str>, waiting: usize) -> String {
+    let title = name.map_or_else(|| "PiMate".into(), |name| format!("{name} — PiMate"));
+    if waiting == 0 {
+        title
+    } else {
+        format!("({waiting}) {title}")
+    }
+}
+#[derive(Clone)]
+struct DragSidebar;
+impl Render for DragSidebar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
 }
 impl Desktop {
     fn update_spinner(&mut self, cx: &mut Context<Self>) {
@@ -125,7 +113,7 @@ impl Desktop {
     }
     fn working_spinner(&self, color: Hsla) -> Div {
         let ring = div()
-            .size(px(12.))
+            .size(px(11.))
             .flex_none()
             .rounded_full()
             .border_2()
@@ -135,6 +123,24 @@ impl Desktop {
             1 => ring.border_r_0(),
             2 => ring.border_b_0(),
             _ => ring.border_l_0(),
+        }
+    }
+    fn waiting_count(&self) -> usize {
+        self.machines
+            .values()
+            .flat_map(|m| m.rows.group("instance"))
+            .filter(|(_, v)| v["section"] == "waiting")
+            .count()
+    }
+    fn sync_title(&mut self, w: &mut Window) {
+        let name = self.selected.as_ref().and_then(|(h, i)| {
+            let v = self.machines.get(h)?.rows.get("instance", i);
+            (!v.is_null()).then(|| pi_title(v, i))
+        });
+        let title = window_title(name, self.waiting_count());
+        if title != self.title {
+            w.set_window_title(&title);
+            self.title = title;
         }
     }
     fn pi_row(
@@ -147,61 +153,59 @@ impl Desktop {
         cx: &Context<Self>,
     ) -> Button {
         let (host, pi) = (h.id.clone(), id.to_owned());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
         let waiting = v["section"] == "waiting";
         let nav = nav.clone();
         let working = v["working"] == true;
-        let failed = v["failureText"].as_str().is_some_and(|s| !s.is_empty());
-        let state = if failed {
-            "失敗"
+        let failure = v["failureText"].as_str().filter(|s| !s.is_empty());
+        let cwd = v["cwd"].as_str().unwrap_or(id);
+        let (detail, color) = if let Some(text) = failure {
+            (format!("失敗: {text}"), p.fail_ink)
         } else if waiting {
-            "入力待ち"
+            ("入力待ち".to_owned(), p.waiting)
         } else {
-            "待機"
-        };
-        let origin = match v["origin"].as_str() {
-            Some("mobile") => "スマホ",
-            Some("grok-bot") => "Grok Bot",
-            _ => "PC",
-        };
-        let detail = if waiting {
-            format!("{state} · {} · {origin}", self.host_label(h))
-        } else if working {
-            format!("{origin} で起動")
-        } else {
-            format!("{state} · {origin} で起動")
+            let mut detail = cwd.to_owned();
+            if let Some(n) = v["subagents"]["active"].as_u64().filter(|n| *n > 0) {
+                detail += &format!(" · サブエージェント {n} 実行中");
+            }
+            match v["origin"].as_str() {
+                Some("mobile") => detail += " · スマホで起動",
+                Some("grok-bot") => detail += " · Grok Bot",
+                _ => {}
+            }
+            (detail, p.secondary)
         };
         let selected = self
             .selected
             .as_ref()
             .is_some_and(|(a, b)| a == &host && b == &pi);
-        Button::new(SharedString::from(format!("pi-{host}-{pi}")))
-            .ghost()
-            .selected(selected)
-            .w_full()
-            .h(rems(3.2))
-            .tooltip(format!("{} · {detail}", v["cwd"].as_str().unwrap_or(id)))
-            .justify_start()
-            .px_2()
+        let mark = if working {
+            self.working_spinner(p.secondary).mt(px(4.))
+        } else {
+            p.dot(if failure.is_some() {
+                p.fail
+            } else if waiting {
+                p.wait
+            } else {
+                p.secondary.opacity(0.55)
+            })
+            .mt(px(7.))
+        };
+        p.row(SharedString::from(format!("pi-{host}-{pi}")), selected, cx)
+            .h(px(theme::ROW))
+            .px_3()
+            .tooltip(format!("{} · {cwd}", self.host_label(h)))
             .child(
                 div()
                     .flex()
-                    .items_center()
+                    .items_start()
                     .gap_2()
-                    .min_w_0()
-                    .w_full()
-                    .when_else(
-                        working,
-                        |row| row.child(self.working_spinner(p.accent)),
-                        |row| {
-                            row.child(div().size(px(7.)).rounded_full().bg(if waiting {
-                                p.waiting
-                            } else if selected {
-                                p.accent
-                            } else {
-                                p.secondary
-                            }))
-                        },
-                    )
+                    // Button は中身を幅いっぱいに広げないので、行の内側の幅を決める
+                    // （サイドバーの左右 8px と行の左右 12px を引く）。
+                    .w(px(self.sidebar_width() - 40.))
+                    .child(mark)
                     .child(
                         div()
                             .flex()
@@ -214,9 +218,19 @@ impl Desktop {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(pi_title(v, id).to_owned()),
                             )
-                            .child(p.caption(detail).truncate()),
+                            .child(p.caption(detail).text_color(color).truncate()),
                     )
-                    .when(working, |row| row.child(p.caption("作業中").flex_none())),
+                    .child(
+                        p.caption(if working {
+                            "作業中".to_owned()
+                        } else {
+                            v["updatedAt"]
+                                .as_u64()
+                                .map_or_else(String::new, |t| ago(now, t))
+                        })
+                        .flex_none()
+                        .text_size(rems(0.69)),
+                    ),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if nav.read(cx).route != Route::Home {
@@ -225,52 +239,105 @@ impl Desktop {
                 this.select(host.clone(), pi.clone(), cx)
             }))
     }
-    fn sidebar(&self, n: &Navigation, p: &Colors, cx: &Context<Self>) -> Div {
+    /// サイドバー: 検索欄・要対応・マシンごと・最下段（設定／＋新しい Pi）。
+    fn sidebar(
+        &self,
+        n: &Navigation,
+        p: &Colors,
+        search: &Entity<InputState>,
+        cx: &Context<Self>,
+    ) -> Div {
+        let query = search.read(cx).value().trim().to_lowercase();
+        let shown = |id: &str, v: &Value| {
+            query.is_empty()
+                || format!("{} {}", pi_title(v, id), v["cwd"].as_str().unwrap_or(""))
+                    .to_lowercase()
+                    .contains(&query)
+        };
+        let group = || {
+            div()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .px_3()
+                .pt_3()
+                .pb_1()
+                .text_size(rems(0.75))
+                .text_color(p.secondary)
+        };
         let mut rows = div()
             .id("machine-list")
+            .flex()
+            .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
-            .px_2();
-        let mut any_waiting = false;
-        for h in &self.hosts {
-            if let Some(m) = self.machines.get(&h.id) {
-                for (id, v) in m
-                    .rows
+            .overflow_y_scroll();
+        let waiting: Vec<_> = self
+            .hosts
+            .iter()
+            .filter_map(|h| Some((h, self.machines.get(&h.id)?)))
+            .flat_map(|(h, m)| {
+                m.rows
                     .group("instance")
                     .iter()
-                    .filter(|(_, v)| v["section"] == "waiting")
-                {
-                    if !any_waiting {
-                        rows = rows.child(
-                            p.caption("要対応")
-                                .px_2()
-                                .py_1()
-                                .font_weight(FontWeight::SEMIBOLD),
-                        );
-                        any_waiting = true;
-                    }
-                    rows = rows.child(self.pi_row(h, id, v, n, p, cx));
-                }
+                    .map(move |(id, v)| (h, id, v))
+            })
+            .filter(|(_, id, v)| v["section"] == "waiting" && shown(id, v))
+            .collect();
+        if !waiting.is_empty() {
+            rows = rows.child(
+                group()
+                    .text_color(p.waiting)
+                    .child(icon("bell", 13., p.waiting))
+                    .child(format!("要対応　{}", waiting.len()))
+                    .debug_selector(|| "sidebar-waiting".into()),
+            );
+            for (h, id, v) in waiting {
+                rows = rows.child(self.pi_row(h, id, v, n, p, cx));
             }
         }
         for h in &self.hosts {
             let data = self.machines.get(&h.id).map(|m| &m.rows);
+            let state = connection(h, data);
             rows = rows.child(
-                div()
-                    .mt_3()
-                    .px_2()
-                    .flex()
-                    .flex_col()
+                group()
+                    .child(icon("laptop", 14., p.secondary))
                     .child(
                         div()
-                            .font_weight(FontWeight::BOLD)
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
                             .child(self.host_label(h)),
                     )
-                    .child(p.caption(connection(h, data))),
+                    .child(
+                        p.dot(if state == "接続中" { p.done } else { p.wait })
+                            .size(px(6.)),
+                    )
+                    .child(div().flex_none().text_size(rems(0.69)).child(state)),
             );
             if let Some(error) = self.state.registration.connection_errors.get(&h.id) {
-                rows = rows.child(p.caption(format!("接続できません: {error}")).px_2());
+                rows = rows.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .pl_3()
+                        .child(
+                            p.caption(format!("接続できません: {error}"))
+                                .text_color(p.fail_ink)
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .child(
+                            self.reload_button(
+                                SharedString::from(format!("retry-{}", h.id)),
+                                "つなぎ直す",
+                                p,
+                                cx,
+                            )
+                            .flex_none(),
+                        ),
+                );
             }
             if let Some(data) = data {
                 let entries = data.group("instance");
@@ -281,169 +348,268 @@ impl Desktop {
                         } else {
                             "一覧を取得しています…"
                         })
-                        .p_2(),
+                        .px_3()
+                        .py_2(),
                     );
                 }
-                for (id, v) in entries.iter().filter(|(_, v)| v["section"] != "waiting") {
+                for (id, v) in entries
+                    .iter()
+                    .filter(|(id, v)| v["section"] != "waiting" && shown(id, v))
+                {
                     rows = rows.child(self.pi_row(h, id, v, n, p, cx));
                 }
             }
         }
-        let mut side = div()
+        let go = |id: &'static str, route: Route, button: Button| {
+            let n = n.clone();
+            button
+                .debug_selector(move || format!("nav-{id}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.sidebar_open = false;
+                    this.navigate(&n, route.clone(), cx)
+                }))
+        };
+        div()
+            .debug_selector(|| "sidebar".into())
             .flex()
             .flex_col()
-            .w(rems(15.5))
-            .max_w(relative(0.4))
+            .flex_none()
+            .h_full()
             .bg(p.surface)
-            .border_r_1()
-            .border_color(p.border)
+            .px_2()
+            .pt_3()
+            .pb_2()
             .child(
                 div()
-                    .px_4()
-                    .pt_4()
-                    .child(
-                        p.caption("PiMate")
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(p.accent),
-                    )
-                    .child(
-                        div()
-                            .text_size(rems(1.22))
-                            .font_weight(FontWeight::BOLD)
-                            .child("マシンと Pi"),
-                    ),
-            )
-            .child(
-                div().p_3().child(
-                    Button::new("paste")
-                        .w_full()
-                        .label("リンクを貼り付ける")
-                        .disabled(self.pairing)
-                        .on_click(cx.listener(|this, _, _, cx| this.paste(cx))),
-                ),
-            );
-        if let Some((_, name)) = &self.confirmation {
-            side = side.child(
-                div()
-                    .mx_3()
-                    .mb_2()
-                    .p_3()
+                    .mx_1()
+                    .mb_1()
+                    .h(px(theme::CONTROL))
+                    .flex_none()
                     .flex()
-                    .flex_col()
+                    .items_center()
                     .gap_2()
+                    .pl_3()
+                    .rounded(px(theme::CONTROL / 2.))
                     .bg(p.bg)
-                    .rounded_lg()
-                    .child(p.caption("接続先を確認"))
-                    .child(div().font_weight(FontWeight::SEMIBOLD).child(name.clone()))
+                    .child(icon("search", 16., p.secondary))
+                    .child(Input::new(search).appearance(false).cleanable(true)),
+            )
+            .child(rows)
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_between()
+                    .px_1()
+                    .pt_2()
+                    .child(go(
+                        "settings",
+                        Route::Settings,
+                        p.text_button("settings", p.secondary, cx)
+                            .child(icon("gear", 16., p.secondary))
+                            .child("設定"),
+                    ))
+                    .child(go(
+                        "new-pi",
+                        self.new_route(),
+                        p.primary("new-pi", cx)
+                            .child(icon("plus", 16., p.on_accent))
+                            .child("新しい Pi"),
+                    )),
+            )
+    }
+    fn sidebar_width(&self) -> f32 {
+        let (min, max) = theme::SIDEBAR_RANGE;
+        self.sidebar_width.unwrap_or(theme::SIDEBAR).clamp(min, max)
+    }
+    fn sidebar_toggle(&self, p: &Colors, cx: &Context<Self>) -> Button {
+        p.icon_button("sidebar-toggle", "side", "Pi の一覧", cx)
+            .debug_selector(|| "sidebar-toggle".into())
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.sidebar_open = !this.sidebar_open;
+                cx.notify()
+            }))
+    }
+    /// 登録の進み具合・結果・失敗。読み出せないときは、ここから読み直せる。
+    fn registration_notice(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
+        let r = &self.state.registration;
+        let message = r.message();
+        if message.is_empty() && !self.pairing {
+            return None;
+        }
+        let warning = r.error.is_some() || r.save_unknown;
+        // Keep the store diagnostic legible and separate from the Japanese recovery text.
+        let message = match r.error {
+            Some(e) => message.replace(&format!(": {e}"), ""),
+            None => message,
+        };
+        Some(
+            p.card()
+                .flex()
+                .flex_col()
+                .items_start()
+                .gap_1()
+                .debug_selector(|| "registration-notice".into())
+                // 保存の応答は待ち続けることがある。その間も画面は操作できるよう、幕は出さない。
+                .when(self.pairing, |card| card.child("登録・保存の結果を確認中…"))
+                .when(!message.is_empty(), |card| {
+                    card.child(
+                        div()
+                            .text_color(if warning { p.fail_ink } else { p.ink })
+                            .child(message),
+                    )
+                })
+                .children(r.error.map(|e| {
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .font_family("monospace")
+                        .child(format!("Error: {e}"))
+                }))
+                .when(warning, |card| {
+                    card.child(self.reload_button("reload", "登録を読み直す", p, cx))
+                }),
+        )
+    }
+    /// 登録を読み直し、つながっていないマシンへつなぎ直す。
+    fn reload_button(
+        &self,
+        id: impl Into<ElementId>,
+        label: &'static str,
+        p: &Colors,
+        cx: &Context<Self>,
+    ) -> Button {
+        p.text_button(id, p.accent_ink, cx)
+            .label(label)
+            .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+    }
+    /// 貼り付けたリンクの接続先を見せてから登録する。確定したあとの進み具合は知らせに出す。
+    fn pair_dialog(&self, p: &Colors, cx: &Context<Self>) -> Option<Div> {
+        let (_, target) = self.confirmation.as_ref()?;
+        let card = div()
+            .w(px(380.))
+            .max_w(relative(0.9))
+            .p_5()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .rounded(px(theme::R_CARD))
+            .bg(p.bg)
+            .shadow_lg()
+            .debug_selector(|| "pair-dialog".into());
+        let (name, address) = target.rsplit_once(" · ").unwrap_or((target, ""));
+        let card = card
+            .child(p.caption("接続先を確認"))
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name.to_owned()),
+            )
+            .child(p.caption(address.to_owned()).font_family("monospace"))
+            .child(
+                div()
+                    .mt_3()
+                    .flex()
+                    .justify_end()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        p.text_button("cancel", p.secondary, cx)
+                            .label("キャンセル")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.confirmation = None;
+                                cx.notify()
+                            })),
+                    )
                     .child(
                         p.primary("pair", cx)
                             .label("この接続先を登録")
+                            .disabled(self.pairing)
                             .on_click(cx.listener(|this, _, _, cx| this.pair(cx))),
+                    ),
+            );
+        Some(p.scrim().items_center().justify_center().child(card))
+    }
+    /// 3ペインの入れ物。幅に応じてサイドバーとインスペクターを並べるか重ねる。
+    fn panes(
+        &self,
+        layout: Layout,
+        side: Option<Div>,
+        main: Div,
+        inspector: Option<Div>,
+        p: &Colors,
+        cx: &Context<Self>,
+    ) -> Div {
+        let (min, max) = theme::SIDEBAR_RANGE;
+        let width = self.sidebar_width();
+        let side = side.map(|s| s.w(px(width)));
+        let mut panes = div().relative().flex().flex_1().min_h_0();
+        let mut overlay = None;
+        match side {
+            Some(side) if layout != Layout::Narrow => {
+                panes = panes
+                    .on_drag_move(cx.listener(
+                        move |this, e: &DragMoveEvent<DragSidebar>, _, cx| {
+                            let width = f32::from(e.event.position.x - e.bounds.left());
+                            this.sidebar_width = Some(width.clamp(min, max));
+                            cx.notify()
+                        },
+                    ))
+                    .on_drop(cx.listener(|this, _: &DragSidebar, _, _| {
+                        // 幅は次回も覚える。書けなくても、この起動中は効く。設定のファイルには触れない。
+                        let _ = state::layout_path()
+                            .and_then(|p| state::save_sidebar_width(&p, this.sidebar_width()));
+                    }))
+                    .child(side)
+                    .child(
+                        div()
+                            .id("sidebar-handle")
+                            .absolute()
+                            .top_0()
+                            .left(px(width - 3.))
+                            .w(px(6.))
+                            .h_full()
+                            .cursor_col_resize()
+                            .on_drag(DragSidebar, |drag, _, _, cx| {
+                                cx.stop_propagation();
+                                cx.new(|_| drag.clone())
+                            }),
                     )
-                    .child(Button::new("cancel").ghost().label("キャンセル").on_click(
+            }
+            side => overlay = side.filter(|_| self.sidebar_open),
+        }
+        panes = panes.child(main);
+        // 変更・サブエージェント・GitHub。広ければ並べ、狭ければ会話の上に重ねる。
+        if let Some(inspector) = inspector {
+            panes = panes.child(if layout == Layout::Wide {
+                inspector.flex_none().border_l_1().border_color(p.fill2)
+            } else {
+                inspector
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .h_full()
+                    .bg(p.bg)
+                    .shadow_lg()
+            });
+        }
+        if let Some(side) = overlay {
+            panes = panes.child(
+                p.scrim()
+                    .on_mouse_down(
+                        MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
-                            this.confirmation = None;
+                            this.sidebar_open = false;
                             cx.notify()
                         }),
-                    )),
-            );
-        }
-        if self.pairing {
-            side = side.child(p.caption("登録・保存の結果を確認中…").px_3().pb_2());
-        }
-        let registration = self.state.registration.message();
-        if !registration.is_empty() {
-            let error = self.state.registration.error;
-            let warning = error.is_some() || self.state.registration.save_unknown;
-            // Keep the store diagnostic legible and separate from the Japanese recovery text.
-            let message = if let Some(e) = error {
-                registration.replace(&format!(": {e}"), "")
-            } else {
-                registration
-            };
-            let card = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_size(rems(0.88)).text_color(p.ink).child(message));
-            let card = if let Some(e) = error {
-                card.child(
-                    div()
-                        .text_color(p.ink)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .font_family("monospace")
-                        .child(format!("Error: {e}")),
-                )
-            } else {
-                card
-            };
-            side = side.child(
-                card.mx_2()
-                    .mb_2()
-                    .p_2()
-                    .rounded_md()
-                    .border_l_2()
-                    .border_color(if warning { p.waiting } else { p.accent })
-                    .bg(p.bg)
-                    .debug_selector(|| "registration-notice".into()),
-            );
-        }
-        if self.hosts.is_empty() {
-            rows = rows.child(
-                self.nav_button(n, "setup", "はじめての接続ガイド　›", Route::Tailscale, cx)
-                    .ghost()
-                    .w_full(),
-            );
-        }
-        side.child(rows)
-            .when(
-                self.selected.as_ref().is_some_and(|(h, i)| {
-                    self.machines
-                        .get(h)
-                        .is_some_and(|m| github_available(&m.rows, h, i))
-                }),
-                |v| {
-                    v.child(
-                        div().px_2().child(
-                            self.nav_button(
-                                n,
-                                "github",
-                                "GitHub　·　Issue / PR",
-                                Route::Github(pimate_protocol::GitHubQuery::List),
-                                cx,
-                            )
-                            .w_full()
-                            .ghost(),
-                        ),
-                    )
-                },
-            )
-            .child(
-                div().px_2().py_1().child(
-                    self.nav_button(n, "new-pi", "＋ 新しい Pi", self.new_route(), cx)
-                        .w_full(),
-                ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_1()
-                    .p_2()
-                    .border_t_1()
-                    .border_color(p.border)
-                    .child(
-                        Button::new("reload")
-                            .small()
-                            .ghost()
-                            .label("登録を読み直す")
-                            .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                     )
                     .child(
-                        self.nav_button(n, "settings", "設定", Route::Settings, cx)
-                            .small()
-                            .ghost(),
+                        side.shadow_lg()
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
                     ),
-            )
+            );
+        }
+        panes
     }
 }
 impl Render for Desktop {
@@ -457,14 +623,22 @@ impl Render for Desktop {
         let dark = self.palette(w, cx);
         w.set_rem_size(px(self.size));
         let p = Colors::new(dark);
-        let side = self.sidebar(&nav, &p, cx);
-        let root = div()
-            .flex()
-            .size_full()
-            .bg(p.bg)
-            .text_color(p.ink)
-            .text_size(rems(0.94))
-            .child(side);
+        self.sync_title(w);
+        let layout = Layout::of(w.viewport_size().width);
+        if self.search.is_none() {
+            let input = cx.new(|cx| InputState::new(w, cx).placeholder("Pi・フォルダを検索"));
+            let changed = cx.subscribe(&input, |_, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    cx.notify()
+                }
+            });
+            self.search = Some((input, changed));
+        }
+        let search = self.search.as_ref().unwrap().0.clone();
+        // マシンが1台もないうちは、並べる Pi がないのでサイドバーを出さない。
+        let side = (!self.hosts.is_empty()).then(|| self.sidebar(&nav, &p, &search, cx));
+        let toggle =
+            (side.is_some() && layout == Layout::Narrow).then(|| self.sidebar_toggle(&p, cx));
         // The answer belongs to the pending question, not to the visible workspace panel.
         let editor = self.editor();
         let question = editor.as_ref().and_then(|key| {
@@ -476,10 +650,12 @@ impl Render for Desktop {
                 )
             })
         });
-        if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
-            return root.child(panel);
+        let home = nav.read(cx).route == Route::Home;
+        let first = home && self.hosts.is_empty();
+        let mut main = div().flex().flex_col().flex_1().min_w_0().h_full();
+        if !first && let Some(notice) = self.registration_notice(&p, cx) {
+            main = main.child(notice.mx_4().mt_3());
         }
-        let mut main = div().flex().flex_col().flex_1().min_w_0();
         if !self.notice.is_empty() {
             main = main.child(
                 p.caption(self.notice.clone())
@@ -488,47 +664,78 @@ impl Render for Desktop {
                     .debug_selector(|| "chat-notice".into()),
             );
         }
-        if let Some(key) = editor {
-            main = self.chat_area(main, key, question, &p, w, cx);
-        } else if let Some(hint) = self.reconnect_hint() {
-            main = main.child(hint);
-        } else {
-            let title = if self.hosts.is_empty() {
-                "PC の Pi とつなぐ"
-            } else {
-                "会話を開く"
-            };
-            let description = self.selected.as_ref().and_then(|(host,pi)| self.machines.get(host).map(|m|m.rows.subscription(pi))).unwrap_or_else(|| {
-                if self.hosts.is_empty() {"PC の Pi で /pimate setup を実行してリンクをコピーします。左の「リンクを貼り付ける」で接続先を確認してください。"} else {"左の一覧から Pi を選ぶと、この場所に会話が表示されます。"}.into()
-            });
-            main = main.child(
+        // 会話のヘッダーがない画面では、狭いときの一覧のボタンだけを上に置く。
+        let bar = |toggle: Option<Button>| {
+            toggle.map(|t| {
                 div()
-                    .size_full()
+                    .h(px(theme::HEADER))
+                    .flex_none()
                     .flex()
                     .items_center()
+                    .px_3()
+                    .child(t)
+            })
+        };
+        if let Some(panel) = self.other_panel(&nav, &p, w, cx) {
+            main = main
+                .children(bar(toggle))
+                .child(div().flex().flex_1().min_h_0().child(panel));
+        } else if first {
+            main = main.child(self.first_screen(&nav, &p, cx));
+        } else if let Some(key) = editor {
+            main = self.chat_area(main, key, question, &p, w, cx);
+        } else if let Some(hint) = self.reconnect_hint() {
+            main = main.children(bar(toggle)).child(hint);
+        } else {
+            let description = self
+                .selected
+                .as_ref()
+                .and_then(|(host, pi)| self.machines.get(host).map(|m| m.rows.subscription(pi)))
+                .unwrap_or_else(|| "左の一覧から Pi を選ぶと、ここに会話が出ます。".into());
+            main = main.children(bar(toggle)).child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
                     .justify_center()
+                    .gap_2()
                     .p_4()
                     .child(
                         div()
-                            .max_w(rems(24.))
-                            .child(
-                                p.caption("PiMate Desktop")
-                                    .text_color(p.accent)
-                                    .font_weight(FontWeight::SEMIBOLD),
-                            )
-                            .child(
-                                div()
-                                    .mt_2()
-                                    .mb_2()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_size(rems(1.6))
-                                    .child(title),
-                            )
-                            .child(div().text_color(p.secondary).child(description)),
-                    ),
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_size(rems(1.06))
+                            .child("会話を開く"),
+                    )
+                    .child(div().text_color(p.secondary).child(description)),
             );
         }
-        root.child(main)
+        // Linux で OS がタイトルバーを描かない（GNOME）ときだけ、アプリが描く。
+        let titlebar = (cfg!(target_os = "linux")
+            && matches!(w.window_decorations(), Decorations::Client { .. }))
+        .then(|| {
+            TitleBar::new().bg(p.fill2).border_color(p.fill2).child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_center()
+                    .text_size(rems(0.75))
+                    .text_color(p.secondary)
+                    .child(self.title.clone()),
+            )
+        });
+        div()
+            .relative()
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(p.bg)
+            .text_color(p.ink)
+            .text_size(rems(0.875))
+            .children(titlebar)
+            .child(self.panes(layout, side, main, None, &p, cx))
+            .children(self.pair_dialog(&p, cx))
     }
 }
 
@@ -625,15 +832,20 @@ mod tests {
             assert_eq!(d.spinner_phase, 0);
         });
     }
-    #[gpui::test]
-    fn unanswered_input_survives_sidebar_routes(cx: &mut gpui::TestAppContext) {
+    /// 1台のマシンと、質問待ちの会話を開いた状態。
+    fn open_chat(
+        cx: &mut gpui::TestAppContext,
+    ) -> (
+        gpui::Entity<super::Desktop>,
+        &mut gpui::VisualTestContext,
+        std::net::TcpListener,
+    ) {
         use super::{Desktop, Machine, Rows};
-        use gpui::{ClipboardItem, VisualTestContext};
         use gpui_component::Root;
         use pimate_core::{Item, Snapshot};
         use serde_json::json;
         use std::sync::Arc;
-        let (_socket, h, core) = test_host();
+        let (socket, h, core) = test_host();
         let (tx, _rx) = crate::Delivery::channel();
         let conn = core.connect(h.id.clone(), Arc::new(tx)).unwrap();
         cx.update(gpui_component::init);
@@ -653,6 +865,11 @@ mod tests {
                     ("view", "phase", json!("ready")),
                     ("view", "instanceId", json!("pi")),
                     ("question", "q", json!({"kind":"input","title":"Question"})),
+                    (
+                        "instance",
+                        "pi",
+                        json!({"cwd":"/home/u/a-rather-long-folder-name-for-the-header","section":"waiting"}),
+                    ),
                 ]
                 .map(|(c, id, v)| Item {
                     collection: c.into(),
@@ -675,6 +892,188 @@ mod tests {
             cx.notify();
         });
         w.run_until_parked();
+        (desktop, w, socket)
+    }
+    #[test]
+    fn row_time_and_window_title_follow_the_design() {
+        let minute = 60_000;
+        for (age, text) in [
+            (0, "今"),
+            (59_999, "今"),
+            (5 * minute, "5分"),
+            (179 * minute, "2時間"),
+            (30 * 60 * minute, "昨日"),
+            (72 * 60 * minute, "3日"),
+        ] {
+            assert_eq!(
+                super::ago(100 * 60 * 60 * minute, 100 * 60 * 60 * minute - age),
+                text
+            );
+        }
+        assert_eq!(super::ago(0, 5), "今", "a clock behind the host");
+        assert_eq!(super::window_title(None, 0), "PiMate");
+        assert_eq!(super::window_title(Some("demo"), 0), "demo — PiMate");
+        assert_eq!(super::window_title(Some("demo"), 2), "(2) demo — PiMate");
+        assert_eq!(super::window_title(None, 1), "(1) PiMate");
+    }
+    #[gpui::test]
+    fn panes_follow_the_window_width(cx: &mut gpui::TestAppContext) {
+        use crate::state::FontSize;
+        let (desktop, w, _socket) = open_chat(cx);
+        // Desktop::new reads no settings file; every text size the user can choose is set here.
+        // Test text is not measured with the real fonts: whether the labels fit is checked on screen.
+        // debug_bounds keeps selectors from earlier frames, so judge by where the header starts.
+        for (font, (width, docked)) in ["small", "standard", "large"].into_iter().flat_map(|font| {
+            [(1280., true), (900., true), (620., false), (480., false)].map(|at| (font, at))
+        }) {
+            desktop.update(w, |d, cx| {
+                d.state.settings.font_size = match font {
+                    "small" => FontSize::Small,
+                    "large" => FontSize::Large,
+                    _ => FontSize::Standard,
+                };
+                cx.notify()
+            });
+            w.simulate_resize(size(px(width), px(800.)));
+            w.run_until_parked();
+            let at = format!("{font} {width}");
+            // The header stays one line: fixed height, nothing wrapped below or cut off.
+            let header = w.debug_bounds("chat-header").unwrap();
+            assert_eq!(header.size.height, px(52.), "{at}");
+            assert_eq!(header.left(), px(if docked { 264. } else { 0. }), "{at}");
+            assert_eq!(header.right(), px(width), "{at}");
+            let mut parts = vec!["chat-title", "nav-github"];
+            if docked {
+                let side = w.debug_bounds("sidebar").unwrap();
+                assert_eq!((side.left(), side.right()), (px(0.), header.left()));
+            } else {
+                // Without room for its text, the state keeps a mark with a tooltip to hover.
+                parts.extend(["sidebar-toggle", "chat-status"]);
+            }
+            for part in parts {
+                let b = w.debug_bounds(part).unwrap();
+                assert!(
+                    b.top() >= header.top()
+                        && b.bottom() <= header.bottom()
+                        && b.left() >= header.left()
+                        && b.right() <= header.right()
+                        && b.size.width > px(0.),
+                    "{part} at {at}: {b:?}"
+                );
+            }
+            // The conversation keeps a 720px column (plus its 16px gutters) in the middle.
+            let column = w.debug_bounds("chat-column").unwrap();
+            assert_eq!(column.size.width, header.size.width.min(px(752.)), "{at}");
+            assert_eq!(
+                column.left() - header.left(),
+                header.right() - column.right(),
+                "{at}"
+            );
+        }
+        // Below 760px the list overlays the conversation; a click outside puts it away.
+        let toggle = w.debug_bounds("sidebar-toggle").unwrap().center();
+        w.simulate_click(toggle, Default::default());
+        desktop.read_with(w, |d, _| assert!(d.sidebar_open));
+        assert_eq!(w.debug_bounds("chat-header").unwrap().left(), px(0.));
+        w.simulate_click(point(px(400.), px(400.)), Default::default());
+        desktop.read_with(w, |d, _| {
+            assert!(!d.sidebar_open);
+            assert_eq!(
+                d.title,
+                "(1) a-rather-long-folder-name-for-the-header — PiMate"
+            );
+        });
+    }
+    #[gpui::test]
+    fn opening_a_chat_keeps_the_reason_a_registration_failed(cx: &mut gpui::TestAppContext) {
+        let (desktop, w, _socket) = open_chat(cx);
+        for (message, kept) in [
+            ("登録できません: expired", true),
+            ("有効なペアリングリンクをコピーしてください", true),
+            (crate::PAIRED, false),
+        ] {
+            desktop.update(w, |d, cx| {
+                d.state.registration.pair_message = message.into();
+                let host = d.hosts[0].id.clone();
+                d.select(host, "pi".into(), cx);
+                assert_eq!(
+                    !d.state.registration.message().is_empty(),
+                    kept,
+                    "{message}"
+                );
+            });
+        }
+    }
+    #[gpui::test]
+    fn dragged_sidebar_width_is_used_within_its_range(cx: &mut gpui::TestAppContext) {
+        // Desktop::new never reads the saved width, so these tests don't depend on the user's file.
+        let (desktop, w, _socket) = open_chat(cx);
+        w.simulate_resize(size(px(1280.), px(800.)));
+        for (saved, shown) in [(None, 264.), (Some(300.), 300.), (Some(1000.), 360.)] {
+            desktop.update(w, |d, cx| {
+                d.sidebar_width = saved;
+                cx.notify()
+            });
+            w.run_until_parked();
+            assert_eq!(
+                w.debug_bounds("chat-header").unwrap().left(),
+                px(shown),
+                "{saved:?}"
+            );
+        }
+    }
+    #[gpui::test]
+    fn registrations_reload_from_settings_even_while_a_pairing_is_saving(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (desktop, w, _socket) = open_chat(cx);
+        // A save that never answers shows its progress without covering the window.
+        desktop.update(w, |d, cx| {
+            d.pairing = true;
+            cx.notify()
+        });
+        w.run_until_parked();
+        assert!(w.debug_bounds("registration-notice").is_some());
+        assert!(w.debug_bounds("pair-dialog").is_none());
+        for id in ["nav-settings", "settings-reload"] {
+            let pos = w.debug_bounds(id).unwrap().center();
+            w.simulate_click(pos, Default::default());
+            w.run_until_parked();
+        }
+        // The fixture's store lists no machines, so a reload that really ran forgets the injected one.
+        desktop.read_with(w, |d, _| {
+            assert!(d.hosts.is_empty() && d.machines.is_empty())
+        });
+    }
+    #[gpui::test]
+    fn first_screen_has_no_sidebar_until_a_machine_is_registered(cx: &mut gpui::TestAppContext) {
+        use gpui::ClipboardItem;
+        let (_socket, _, core) = test_host();
+        cx.update(gpui_component::init);
+        let (desktop, w) = cx.add_window_view(|w, cx| super::Desktop::new(core, w, cx));
+        w.run_until_parked();
+        assert!(w.debug_bounds("first-screen").is_some());
+        assert!(w.debug_bounds("sidebar").is_none());
+        assert!(w.debug_bounds("pair-dialog").is_none());
+        // A valid link asks for confirmation in a dialog before anything is registered.
+        w.update(|_, cx| {
+            cx.write_to_clipboard(ClipboardItem::new_string(
+                "pimate://pair?h=127.0.0.1%3A47811&c=ABCDEFGH-JKLMNPQR&n=Desk&id=desk".into(),
+            ))
+        });
+        desktop.update(w, |d, cx| d.paste(cx));
+        w.run_until_parked();
+        assert!(w.debug_bounds("pair-dialog").is_some());
+        desktop.read_with(w, |d, _| {
+            assert_eq!(d.confirmation.as_ref().unwrap().1, "Desk · 127.0.0.1:47811")
+        });
+    }
+    #[gpui::test]
+    fn unanswered_input_survives_sidebar_routes(cx: &mut gpui::TestAppContext) {
+        use gpui::{ClipboardItem, VisualTestContext};
+        use pimate_core::Item;
+        use serde_json::json;
+        let (desktop, w, _socket) = open_chat(cx);
         let click = |w: &mut VisualTestContext, id| {
             let pos = w.debug_bounds(id).unwrap().center();
             w.simulate_click(pos, Default::default());

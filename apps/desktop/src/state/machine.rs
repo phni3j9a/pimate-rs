@@ -57,21 +57,41 @@ impl Settings {
         }
     }
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        use std::io::Write;
-        let dir = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-        std::fs::create_dir_all(dir)?;
-        let temp = dir.join(format!(".settings-{}-{}", std::process::id(), sequence()));
-        let mut f = std::fs::File::create_new(&temp)?;
-        let result = (|| {
-            f.write_all(&serde_json::to_vec(self)?)?;
-            f.sync_all()?;
-            std::fs::rename(&temp, path)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(temp);
-        }
-        result
+        replace_file(path, &serde_json::to_vec(self)?)
     }
+}
+/// 同じディレクトリの一時ファイルに書いてから置き換える。途中で失敗しても、前の内容が残る。
+fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    std::fs::create_dir_all(dir)?;
+    let temp = dir.join(format!(".write-{}-{}", std::process::id(), sequence()));
+    let mut f = std::fs::File::create_new(&temp)?;
+    let result = (|| {
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp);
+    }
+    result
+}
+/// サイドバーの幅の置き場。settings.json は旧版が未知の項目を拒み、読めなかったときに
+/// 上書きすると利用者の設定を失うので、幅は別のファイルに置く。
+pub fn layout_path() -> std::io::Result<std::path::PathBuf> {
+    Ok(Settings::path()?.with_file_name("layout.json"))
+}
+/// 読めなければ既定の幅に戻るだけなので、失敗は知らせない。知らない項目は読み飛ばす。
+pub fn load_sidebar_width(path: &Path) -> Option<f32> {
+    let v: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    v["sidebar_width"].as_f64().map(|w| w as f32)
+}
+pub fn save_sidebar_width(path: &Path, width: f32) -> std::io::Result<()> {
+    replace_file(
+        path,
+        json!({ "sidebar_width": width }).to_string().as_bytes(),
+    )
 }
 fn sequence() -> u64 {
     static N: AtomicU64 = AtomicU64::new(0);
@@ -471,6 +491,37 @@ mod tests {
         assert_eq!(v.as_object().unwrap().len(), 3);
         std::fs::write(&path, "{not-json}").unwrap();
         assert!(Settings::load(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn sidebar_width_is_kept_apart_from_the_settings_file() {
+        let dir = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        let (settings, layout) = (dir.join("settings.json"), dir.join("layout.json"));
+        assert_eq!(load_sidebar_width(&layout), None);
+        // A settings file this build cannot read (a newer build's key) must survive a resize.
+        std::fs::create_dir_all(&dir).unwrap();
+        let unreadable = r#"{"appearance":"Dark","from_a_newer_build":1}"#;
+        std::fs::write(&settings, unreadable).unwrap();
+        assert!(Settings::load(&settings).is_err());
+        save_sidebar_width(&layout, 330.).unwrap();
+        assert_eq!(load_sidebar_width(&layout), Some(330.));
+        assert_eq!(std::fs::read_to_string(&settings).unwrap(), unreadable);
+        std::fs::write(&layout, r#"{"sidebar_width":300,"later":true}"#).unwrap();
+        assert_eq!(load_sidebar_width(&layout), Some(300.));
+        std::fs::write(&layout, "{not-json}").unwrap();
+        assert_eq!(load_sidebar_width(&layout), None);
+        // A save replaces the file in one step and leaves no temporary file, also when it fails.
+        save_sidebar_width(&layout, 280.).unwrap();
+        let blocked = dir.join("blocked");
+        std::fs::create_dir_all(blocked.join("not-empty")).unwrap();
+        assert!(save_sidebar_width(&blocked, 290.).is_err());
+        assert_eq!(load_sidebar_width(&layout), Some(280.));
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["blocked", "layout.json", "settings.json"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]

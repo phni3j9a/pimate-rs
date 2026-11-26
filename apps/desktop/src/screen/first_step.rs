@@ -25,6 +25,140 @@ fn bridge(p: &Colors) -> Div {
         .child(chip("PC"))
 }
 impl Desktop {
+    /// マシンが1台もないときの最初の画面。案内を中央に1つだけ置く。
+    pub(super) fn first_screen(
+        &self,
+        n: &Navigation,
+        p: &Colors,
+        cx: &Context<Self>,
+    ) -> Stateful<Div> {
+        let step = |number: &'static str, body: Div| {
+            div()
+                .flex()
+                .items_start()
+                .gap_3()
+                .child(
+                    div()
+                        .size(px(26.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(theme::R_CONTROL))
+                        .bg(p.surface)
+                        .font_family("monospace")
+                        .text_size(rems(0.75))
+                        .child(number),
+                )
+                .child(body.flex().flex_col().gap_2().flex_1().min_w_0())
+        };
+        let command = |id: &'static str, prompt: &'static str, text: &'static str| {
+            div()
+                .h(px(theme::CONTROL))
+                .pl_4()
+                .pr_1()
+                .flex()
+                .items_center()
+                .gap_2()
+                .rounded(px(theme::CONTROL / 2.))
+                .bg(p.surface)
+                .font_family("monospace")
+                .text_size(rems(0.78))
+                .child(div().text_color(p.secondary).child(prompt))
+                .child(div().flex_1().min_w_0().truncate().child(text))
+                .child(
+                    p.icon_button(id, "copy", "コピー", cx)
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text.into()))
+                        }),
+                )
+        };
+        let go = |id: &'static str, label: &'static str, route: Route| {
+            let n = n.clone();
+            p.text_button(id, p.accent_ink, cx)
+                .label(label)
+                .debug_selector(move || format!("nav-{id}"))
+                .on_click(cx.listener(move |this, _, _, cx| this.navigate(&n, route.clone(), cx)))
+        };
+        let warned =
+            self.state.registration.error.is_some() || self.state.registration.save_unknown;
+        let body = div()
+            .w(px(560.))
+            .max_w_full()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .debug_selector(|| "first-screen".into())
+            .child(
+                div()
+                    .text_size(rems(1.375))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("PC の Pi とつなぐ"),
+            )
+            .child(div().text_color(p.secondary).child(
+                "Pi を動かしている PC（この PC でも別の PC でも）と、このアプリをペアリングします。",
+            ))
+            .child(step(
+                "01",
+                div()
+                    .child("別の PC とつなぐときは、両方を同じアカウントの Tailscale に入れる")
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .child(p.caption("この PC の Pi とつなぐだけなら不要です。"))
+                            .child(go("setup", "Tailscale の入れ方", Route::Tailscale)),
+                    ),
+            ))
+            .child(step(
+                "02",
+                div()
+                    .child("Pi を動かす PC のターミナルで PiMate を入れ、Pi を起動する")
+                    .child(command("install-cmd", "$", "pi install npm:@phni3j9a/pimate"))
+                    .child(command("pi-cmd", "$", "pi"))
+                    // シェルのコマンドではないので、どこに打つかを分けて示す。
+                    .child("起動した Pi の入力欄で実行する")
+                    .child(command("setup-cmd", ">", "/pimate setup")),
+            ))
+            .child(step(
+                "03",
+                div()
+                    .child("表示されたリンクをコピーして、ここに貼り付ける")
+                    .child(
+                        div().flex().child(
+                            p.primary("paste", cx)
+                                .label("リンクを貼り付ける")
+                                .disabled(self.pairing)
+                                .on_click(cx.listener(|this, _, _, cx| this.paste(cx))),
+                        ),
+                    )
+                    .child(p.caption("接続先を確認してから登録します。"))
+                    .children(self.registration_notice(p, cx)),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_1()
+                    // 読み出せないときは、上の知らせの中に同じボタンが出る。
+                    .when(!warned, |row| {
+                        row.child(self.reload_button("reload", "登録を読み直す", p, cx))
+                    })
+                    .child(go("settings", "設定", Route::Settings)),
+            );
+        div()
+            .id("first-scroll")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .items_center()
+            .px_6()
+            // 上下の余白を auto にして中央へ。低いウィンドウでは上から読める。
+            .child(div().my_auto().py_6().max_w_full().child(body))
+    }
     pub(super) fn guide(&self, n: &Navigation, p: &Colors, pc: bool, cx: &Context<Self>) -> Div {
         let root = div().flex().flex_col().gap_3().child(p.caption(if pc {
             "ペアリングの準備　2 / 3"

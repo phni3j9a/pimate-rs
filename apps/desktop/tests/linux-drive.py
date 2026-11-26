@@ -81,35 +81,60 @@ key(0xff1b)  # dismiss shell overview
 link = next(s for s in Path('demo.log').read_text().splitlines() if s.startswith('pimate://pair?'))
 subprocess.run(['wl-copy', '--type', 'text/plain;charset=utf-8'], input=link.encode(), check=True)
 image = snap('initial')
-# Find the flat sidebar instead of assuming a Mutter window placement.
+ACCENT = (27, 107, 145)
+
+
+def blob(image, color, box=(0, 0, 1280, 800)):
+    """Centre and left edge of the pixels painted in exactly this colour (a filled button)."""
+    pixels = image.load()
+    found = [(px, py) for py in range(box[1], box[3]) for px in range(box[0], box[2]) if pixels[px, py] == color]
+    assert found, f'no {color} in {box}'
+    xs, ys = [f[0] for f in found], [f[1] for f in found]
+    return (min(xs)+max(xs))//2, (min(ys)+max(ys))//2, min(xs)
+
+
+# Find the window by the title bar the app draws on GNOME, not by a Mutter window placement.
 pixels = image.load()
-coords = [(x, y) for y in range(800) for x in range(1280) if pixels[x, y] in ((241,243,244),(30,35,38))]
-x = min(x for x, y in coords) + 120
-y = min(y for x, y in coords)
+bar = [(x, y) for y in range(800) for x in range(1280) if pixels[x, y] in ((230,233,235),(41,48,53))]
+x = min(x for x, y in bar)
+y = min(y for x, y in bar) + 34  # top of the panes, below the title bar
+# First screen: the only filled button is step 03 "リンクを貼り付ける"; "登録を読み直す" sits below its right.
+paste_x, paste_y, _ = blob(image, ACCENT)
+
+
+def confirm():
+    """The dialog's filled button (the paste button behind the scrim is dimmed), Cancel on its left,
+    when it was drawn, and the name and address above them (small type: enlarge it for OCR)."""
+    image = snap('confirm')
+    drawn = time.monotonic()
+    cx, cy, left = blob(image, ACCENT)
+    image.crop((cx-290, cy-100, cx+90, cy-25)).resize((1140, 225)).save('target.png')
+    target = subprocess.check_output(['tesseract', 'target.png', 'stdout', '--psm', '6'], text=True)
+    return (cx, cy), (left-62, cy), drawn, target
+
+
 if mode == 'check':
     # Stop only the daemon started by our namespace. Paste must still redraw while reload waits.
     daemon = int(os.environ['PRIVATE_KEYRING_PID'])
     os.kill(daemon, signal.SIGSTOP)
     try:
         started = time.monotonic()
-        click(x-48, y+695)  # reload (left of the text-size control)
-        click(x, y+89)  # paste
-        snap('confirm')
-        drawn_after = time.monotonic() - started
+        click(paste_x+322, paste_y+78)  # reload
+        click(paste_x, paste_y)  # paste
+        _, cancel, drawn, target = confirm()
+        drawn_after = drawn - started
         def ocr(name):
             return subprocess.check_output(['tesseract', name+'.png', 'stdout', '--psm', '11'], text=True)
-        assert '127.0.0.1' in ocr('confirm') and drawn_after < 5, 'UI blocked on reload'
+        assert '127.0.0.1' in target and drawn_after < 5, 'UI blocked on reload'
+        click(*cancel)  # the notice appears under the paste button, behind the dialog
         time.sleep(5)
-        timeout_image = snap('storage-timeout')
-        timeout_image.crop((x-118,y+100,x+125,y+425)).resize((729,975)).save('registration.png')
-        notice = subprocess.check_output(['tesseract','registration.png','stdout','-l','jpn+eng','--psm','6'], text=True)
-        assert 'storage' in notice.lower(), 'missing timeout notice'
+        # The notice makes the centred steps taller, so look for the paste button again.
+        paste_x, paste_y, _ = blob(snap('storage-timeout'), ACCENT)
+        assert 'storage' in ocr('storage-timeout').lower(), 'missing timeout notice'
     finally:
         os.kill(daemon, signal.SIGCONT)
-else:
-    click(x, y+89)
-    snap('confirm')
-click(x, y+208)
+click(paste_x, paste_y)
+click(*confirm()[0])
 time.sleep(2)
 image = snap('list')
 # English OCR locates the demo in the (sorted, variable-length) list.
@@ -121,8 +146,8 @@ if mode == 'package':
 click(int(word['left'])+8, int(word['top'])+6)
 time.sleep(.8)
 # Select only the first characters in the heading, while 50 ms deltas are arriving.
-# The test monitor uses 16 px/rem and the heading follows the session + author labels.
-move(x+146, y+111)
+# The 752 px column is centred right of the 264 px sidebar; the heading follows the author label.
+move(x+414, y+98)
 pointer.NotifyPointerButton(272, True)
 pointer.NotifyPointerMotionRelative(56.,0.)
 time.sleep(.12)
@@ -130,10 +155,11 @@ pointer.NotifyPointerButton(272, False)
 a = snap('stream-start')
 time.sleep(2)
 b = snap('stream-later')
-assert ImageChops.difference(a,b).crop((x+160,y+60,x+760,y+490)).getbbox(), 'no visible stream update'
+assert ImageChops.difference(a,b).crop((x+400,y+55,x+1140,y+570)).getbbox(), 'no visible stream update'
 seat.NotifyKeyboardKeysym(0xffe3, True)
 key(ord('c'))
 seat.NotifyKeyboardKeysym(0xffe3, False)
+time.sleep(.3)  # let the compositor see the new selection before reading it back
 copied = subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2)
 assert copied.strip() and copied in '開発用の会話' and copied != '開発用の会話', 'partial selection or copy focus lost during streaming'
 # On the mock PC, a second RC client steers the running answer. The mock appends this
@@ -152,19 +178,19 @@ with socket.socket(socket.AF_UNIX) as peer:
 for n in range(2):
     subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','prefer-dark'],check=True)
     time.sleep(.65)
-    assert snap('dark').getpixel((x-110,y+12)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
+    assert snap('dark').getpixel((x+12,y+600)) == (30,35,38), 'desktop did not follow GNOME dark appearance'
     subprocess.run(['gsettings','set','org.gnome.desktop.interface','color-scheme','default'],check=True)
     time.sleep(.65)
-    assert snap('light').getpixel((x-110,y+12)) == (241,243,244), 'desktop did not return to light appearance'
+    assert snap('light').getpixel((x+12,y+600)) == (241,243,244), 'desktop did not return to light appearance'
 # message_end precedes the idle status. Wait for the actual rendered header
 # and answer (not mock time or a fixed delay); never scroll the selection away.
 deadline = time.monotonic() + 25
 while time.monotonic() < deadline:
     image = snap('committed-row')
-    image.crop((x+120,y,x+860,y+53)).resize((1480,106)).save('header.png')
-    status = subprocess.check_output(['tesseract','header.png','stdout','-l','jpn','--psm','6'],text=True)
+    image.crop((x+860,y+8,x+940,y+44)).resize((320,144)).save('header.png')
+    status = subprocess.check_output(['tesseract','header.png','stdout','-l','jpn','--psm','7'],text=True)
     if '待機' in ''.join(status.split()):
-        image.crop((x+125,y+55,x+840,y+500)).save('transcript.png')
+        image.crop((x+400,y+55,x+1140,y+570)).save('transcript.png')
         painted = subprocess.check_output(['tesseract','transcript.png','stdout','--psm','11'],text=True)
         if any(marker in painted for marker in ('Android', 'greet', 'shout', 'PiMate')):
             break
@@ -177,9 +203,11 @@ subprocess.run(['wl-copy', 'sentinel'],check=True)
 seat.NotifyKeyboardKeysym(0xffe3, True)
 key(ord('c'))
 seat.NotifyKeyboardKeysym(0xffe3, False)
+time.sleep(.3)
 assert subprocess.check_output(['wl-paste','--no-newline'],text=True,timeout=2) == copied, 'selection lost at interrupted message_end'
 empty_editor = snap('empty-editor')
-click(x+320, y+615)
+editor = (x+700, y+624)
+click(*editor)
 if mode == 'hotplug':
     # Really losing the keyboard must cancel the marked 'か', not carry it into the next draft.
     key(0xff26)
@@ -192,13 +220,13 @@ if mode == 'hotplug':
     time.sleep(.5)
     cleared = snap('after-keyboard-loss')
     # Compare the placeholder glyphs, excluding the caret, pointer and input border.
-    placeholder = (x+158, y+615, x+225, y+634)
+    placeholder = (x+444, y+610, x+510, y+632)
     assert ImageChops.difference(empty_editor, marked).crop(placeholder).getbbox()
     assert not ImageChops.difference(empty_editor, cleared).crop(placeholder).getbbox(), 'marked text remained after keyboard loss'
     # Without a keyboard, the vertical wheel must not be interpreted as Shift+wheel.
     pointer.NotifyPointerMotionRelative(0., -280.)
     time.sleep(.2)
-    area = (x+160, y+100, x+710, y+460)
+    area = (x+400, y+60, x+1140, y+560)
     views = [snap('wheel-start').crop(area)]
     for step in (-6, 6):
         pointer.NotifyPointerAxisDiscrete(0, step)
@@ -208,7 +236,7 @@ if mode == 'hotplug':
     seat = session()
     key(0xffe1)
     key(0xff1b)  # dismiss any candidate restored by the input method itself
-    click(x+320, y+615)
+    click(*editor)
     pointer.Stop()  # keep only the keyboard until conversion is live
     time.sleep(.5)
 else:
@@ -232,7 +260,9 @@ if mode == 'check':
     key(0xff0d)
     seat.NotifyKeyboardKeysym(0xffe3, False)
 else:
-    click(x+796,y+694)
+    # Look for the enabled (filled) send button now, not in the frame right after the commit:
+    # the button is redrawn one frame after the composition ends.
+    click(*blob(snap('before-send'), ACCENT, (x+300, y+560, 1280, 800))[:2])
 time.sleep(4)
 assert prompts() == external + [['demo', 'ニホンゴ\n']], 'explicit send did not deliver exactly one committed line'
 snap('sent')

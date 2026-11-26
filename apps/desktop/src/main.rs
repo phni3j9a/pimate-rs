@@ -15,6 +15,7 @@ use std::{
     sync::Arc,
 };
 
+const PAIRED: &str = "登録しました";
 struct Machine {
     registration: Host,
     conn: Arc<Connection>,
@@ -40,6 +41,14 @@ struct Desktop {
     epoch: u64,
     size: f32,
     scroll: ListState,
+    /// 760px 未満で重ねて出すサイドバーの開閉。
+    sidebar_open: bool,
+    /// ドラッグで変えたサイドバーの幅（px）。未設定なら既定の幅。
+    sidebar_width: Option<f32>,
+    /// 起動時に設定ファイルを読めなかった（この起動中は既定値で動く）。
+    pref_error: bool,
+    search: Option<(Entity<InputState>, Subscription)>,
+    title: String,
 }
 impl Desktop {
     fn new(core: Arc<Core>, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -67,9 +76,23 @@ impl Desktop {
             epoch: 0,
             size: 16.,
             scroll: screen::transcript(),
+            sidebar_open: false,
+            sidebar_width: None,
+            pref_error: false,
+            search: None,
+            title: String::new(),
         };
         app.reload(cx);
         app
+    }
+    /// 設定と覚えた幅を読む。起動時にだけ呼ぶ（試験は利用者のファイルを読まず、既定値で動く）。
+    fn load_saved(&mut self) {
+        let settings = state::Settings::path().and_then(|p| state::Settings::load(&p));
+        self.pref_error = settings.is_err();
+        self.state.settings = settings.unwrap_or_default();
+        self.sidebar_width = state::layout_path()
+            .ok()
+            .and_then(|p| state::load_sidebar_width(&p));
     }
     fn reload(&mut self, cx: &mut Context<Self>) {
         self.state.registration.listing_known = false;
@@ -231,7 +254,7 @@ impl Desktop {
                     .registration
                     .paired(&h.id, first && self.hosts.is_empty());
                 self.machines.remove(&h.id);
-                self.state.registration.pair_message = "登録しました".into();
+                self.state.registration.pair_message = PAIRED.into();
                 self.reload(cx)
             }
             Err(Error::OutcomeUnknown) => {
@@ -258,6 +281,11 @@ impl Desktop {
             self.scroll = screen::transcript();
             self.input = None;
             self.selected = Some((h, i));
+            self.sidebar_open = false;
+            // 「登録しました」は次の操作まで。登録できなかった理由は、会話を開いても残す。
+            if self.state.registration.pair_message == PAIRED {
+                self.state.registration.pair_message.clear();
+            }
             self.notice.clear();
             cx.notify()
         }
@@ -369,12 +397,21 @@ fn committed_input_matches(
         s.marked_text_range(w, cx).is_none() && s.value().as_str() == expected
     })
 }
+/// Linux のタイトルバーは OS のものを使う。GNOME（Wayland の Mutter）だけは OS が描かず、
+/// gpui からも見分けられないので、デスクトップ名で決めてアプリが描く（screen.rs）。
+fn draws_own_titlebar(desktop: &str, wayland: bool) -> bool {
+    cfg!(target_os = "linux")
+        && wayland
+        && desktop
+            .split(':')
+            .any(|name| name.eq_ignore_ascii_case("gnome"))
+}
 fn main() {
     if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--version")) {
         println!("pimate-desktop {}", env!("CARGO_PKG_VERSION"));
         return;
     }
-    Application::new().run(|cx| {
+    Application::new().with_assets(screen::Assets).run(|cx| {
         gpui_component::init(cx);
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
@@ -386,15 +423,28 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(980.), px(720.)),
+                    size(px(1280.), px(800.)),
                     cx,
                 ))),
+                window_min_size: Some(size(px(480.), px(480.))),
+                window_decorations: Some(
+                    if draws_own_titlebar(
+                        &std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+                        std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty()),
+                    ) {
+                        WindowDecorations::Client
+                    } else {
+                        WindowDecorations::Server
+                    },
+                ),
                 ..Default::default()
             },
             |w, cx| {
-                w.set_window_title("PiMate RS");
                 let view = cx.new(|cx| {
-                    Desktop::new(Arc::new(Core::new(Arc::new(store::Store::open()))), w, cx)
+                    let mut app =
+                        Desktop::new(Arc::new(Core::new(Arc::new(store::Store::open()))), w, cx);
+                    app.load_saved();
+                    app
                 });
                 cx.new(|cx| Root::new(view, w, cx))
             },
@@ -407,6 +457,23 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{committed_input_matches, sync_composition};
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_gnome_on_wayland_draws_its_own_titlebar() {
+        for (desktop, wayland, own) in [
+            ("GNOME", true, true),
+            ("ubuntu:GNOME", true, true),
+            ("ubuntu:GNOME", false, false),
+            ("KDE", true, false),
+            ("", true, false),
+        ] {
+            assert_eq!(
+                super::draws_own_titlebar(desktop, wayland),
+                own,
+                "{desktop}"
+            );
+        }
+    }
     use gpui::{AppContext, EntityInputHandler};
     use gpui_component::input::InputState;
     #[gpui::test]

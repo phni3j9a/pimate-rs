@@ -529,7 +529,7 @@ fn registration_and_chat_notices_stay_visible_in_both_completion_orders(
         });
         let registration = w.debug_bounds("registration-notice").unwrap();
         let chat = w.debug_bounds("chat-notice").unwrap();
-        assert!(registration.right() <= chat.left());
+        assert!(registration.bottom() <= chat.top());
     }
 }
 
