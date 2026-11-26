@@ -144,7 +144,7 @@ struct MarkdownTable: View {
                             Button(action: showTable) {
                                 Selectable(spans: rows[i][j], heading: i == 0).allowsHitTesting(false)
                                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
-                            }.buttonStyle(.plain).accessibilityHint("表を開く").accessibilityIdentifier("table-cell")
+                            }.buttonStyle(.plain).accessibilityLabel("表を開く: " + rows[i][j].compactMap { if case .text(let value, _) = $0 { value } else { nil } }.joined()).accessibilityIdentifier("table-cell")
                         }
                     }.padding(8).frame(width: widths[j], alignment: .leading)
                 } }.background(i == 0 ? PiTheme.surface : PiTheme.background); Divider()
@@ -152,7 +152,8 @@ struct MarkdownTable: View {
         }.background(GeometryReader { g in Color.clear.onAppear { width = g.size.width }.onChange(of: g.size.width) { _, w in width = w } })
     }
     var body: some View {
-        grid(full: full).keepsHorizontalDrag().accessibilityAction(named: "表を開く") { if !full { showTable() } }
+        if full { grid(full: true) }
+        else { grid(full: false).keepsHorizontalDrag().accessibilityAction(named: "表を開く", showTable) }
     }
 }
 
