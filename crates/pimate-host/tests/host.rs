@@ -1678,8 +1678,13 @@ async fn agent_cli_contract() -> Result<()> {
             cases.extend([
             (vec!["ui", "i", "R", "--label", "~/one"], json!({})),
             (vec!["ui", "i", "R", "~/one"], json!({})),
+            (vec!["ui", "i", "R", "--label"], json!({})),
+            (vec!["ui", "i", "R", "--answer-labels"], json!({})),
             (vec!["ui", "i", "R", "--answer-labels", r#"[{"selected":["~/one"]}]"#], json!({})),
-            (vec!["wait", "i", "--timeout", "3"], json!({"outcome":"waiting_input","pending":[{"kind":"editor","requestId":"R","title":"[redacted]"}]})),
+            (vec!["wait", "i", "--timeout", "3"], json!({"outcome":"waiting_input","pending":[{"kind":"editor","requestId":"R","title":"token=supersecret"}]})),
+            (vec!["wait", "i", "--redact", "--timeout", "3"], json!({"outcome":"waiting_input","pending":[{"kind":"editor","requestId":"R","title":"[redacted]"}]})),
+            (vec!["prompt", "i", "secret", "--wait"], json!({"deliveredAs":"prompt","outcome":"done","reply":"token=supersecret"})),
+            (vec!["prompt", "i", "secret", "--wait", "--redact"], json!({"deliveredAs":"prompt","outcome":"done","reply":"[redacted]"})),
             (vec!["history", "i", "--last", "1"], json!([{"kind":"assistant","text":"OK","entryId":"a1"}])),
         ]);
         }
@@ -1690,7 +1695,7 @@ async fn agent_cli_contract() -> Result<()> {
             let mut dialogs = json!([]);
             let mut ui_params = Value::Null;
             if args[0] == "ui" {
-                if matches!(args[3], "--answers" | "--answer-labels") {
+                if args.len() > 4 && matches!(args[3], "--answers" | "--answer-labels") {
                     let label = if args[3] == "--answers" {
                         "x"
                     } else {
@@ -1699,15 +1704,15 @@ async fn agent_cli_contract() -> Result<()> {
                     dialogs = json!([{"kind":"questionnaire","requestId":"R","questions":[{"options":[{"label":label}]}]}]);
                     ui_params = json!({"requestId":"R","answers":[{"selected":[label]}]});
                 } else {
-                    let label = if args[3] == "--label" {
+                    let label = if args.len() > 4 && args[3] == "--label" {
                         &original
                     } else {
-                        "~/one"
+                        args[3]
                     };
                     dialogs = json!([{"kind":"select","requestId":"R","options":[label]}]);
                     ui_params = json!({"requestId":"R","value":label});
                 }
-            } else if args == ["wait", "i", "--timeout", "3"] {
+            } else if args[0] == "wait" && args.last() == Some(&"3") {
                 dialogs = json!([{"kind":"editor","requestId":"R","title":"token=supersecret"}]);
             }
             let entry_ids = args == ["history", "i", "--last", "1"];
@@ -1735,9 +1740,14 @@ async fn agent_cli_contract() -> Result<()> {
                         }
                         Some("prompt") => {
                             let mode = r["params"]["deliverAs"].as_str().unwrap_or("prompt");
+                            let text = if r["params"]["text"] == "secret" {
+                                "token=supersecret"
+                            } else {
+                                "OK"
+                            };
                             close = r["params"]["text"] == "bye";
                             if !close {
-                                for(seq,e)in [json!({"type":"agent_start"}),json!({"type":"message_end","item":match mode{"prompt"=>json!({"kind":"assistant","text":"OK"}),"steer"=>json!({"kind":"assistant","stopReason":"error","errorMessage":"bad"}),_=>json!({"kind":"user"})}}),json!({"type":"agent_settled","aborted":mode=="followUp"})].into_iter().enumerate(){io.send(json!({"type":"event","seq":seq+1,"instanceId":"i","event":e}).to_string()).await?}
+                                for(seq,e)in [json!({"type":"agent_start"}),json!({"type":"message_end","item":match mode{"prompt"=>json!({"kind":"assistant","text":text}),"steer"=>json!({"kind":"assistant","stopReason":"error","errorMessage":"bad"}),_=>json!({"kind":"user"})}}),json!({"type":"agent_settled","aborted":mode=="followUp"})].into_iter().enumerate(){io.send(json!({"type":"event","seq":seq+1,"instanceId":"i","event":e}).to_string()).await?}
                             }
                             json!({"deliveredAs":mode})
                         }

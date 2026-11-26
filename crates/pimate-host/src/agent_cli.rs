@@ -203,6 +203,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
     ensure!(!args.is_empty(), "missing instanceId");
     let id = args.remove(0);
     let mut wait = cmd == "wait";
+    let mut redact = false;
     let mut secs = 300;
     let mut last = None;
     let mut method = cmd;
@@ -216,6 +217,8 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
                 let steer = flag(&mut args, "--steer");
                 let follow = flag(&mut args, "--follow-up");
                 ensure!(!(steer && follow));
+                // A lone "--redact" is the prompt text, not an option.
+                redact = wait && args.len() > 1 && flag(&mut args, "--redact");
                 let mut text = args.join(" ");
                 if text == "-" {
                     text.clear();
@@ -228,6 +231,7 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
                     params["deliverAs"] = if steer { "steer" } else { "followUp" }.into()
                 }
             } else {
+                redact = flag(&mut args, "--redact");
                 ensure!(args.is_empty())
             }
         }
@@ -242,6 +246,9 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
             match args[1].as_str() {
                 "--confirm" => params["confirmed"] = true.into(),
                 "--cancel" => params["cancelled"] = true.into(),
+                "--label" | "--answer-labels" if args.len() == 2 => {
+                    params["value"] = args[1].clone().into()
+                }
                 "--label" => {
                     ensure!(args.len() == 3, "--label requires one label");
                     card_labels = true;
@@ -391,7 +398,9 @@ pub async fn run(cmd: &str, mut args: Vec<String>) -> Result<()> {
             "done"
         })
     }
-    crate::webhook::redact(&mut result);
+    if redact {
+        crate::webhook::redact(&mut result);
+    }
     reply
         .as_object_mut()
         .context("invalid RC result")?

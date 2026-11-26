@@ -105,7 +105,7 @@ fn main() -> std::process::ExitCode {
 async fn run() -> Result<()> {
     let mut args = env::args().skip(1);
     let cmd = args.next().unwrap_or_default();
-    const USAGE: &str = "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] [--json] | devices | revoke ID | list | attach [session] | spawn --cwd DIR [-- pi args] | prompt ID TEXT [--steer|--follow-up] [--wait] [--timeout S] | wait ID [--timeout S] | history ID [--last N] | abort ID | shutdown ID | ui ID REQUEST <value|--confirm|--cancel|--answers JSON|--label LABEL|--answer-labels JSON> | watch ID | webhook <setup|test|status|off|watch|unwatch> | service ACTION | setup-info | pair-pending (code on stdin)";
+    const USAGE: &str = "Usage: pimate serve [--port N] [--listen IP] | pair [--address host:port] [--json] | devices | revoke ID | list | attach [session] | spawn --cwd DIR [-- pi args] | prompt ID TEXT [--steer|--follow-up] [--wait [--redact]] [--timeout S] | wait ID [--redact] [--timeout S] | history ID [--last N] | abort ID | shutdown ID | ui ID REQUEST <value|--confirm|--cancel|--answers JSON|--label LABEL|--answer-labels JSON> | watch ID | webhook <setup|test|status|off|watch|unwatch> | service ACTION | setup-info | pair-pending (code on stdin)";
     if cmd == "--version" {
         ensure!(args.next().is_none());
         println!("{}", env!("CARGO_PKG_VERSION"));

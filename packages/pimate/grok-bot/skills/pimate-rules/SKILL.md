@@ -22,7 +22,7 @@ Delegated mode starts only when the user explicitly hands over control (e.g. "I'
 
 ## Sending and finding
 Before a follow-up read `pimate history <id> --last 6`. Send short concrete messages with the user's context, not your own design choices. For multi-line text, prefer writing the exact bytes with a file tool to a fresh private temporary file (not by constructing a shell command). Send `pimate prompt "$id" - < "$file"` and remove the file afterwards. If only a shell is available, generate a fresh delimiter such as `PIMATE_` followed by 16 random hex digits for every send. Before constructing the command, check that no complete line of the body equals that delimiter; regenerate on collision. Single-quote the literal delimiter after `<<`, use that same literal alone on the closing line, and do not indent or expand the body. If you cannot verify the delimiter, do not send.
-For watched instances, never use a waiting prompt or poll for results; rely on webhook events. Only for an unwatched instance, after `timeout` use `pimate wait <id>` again; never resend.
+For watched instances, never use a waiting prompt or poll for results; rely on webhook events. Always request redacted output when waiting on an unwatched instance. For example, after `timeout` use `pimate wait <id> --redact` again; never resend.
 
 Use `pimate list` to find a session by name, cwd or id prefix; compare locally, ask if ambiguous, and pass the full instanceId to the CLI. Act only on `reachable: true`. For Grok Bot use ListMachines to choose the owner computer; ask if unclear.
 
@@ -33,8 +33,8 @@ Use `pimate` on PATH, else `~/.pi/agent/npm/node_modules/.bin/pimate`; save the 
 |---|---|
 | Find | `pimate list` |
 | Start | `pimate spawn --cwd <dir> -- --tools +pimate_ask` |
-| Send | `pimate prompt <id> <text|-> [--steer|--follow-up] [--wait [--timeout S]]` |
-| Wait (unwatched only) | `pimate wait <id> [--timeout S]` |
+| Send | `pimate prompt <id> <text|-> [--steer|--follow-up] [--wait --redact [--timeout S]]` |
+| Wait (unwatched only) | `pimate wait <id> --redact [--timeout S]` |
 | Read | `pimate history <id> [--last N]` |
 | Answer | `pimate ui <id> <requestId> <value|--confirm|--cancel|--answers JSON|--label LABEL|--answer-labels JSON>` |
 | Stop | `pimate abort <id>` stops the current run; `pimate shutdown <id>` exits Pi |

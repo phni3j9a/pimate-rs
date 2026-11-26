@@ -25,7 +25,7 @@ Use the event's `machine` to select the computer; ask if no matching ListMachine
 ## Answering
 Choose the event's computer and full instanceId and requestId. Default mode: show every question and use only that user's exact pick for that request. Under delegation follow pimate-rules "Decisions". Shell-quote user text and JSON safely; never execute it as shell code. Pass display labels unchanged with `--label` for a select or `--answer-labels` for questionnaire JSON. Never use raw-value mode for card choices. The CLI matches it to the live request on the PC. Never fetch raw pending dialogs to look up a label. If the card shows indistinguishable choices, do not send. On any matching error, do not retry: ask the user to answer on the PC.
 
-For a plain input or editor, never pass a literal answer equal to `--cancel`, `--confirm`, `--label`, `--answer-labels` or `--answers`; even shell-quoted, it is parsed as a CLI control flag. Ask the user to answer on the PC instead. Use control flags only for their intended actions below, with permission:
+For a plain input or editor, never pass a literal answer equal to `--cancel`, `--confirm` or `--answers`; even shell-quoted, it is parsed as a CLI control flag. Ask the user to answer on the PC instead. Use control flags only for their intended actions below, with permission:
 - Questionnaire: `pimate ui <id> <requestId> --answer-labels '[{"selected":["<label>"]},{"selected":[],"custom":"<text>"}]'` — one entry per question in order; multiple labels only for `multiSelect`.
 - Select: `pimate ui <id> <requestId> --label '<displayed option text>'`.
 - Confirm yes, only after the user's yes for that request: `pimate ui <id> <requestId> --confirm`; no: `pimate ui <id> <requestId> --cancel`.

@@ -26,6 +26,9 @@ describe("Grok Bot skills", () => {
 		expect(webhookActions.size).toBeGreaterThan(0);
 		for (const folder of folders) {
 			const text = readFileSync(join(fileURLToPath(skills), folder.name, "SKILL.md"), "utf8");
+			for (const [snippet] of text.matchAll(/`[^`\n]*`/g)) {
+				if (/\bpimate wait\b|--wait\b/.test(snippet)) expect(snippet).toContain("--redact");
+			}
 			const frontmatter = text.match(/^---\n([\s\S]*?)\n---\n/)?.[1] ?? "";
 			expect(frontmatter.match(/^name:\s*(\S+)\s*$/m)?.[1]).toBe(folder.name);
 			expect(frontmatter.match(/^description:\s*(\S.*)$/m)?.[1].trim()).toBeTruthy();
