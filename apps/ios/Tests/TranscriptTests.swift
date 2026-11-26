@@ -5,6 +5,22 @@ final class TranscriptTests: XCTestCase {
     private func item(_ id: String, _ o: Object) throws -> Item {
             Item(collection: "entry", id: id, position: 0, json: String(decoding: try JSONSerialization.data(withJSONObject: o), as: UTF8.self))
         }
+    func testFirstAnswerDeltaClosesStreamingThoughtWithoutWaitingForMessageEnd() {
+        let since = Item(collection: "stream", id: "thinkingSince", position: 0, json: "1000")
+        let until = Item(collection: "stream", id: "thinkingUntil", position: 1, json: "13000")
+        let live = WorkLine.streamThought([since], hasAnswer: false)
+        XCTAssertTrue(live.automatic); XCTAssertEqual(live.title, "Thinking…")
+        for hasAnswer in [true, false] { // An empty first delta also stops the core clock.
+            let stopped = WorkLine.streamThought([since, until], hasAnswer: hasAnswer)
+            XCTAssertFalse(stopped.automatic); XCTAssertEqual(stopped.title, "Thought for 12s")
+        }
+        let snapshot = WorkLine.streamThought([], hasAnswer: true)
+        XCTAssertFalse(snapshot.automatic); XCTAssertEqual(snapshot.title, "Thought")
+    }
+    func testMeasuredThinkingLabels() {
+        XCTAssertEqual(WorkLine.thoughtTitle(nil), "Thought"); XCTAssertEqual(WorkLine.thoughtTitle(999), "Thought")
+        XCTAssertEqual(WorkLine.thoughtTitle(11900), "Thought for 12s"); XCTAssertEqual(WorkLine.thoughtTitle(61500), "Thought for 1m 2s")
+    }
     func testImageOnlyTurnSurvivesBeforeReply() throws {
         for (o, count): (Object, Int) in [(["imageCount": 4], 4), (["images": [["mimeType": "image/png"]]], 1)] {
             let result = try ChatTurn.read([item("user", o.merging(["kind": "user", "text": ""]) { a, _ in a })], live: [])

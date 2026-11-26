@@ -72,7 +72,7 @@ enum ChatImageSource {
 }
 
 // Keep only supplied previews; imageCount can be much larger than the history page.
-struct HistoryImages {
+struct HistoryImages: Equatable {
     let entry: String, count: Int
     private let previews: [Int: String]
     init(_ row: Item) {

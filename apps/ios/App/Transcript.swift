@@ -1,18 +1,32 @@
 import Foundation
 
-struct WorkLine: Identifiable {
+struct WorkLine: Identifiable, Equatable {
     let id: String, name: String, subject: String
     var output: String, state: String
     var images: HistoryImages?
     var callID: String?
+    var isThought: Bool { state.isEmpty }
+    static func streamThought(_ stream: [Item], hasAnswer: Bool) -> (automatic: Bool, title: String) {
+        func timestamp(_ id: String) -> UInt64? { stream.first { $0.id == id }.flatMap { UInt64($0.json) } }
+        let end = timestamp("thinkingUntil")
+        guard end != nil || hasAnswer else { return (true, "Thinking…") }
+        // A snapshot can contain both thinking and answer text without a measured interval.
+        let ms = end.flatMap { stop in timestamp("thinkingSince").map { start in Int(clamping: stop - min(start, stop)) } }
+        return (false, thoughtTitle(ms))
+    }
+    static func thoughtTitle(_ ms: Int?) -> String {
+        guard let ms, ms >= 1000 else { return "Thought" }
+        let sec = ms / 1000 + (ms % 1000 >= 500 ? 1 : 0)
+        return sec < 60 ? "Thought for \(sec)s" : "Thought for \(sec / 60)m \(sec % 60)s"
+    }
 }
-struct ChatTurn: Identifiable {
+struct ChatTurn: Identifiable, Equatable {
     let id: String
     var prompt = ""
     var images: HistoryImages?
     var imageCount: Int { images?.count ?? 0 }
     var lines: [Line] = []
-    enum Line: Identifiable {
+    enum Line: Identifiable, Equatable {
         case reply(Reply), work(WorkLine)
         var id: String {
             switch self { case .reply(let r): "reply:" + r.id; case .work(let w): "work:" + w.id }
@@ -23,13 +37,14 @@ struct ChatTurn: Identifiable {
         guard case .work(var w) = lines[index] else { return }; w.output = output; w.state = state; w.images = images; lines[index] = .work(w)
     }
     var start: Int?, end: Int?
-    struct Reply: Identifiable { let id: String, text: String, meta: String }
+    struct Reply: Identifiable, Equatable { let id: String, text: String }
     var summary: String {
-        let calls = work.filter { $0.name != "考えた内容" }.count
+        let calls = work.filter { !$0.isThought }.count
         let elapsed = start.flatMap { a in end.map { max(0, ($0 - a) / 1000) } } ?? 0
         return [elapsed > 0 ? "\(elapsed)秒 作業" : "作業", calls > 0 ? "ツール \(calls) 回" : nil].compactMap { $0 }.joined(separator: " · ")
     }
-    static func read(_ entries: [Item], live: [Item]) -> [Self] {
+    static func read(_ entries: [Item], live: [Item], timing: [Item] = []) -> [Self] {
+        let thinkingMs = Dictionary(uniqueKeysWithValues: timing.map { ($0.id, Int($0.json)) })
         var turns = [Self(id: "begin")], pending: [String: (Int, Int)] = [:]
         func line(_ id: String, _ o: Object, _ name: String, callID: String) -> WorkLine {
             let args = o.obj("args"); return WorkLine(id: id, name: name, subject: args.str("path").isEmpty ? args.str("command") : args.str("path"), output: "", state: "未完了", callID: callID)
@@ -48,10 +63,9 @@ struct ChatTurn: Identifiable {
                 let (t, w) = pos ?? (i, turns[i].lines.count - 1)
                 turns[t].updateWork(w, output: text, state: o["isError"] as? Bool == true ? "失敗" : "完了", images: HistoryImages(item))
             } else {
-                if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: "考えた内容", subject: "", output: o.str("thinking"), state: ""))) }
-                let error = o.str("errorMessage"), usage = o.obj("usage")
-                let meta = [o.obj("model").str("id"), (usage["input"] as? Int).map { "\($0.formatted()) in" } ?? "", (usage["output"] as? Int).map { "\($0.formatted()) out" } ?? "", (usage["cost"] as? Double).map { String(format: "$%.2f", $0) } ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
-                if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n"), meta: meta))) }
+                if !o.str("thinking").isEmpty { turns[i].lines.append(.work(WorkLine(id: item.id + ":thinking", name: WorkLine.thoughtTitle(thinkingMs[item.id] ?? nil), subject: "", output: o.str("thinking"), state: ""))) }
+                let error = o.str("errorMessage")
+                if !text.isEmpty || !error.isEmpty { turns[i].lines.append(.reply(.init(id: item.id, text: [text, error].filter { !$0.isEmpty }.joined(separator: "\n")))) }
                 for (n, c) in o.list("toolCalls").enumerated() {
                     pending[c.str("id")] = (i, turns[i].lines.count)
                     turns[i].lines.append(.work(line("\(item.id):\(n)", c, c.str("name"), callID: c.str("id"))))

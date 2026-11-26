@@ -86,13 +86,10 @@ struct PhotoViewer: View {
     }
     var body: some View {
         NavigationStack {
-            LoadedPhoto(context: context, label: gallery.label(index), thumbnail: false, source: { gallery.source(index, false) })
-                .id(index).frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 50).onEnded { value in
-                    let dx = value.translation.width
-                    guard abs(dx) > abs(value.translation.height) else { return }
-                    index = min(gallery.count - 1, max(0, index + (dx < 0 ? 1 : -1)))
-                }).navigationTitle(gallery.label(index)).navigationBarTitleDisplayMode(.inline)
+            LoadedPhoto(context: context, label: gallery.label(index), thumbnail: false, source: { gallery.source(index, false) }, swipe: { direction in
+                if direction == .down { dismiss() }
+                else { index = min(gallery.count - 1, max(0, index + (direction == .left ? 1 : -1))) }
+            }).id(index).frame(maxWidth: .infinity, maxHeight: .infinity).navigationTitle(gallery.label(index)).navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) { Button("閉じる") { dismiss() }.accessibilityLabel("画像を閉じる") }
                     if gallery.count > 1 {
@@ -108,13 +105,18 @@ struct PhotoViewer: View {
 }
 struct LoadedPhoto: View {
     let context: PhotoContext, label: String, thumbnail: Bool, source: () -> ChatImageSource?
+    var swipe: ((UISwipeGestureRecognizer.Direction) -> Void)? = nil
     @State private var image: UIImage?
     @State private var failed = false
     var body: some View {
         Group {
-            if let image { SwiftUI.Image(uiImage: image).resizable().scaledToFit().accessibilityLabel(label) }
-            else if failed { Label("画像を表示できません", systemImage: "photo.badge.exclamationmark").font(.caption).foregroundStyle(PiTheme.secondary) }
-            else { ProgressView().accessibilityLabel("画像を読み込み中") }
+            if let swipe {
+                ZoomPhoto(image: image, label: label, swipe: swipe).overlay {
+                    if image == nil { placeholder.allowsHitTesting(false) }
+                }
+            }
+            else if let image { SwiftUI.Image(uiImage: image).resizable().scaledToFit().accessibilityLabel(label) }
+            else { placeholder }
         }.task {
             do {
                 guard let source = source() else { throw CoreError.Unsupported }
@@ -125,6 +127,60 @@ struct LoadedPhoto: View {
                 let result = await withTaskCancellationHandler { await decode.value } onCancel: { decode.cancel() }
                 try Task.checkCancellation(); guard let result else { throw CoreError.BadRequest }; image = result
             } catch { if !Task.isCancelled { failed = true } }
+        }
+    }
+    @ViewBuilder private var placeholder: some View {
+        if failed { Label("画像を表示できません", systemImage: "photo.badge.exclamationmark").font(.caption).foregroundStyle(PiTheme.secondary) }
+        else { ProgressView().accessibilityLabel("画像を読み込み中") }
+    }
+}
+
+private struct ZoomPhoto: UIViewRepresentable {
+    let image: UIImage?, label: String, swipe: (UISwipeGestureRecognizer.Direction) -> Void
+    func makeUIView(context: Context) -> Canvas { Canvas() }
+    func updateUIView(_ view: Canvas, context: Context) {
+        if view.picture.image !== image { view.picture.image = image; view.setNeedsLayout() }
+        view.picture.isAccessibilityElement = image != nil; view.picture.accessibilityLabel = label; view.swipe = swipe
+    }
+    final class Canvas: UIScrollView, UIScrollViewDelegate {
+        let picture = UIImageView()
+        var swipe: ((UISwipeGestureRecognizer.Direction) -> Void)?
+        private var pageSwipes: [UISwipeGestureRecognizer] = []
+        private var viewport = CGSize.zero
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            delegate = self; maximumZoomScale = 4; bouncesZoom = false; contentInsetAdjustmentBehavior = .never
+            showsHorizontalScrollIndicator = false; showsVerticalScrollIndicator = false
+            addSubview(picture); picture.accessibilityTraits = .image
+            let tap = UITapGestureRecognizer(target: self, action: #selector(toggleZoom(_:)))
+            tap.numberOfTapsRequired = 2; addGestureRecognizer(tap)
+            for direction: UISwipeGestureRecognizer.Direction in [.left, .right, .down] {
+                let gesture = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
+                gesture.direction = direction; addGestureRecognizer(gesture); pageSwipes.append(gesture)
+                panGestureRecognizer.require(toFail: gesture)
+            }
+        }
+        required init?(coder: NSCoder) { fatalError() }
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let size = picture.image?.size, bounds.width > 0, bounds.height > 0 else { return }
+            if viewport != bounds.size {
+                viewport = bounds.size; setZoomScale(1, animated: false)
+                let fit = min(bounds.width / size.width, bounds.height / size.height)
+                picture.frame = CGRect(origin: .zero, size: CGSize(width: size.width * fit, height: size.height * fit)); contentSize = picture.frame.size
+            }
+            picture.center = CGPoint(x: max(bounds.width, contentSize.width) / 2, y: max(bounds.height, contentSize.height) / 2)
+        }
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? { picture }
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            for swipe in pageSwipes { swipe.isEnabled = zoomScale == minimumZoomScale }
+        }
+        @objc private func swiped(_ gesture: UISwipeGestureRecognizer) { swipe?(gesture.direction) }
+        @objc private func toggleZoom(_ tap: UITapGestureRecognizer) {
+            guard picture.image != nil else { return }
+            if zoomScale > minimumZoomScale { setZoomScale(1, animated: true); return }
+            let p = tap.location(in: picture), w = bounds.width / 2.5, h = bounds.height / 2.5
+            zoom(to: CGRect(x: p.x - w / 2, y: p.y - h / 2, width: w, height: h), animated: true)
         }
     }
 }

@@ -24,17 +24,22 @@ func scaledPhoto(_ data: Data, pixels: Int) -> UIImage? {
 }
 
 struct DraftPhotos: View {
+    @Environment(\.photoContext) private var context
     let images: [Image], remove: (Int) -> Void
     var body: some View {
         ScrollView(.horizontal) {
             HStack(spacing: 8) {
                 ForEach(images.indices, id: \.self) { i in
-                    Button { remove(i) } label: {
-                        ZStack(alignment: .topTrailing) {
+                    VStack(spacing: 0) {
+                        Button {
+                            context?.open(OpenPhoto(start: i, count: images.count, label: { "添付画像 \($0 + 1) / \(images.count)" }, source: { index, _ in .inline(images[index].data) }))
+                        } label: {
                             DraftThumbnail(image: images[i]).frame(width: 58, height: 58).clipped().clipShape(RoundedRectangle(cornerRadius: 8))
-                            SwiftUI.Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette).foregroundStyle(.white, .black)
-                        }
-                    }.accessibilityLabel("画像 \(i + 1) を取り消す")
+                        }.accessibilityLabel("添付画像 \(i + 1) を開く")
+                        Button { remove(i) } label: {
+                            SwiftUI.Image(systemName: "xmark.circle").frame(width: 58, height: 44)
+                        }.accessibilityLabel("画像 \(i + 1) を取り消す")
+                    }
                 }
             }
         }
