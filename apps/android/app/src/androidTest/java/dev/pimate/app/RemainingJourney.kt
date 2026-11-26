@@ -236,7 +236,9 @@ class RemainingJourney {
             tap("キャンセル")
             tap("ログアウト")
             tap("ログアウト")
+            find(hasText("保存した認証情報を削除しました", substring = true))
             find(hasText("未設定"))
+            ui.onNodeWithText("ログインしました", substring = true).assertDoesNotExist()
             icon("戻る")
         }
         tap("このマシンを削除")

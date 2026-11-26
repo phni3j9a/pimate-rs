@@ -1032,7 +1032,6 @@ private fun OnlineProviderPage(m: SessionModel, id: String, close: () -> Unit, r
     }
     Page("プロバイダーのログイン", close) {
         SheetError(error)
-        if (message.isNotEmpty()) Hint(message)
         if (
             error.isNotEmpty() ||
                 login != null && (providers.isEmpty() || flow?.str("error") == "storage_failed")
@@ -1084,7 +1083,7 @@ private fun OnlineProviderPage(m: SessionModel, id: String, close: () -> Unit, r
             )
         } else {
             Hint("認証情報は PC のログイン専用の Pi で保存します。作業中の Pi に反映するには /reload または再起動が必要です。")
-            if (flow != null) Hint(authResultText(flow))
+            if (message.isNotEmpty()) Hint(message) else if (flow != null) Hint(authResultText(flow))
             if (login != null && providers.isEmpty()) Hint("プロバイダーの一覧がありません。")
             providers
                 .groupBy { it.str("vendor") }
