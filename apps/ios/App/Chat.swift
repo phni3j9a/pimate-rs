@@ -128,6 +128,7 @@ private struct Conversation: View {
                     Composer(model: model, key: key, rows: rows, running: running, blocked: !questions.isEmpty || pc)
                 }.background(PiTheme.background)
             }
+            .accessibilityHidden(table != nil || photo != nil)
             .sheet(item: $agents) { AgentsView(model: model, key: key, sheet: $0) }
             // A streaming block can disappear at message_end; the presented table must outlive it.
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("変更をレビュー", systemImage: "doc.text.magnifyingglass") { review = ReviewRoute() } } }
