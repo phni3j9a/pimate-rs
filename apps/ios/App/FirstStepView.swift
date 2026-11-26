@@ -14,7 +14,7 @@ struct FirstStepView: View {
                     Label("\(host.name) とつながりました", systemImage: "checkmark.circle").modifier(PiFont(.title)).bold().accessibilityAddTraits(.isHeader)
                     if phase == .empty {
                         DeviceBridge(); Text("まだ起動中の Pi はありません。このスマホから PC のフォルダを選んで、新しい Pi を起動できます。")
-                        Text("$ pi").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled)
+                        Text("$ pi").modifier(PiFont(.lead)).fontDesign(.monospaced).textSelection(.enabled).padding(.horizontal, 16).padding(.vertical, 8).background(PiTheme.surface, in: Capsule())
                         Text("PC のターミナルで起動した Pi も、ここに表示されます。").foregroundStyle(.secondary)
                     } else { Text("選ぶとチャットを開きます。").foregroundStyle(.secondary) }
                 }.listRowSeparator(.hidden)
