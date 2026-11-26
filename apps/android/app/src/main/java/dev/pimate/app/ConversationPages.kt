@@ -11,6 +11,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.*
 import org.json.*
+import uniffi.pimate_ffi.CoreException
+import uniffi.pimate_ffi.Operation
 
 @Composable
 internal fun ReviewPage(
@@ -189,6 +191,46 @@ internal fun ChatEdits.insertGithub(
     return true
 }
 
+internal fun githubMetadata(item: JSONObject, pr: Boolean): String =
+    buildList {
+            add(item.str("state"))
+            if (pr) {
+                when {
+                    item.optBoolean("isDraft") -> add("ドラフト")
+                    else ->
+                        when (val decision = item.str("reviewDecision")) {
+                            "APPROVED" -> add("承認済み")
+                            "CHANGES_REQUESTED" -> add("変更の依頼あり")
+                            "REVIEW_REQUIRED" -> add("レビュー待ち")
+                            "" -> Unit
+                            else -> add(decision)
+                        }
+                }
+                item
+                    .optJSONObject("ci")
+                    ?.takeIf { ci ->
+                        listOf("passed", "failed", "pending").all { ci.opt(it) is Number }
+                    }
+                    ?.let {
+                        add(
+                            "CI 成功 ${it.getInt("passed")}・失敗 ${it.getInt("failed")}・待機 ${it.getInt("pending")}"
+                        )
+                    }
+            }
+            addAll(item.optJSONArray("labels").strings())
+        }
+        .filter { it.isNotEmpty() }
+        .joinToString(" · ")
+
+internal fun githubRejected(status: JSONObject?) =
+    when {
+        status?.opt("installed") == false -> "PC に GitHub CLI（gh）をインストールし、gh auth login を実行してください。"
+        status?.opt("loggedIn") == false -> "PC で gh auth login を実行してください。"
+        status?.opt("loggedIn") == true ->
+            "作業中の Pi が GitHub のリポジトリで動いているか、対象の Issue / PR と閲覧権限を確認してください。"
+        else -> "取得できませんでした。PC の gh の状態を確認してください。"
+    }
+
 @Composable
 internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
     var tab by rememberSaveable { mutableStateOf("issue") }
@@ -200,7 +242,18 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
         checked({ error = it }) {
             val q = JSONObject().put("kind", if (number == 0) "list" else tab)
             if (number != 0) q.put("number", number)
-            data = m.github(at, q).getJSONObject("data")
+            try {
+                data = m.github(at, q).getJSONObject("data")
+            } catch (_: CoreException.Rejected) {
+                var status: JSONObject? = null
+                if (m.rowsFor(at.host).info().optBoolean("githubStatus"))
+                    checked({}) {
+                        status =
+                            JSONObject(m.machineRequest(at.host, Operation.GithubStatus))
+                                .optJSONObject("status")
+                    }
+                error = githubRejected(status)
+            }
         }
     }
     Page(
@@ -218,11 +271,10 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                 val list = r.optJSONArray(if (tab == "issue") "issues" else "prs").objects()
                 if (list.isEmpty()) Hint("該当する項目はありません")
                 list.forEach { v ->
-                    MenuRow(
+                    ListRow(
                         "#${v.optInt("number")}　${v.str("title")}",
-                        v.str("state"),
+                        githubMetadata(v, tab == "pr"),
                         true,
-                        next = true,
                     ) {
                         number = v.getInt("number")
                     }
@@ -231,7 +283,28 @@ internal fun GithubPage(m: SessionModel, at: EditorKey, close: () -> Unit) {
                 r.optJSONObject("item")?.let { v ->
                     CompositionLocalProvider(LocalPics provides Pics.Local) {
                         Text(v.str("title"), style = Type.title)
-                        Hint("${v.str("author")} · ${v.str("state")}")
+                        Hint("${v.str("author")} · ${githubMetadata(v, tab == "pr")}")
+                        if (tab == "pr") {
+                            if (
+                                v.str("headRefName").isNotEmpty() &&
+                                    v.str("baseRefName").isNotEmpty()
+                            )
+                                Hint("${v.str("headRefName")} → ${v.str("baseRefName")}")
+                            if (
+                                listOf("changedFiles", "additions", "deletions").all {
+                                    v.opt(it) is Number
+                                }
+                            )
+                                Hint(
+                                    "変更 ${v.optInt("changedFiles")} ファイル · +${v.optInt("additions")} / −${v.optInt("deletions")}"
+                                )
+                            Label("CI チェック")
+                            if (
+                                !v.optBoolean("checksTruncated") &&
+                                    v.optJSONArray("checks").objects().isEmpty()
+                            )
+                                Hint(if (v.has("checks")) "チェックはありません" else "CI チェックの内訳は未提供です")
+                        }
                         v.optJSONArray("checks").objects().forEach {
                             Hint("${it.str("name")} · ${it.str("state")}")
                         }

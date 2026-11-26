@@ -698,7 +698,7 @@ private fun PageHeader(title: String, back: (() -> Unit)?) {
 }
 
 @Composable
-private fun ListRow(
+internal fun ListRow(
     title: String,
     meta: String,
     enabled: Boolean,

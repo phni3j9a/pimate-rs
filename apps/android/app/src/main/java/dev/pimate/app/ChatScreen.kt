@@ -756,7 +756,9 @@ internal fun RowView(
             }
         is ChatRow.Summary ->
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
+                if (row.expandable)
+                    Expander(row.text, open, toggle, Modifier.heightIn(min = 32.dp), wide = false)
+                else Hint(row.text)
                 if (row.reviewTurn != null && review != null)
                     TextAction(row.reviewLabel, { review(row.reviewTurn) })
             }
