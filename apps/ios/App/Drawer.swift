@@ -17,7 +17,7 @@ struct Drawer: View {
     private func items(_ host: Host, _ section: String) -> [Item] {
         (model.rows[host.id]?.groups["instance"] ?? []).filter {
             let o = $0.object
-            return o.str("section") == section && (query.isEmpty || [o.piTitle, o.str("cwd"), host.name].contains { $0.localizedCaseInsensitiveContains(query) })
+            return o.str("section") == section && (query.isEmpty || [o.piTitle, o.str("cwd"), host.name, o.str("origin") == "grok-bot" ? "Grok Bot" : ""].contains { $0.localizedCaseInsensitiveContains(query) })
         }
     }
     var body: some View {
@@ -28,20 +28,21 @@ struct Drawer: View {
             ForEach(model.hosts, id: \.id) { host in
                 Section {
                     rows(host, "normal")
-                    if !items(host, "bot").isEmpty { Label("Grok Bot", systemImage: "terminal").font(.caption); rows(host, "bot") }
+                    if !items(host, "bot").isEmpty { Label { Text("Grok Bot") } icon: { mark("grok-bot", 14) }.modifier(PiFont(.caption)).accessibilityLabel(host.name + ": Grok Bot").accessibilityAddTraits(.isHeader); rows(host, "bot") }
                     if (model.rows[host.id]?.groups["instance"] ?? []).isEmpty {
                         Text(Self.emptyMessage(connection: connection(host), rows: model.rows[host.id])).foregroundStyle(PiTheme.secondary)
                     }
-                } header: { HStack { Label(host.displayName(in: model.hosts), systemImage: "desktopcomputer"); Spacer(); Text(connection(host)) }.textCase(nil) }
+                } header: { HStack { Label { Text(host.displayName(in: model.hosts)) } icon: { mark("lucide-monitor", 18) }; Spacer(); Text(connection(host)) }.textCase(nil) }
             }
             if !model.message.isEmpty { Text(model.message).foregroundStyle(PiTheme.failure) }
         }.listStyle(.plain).scrollContentBackground(.hidden).background(PiTheme.background)
             .navigationTitle("Pi 一覧").searchable(text: $query, prompt: "名前・フォルダで検索")
             .safeAreaInset(edge: .bottom) {
                 HStack(spacing: 18) {
-                    Button("設定", systemImage: "gearshape") { settings = true }.frame(minHeight: 44)
-                    Button { newPi = true } label: { Label("新しい Pi", systemImage: "plus") }.buttonStyle(PiPrimary())
-                }.padding(.horizontal, 20).padding(.vertical, 6).background(PiTheme.background)
+                    Button { settings = true } label: { mark("lucide-settings", 22).frame(width: 44, height: 44) }.accessibilityLabel("設定")
+                    Spacer()
+                    Button { newPi = true } label: { HStack(spacing: 4) { mark("lucide-plus", 16); Text("新しい Pi") }.modifier(PiFont(.body)).padding(.horizontal, 14).padding(.vertical, 7).foregroundStyle(PiTheme.background).background(PiTheme.accent, in: Capsule()).frame(minHeight: 44) }.accessibilityLabel("新しい Pi")
+                }.padding(.horizontal, 20).padding(.bottom, 16).background(PiTheme.background)
             }.sheet(isPresented: $newPi) {
                 NavigationStack {
                     NewPiView(model: model, initial: model.host ?? model.hosts.first?.id ?? "") { h, pi in newPi = false; select(h, pi) }
@@ -85,7 +86,9 @@ struct InstanceRowLabel: View {
     var machine: String? = nil
     var body: some View {
         let o = item.object, waiting = o.str("section") == "waiting", failed = !o.str("failureText").isEmpty
-        let working = o["working"] as? Bool == true
+        let children = o.obj("subagents"), pending = children["waiting"] as? Int ?? 0
+        let running = max(0, (children["active"] as? Int ?? 0) - pending)
+        let working = !waiting && (o["working"] as? Bool == true || running > 0)
         let origin = o.str("origin") == "mobile" ? "スマホで起動" : o.str("origin") == "grok-bot" ? "Grok Bot" : "PC で起動"
         let state = failed ? "失敗" : waiting ? "入力待ち" : "待機"
         HStack(alignment: .top, spacing: 12) {
@@ -95,15 +98,17 @@ struct InstanceRowLabel: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(o.piTitle.isEmpty ? item.id : o.piTitle).fontWeight(.semibold).foregroundStyle(PiTheme.text)
                 if waiting, let machine {
-                    Label(machine, systemImage: "desktopcomputer").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
+                    Label { Text(machine) } icon: { mark("lucide-monitor", 14) }.modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
                 }
                 if waiting && (failed || !o.str("questionTitle").isEmpty) { Text(failed ? o.str("failureText") : o.str("questionTitle")).foregroundStyle(PiTheme.secondary) }
-                Text(o.str("cwd")).font(.system(.caption, design: .monospaced)).foregroundStyle(PiTheme.secondary).lineLimit(2)
+                Text(o.str("cwd")).modifier(PiFont(.caption)).fontDesign(.monospaced).foregroundStyle(PiTheme.secondary).lineLimit(2)
+                if running > 0 { Text("サブエージェント \(running) 実行中").modifier(PiFont(.caption)) }
+                if pending > 0 { Text("サブエージェント \(pending) 入力待ち").modifier(PiFont(.caption)).foregroundStyle(PiTheme.waiting) }
                 Text(working ? origin : "\(state) · \(origin)").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary)
             }
             Spacer()
             if working { Text("作業中").modifier(PiFont(.caption)).foregroundStyle(PiTheme.secondary) }
-            SwiftUI.Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary).accessibilityHidden(true)
+            mark("lucide-chevron-right", 14).foregroundStyle(.tertiary).accessibilityHidden(true)
         }.padding(.vertical, 5).frame(minHeight: 52).contentShape(Rectangle())
     }
 }
