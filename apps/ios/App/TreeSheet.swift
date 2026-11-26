@@ -26,15 +26,17 @@ struct BranchRow: Identifiable {
 struct TreeSheet: View {
     let panel: PiSheetPanel
     @State private var nodes: [BranchRow] = []
+    @State private var usersOnly = true
     @State private var truncated = false
     @State private var loaded = false
     @State private var attempt = 0
     var body: some View {
         List {
             Section {
+                Picker("表示", selection: $usersOnly) { Text("ユーザーのみ").tag(true); Text("すべて").tag(false) }.pickerStyle(.segmented)
                 if truncated { Text("大きなツリーのため一部を省略しています。全体は PC の /tree で確認できます。").font(.footnote) }
                 if loaded && nodes.isEmpty { Text("まだ会話がありません").foregroundStyle(.secondary) }
-                ForEach(nodes) { row in
+                ForEach(usersOnly ? nodes.filter { $0.node.str("kind") == "user" } : nodes) { row in
                     NavigationLink { TreeDestination(panel: panel, row: row) } label: {
                         HStack(spacing: 10) {
                             Capsule().fill(row.node["onBranch"] as? Bool == true ? PiTheme.accent : Color.secondary).frame(width: 3).accessibilityHidden(true)

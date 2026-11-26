@@ -14,12 +14,14 @@ struct CommandPalette: View {
             else if names.isEmpty { Text("一致するコマンドはありません").font(.caption) }
             ScrollView(.horizontal) {
                 HStack(spacing: 8) { ForEach(names, id: \.self) { name in
-                    let detail = commands.first { $0.id == name }?.object.str("description") ?? ""
+                    let command = commands.first { $0.id == name }?.object ?? [:], source = command.str("source")
+                    let detail = command.str("description"), kind = ["builtin": "アプリ操作", "extension": "Extension", "prompt": "テンプレート", "skill": "Skill"][source] ?? source
                     Button {
                         model.text("/" + name + " ", for: key)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: "/" + name).font(.callout.monospaced())
+                            if !kind.isEmpty { Text(kind).modifier(PiFont(.meta)) }
                             if !detail.isEmpty { Text(detail).font(.caption).lineLimit(2).foregroundStyle(PiTheme.secondary) }
                         }.padding(.horizontal, 12).frame(minHeight: 44).background(PiTheme.surface, in: RoundedRectangle(cornerRadius: 10))
                     }.buttonStyle(.plain).accessibilityIdentifier("command-" + name).accessibilityHint("入力欄に入れます。送信はしません")
