@@ -377,10 +377,11 @@ private fun TableBody(
             tableWidths(natural, available.value.toDouble(), ratio)
         }
     val total = widths.sum().dp
+    val cell = Type.caption.copy(fontSize = 13.sp, lineHeight = 19.sp)
     // 収まる表は横送りにしない（表の上から右へ送っても一覧を開ける）。
     Column(
         modifier
-            .background(pi.surface, RoundedCornerShape(12.dp))
+            .background(pi.surface, RoundedCornerShape(10.dp))
             .then(
                 if (scroll && total > available + .5.dp)
                     Modifier.horizontalScroll(rememberScrollState())
@@ -393,8 +394,7 @@ private fun TableBody(
                 widths.forEachIndexed { col, width ->
                     Paragraph(
                         row.getOrElse(col) { emptyList() },
-                        if (index == 0) Type.body.copy(fontWeight = FontWeight.SemiBold)
-                        else Type.body,
+                        if (index == 0) cell.copy(fontWeight = FontWeight.SemiBold) else cell,
                         Modifier.width(width.dp).padding(8.dp),
                         when (table.align.getOrNull(col)) {
                             uniffi.pimate_ffi.Alignment.CENTER -> TextAlign.Center
