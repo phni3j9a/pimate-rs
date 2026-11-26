@@ -206,8 +206,8 @@ impl Desktop {
         let start = v["startedAt"].as_u64();
         let new_nav = nav.clone();
         let open = cx.listener(move |this, _: &ClickEvent, _, cx| {
-            if nav.read(cx).route != Route::Home {
-                this.navigate(&nav, Route::Home, cx);
+            if nav.read(cx).route != Route::Home && !this.navigate(&nav, Route::Home, cx) {
+                return;
             }
             this.select(host.clone(), pi.clone(), cx);
         });
@@ -286,8 +286,10 @@ impl Desktop {
                                 }) {
                                     return;
                                 }
-                                if nav.read(cx).route != Route::Home {
-                                    app.navigate(&nav, Route::Home, cx);
+                                if nav.read(cx).route != Route::Home
+                                    && !app.navigate(&nav, Route::Home, cx)
+                                {
+                                    return;
                                 }
                                 if app.selected.as_ref() != Some(&(host.clone(), pi.clone())) {
                                     app.select(host.clone(), pi.clone(), cx);
@@ -317,8 +319,9 @@ impl Desktop {
                             .on_click(move |_, w, cx| {
                                 let _ = owner.update(cx, |d, cx| {
                                     d.prepare_dialog(w, cx);
-                                    d.navigate(&n, Route::New(host.clone()), cx);
-                                    n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
+                                    if d.navigate(&n, Route::New(host.clone()), cx) {
+                                        n.update(cx, |s, _| s.initial_folder = Some(path.clone()));
+                                    }
                                 });
                             }),
                     )
@@ -439,7 +442,7 @@ impl Desktop {
                 .debug_selector(move || format!("nav-{id}"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.sidebar_open = false;
-                    this.navigate(&n, route.clone(), cx)
+                    this.navigate(&n, route.clone(), cx);
                 }))
         };
         div()
@@ -1958,20 +1961,131 @@ mod key_tests {
         w.run_until_parked();
     }
     #[gpui::test]
-    fn model_shortcut_cannot_cover_a_table_viewer(cx: &mut gpui::TestAppContext) {
+    fn model_and_inspector_shortcuts_cannot_cover_a_table_viewer(cx: &mut gpui::TestAppContext) {
         let (app, w, _) = tests::open_chat(cx);
         w.update(|_, cx| keys::init(cx));
         fixture_message(&app, w, "| A | B |\n|---|---|\n| 1 | 2 |");
         let table = wait(w, "open-markdown-table");
         w.simulate_click(table, Default::default());
         wait(w, "close-media");
-        press(w, "secondary-shift-m");
+        press(
+            w,
+            "secondary-shift-m secondary-shift-d secondary-shift-s secondary-shift-g",
+        );
         assert!(w.update(|w, cx| {
             let d = app.read(cx);
-            d.front(w, cx) == Some(keys::Overlay::Media) && d.active_sheet().is_none()
+            d.chat_keys.is_none()
+                && d.front(w, cx) == Some(keys::Overlay::Media)
+                && d.active_sheet().is_none()
         }));
         press(w, "escape");
         assert!(w.update(|w, cx| app.read(cx).front(w, cx).is_none()));
+    }
+    #[gpui::test]
+    fn new_pi_keeps_github_detail_and_review_target(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+        app.update(w, |d, cx| {
+            d.select_github(pimate_protocol::GitHubQuery::Pr { number: 93 }, cx)
+        });
+        let (page, ins, github) = app.read_with(w, |d, cx| {
+            let (p, i) = d.chat_keys.as_ref().unwrap();
+            (p.clone(), i.clone(), i.read(cx).github.clone().unwrap())
+        });
+        app.update(w,|_,cx|{ github.update(cx,|n,_|{ n.github.loaded=true; n.github.data=Some(serde_json::json!({"item":{"kind":"pr","number":93,"title":"detail","body":"| A | B |\n|---|---|\n| 1 | 2 |"}})); });cx.notify(); });
+        press(w, "secondary-n");
+        let modal = app.read_with(w, |d, cx| {
+            d.navigation
+                .as_ref()
+                .unwrap()
+                .read(cx)
+                .page
+                .clone()
+                .unwrap()
+        });
+        press(w, "escape");
+        app.read_with(w, |d, cx| {
+            assert!(github.read(cx).page.as_ref().unwrap().visible(d) && !modal.visible(d));
+            assert!(ins.read(cx).github.as_ref() == Some(&github));
+        });
+        let table = wait(w, "open-markdown-table");
+        w.simulate_click(table, Default::default());
+        wait(w, "close-media");
+        press(w, "secondary-shift-d escape");
+        assert!(w.update(
+            |w, cx| app.read(cx).front(w, cx) == Some(keys::Overlay::Inspector)
+                && ins.read(cx).tab == Some(super::Tab::Github)
+        ));
+        let mut review = page.review(None).unwrap();
+        review.files.push(state::review::ChangedFile {
+            path: "review.txt".into(),
+            pieces: vec![],
+        });
+        ins.update(w, |i, cx| {
+            i.tab = Some(super::Tab::Review);
+            i.review = Some(std::sync::Arc::new(review));
+            cx.notify();
+        });
+        press(w, "secondary-n escape");
+        let ask = wait(w, "ask-changes");
+        w.simulate_click(ask, Default::default());
+        w.run_until_parked();
+        assert!(app.read_with(w, |d, cx| {
+            d.input
+                .as_ref()
+                .unwrap()
+                .1
+                .read(cx)
+                .value()
+                .contains("review.txt")
+        }));
+    }
+    #[gpui::test]
+    fn pending_spawn_rejects_palette_pi_without_selecting(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        press(w, "secondary-n");
+        let epoch = app.update(w, |d, cx| {
+            d.navigation
+                .as_ref()
+                .unwrap()
+                .update(cx, |n, _| n.spawn.as_mut().unwrap().submitting = true);
+            d.epoch
+        });
+        press(w, "secondary-k enter");
+        assert!(app.read_with(w, |d, cx| {
+            let n = d.navigation.as_ref().unwrap().read(cx);
+            !d.palette_open
+                && d.epoch == epoch
+                && n.spawn.as_ref().unwrap().submitting
+                && n.page.as_ref().unwrap().visible(d)
+        }));
+    }
+    #[gpui::test]
+    fn disconnected_spawn_host_can_tab_to_a_connected_host(cx: &mut gpui::TestAppContext) {
+        let (app, w, _) = tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        app.update(w, |d, cx| {
+            let mut missing = d.hosts[0].clone();
+            missing.id = "offline".into();
+            d.hosts.push(missing);
+            let nav = d.navigation.clone().unwrap();
+            d.navigate(&nav, Route::New("offline".into()), cx);
+        });
+        w.run_until_parked();
+        press(w, "tab tab");
+        app.update(w, |_, cx| cx.notify());
+        w.run_until_parked();
+        assert!(w.update(|w, cx| {
+            let f = &app.read(cx).modal_focus;
+            f.contains_focused(w, cx) && !f.is_focused(w)
+        }));
+        press(w, "enter");
+        assert!(
+            app.read_with(w, |d, cx| d.navigation.as_ref().unwrap().read(cx).route
+                == Route::New("fixture".into()))
+        );
     }
     #[gpui::test]
     fn right_click_copies_raw_message_not_rendered_selection(cx: &mut gpui::TestAppContext) {

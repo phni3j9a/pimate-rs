@@ -41,6 +41,11 @@ impl Desktop {
         let machine = self.machines.get(id).ok_or(Error::StaleTarget)?;
         Ok(self.state.open(id, machine, None))
     }
+    pub(crate) fn modal_machine(&self, id: &str, generation: &Arc<()>) -> Option<Page> {
+        let mut page = self.state.page_for(id, self.machines.get(id)?, None);
+        page.page = Arc::downgrade(generation);
+        Some(page)
+    }
     pub(crate) fn background_chat(&self) -> Option<Page> {
         let k = self.editor()?;
         Some(

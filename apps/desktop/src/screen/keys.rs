@@ -500,8 +500,12 @@ impl Desktop {
             Search | Keys => {
                 self.open_palette(c == Keys, w, cx);
             }
-            Preferences => self.navigate(&nav, Route::Settings, cx),
-            NewPi => self.navigate(&nav, self.new_route(), cx),
+            Preferences => {
+                self.navigate(&nav, Route::Settings, cx);
+            }
+            NewPi => {
+                self.navigate(&nav, self.new_route(), cx);
+            }
             Sidebar => {
                 if narrow {
                     self.sidebar_open = !self.sidebar_open;
@@ -620,10 +624,9 @@ impl Desktop {
                     .position(|key| *key == c)
                     .unwrap(),
                 };
-                if let Some((h, i, _)) = rows.get(ix) {
-                    if !home {
-                        self.navigate(&nav, Route::Home, cx)
-                    }
+                if let Some((h, i, _)) = rows.get(ix)
+                    && (home || self.navigate(&nav, Route::Home, cx))
+                {
                     self.select(h.clone(), i.clone(), cx);
                 }
             }

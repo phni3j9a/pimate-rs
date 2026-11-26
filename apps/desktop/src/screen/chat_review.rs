@@ -253,6 +253,7 @@ impl Desktop {
             .child(
                 div().p_3().child(
                     p.primary("ask-changes", cx)
+                        .debug_selector(|| "ask-changes".into())
                         .label("この変更について依頼")
                         .disabled(review.as_ref().is_none_or(|r| r.files.is_empty()))
                         .on_click(cx.listener(move |this, _, w, cx| {

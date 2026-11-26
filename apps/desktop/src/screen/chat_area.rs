@@ -66,21 +66,6 @@ impl Desktop {
             cx,
             |_, _| super::chat_review::Inspector::default(),
         );
-        if !background {
-            self.chat_keys = Some((page.clone(), inspector.clone()));
-        }
-        if let Some((host, pi, start, shutdown)) = self.row_action.take()
-            && key.host == host
-            && key.instance == pi
-            && rows.get("view", "startedAt").as_u64() == Some(start)
-        {
-            if shutdown {
-                self.confirm_shutdown(&page, w, cx)
-            } else {
-                inspector.update(cx, |s, cx| s.load(page.clone(), None, true, cx));
-            }
-        }
-        let rows = &self.machines[&key.host].rows;
         let media = super::chat_media::Media {
             page: page.clone(),
             files: rows.get("view", "fileImages") == true,
@@ -90,10 +75,37 @@ impl Desktop {
                 |_, _| Default::default(),
             ),
         };
-        if let Some(viewer) = media.panel(p, w, cx) {
-            self.media_keys = Some(media.viewer.clone());
-            return main.child(viewer);
+        let viewer = media
+            .panel(p, w, cx)
+            .map(|panel| (media.viewer.clone(), panel))
+            .or_else(|| {
+                let ins = inspector.read(cx);
+                if ins.tab != Some(Tab::Github) {
+                    return None;
+                }
+                let viewer = ins.github.as_ref()?.read(cx).github.viewer.clone()?;
+                let panel = chat_media::Viewer::panel(&viewer, None, p, w, cx)?;
+                Some((viewer, panel))
+            });
+        if let Some((host, pi, start, shutdown)) = self.row_action.take()
+            && key.host == host
+            && key.instance == pi
+            && rows.get("view", "startedAt").as_u64() == Some(start)
+        {
+            if shutdown {
+                self.confirm_shutdown(&page, w, cx)
+            } else if viewer.is_none() {
+                inspector.update(cx, |s, cx| s.load(page.clone(), None, true, cx));
+            }
         }
+        if let Some((viewer, panel)) = viewer {
+            self.media_keys = Some(viewer);
+            return main.child(panel);
+        }
+        if !background {
+            self.chat_keys = Some((page.clone(), inspector.clone()));
+        }
+        let rows = &self.machines[&key.host].rows;
         let movement = rows.pending_move(&key, &self.drafts).or_else(|| {
             rows.pending_move_with(&key, |k| !self.state.attachments.images(k).is_empty())
         });

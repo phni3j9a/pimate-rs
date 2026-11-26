@@ -61,10 +61,11 @@ impl Desktop {
         self.close_palette(w, cx);
         match choice {
             Choice::Pi(h, i) => {
-                if let Some(nav) = self.navigation.clone() {
-                    self.navigate(&nav, Route::Home, cx);
+                if let Some(nav) = self.navigation.clone()
+                    && self.navigate(&nav, Route::Home, cx)
+                {
+                    self.select(h.clone(), i.clone(), cx);
                 }
-                self.select(h.clone(), i.clone(), cx);
             }
             Choice::App(c) => {
                 if !matches!(c, Command::Sidebar | Command::NextPane) {

@@ -83,7 +83,10 @@ impl Desktop {
         w: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
-        if n.read(cx).spawn.is_none() && !self.palette_open {
+        if n.read(cx).spawn.is_none()
+            && !self.palette_open
+            && !self.modal_focus.contains_focused(w, cx)
+        {
             self.modal_focus.focus(w);
         }
         let mut machines = line();
@@ -585,8 +588,9 @@ impl Desktop {
                     n.update(cx, |s, _| s.spawn.as_mut().unwrap().submitting = false);
                     let msg = match res {
                         Ok((id, SpawnStatus::Ready)) => {
-                            app.navigate(n, Route::Home, cx);
-                            app.select(host, id, cx);
+                            if app.navigate(n, Route::Home, cx) {
+                                app.select(host, id, cx);
+                            }
                             return;
                         }
                         Ok((_, SpawnStatus::MessageUnconfirmed)) => {

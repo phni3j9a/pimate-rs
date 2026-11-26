@@ -96,14 +96,19 @@ impl Desktop {
         }
         dark
     }
-    pub(super) fn navigate(&mut self, n: &Navigation, route: Route, cx: &mut Context<Self>) {
+    pub(super) fn navigate(
+        &mut self,
+        n: &Navigation,
+        route: Route,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if n.read(cx).spawn.as_ref().is_some_and(|f| f.submitting)
             && n.read(cx)
                 .page
                 .as_ref()
                 .is_some_and(|page| page.visible(self))
         {
-            return;
+            return false;
         }
         if matches!(route, Route::New(_)) {
             self.sidebar_open = false;
@@ -126,16 +131,23 @@ impl Desktop {
             _ => Route::Home,
         };
         self.row_action = None;
-        self.state.close_page();
-        let page = match &route {
-            Route::Machine(id) | Route::Providers(id) | Route::New(id) => {
-                self.open_machine(id).ok()
+        // A New Pi form overlays Home; it owns its requests, not the conversation's inspector.
+        match (previous, &route) {
+            (Route::Home | Route::New(_), Route::New(_)) | (Route::New(_), Route::Home) => {
+                self.state.sheet = None
             }
+            _ => self.state.close_page(),
+        }
+        let generation = Arc::new(());
+        let page = match &route {
+            Route::New(id) => self.modal_machine(id, &generation),
+            Route::Machine(id) | Route::Providers(id) => self.open_machine(id).ok(),
             _ => None,
         };
         n.update(cx, |s, _| {
             *s = Nav {
                 route,
+                generation,
                 back,
                 page,
                 pref_error: s.pref_error,
@@ -144,6 +156,7 @@ impl Desktop {
             }
         });
         cx.notify();
+        true
     }
     pub(super) fn page_task<T: 'static, F: Future<Output = T> + 'static>(
         &self,
@@ -184,7 +197,9 @@ impl Desktop {
         Button::new(id.clone())
             .debug_selector(|| format!("nav-{id}"))
             .label(label)
-            .on_click(cx.listener(move |this, _, _, cx| this.navigate(&n, r.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.navigate(&n, r.clone(), cx);
+            }))
     }
     pub(super) fn host_label(&self, h: &Host) -> String {
         if self.hosts.iter().filter(|x| x.name == h.name).count() > 1 {

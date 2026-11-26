@@ -116,27 +116,18 @@ impl Desktop {
             Tab::Github => {
                 let n = ins.read(cx).github.clone().unwrap();
                 let q = n.read(cx).github.query.clone().unwrap();
-                let viewer = n.read(cx).github.viewer.clone();
-                if let Some(panel) = viewer
-                    .as_ref()
-                    .and_then(|v| chat_media::Viewer::panel(v, None, p, w, cx))
-                {
-                    self.media_keys = viewer;
-                    div().child(panel)
-                } else {
-                    let mut body = div().flex().flex_col().min_h_0().flex_1();
-                    if q != GitHubQuery::List {
-                        body = body.child(Button::new("github-list").label("一覧に戻る").on_click(
-                            cx.listener(|app, _, _, cx| app.select_github(GitHubQuery::List, cx)),
-                        ))
-                    };
-                    body.child(
-                        div()
-                            .id("github-inspector-body")
-                            .overflow_y_scroll()
-                            .child(self.github_view(&n, p, &q, w, cx)),
-                    )
-                }
+                let mut body = div().flex().flex_col().min_h_0().flex_1();
+                if q != GitHubQuery::List {
+                    body = body.child(Button::new("github-list").label("一覧に戻る").on_click(
+                        cx.listener(|app, _, _, cx| app.select_github(GitHubQuery::List, cx)),
+                    ))
+                };
+                body.child(
+                    div()
+                        .id("github-inspector-body")
+                        .overflow_y_scroll()
+                        .child(self.github_view(&n, p, &q, w, cx)),
+                )
             }
         };
         let wide = Layout::of(w.viewport_size().width) == Layout::Wide;
