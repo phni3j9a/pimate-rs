@@ -80,6 +80,8 @@ impl Desktop {
                 .debug_selector(move || format!("nav-{id}"))
                 .on_click(cx.listener(move |this, _, _, cx| this.navigate(&n, route.clone(), cx)))
         };
+        let warned =
+            self.state.registration.error.is_some() || self.state.registration.save_unknown;
         let body = div()
             .w(px(560.))
             .max_w_full()
@@ -136,7 +138,8 @@ impl Desktop {
                     .flex()
                     .justify_end()
                     .gap_1()
-                    .child(self.reload_button(p, cx))
+                    // 読み出せないときは、上の知らせの中に同じボタンが出る。
+                    .when(!warned, |row| row.child(self.reload_button(p, cx)))
                     .child(go("settings", "設定", Route::Settings)),
             );
         div()
