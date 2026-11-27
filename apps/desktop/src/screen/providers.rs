@@ -10,7 +10,7 @@ pub(super) struct ProviderData {
     login: Option<Arc<Login>>,
     pending: bool,
     following: Option<String>,
-    logged_out_flow: Option<String>,
+    superseded_flow: Option<String>,
     list_failed: bool,
     logout: Option<(AuthProviderId, String)>,
     prompt: Option<(String, String, Entity<InputState>)>,
@@ -59,9 +59,28 @@ impl settings::Nav {
         !flow.is_null()
             && self
                 .providers
-                .logged_out_flow
+                .superseded_flow
                 .as_deref()
                 .is_none_or(|id| flow["id"] != id)
+    }
+    fn start_auth(&mut self, action: &AuthAction, flow: &Value) {
+        if matches!(action, AuthAction::Begin(_)) {
+            self.providers.superseded_flow = flow["id"].as_str().map(str::to_owned);
+        }
+        self.providers.pending = true;
+        self.providers.prompt = None;
+        self.note.clear();
+    }
+    fn finish_auth(&mut self, result: Result<bool, Error>) {
+        self.providers.pending = false;
+        match result {
+            Ok(list_failed) => self.providers.list_failed = list_failed,
+            Err(_) => {
+                self.note =
+                    "資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。"
+                        .into()
+            }
+        }
     }
     fn logout_ack(&mut self, result: Result<Value, Error>, old_flow: Option<String>) -> bool {
         self.note = match result {
@@ -78,7 +97,7 @@ impl settings::Nav {
         }
         .into();
         if old_flow.is_some() {
-            self.providers.logged_out_flow = old_flow;
+            self.providers.superseded_flow = old_flow;
         }
         true
     }
@@ -105,24 +124,24 @@ impl Desktop {
             return;
         };
         n.update(cx, |s, _| {
-            s.providers.pending = true;
-            s.providers.prompt = None;
-            s.note.clear();
+            let flow = s
+                .page
+                .as_ref()
+                .and_then(|page| self.machines.get(page.host()))
+                .map(|machine| machine.rows.get("auth", login.instance()))
+                .unwrap_or(&Value::Null);
+            s.start_auth(&action, flow);
         });
         self.page_task(
-            n, w, cx,
+            n,
+            w,
+            cx,
             async move |_| {
                 login.request(action).await?;
                 Ok::<_, Error>(login.request(AuthAction::List).await.is_err())
             },
             |_, n, result, _, cx| {
-                n.update(cx, |s, _| {
-                    s.providers.pending = false;
-                    match result {
-                        Ok(failed) => s.providers.list_failed = failed,
-                        Err(_) => s.note = "資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。".into(),
-                    }
-                });
+                n.update(cx, |s, _| s.finish_auth(result));
             },
         );
     }
@@ -530,6 +549,24 @@ mod tests {
             nav.note.contains("削除結果は不明")
                 && !nav.note.contains("保存した認証情報を削除しました")
         );
+    }
+    #[test]
+    fn timed_out_begin_hides_previous_success_but_list_failure_keeps_new_success() {
+        use super::{AuthAction, AuthBeginParams, AuthProviderId, ProviderAuthType};
+        let mut nav = crate::screen::settings::Nav::default();
+        let previous = serde_json::json!({"id":"first","provider":"openai","status":"succeeded"});
+        let next = serde_json::json!({"id":"second","provider":"anthropic","status":"succeeded","refreshRequired":true});
+        let begin = AuthAction::Begin(AuthBeginParams {
+            provider: AuthProviderId::Anthropic,
+            method: ProviderAuthType::ApiKey,
+        });
+        assert!(nav.show_login_result(&previous));
+        nav.start_auth(&begin, &previous);
+        nav.finish_auth(Err(pimate_core::Error::Timeout));
+        assert!(nav.note.contains("未確認") && !nav.show_login_result(&previous));
+        nav.start_auth(&begin, &previous);
+        nav.finish_auth(Ok(true));
+        assert!(nav.providers.list_failed && nav.show_login_result(&next));
     }
     #[test]
     fn vendors_keep_member_methods_and_ids_separate() {
