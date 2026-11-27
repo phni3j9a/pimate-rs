@@ -47,7 +47,13 @@ private struct Conversation: View {
     let model: SessionModel, key: EditorKey, rows: Rows
     let showList: () -> Void
     @Environment(\.horizontalSizeClass) private var widthClass
-    @State private var horizontalRegions: [CGRect] = []
+    // Gesture bookkeeping is not view state: moving a pixel must not rebuild the transcript.
+    private final class ScrollState {
+        var horizontalRegions: [CGRect] = []
+        var metrics: TailMetrics?
+    }
+    @State private var scroll = ScrollState()
+    @State private var showJump = false
     @State private var turns: [ChatTurn] = []
     private struct ReviewRoute: Identifiable { let id = UUID(); var turn: String?, line: String? }
     @State private var review: ReviewRoute?
@@ -58,7 +64,6 @@ private struct Conversation: View {
         PhotoContext(model: model, key: key, entries: rows.field("entryImages") == "true", files: rows.field("fileImages") == "true", open: { photo = $0 })
     }
     @State private var loaded = false
-    @State private var metrics: TailMetrics?
     @State private var manualLayout: TailContent?
     @GestureState private var dragging = false
     private var running: Bool { rows.field("status") == "\"running\"" }
@@ -100,19 +105,20 @@ private struct Conversation: View {
                             let top = geometry.frame(in: .named("transcript")).minY
                             return TailMetrics(height: geometry.size.height, viewport: CGRect(x: 0, y: -top, width: outer.size.width, height: outer.size.height))
                         } action: { next in
-                            let follow = next.shouldFollow(after: metrics, dragging: dragging, content: content, manualLayout: manualLayout)
-                            if next.height != metrics?.height || manualLayout != content { manualLayout = nil }
-                            metrics = next
+                            let follow = next.shouldFollow(after: scroll.metrics, dragging: dragging, content: content, manualLayout: manualLayout)
+                            if next.height != scroll.metrics?.height || manualLayout != content { manualLayout = nil }
+                            scroll.metrics = next
+                            showJump = !next.nearTail
                             if follow { reader.scrollTo("tail", anchor: .bottom) }
                         }
                     }.coordinateSpace(name: "transcript").accessibilityIdentifier("transcript").modifier(PhotoViewport()).scrollDismissesKeyboard(.interactively)
-                        .onPreferenceChange(HorizontalRegions.self) { horizontalRegions = $0 }
+                        .onPreferenceChange(HorizontalRegions.self) { scroll.horizontalRegions = $0 }
                         .simultaneousGesture(DragGesture(coordinateSpace: .named("transcript")).updating($dragging) { _, state, _ in state = true }.onEnded { drag in
                             if widthClass == .compact, drag.translation.width > 80, drag.translation.width > abs(drag.translation.height) * 2,
-                               !horizontalRegions.contains(where: { $0.contains(drag.startLocation) }) { showList() }
+                               !scroll.horizontalRegions.contains(where: { $0.contains(drag.startLocation) }) { showList() }
                         })
                         .overlay(alignment: .bottomTrailing) {
-                            if metrics?.nearTail == false {
+                            if showJump {
                                 Button { withAnimation { reader.scrollTo("tail", anchor: .bottom) } } label: {
                                     Label("最新へ", systemImage: "arrow.down").padding(10).background(.regularMaterial, in: Capsule())
                                 }.padding(8)

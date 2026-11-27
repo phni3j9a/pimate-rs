@@ -53,7 +53,14 @@ struct Selectable: UIViewRepresentable {
         v.textContainerInset = .zero; v.textContainer.lineFragmentPadding = 0; v.setContentCompressionResistancePriority(.defaultLow, for: .horizontal); return v
     }
     func updateUIView(_ v: UITextView, context: Context) {
-        let result = NSMutableAttributedString(string: ""), scale = points * size.factor * (heading ? 1.15 : 1)
+        let scale = points * size.factor * (heading ? 1.15 : 1)
+        let result = Self.styledText(spans, heading: heading, mono: mono, links: links, scale: scale)
+        if v.attributedText != result { v.attributedText = result }
+        v.linkTextAttributes = [.foregroundColor: UIColor(PiTheme.accent), .underlineStyle: NSUnderlineStyle.single.rawValue]
+        if heading { v.accessibilityTraits.insert(.header) }
+    }
+    static func styledText(_ spans: [Inline], heading: Bool, mono: Bool = false, links: Bool = true, scale: CGFloat) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: "")
         for span in spans {
             switch span {
             case .text(let text, let style):
@@ -68,9 +75,7 @@ struct Selectable: UIViewRepresentable {
             case .image(let image): result.append(Self.imageLabel(image, links: links, size: scale))
             }
         }
-        if v.attributedText != result { v.attributedText = result }
-        v.linkTextAttributes = [.foregroundColor: UIColor(PiTheme.accent), .underlineStyle: NSUnderlineStyle.single.rawValue]
-        if heading { v.accessibilityTraits.insert(.header) }
+        return result
     }
     static func imageLabel(_ image: MarkdownImage, links: Bool, size: CGFloat) -> NSAttributedString {
         var attrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: size), .foregroundColor: UIColor.secondaryLabel]
@@ -143,7 +148,8 @@ struct MarkdownTable: View {
                             PhotoParagraph(spans: rows[i][j], answer: answer, heading: i == 0)
                         } else {
                             Button(action: showTable) {
-                                Selectable(spans: rows[i][j], heading: i == 0).allowsHitTesting(false)
+                                // Preview cells are buttons, not editors. Avoid building a UIKit text view for every AX snapshot.
+                                Text(AttributedString(Selectable.styledText(rows[i][j], heading: i == 0, scale: 15 * ratio * size.factor * (i == 0 ? 1.15 : 1))))
                                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
                             }.buttonStyle(.plain).accessibilityLabel("表を開く: " + rows[i][j].compactMap { if case .text(let value, _) = $0 { value } else { nil } }.joined()).accessibilityIdentifier("table-cell")
                         }

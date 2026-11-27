@@ -109,7 +109,7 @@ iOS の作業中は、VM を手元の速いビルド・試験の場として使�
 - 終わったら、VM の上のシミュレーター・模擬 Host を止め、手元の `devin --cloud`（keepalive）が残っていないことを確かめて `down` します。
 - 手元の keepalive を止めるときは、自分のシェルに一致しない書き方で探します（例: `pgrep -af '^devin --cloud'`、`pgrep -af '^timeout .*devin --cloud'` で PID を確かめてから `kill PID`）。`pkill -f 'devin --cloud -r …'` は、そのコマンドを含む自分のシェルまで止めてしまいます。VM の上の待機ループは `pgrep -fl devin-mac-keepalive` で探して止めます。
 - 小さな修正の確認だけなら、`keepalive 15` → `sync` → `apps/ios/prepare.sh` → `xcodebuild ... -destination "generic/platform=iOS Simulator" build` で、同期とビルドを合わせて約2分でした（#44 の最後の修正）。
-- CI の UI 試験は共有ランナーで遅くなることがあります。画像の取得・復号を待つ箇所は余裕のある待ち時間にしてください（10秒では落ちたことがあります）。
+- CI の UI 試験は共有ランナーで遅くなることがあります。CI では `TEST_RUNNER_PIMATE_SLOW_UI=1` を渡して XCTest の UI 状態待ちの上限を通常の3倍にします。条件を満たせばすぐ進み、失敗した操作は再タップしません。VM では通常の上限を使います。
 
 ## macOS アプリ（GPUI など）
 

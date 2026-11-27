@@ -12,14 +12,14 @@ if (
 	throw Error("Expected the disposable Host port");
 const host = "127.0.0.1";
 const server = http.createServer((req, res) => {
-	if (req.url !== "/pair" || req.method !== "POST")
+	if (!(req.url === "/pair" && req.method === "POST") && !(req.url === "/health" && req.method === "GET"))
 		return res.writeHead(404).end();
-	const post = http.request(
+	const request = http.request(
 		{
 			hostname: host,
 			port: upstream,
-			path: "/pair",
-			method: "POST",
+			path: req.url,
+			method: req.method,
 			headers: req.headers,
 		},
 		(r) => {
@@ -27,8 +27,8 @@ const server = http.createServer((req, res) => {
 			r.pipe(res);
 		},
 	);
-	post.on("error", () => res.destroy());
-	req.pipe(post);
+	request.on("error", () => res.destroy());
+	req.pipe(request);
 });
 const issue = (kind) => ({
 	kind,

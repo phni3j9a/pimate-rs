@@ -6,10 +6,12 @@ struct ReviewView: View {
     @State private var session = false
     @State var turn: String?
     var line: String? = nil
-    @State private var review: ChangeReview?
+    @State private var loaded: (query: Query, review: ChangeReview)?
     @State private var error = ""
     var body: some View {
-        let entries = model.rows[key.host]?.groups["entry"] ?? []
+        let query = Query(entries: model.rows[key.host]?.groups["entry"] ?? [], session: session, turn: turn)
+        // Never offer the previous scope while its replacement is being calculated.
+        let review = loaded?.query == query ? loaded?.review : nil
         NavigationStack {
             List {
                 if line == nil { Section {
@@ -47,12 +49,12 @@ struct ReviewView: View {
                         }.buttonStyle(PiPrimary()).padding().background(.bar)
                     }
                 }
-                .task(id: Query(entries: entries, session: session, turn: turn)) {
-                    review = nil; error = ""
+                .task(id: query) {
+                    error = ""
                     do {
                         let all = try await model.review(key, turn: nil)
-                        if !session, let id = turn ?? all.latestChangedTurn { review = try await model.review(key, turn: id) }
-                        else { review = all }
+                        if !query.session, let id = query.turn ?? all.latestChangedTurn { loaded = (query, try await model.review(key, turn: id)) }
+                        else { loaded = (query, all) }
                     } catch { if !Task.isCancelled { self.error = "変更を読み込めません。会話を確認してください。" } }
                 }
         }.tint(PiTheme.accent)

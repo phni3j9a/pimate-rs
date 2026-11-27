@@ -22,6 +22,8 @@ jobs:
           rc=0; apps/ios/test.sh || rc=$?; test "$rc" = 64
       - name: Test on a new disposable simulator
         id: ui
+        env:
+          TEST_RUNNER_PIMATE_SLOW_UI: "1"
         run: apps/ios/test-disposable.sh
       - name: Compose mock, light, dark and large-text comparisons
         id: compare
