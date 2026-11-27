@@ -1,5 +1,5 @@
 use super::*;
-use settings::{group, line};
+use settings::{line, section};
 use state::{Confirmation, MachineQuery, Maintenance};
 #[derive(Default)]
 pub(super) struct MachineData {
@@ -127,7 +127,7 @@ impl Desktop {
                         s.machine.check = check;
                         s.machine.devices = devices["devices"].clone();
                         s.machine.github = github["status"].clone();
-                        if error {
+                        if error && s.note.is_empty() {
                             s.note = "PC の状態を一部確認できませんでした。".into();
                         }
                     });
@@ -138,23 +138,37 @@ impl Desktop {
         let id = h.id.clone();
         let host_label = self.host_label(&h);
         let c = &m.check;
-        let mut maint = group("PC の PiMate", p).child(format!(
+        let current = c["current"]
+            .as_str()
+            .or(caps["version"].as_str())
+            .unwrap_or("");
+        let latest = c["latest"].as_str().unwrap_or("");
+        let cmp = settings::version_cmp(latest, current);
+        let available = cmp == Some(std::cmp::Ordering::Greater);
+        let mut maint = section("PC の PiMate", p).child(format!(
             "現在の版　{}",
-            c["current"]
-                .as_str()
-                .or(caps["version"].as_str())
-                .unwrap_or("未確認")
+            if current.is_empty() {
+                "未確認"
+            } else {
+                current
+            }
         ));
-        maint = maint.child(p.caption(if c["reason"] == "not_package" {
-            "開発版は PC で更新してください。".into()
-        } else if c["latest"].is_string() && c["latest"] == c["current"] {
+        maint = maint.child(p.caption(if !online {
+            "接続していません".into()
+        } else if !upd {
+            "この PC では更新を確認できません".into()
+        } else if m.busy && c.is_null() {
+            "確認中…".into()
+        } else if available {
+            format!("{latest} に更新できます")
+        } else if cmp.is_some() {
             "最新です".into()
         } else {
-            format!(
-                "照会時の最新版　{}",
-                c["latest"].as_str().unwrap_or("未確認")
-            )
+            "最新版を確認できませんでした".into()
         }));
+        if online && available && c["canUpdate"] != true {
+            maint = maint.child(p.caption("PC で更新してください。"));
+        }
         let conn = self.machines.get(&h.id).map(|m| m.conn.clone());
         let button = |label: &str, op: Option<Maintenance>, target: Option<String>| {
             let destructive = matches!(&op, None | Some(Maintenance::Revoke(_)));
@@ -202,24 +216,31 @@ impl Desktop {
                 });
                 cx.notify();
             });
-            Button::new(id)
-                .when(destructive, |b| b.danger())
-                .label(label)
-                .disabled(m.busy)
-                .on_click(handler)
+            p.text_button(
+                id,
+                if destructive {
+                    p.fail_ink
+                } else {
+                    p.accent_ink
+                },
+                cx,
+            )
+            .label(label)
+            .disabled(m.busy)
+            .on_click(handler)
         };
         let mut actions = line();
-        if upd && c["canUpdate"] == true && c["latest"] != c["current"] {
+        if upd && c["canUpdate"] == true && available {
             actions = actions.child(button(
                 "実行時の最新版に更新…",
                 Some(Maintenance::UpdateLatest),
-                None,
+                Some(format!("確認時の最新版は {latest} です。実行中の各 Pi は /reload または再起動まで旧版のままです。")),
             ));
         }
         if supports("hostRestart") {
             actions = actions.child(button("Host を再起動…", Some(Maintenance::Restart), None));
         }
-        let mut devices = group("ペアリング済みの端末", p);
+        let mut devices = section("ペアリング済みの端末", p);
         if let Some(list) = m.devices.as_array().filter(|_| online) {
             if list.is_empty() {
                 devices = devices.child(p.caption("登録された端末はありません"));
@@ -265,9 +286,17 @@ impl Desktop {
                 .unwrap_or_default()
         );
         let status = rows.and_then(|r| r.get("host", "connection").as_str());
-        let mut detail = group(host_label, p)
-            .child(summary)
-            .child(p.caption(h.address.clone()));
+        let mut detail = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_size(rems(1.1))
+                    .child(host_label),
+            )
+            .child(p.caption(format!("{summary}　·　{}", h.address)));
         if h.needs_pairing || matches!(status, Some("auth_failed" | "revoked" | "invalid_token")) {
             detail =
                 detail.child(self.nav_button(n, "repair", "ペアリングし直す", Route::SetupPc, cx));
@@ -287,7 +316,7 @@ impl Desktop {
             .child(detail)
             .child(maint.child(actions))
             .child(
-                group("プロバイダー", p).child(
+                section("プロバイダー", p).child(
                     self.nav_button(
                         n,
                         "providers",
@@ -299,8 +328,12 @@ impl Desktop {
                 ),
             )
             .child(
-                group("GitHub", p)
-                    .child(github_status(if online { &m.github } else { &Value::Null }))
+                section("GitHub", p)
+                    .child(
+                        line()
+                            .child(icon("github-mark", 16., p.ink))
+                            .child(github_status(if online { &m.github } else { &Value::Null })),
+                    )
                     .when(
                         gh && m.github["installed"] == true && m.github["loggedIn"] == false,
                         |v| {
@@ -359,10 +392,11 @@ impl Desktop {
                     n.update(cx, |s, _| {
                         s.machine = Default::default();
                         s.note = match r {
-                            Ok(v) => v["to"]
-                                .as_str()
-                                .map(|v| format!("{v} に更新しました。"))
-                                .unwrap_or_else(|| "PC が操作を受け付けました。".into()),
+                            Ok(v) => match v["to"].as_str() {
+                                Some(to) if Some(to) == v["from"].as_str() => "版は変わりませんでした。".into(),
+                                Some(to) => format!("{to} に更新しました。実行中の各 Pi で /reload を実行してください。"),
+                                None => "PC が操作を受け付けました。".into(),
+                            },
                             Err(_) => {
                                 "操作結果は不明です。再実行する前に状態を確認してください。".into()
                             }
