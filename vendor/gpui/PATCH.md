@@ -23,3 +23,7 @@ Wayland の XDG portal の `WindowAppearance` を配送するとき、対象ウ�
 ## ウィンドウ単位のキー解放（#84）
 
 `Window::set_key_release_listener` はフォーカス先の dispatch tree より先に KeyUp を通知します。確認の表示でフォーカスが変わっても、背景で消費したキーを離した時点でラッチを解除します。
+
+## 文字だけの倍率（#73）
+
+`src/window.rs` の `Window::set_text_scale` は `text_style` の解決時に文字サイズだけに倍率を掛け、rem（余白・幅など）は変えない。既定は 1。上流更新時は設定画面の倍率変更試験と `panes_follow_the_window_width` を確認する。

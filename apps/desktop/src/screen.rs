@@ -713,7 +713,7 @@ impl Render for Desktop {
             self.navigate(&nav, Route::First(host), cx);
         }
         let dark = self.palette(w, cx);
-        w.set_rem_size(px(self.size));
+        w.set_text_scale(self.size / 16.);
         let p = Colors {
             keyboard_focus: self.keyboard_focus,
             ..Colors::new(dark)
