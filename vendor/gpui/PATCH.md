@@ -26,8 +26,6 @@ Wayland の XDG portal の `WindowAppearance` を配送するとき、対象ウ�
 
 ## 画像の貼り付け（#94）
 
-`App::clipboard_image_reader` は形式だけを調べ、画像本体の取得を遅延します。添付枠の確認後、呼び出し側がバイト上限を指定してバックグラウンドで読みます。Wayland は提供元の FD から上限 + 1 バイトまで、X11 は通常・INCR とも残り容量以内、macOS は pasteboard の世代と NSData の長さを検査してから Rust 側にコピーします。AppKit はサイズを問い合わせて部分的に読み出す API を提供しておらず、OS 側の NSData の準備量までは制御しません。更新時は desktop の `stage5_external_image_and_image_paste_both_attach` と隔離 Wayland の `linux-session.sh check` で確認します。
+`App::clipboard_image_reader` は形式だけを調べ、画像本体の取得を遅延します。添付枠の確認後、呼び出し側がバイト上限を指定してバックグラウンドで読みます。Wayland は提供元の FD から上限 + 1 バイトまで、macOS は pasteboard の世代と NSData の長さを検査してから Rust 側にコピーします。AppKit はサイズを問い合わせて部分的に読み出す API を提供しておらず、OS 側の NSData の準備量までは制御しません。更新時は desktop の `stage5_external_image_and_image_paste_both_attach` と隔離 Wayland の `linux-session.sh check` で確認します。
 
-X11 で TARGETS が失敗・不正なときは画像リーダーを返さず、文字形式だけを個別に試します（画像を無制限に取得しません）。Wayland の上限付き画像読み込みは転送開始から合計10秒を期限とし、期限切れのエラーでも添付枠を解放します。文字の回帰試験は `tests/x11-clipboard.sh`（Xvfb）、`linux-session.sh check`（Wayland）、macOS CI の `clipboard_text_probe` です。
-
-既知の制限: X11 では形式を判別してから読み始めるまでに選択の所有者が変わると、新しい提供元の同形式の画像を取得する場合があります。
+Wayland の上限付き画像読み込みは転送開始から合計10秒を期限とし、期限切れのエラーでも添付枠を解放します。文字の回帰試験は `linux-session.sh check`（Wayland）、macOS CI の `clipboard_text_probe` です。

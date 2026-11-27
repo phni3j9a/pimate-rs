@@ -280,12 +280,7 @@ impl Inner {
     /// `formats` must be a slice of atoms, where each atom represents a target format.
     /// The first format from `formats`, which the clipboard owner supports will be the
     /// format of the return value.
-    fn read(
-        &self,
-        formats: &[Atom],
-        fallback_text: &[Atom],
-        selection: ClipboardKind,
-    ) -> Result<ClipboardData> {
+    fn read(&self, formats: &[Atom], selection: ClipboardKind) -> Result<ClipboardData> {
         // if we are the current owner, we can get the current clipboard ourselves
         if self.is_owner(selection)? {
             let data = self.selection_of(selection).data.read();
@@ -303,7 +298,7 @@ impl Inner {
         let reader = XContext::new()?;
 
         let highest_precedence_format =
-            match self.read_single(&reader, selection, self.atoms.TARGETS, 64 * 1024) {
+            match self.read_single(&reader, selection, self.atoms.TARGETS) {
                 Err(err) => {
                     log::trace!("Clipboard TARGETS query failed with {err:?}");
                     None
@@ -325,7 +320,7 @@ impl Inner {
             };
 
         if let Some(&format) = highest_precedence_format {
-            let data = self.read_single(&reader, selection, format, usize::MAX)?;
+            let data = self.read_single(&reader, selection, format)?;
             if !formats.contains(&data.format) {
                 // This shouldn't happen since the format is from the TARGETS list.
                 log::trace!(
@@ -338,11 +333,11 @@ impl Inner {
             return Ok(data);
         }
 
-        log::trace!("Unknown clipboard targets; trying text conversions only.");
-        for format in fallback_text {
-            match self.read_single(&reader, selection, *format, usize::MAX) {
+        log::trace!("Falling back on attempting to convert clipboard to each format.");
+        for format in formats {
+            match self.read_single(&reader, selection, *format) {
                 Ok(data) => {
-                    if fallback_text.contains(&data.format) {
+                    if formats.contains(&data.format) {
                         return Ok(data);
                     } else {
                         log::trace!(
@@ -378,7 +373,6 @@ impl Inner {
         reader: &XContext,
         selection: ClipboardKind,
         target_format: Atom,
-        limit: usize,
     ) -> Result<ClipboardData> {
         // Delete the property so that we can detect (using property notify)
         // when the selection owner receives our request.
@@ -424,8 +418,8 @@ impl Inner {
                         reader,
                         target_format,
                         &mut using_incr,
+                        &mut incr_data,
                         event,
-                        limit,
                     )?;
                     match result {
                         ReadSelNotifyResult::GotData(data) => return Ok(data),
@@ -449,7 +443,6 @@ impl Inner {
                         &mut incr_data,
                         &mut timeout_end,
                         event,
-                        limit,
                     )?;
                     if result {
                         return Ok(ClipboardData {
@@ -541,8 +534,8 @@ impl Inner {
         reader: &XContext,
         target_format: u32,
         using_incr: &mut bool,
+        incr_data: &mut Vec<u8>,
         event: SelectionNotifyEvent,
-        limit: usize,
     ) -> Result<ReadSelNotifyResult> {
         // The property being set to NONE means that the `convert_selection`
         // failed.
@@ -569,7 +562,7 @@ impl Inner {
         // is provided.
         let property_type = AtomEnum::ANY;
         // request the selection
-        let reply = reader
+        let mut reply = reader
             .conn
             .get_property(
                 true,
@@ -577,26 +570,40 @@ impl Inner {
                 event.property,
                 property_type,
                 0,
-                limit.div_ceil(4).min((u32::MAX / 4) as usize) as u32,
+                u32::MAX / 4,
             )
             .map_err(into_unknown)?
             .reply()
             .map_err(into_unknown)?;
 
-        if reply.bytes_after != 0 || reply.value.len() > limit {
-            return Err(Error::ConversionFailure);
-        }
         // we found something
         if reply.type_ == self.atoms.INCR {
-            // The initial INCR property is a lower bound, not a trusted allocation size.
-            if reply
-                .value32()
-                .and_then(|mut v| v.next())
-                .is_some_and(|n| n as usize > limit)
-            {
-                return Err(Error::ConversionFailure);
-            }
+            // Note that we call the get_property again because we are
+            // indicating that we are ready to receive the data by deleting the
+            // property, however deleting only works if the type matches the
+            // property type. But the type didn't match in the previous call.
+            reply = reader
+                .conn
+                .get_property(
+                    true,
+                    event.requestor,
+                    event.property,
+                    self.atoms.INCR,
+                    0,
+                    u32::MAX / 4,
+                )
+                .map_err(into_unknown)?
+                .reply()
+                .map_err(into_unknown)?;
+            log::trace!("Receiving INCR segments");
             *using_incr = true;
+            if reply.value_len == 4 {
+                let min_data_len = reply
+                    .value32()
+                    .and_then(|mut vals| vals.next())
+                    .unwrap_or(0);
+                incr_data.reserve(min_data_len as usize);
+            }
             Ok(ReadSelNotifyResult::IncrStarted)
         } else {
             Ok(ReadSelNotifyResult::GotData(ClipboardData {
@@ -615,7 +622,6 @@ impl Inner {
         incr_data: &mut Vec<u8>,
         timeout_end: &mut Instant,
         event: PropertyNotifyEvent,
-        limit: usize,
     ) -> Result<bool> {
         if event.atom != self.atoms.ARBOARD_CLIPBOARD || event.state != Property::NEW_VALUE {
             return Ok(false);
@@ -637,18 +643,12 @@ impl Inner {
                     target_format
                 },
                 0,
-                limit
-                    .saturating_sub(incr_data.len())
-                    .div_ceil(4)
-                    .min((u32::MAX / 4) as usize) as u32,
+                u32::MAX / 4,
             )
             .map_err(into_unknown)?
             .reply()
             .map_err(into_unknown)?;
 
-        if reply.bytes_after != 0 || reply.value.len() > limit.saturating_sub(incr_data.len()) {
-            return Err(Error::ConversionFailure);
-        }
         // log::trace!("Received segment. value_len {}", reply.value_len,);
         if reply.value_len == 0 {
             // This indicates that all the data has been sent.
@@ -1011,8 +1011,9 @@ impl Clipboard {
         self.inner.write(data, selection, wait)
     }
 
-    fn image_atoms(&self) -> [Atom; 7] {
-        [
+    pub(crate) fn get_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
+        const IMAGE_FORMAT_COUNT: usize = 7;
+        let image_format_atoms: [Atom; IMAGE_FORMAT_COUNT] = [
             self.inner.atoms.PNG__MIME,
             self.inner.atoms.JPEG_MIME,
             self.inner.atoms.WEBP_MIME,
@@ -1020,34 +1021,7 @@ impl Clipboard {
             self.inner.atoms.SVG__MIME,
             self.inner.atoms.BMP__MIME,
             self.inner.atoms.TIFF_MIME,
-        ]
-    }
-    pub(crate) fn image_reader(&self) -> Option<crate::ClipboardImageReader> {
-        let selection = ClipboardKind::Clipboard;
-        let reader = XContext::new().ok()?;
-        let targets = self
-            .inner
-            .read_single(&reader, selection, self.inner.atoms.TARGETS, 64 * 1024)
-            .ok()?;
-        if targets.format != self.inner.atoms.ATOM {
-            return None;
-        }
-        let targets = Inner::parse_formats(&targets.bytes);
-        let format = self
-            .image_atoms()
-            .into_iter()
-            .find(|f| targets.contains(f))?;
-        let inner = self.inner.clone();
-        Some(Box::new(move |limit| {
-            let reader = XContext::new()?;
-            let data = inner.read_single(&reader, selection, format, limit)?;
-            anyhow::ensure!(data.format == format, "clipboard changed");
-            Ok(data.bytes)
-        }))
-    }
-    pub(crate) fn get_any(&self, selection: ClipboardKind) -> Result<ClipboardItem> {
-        const IMAGE_FORMAT_COUNT: usize = 7;
-        let image_format_atoms = self.image_atoms();
+        ];
         let image_formats: [ImageFormat; IMAGE_FORMAT_COUNT] = [
             ImageFormat::Png,
             ImageFormat::Jpeg,
@@ -1080,9 +1054,7 @@ impl Clipboard {
         format_atoms[IMAGE_FORMAT_COUNT..].copy_from_slice(&text_format_atoms);
         debug_assert!(!format_atoms.contains(&atom_none));
 
-        let result = self
-            .inner
-            .read(&format_atoms, &text_format_atoms, selection)?;
+        let result = self.inner.read(&format_atoms, selection)?;
 
         log::trace!(
             "read clipboard as format {:?}",

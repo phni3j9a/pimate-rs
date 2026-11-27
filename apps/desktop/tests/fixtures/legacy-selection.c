@@ -12,6 +12,7 @@ int main(void) {
     XSetSelectionOwner(d, clipboard, w, CurrentTime);
     if (XGetSelectionOwner(d, clipboard) != w) return 1;
     puts("ready"); fflush(stdout);
+    int queries = 0;
     for (;;) {
         XEvent event;
         XNextEvent(d, &event);
@@ -24,9 +25,9 @@ int main(void) {
             XChangeProperty(d, r.requestor, r.property, utf8, 8, PropModeReplace,
                             (const unsigned char *)text, sizeof(text) - 1);
             reply.xselection.property = r.property;
-        } else if (r.target != targets) {
-            /* Unknown TARGETS must not lead to an image conversion. */
-            fprintf(stderr, "unexpected selection request: %s\n", XGetAtomName(d, r.target));
+        } else if (r.target == targets && ++queries > 1) {
+            /* Only the original GPUI paste should query TARGETS, not an image probe. */
+            fprintf(stderr, "unexpected extra TARGETS request\n");
             return 1;
         }
         XSendEvent(d, r.requestor, False, NoEventMask, &reply);
