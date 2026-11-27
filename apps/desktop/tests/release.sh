@@ -18,7 +18,7 @@ git config user.name test; git config user.email test@example.invalid
 mkdir -p apps/desktop
 cp "$(dirname "$check")/Cargo.toml" apps/desktop/Cargo.toml
 git add .; git commit -qm approved; expected=$(git rev-parse HEAD)
-tag=desktop-v0.3.0; git update-ref "refs/tags/$tag" HEAD; git commit --allow-empty -qm newer
+tag=desktop-v0.3.1; git update-ref "refs/tags/$tag" HEAD; git commit --allow-empty -qm newer
 test "$(bash "$check" "$tag")" = "$expected"
 reject() { if bash "$check" "$1"; then echo "incorrectly accepted $1" >&2; exit 1; fi; }
 reject main; git update-ref refs/tags/desktop-v2.0.0 HEAD; reject desktop-v2.0.0
