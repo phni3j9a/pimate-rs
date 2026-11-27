@@ -1,12 +1,16 @@
 package dev.pimate.app
 
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -51,6 +55,54 @@ class ChatReviewContract {
             assertEquals(40, list.layoutInfo.totalItemsCount)
             assertFalse(list.canScrollForward)
         }
+    }
+
+    @Test
+    fun tailUsesOneHeightUntilManualExpansionAndRepinsAfterJump() {
+        var count by mutableIntStateOf(10)
+        var rowHeight by mutableStateOf(40.dp)
+        val footerPositions = mutableListOf<Float>()
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    ChatTimeline(Modifier.height(180.dp)) { reverse, hold ->
+                        fun footer() =
+                            item("footer") {
+                                Spacer(
+                                    Modifier.height(10.dp).onGloballyPositioned {
+                                        footerPositions += it.positionInRoot().y
+                                    }
+                                )
+                            }
+                        if (reverse) footer()
+                        items(count, key = { if (reverse) count - 1 - it else it }) { index ->
+                            val n = if (reverse) count - 1 - index else index
+                            Spacer(
+                                Modifier.fillMaxWidth()
+                                    .height(if (n == 9) rowHeight else 40.dp)
+                                    .testTag("row:$n")
+                                    .clickable {
+                                        hold()
+                                        rowHeight += 120.dp
+                                    }
+                            )
+                        }
+                        if (!reverse) footer()
+                    }
+                }
+            }
+        }
+        ui.runOnIdle { rowHeight += 20.dp }
+        ui.runOnIdle { assertEquals(1, footerPositions.distinct().size) }
+        val previous = ui.onNodeWithTag("row:8").getUnclippedBoundsInRoot().top
+        ui.onNodeWithTag("row:9").performClick()
+        ui.runOnIdle { count++ }
+        assertEquals(previous, ui.onNodeWithTag("row:8").getUnclippedBoundsInRoot().top)
+        ui.onNodeWithContentDescription("最新の位置へ").performClick()
+        ui.onNodeWithTag("row:10").assertIsDisplayed()
+        ui.runOnIdle { count++ }
+        ui.onNodeWithTag("row:11").assertIsDisplayed()
+        ui.onNodeWithContentDescription("最新の位置へ").assertDoesNotExist()
     }
 
     @Test
