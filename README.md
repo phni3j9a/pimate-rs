@@ -2,7 +2,9 @@
 
 [PiMate](https://github.com/phni3j9a/PiMate)（PC で動く [Pi Coding Agent](https://github.com/earendil-works/pi) をスマホなどから使うツール）の Rust 版です。最終的に TS 版を置き換えます。
 
-**状態:** TS 版の通知以外の機能を、Android（Compose）・iOS（SwiftUI、シミュレーター）・macOS と Linux のデスクトップ（GPUI）で実装しました。Host は Rust の単一バイナリで、端末の保持（abduco の役割）を内蔵し、Linux の systemd と macOS の launchd で常駐します。RC Extension もこのリポジトリにあります。0.2.0 を公開しました（2026-11-26）: npm の `@phni3j9a/pimate`（TS 版 0.1.20 の後継）、TS 版の上書き更新になる Android の APK（[app-v0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/app-v0.2.0)）、Linux のデスクトップ（[desktop-v0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/desktop-v0.2.0)）。iOS の TestFlight と macOS のデスクトップの署名・公証は、Apple の組織アカウントへの移行のあとです（[#70](https://github.com/phni3j9a/pimate-rs/issues/70)、[ロードマップ #4](https://github.com/phni3j9a/pimate-rs/issues/4)）。
+**状態:** TS 版との機能差は Android・iOS・macOS・Linux でおおむね解消しました（[#74](https://github.com/phni3j9a/pimate-rs/issues/74)）。デスクトップは[画面設計の段階1〜5](docs/design/desktop/PLAN.md)を終え、会話を中心に作り直しました（[#73](https://github.com/phni3j9a/pimate-rs/issues/73)）。
+
+公開済みは [Host・npm 0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/host-v0.2.0)、[Android 0.2.1](https://github.com/phni3j9a/pimate-rs/releases/tag/app-v0.2.1)、[Linux デスクトップ 0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/desktop-v0.2.0) です。[次の版のリリースノート（下書き）](docs/release-notes/)は未公開です。iOS の TestFlight と macOS の署名・公証は [#70](https://github.com/phni3j9a/pimate-rs/issues/70) で扱います。
 
 ## 目的
 
@@ -163,7 +165,7 @@ Grok Bot から使うには、公開テンプレート **[PiMate](https://x.ai/b
 
 ```sh
 pimate prompt "$id" 'この変更を確認して' --wait --timeout 60
-pimate wait "$id" --timeout 60      # timeout は送信失敗ではない。prompt は再送しない
+pimate wait "$id" --redact --timeout 60  # Bot に渡す結果は伏せ字に。timeout でも再送しない
 pimate history "$id" --last 4        # 直近の会話を古い順で返す
 ```
 
@@ -380,7 +382,7 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 
 ### デスクトップ配布版（macOS・Linux）
 
-版の正本は `apps/desktop/Cargo.toml` の `package.version`（変更時は `Cargo.lock` も更新）。初版は Host・Extension・Android と同じ **0.2.0**。以降の更新は独立した `desktop-vX.Y.Z` タグです。設定の「公開版を確認」はインストール版と比較できるよう、GitHub Releases のデスクトップ正式版の一覧をブラウザで開きます。自動インストールはしません。
+0.3.0 の配布対象は Linux のみです。macOS は署名・公証待ちで、CI の zip は公開版ではありません。版の正本は `apps/desktop/Cargo.toml` の `package.version`、タグは `desktop-vX.Y.Z` です。設定では公開版と比較できます。自動で更新はしません。
 
 - **macOS:** `PiMate-Desktop-<版>-macos-{arm64,x86_64}.zip`。Apple Silicon / Intel ともネイティブ runner で Metal を含めてビルドし、不要なもう一方のバイナリを配らないため universal にはしません。zip を展開し `PiMate Desktop.app` を「アプリケーション」へ。開発版 `PiMate RS.app` を置換せず LaunchServices が区別できる名前と ID（配布版 `dev.pimate.desktop`、開発版 `dev.pimate.rs.desktop`）です。バンドルを区別しても通常起動の登録・設定の保存先は共通です。
 - **署名の確認:** ad-hoc は改変検出用で発行元の本人確認にはなりません。ブラウザから取得した未公証の `.app` は Gatekeeper に拒否される場合があります。出所と成果物を確認し、信頼できる場合だけ、一度開いて警告を閉じ「システム設定 → プライバシーとセキュリティ → このまま開く」で**そのアプリだけ**許可します（[Apple の手順](https://support.apple.com/102445)）。Gatekeeper 自体を切らず、隔離属性を一括削除しません。
@@ -388,13 +390,33 @@ Xcode 16.3 以降、iOS 17+。TS 版とは別の `dev.pimate.app.rs.debug` を�
 
 [Desktop packages](.github/workflows/desktop-package.yml) は PR・main の対象変更で4種類の release archive を Actions artifact に残します。ローカルで組み立てるには同じ OS/CPU でリポジトリ直下から `cargo build --release --locked -p pimate-desktop && apps/desktop/package.sh`（要 `jq`・`cargo-about` 0.9.3・Rust の標準ライブラリのライセンス文書）。MIT LICENSE、依存 crate・標準ライブラリの notices も収録し `dist/` に出力します。
 
-**M8 の公開担当者へ（今回はタグ・公開・Developer ID 署名なし）:**
+**両 OS を配布する場合の署名・公開手順:** 下記の `publish=true` は macOS も添付するため、Linux のみの 0.3.0 には使いません。
 
 1. GitHub Environment `desktop-release` の deployment branch policy を branch `main` のみ・tag なしに設定済みです。公開前にもこの制限を確認してください。可能なら承認者も設定します。Apple Developer Program で **Developer ID Application** 証明書と秘密鍵を用意し、パスワード付き PKCS#12 にエクスポート。公証用に App Store Connect のチーム API キー・Key ID・Issuer ID を用意します。
 2. `desktop-release` の **Environment secrets のみ**に `DEVELOPER_ID_P12_BASE64`（p12 の base64）、`DEVELOPER_ID_PASSWORD`、`ASC_PRIVATE_KEY_BASE64`（p8 の base64）、`ASC_KEY_ID`、`ASC_ISSUER_ID` を設定します。repository・organization secret や動作確認 VM には置きません。5個すべて未設定なら ad-hoc のまま、一部だけなら失敗。設定済みなら公開時に一時 keychain で hardened runtime・タイムスタンプ付き署名 → `notarytool submit --wait` → staple と検証を経て zip を作り直します。
 3. 公開承認後、main に統合された対象 commit の既存 `desktop-v<版>` タグを指定し、Actions の **Use workflow from: main**・`publish=false`（既定）で dry-run。タグ名・main の履歴・Cargo 版を照合した SHA からビルドします。タグ push は公開を開始しません。検証後だけ `publish=true`。公開直前に live tag・ビルド SHA・最終アーカイブ内の版を再照合します。macOS は Info.plist の両版、Linux は native runner の `--version` と tar.gz 内バイナリの SHA-256 を照合し、公開権限のあるジョブではバイナリを起動しません。同一実行の4成果物を添付し、Release 本文に macOS の署名・公証状態を書きます。公開済みファイルは上書きしません。
 
 Linux の配布物の接続試験は、tar.gz を展開し、`cargo build --locked -p pimate-host` 後に `apps/desktop/tests/linux-session.sh package /tmp/pi-package /展開先/bin/pimate-desktop`。模擬 Host は debug ビルド、起動するアプリには必ず展開したバイナリを指定します。隔離 GNOME の必要ツールは次節を参照してください。
+
+### デスクトップの操作
+
+左でマシンと Pi を選び、中央で会話を読み書きします。右には変更・サブエージェント・GitHub を開けます（幅 1080px 未満では会話に重ねます）。差分の行を選ぶと下書きに引用されます。モデル・Thinking と使用状況は入力欄の下、セッション操作は会話右上の ⋯ にあります。
+
+| キー（macOS は Ctrl を ⌘ に読み替え） | 操作 |
+|---|---|
+| Enter / Shift+Enter | 送信／改行。日本語変換中の Enter は確定のみ。設定で Ctrl+Enter 送信に変更可 |
+| Ctrl+K / Ctrl+N | Pi・コマンドを検索／新しい Pi |
+| Esc | 手前のメニューやパネルを閉じる。会話で実行中なら停止 |
+| F6 / Ctrl+L / Ctrl+B | 次のペイン／入力欄へ／サイドバーの表示切替 |
+| Ctrl+↑・↓ / Ctrl+1〜9 / Ctrl+Shift+A | 前後の Pi／番号で選択／次の要対応 |
+| Ctrl+Shift+M・D・S・G | モデル・Thinking／変更／サブエージェント／GitHub |
+| Page Up・Down / Ctrl+End | 会話をスクロール／末尾へ |
+| Ctrl++・−・0 | 文字を大きく／小さく／標準に戻す |
+| Ctrl+, / Ctrl+/ | 設定／ショートカット一覧 |
+
+設定は Linux では `$XDG_CONFIG_HOME/pimate-rs-desktop/`（既定 `~/.config/pimate-rs-desktop/`）、macOS では `~/Library/Application Support/pimate-rs-desktop/` にあります。`settings.json` は表示と質問ツールの既定、`layout.json` はサイドバーの幅、`ctrl-enter.json` は送信キーです。接続用の資格情報はこれらに含みません。
+
+**既知の制限:** X11 で画像を添付するときは貼り付けではなくドラッグ＆ドロップを使ってください。OS 通知はなく、要対応の件数はタイトルとサイドバーで確認します。スクリーンリーダーには対応しません。セッション名の変更と、送信済みの割り込みの個別取消はできません。Linux で終了や削除の確認を開くと、最初はキャンセルが選ばれています。開いたときの Enter を押し続けても実行されません。キーボードで実行するには、いったんキーを離し、Tab で実行ボタンを選んでから Enter を押してください。
 
 ### デスクトップ開発版（macOS・Linux）
 

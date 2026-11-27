@@ -13,7 +13,7 @@ copyFileSync('scripts/cli.js', `${out}/dist/cli.js`);
 chmodSync(`${out}/dist/cli.js`, 0o755);
 cpSync('grok-bot', `${out}/grok-bot`, { recursive: true });
 copyFileSync('LICENSE', `${out}/LICENSE`);
-copyFileSync('../../README.md', `${out}/README.md`);
+copyFileSync('README.md', `${out}/README.md`);
 const hostManifest = '../../crates/pimate-host/Cargo.toml';
 const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--no-deps', '--locked', '--format-version', '1']));
 assert.equal(metadata.packages.find(p => p.name === 'pimate-host').version, src.version, 'Host/npm version mismatch');

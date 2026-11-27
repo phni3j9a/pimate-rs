@@ -4546,7 +4546,7 @@ dependencies = [
 
 [[package]]
 name = "pimate-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-io",
@@ -4587,7 +4587,7 @@ dependencies = [
 
 [[package]]
 name = "pimate-host"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",
