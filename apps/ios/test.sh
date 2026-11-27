@@ -49,7 +49,16 @@ start_fixture() {
   links+=("$file")
   PIMATE_DEMO_NAME="デモ PC" scripts/android-demo.py >"$lab/fixture-$n" 2>&1 &
   fixture_pid=$!; fixtures+=("$fixture_pid")
-  for _ in {1..60}; do grep -q '^pimate://pair?' "$lab/fixture-$n" && break; kill -0 "$fixture_pid"; sleep 1; done
+  for _ in {1..60}; do
+    grep -q '^pimate://pair?' "$lab/fixture-$n" && break
+    kill -0 "$fixture_pid" 2>/dev/null || break
+    sleep 1
+  done
+  if ! grep -q '^pimate://pair?' "$lab/fixture-$n"; then
+    echo "Fixture $n did not produce a pairing link:" >&2
+    cat "$lab/fixture-$n" >&2
+    return 1
+  fi
   grep -m1 '^pimate://pair?' "$lab/fixture-$n" | tr -d '\r\n' >"$file"
   [[ -s $file ]]
   # Trust only the port announced by this process; never derive the expected address from a link.

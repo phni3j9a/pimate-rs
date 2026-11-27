@@ -280,7 +280,8 @@ impl Desktop {
             });
         }
         let f = n.read(cx).spawn.as_ref().unwrap();
-        let mut folders = group("フォルダ", p).child(context::field(&folder, locked));
+        let mut folders = group("フォルダ", p)
+            .child(context::field(&folder, locked).debug_selector(|| "spawn-folder".into()));
         let mut recent = line().track_focus(&f.choices);
         for (i, path) in f
             .folders
@@ -525,6 +526,7 @@ impl Desktop {
         v.child(
             group("最初のメッセージ（任意）", p).child(
                 context::editor(div(), msg.clone(), locked)
+                    .debug_selector(|| "spawn-message".into())
                     .child(Input::new(&msg).h(rems(3.5)).disabled(locked)),
             ),
         )
@@ -616,6 +618,7 @@ impl Desktop {
                 .child(p.caption("起動した Pi はマシン一覧に表示されます。"))
                 .child(
                     p.primary("spawn", cx)
+                        .debug_selector(|| "spawn".into())
                         .label("起動")
                         .disabled(disabled)
                         .on_click(submit),
@@ -690,6 +693,43 @@ mod tests {
             "/home/p",
             "~/code/"
         ));
+    }
+    #[gpui::test]
+    fn tab_reveals_the_message_and_shift_tab_scrolls_back(cx: &mut gpui::TestAppContext) {
+        use super::*;
+        let (app, w, _socket) = super::super::tests::open_chat(cx);
+        w.update(|_, cx| keys::init(cx));
+        w.simulate_resize(size(px(480.), px(480.)));
+        w.simulate_keystrokes("secondary-n");
+        w.simulate_input("/tmp/project");
+        let (scroll, folder, msg) = app.read_with(w, |app, cx| {
+            let n = app.navigation.as_ref().unwrap().read(cx);
+            let f = n.spawn.as_ref().unwrap();
+            (n.scroll.clone(), f.folder.clone(), f.message.clone())
+        });
+        let footer = w.debug_bounds("spawn").unwrap();
+        for (key, target, selector) in [
+            ("tab", msg, "spawn-message"),
+            ("shift-tab", folder, "spawn-folder"),
+        ] {
+            for _ in 0..20 {
+                w.simulate_keystrokes(key);
+                w.simulate_event(KeyUpEvent {
+                    keystroke: Keystroke::parse(key).unwrap(),
+                });
+                w.run_until_parked();
+                if w.update(|w, cx| target.focus_handle(cx).is_focused(w)) {
+                    break;
+                }
+            }
+            assert!(w.update(|w, cx| target.focus_handle(cx).is_focused(w)));
+            assert!(
+                w.debug_bounds(selector)
+                    .unwrap()
+                    .is_contained_within(&scroll.bounds())
+            );
+            assert_eq!(w.debug_bounds("spawn").unwrap(), footer);
+        }
     }
     #[gpui::test]
     fn catalog_and_directory_choices_survive_focus_changes(cx: &mut gpui::TestAppContext) {

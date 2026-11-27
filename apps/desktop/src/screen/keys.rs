@@ -150,6 +150,11 @@ pub(crate) fn intercept(w: &mut Window, cx: &mut Context<Desktop>) -> Subscripti
         if key == "tab" && modal {
             d.consumed_keys.insert(key.into(), None);
             w.cycle_focus_within(&d.modal_focus, e.keystroke.modifiers.shift);
+            if top == Some(Overlay::Route)
+                && let Some(n) = &d.navigation
+            {
+                n.read(cx).scroll.reveal_focus();
+            }
             cx.stop_propagation();
             return;
         }

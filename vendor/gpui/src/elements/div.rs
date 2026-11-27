@@ -1393,6 +1393,12 @@ impl Element for Div {
             (child_max - child_min).into()
         };
 
+        let reveal = self
+            .interactivity
+            .tracked_scroll_handle
+            .as_ref()
+            .filter(|handle| mem::take(&mut handle.0.borrow_mut().reveal_focus))
+            .cloned();
         if let Some(scroll_handle) = self.interactivity.tracked_scroll_handle.as_ref() {
             scroll_handle.scroll_to_active_item();
         }
@@ -1410,11 +1416,16 @@ impl Element for Div {
                     return hitbox;
                 }
 
+                let previous = reveal.map(|handle| window.focus_scroll.replace(handle));
                 window.with_element_offset(scroll_offset, |window| {
                     for child in &mut self.children {
                         child.prepaint(window, cx);
                     }
                 });
+
+                if let Some(previous) = previous {
+                    window.focus_scroll = previous;
+                }
 
                 if let Some(listener) = self.prepaint_listener.as_ref() {
                     listener(children_bounds, window, cx);
@@ -1646,6 +1657,17 @@ impl Interactivity {
 
         if let Some(focus_handle) = self.tracked_focus_handle.as_ref() {
             window.set_focus_handle(focus_handle, cx);
+            if let Some(scroll) = &window.focus_scroll
+                && focus_handle.is_focused(window)
+            {
+                let viewport = scroll.bounds();
+                let dy = (viewport.top() - bounds.top()).max(px(0.))
+                    + (viewport.bottom() - bounds.bottom()).min(px(0.));
+                if dy != px(0.) {
+                    scroll.set_offset(scroll.offset() + point(px(0.), dy));
+                    window.defer(cx, |w, _| w.refresh());
+                }
+            }
         }
         window.with_optional_element_state::<InteractiveElementState, _>(
             global_id,
@@ -3044,6 +3066,7 @@ struct ScrollHandleState {
     max_offset: Size<Pixels>,
     child_bounds: Vec<Bounds<Pixels>>,
     scroll_to_bottom: bool,
+    reveal_focus: bool,
     overflow: Point<Overflow>,
     active_item: Option<ScrollActiveItem>,
 }
@@ -3077,6 +3100,11 @@ impl ScrollHandle {
     /// Construct a new scroll handle.
     pub fn new() -> Self {
         Self(Rc::default())
+    }
+
+    /// On the next prepaint, scroll vertically to reveal the currently focused descendant.
+    pub fn reveal_focus(&self) {
+        self.0.borrow_mut().reveal_focus = true;
     }
 
     /// Get the current scroll offset.
