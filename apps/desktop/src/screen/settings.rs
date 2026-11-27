@@ -49,24 +49,33 @@ pub(super) fn version_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
     }
     Some(parts(a)?.cmp(&parts(b)?))
 }
-fn desktop_release(rows: &Value) -> Release {
-    let version = rows
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|v| v["draft"] == false && v["prerelease"] == false)
-        .filter_map(|v| v["tag_name"].as_str()?.strip_prefix("desktop-v"))
-        .filter(|v| version_cmp(v, "0.0.0").is_some())
-        .max_by(|a, b| version_cmp(a, b).unwrap());
-    match version {
-        Some(v)
-            if version_cmp(v, env!("CARGO_PKG_VERSION")) == Some(std::cmp::Ordering::Greater) =>
+const PAGE_SIZE: usize = 100;
+async fn desktop_release(mut fetch: impl AsyncFnMut(u32) -> Option<Vec<Value>>) -> Option<Release> {
+    let mut latest: Option<String> = None;
+    for page in 1.. {
+        let rows = fetch(page).await?;
+        for version in rows
+            .iter()
+            .filter(|v| v["draft"] == false && v["prerelease"] == false)
+            .filter_map(|v| v["tag_name"].as_str()?.strip_prefix("desktop-v"))
         {
-            Release::Available(v.into())
+            if version_cmp(version, latest.as_deref().unwrap_or("0.0.0"))
+                .is_some_and(|cmp| latest.is_none() || cmp.is_gt())
+            {
+                latest = Some(version.to_owned());
+            }
+        }
+        if rows.len() < PAGE_SIZE {
+            break;
+        }
+    }
+    Some(match latest {
+        Some(v) if version_cmp(&v, env!("CARGO_PKG_VERSION")).is_some_and(|cmp| cmp.is_gt()) => {
+            Release::Available(v)
         }
         Some(_) => Release::Latest,
         None => Release::Unknown,
-    }
+    })
 }
 fn query_release() -> Option<Release> {
     tokio::runtime::Builder::new_current_thread()
@@ -74,25 +83,31 @@ fn query_release() -> Option<Release> {
         .build()
         .ok()?
         .block_on(async {
-            let mut response = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(10))
+            let client = reqwest::Client::builder()
                 .user_agent("PiMate Desktop")
                 .build()
-                .ok()?
-                .get("https://api.github.com/repos/phni3j9a/pimate-rs/releases?per_page=100")
-                .send()
+                .ok()?;
+            let query = desktop_release(async |page| {
+                let mut response = client
+                    .get("https://api.github.com/repos/phni3j9a/pimate-rs/releases")
+                    .query(&[("per_page", PAGE_SIZE as u32), ("page", page)])
+                    .send()
+                    .await
+                    .ok()?
+                    .error_for_status()
+                    .ok()?;
+                let mut bytes = Vec::new();
+                while let Some(part) = response.chunk().await.ok()? {
+                    if bytes.len() + part.len() > 2_000_000 {
+                        return None;
+                    }
+                    bytes.extend_from_slice(&part);
+                }
+                serde_json::from_slice(&bytes).ok()
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(20), query)
                 .await
                 .ok()?
-                .error_for_status()
-                .ok()?;
-            let mut bytes = Vec::new();
-            while let Some(part) = response.chunk().await.ok()? {
-                if bytes.len() + part.len() > 2_000_000 {
-                    return None;
-                }
-                bytes.extend_from_slice(&part);
-            }
-            Some(desktop_release(&serde_json::from_slice(&bytes).ok()?))
         })
 }
 #[derive(Default)]
@@ -216,6 +231,9 @@ impl Desktop {
             | (Route::SetupPc, Route::Settings)
             | (Route::Tailscale, Route::Settings) => previous.clone(),
             (Route::New(_), Route::New(_)) => n.read(cx).back.clone(),
+            (Route::Tailscale, Route::SetupPc) if n.read(cx).section == Section::Add => {
+                Route::Settings
+            }
             (Route::SetupPc, _) => Route::Tailscale,
             _ => Route::Home,
         };
@@ -234,7 +252,13 @@ impl Desktop {
             _ => None,
         };
         n.update(cx, |s, _| {
+            let section = if matches!(route, Route::Settings | Route::Tailscale | Route::SetupPc) {
+                s.section
+            } else {
+                Section::default()
+            };
             *s = Nav {
+                section,
                 route,
                 generation,
                 back,
@@ -719,15 +743,57 @@ mod tests {
         ] {
             assert_eq!(version_cmp(latest, current), expected);
         }
-        let rows = serde_json::json!([{"tag_name":"app-v9.9.9","draft":false,"prerelease":false},{"tag_name":"desktop-v9.9.9","draft":true,"prerelease":false}]);
-        assert!(matches!(desktop_release(&rows), Release::Unknown));
-        for (v, newer) in [("0.0.1", false), ("999.1.0", true)] {
-            let rows = serde_json::json!([{"tag_name":format!("desktop-v{v}"),"draft":false,"prerelease":false}]);
-            assert_eq!(
-                matches!(desktop_release(&rows), Release::Available(_)),
-                newer
-            );
+    }
+    #[tokio::test]
+    async fn newest_desktop_release_can_be_on_a_later_page() {
+        let other = serde_json::json!({"tag_name":"app-v999.9.9","draft":false,"prerelease":false});
+        let stable =
+            |tag: &str| serde_json::json!({"tag_name":tag,"draft":false,"prerelease":false});
+        let mut first = vec![other; super::PAGE_SIZE];
+        assert!(matches!(
+            desktop_release(async |_| Some(vec![first[0].clone(), stable("desktop-v1.0.0-beta")]))
+                .await,
+            Some(Release::Unknown)
+        ));
+        first[0] = stable("desktop-v0.0.1");
+        let mut second = vec![stable("desktop-v999.1.0"), stable("desktop-v999.2.0")];
+        second[1]["draft"] = true.into();
+        let release = desktop_release(async |p| match p {
+            1 => Some(first.clone()),
+            2 => Some(second.clone()),
+            _ => panic!("unexpected page"),
+        })
+        .await;
+        assert!(matches!(release,Some(Release::Available(v)) if v=="999.1.0"));
+        assert!(
+            desktop_release(async |p| (p == 1).then(|| first.clone()))
+                .await
+                .is_none()
+        );
+        assert!(matches!(
+            desktop_release(async |_| Some(vec![stable("desktop-v0.0.1")])).await,
+            Some(Release::Latest)
+        ));
+    }
+    #[gpui::test]
+    fn connection_guide_returns_to_add_machine(cx: &mut gpui::TestAppContext) {
+        let (app, w, _socket) = super::super::tests::open_chat(cx);
+        for id in [
+            "nav-settings",
+            "settings-register-machine",
+            "nav-setup",
+            "nav-guide-next",
+            "nav-back",
+            "nav-back",
+        ] {
+            let at = w.debug_bounds(id).unwrap().center();
+            w.simulate_click(at, Default::default());
+            w.run_until_parked();
         }
+        app.read_with(w, |d, cx| {
+            let nav = d.navigation.as_ref().unwrap().read(cx);
+            assert!(nav.route == super::Route::Settings && nav.section == super::Section::Add);
+        });
     }
     #[gpui::test]
     fn settings_click_changes_text_not_layout(cx: &mut gpui::TestAppContext) {

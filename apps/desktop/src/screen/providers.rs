@@ -10,6 +10,8 @@ pub(super) struct ProviderData {
     login: Option<Arc<Login>>,
     pending: bool,
     following: Option<String>,
+    logged_out_flow: Option<String>,
+    list_failed: bool,
     logout: Option<(AuthProviderId, String)>,
     prompt: Option<(String, String, Entity<InputState>)>,
 }
@@ -54,9 +56,14 @@ fn device_code(flow: &str, code: &str, w: &mut Window, cx: &mut App) -> Div {
 }
 impl settings::Nav {
     fn show_login_result(&self, flow: &Value) -> bool {
-        !flow.is_null() && self.note.is_empty() && !self.providers.pending
+        !flow.is_null()
+            && self
+                .providers
+                .logged_out_flow
+                .as_deref()
+                .is_none_or(|id| flow["id"] != id)
     }
-    fn logout_ack(&mut self, result: Result<Value, Error>) -> bool {
+    fn logout_ack(&mut self, result: Result<Value, Error>, old_flow: Option<String>) -> bool {
         self.note = match result {
             Ok(v) if v["refreshRequired"] == true => {
                 "保存した認証情報を削除しました。反映するには PC の Pi で /reload または再起動してください。"
@@ -70,10 +77,14 @@ impl settings::Nav {
             }
         }
         .into();
+        if old_flow.is_some() {
+            self.providers.logged_out_flow = old_flow;
+        }
         true
     }
     fn logout_list(&mut self, result: Result<Value, Error>) {
         self.providers.pending = false;
+        self.providers.list_failed = false;
         if result.is_err() {
             self.note
                 .push_str(" ログイン一覧の再取得に失敗しました。状態を再確認してください。");
@@ -98,13 +109,22 @@ impl Desktop {
             s.providers.prompt = None;
             s.note.clear();
         });
-        self.page_task(n,w,cx,async move|_|{
-            login.request(action).await?;
-            login.request(AuthAction::List).await
-        },|_,n,result,_,cx|{n.update(cx,|s,_|{
-            s.providers.pending=false;
-            if result.is_err(){ s.note="資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。".into();}
-        });});
+        self.page_task(
+            n, w, cx,
+            async move |_| {
+                login.request(action).await?;
+                Ok::<_, Error>(login.request(AuthAction::List).await.is_err())
+            },
+            |_, n, result, _, cx| {
+                n.update(cx, |s, _| {
+                    s.providers.pending = false;
+                    match result {
+                        Ok(failed) => s.providers.list_failed = failed,
+                        Err(_) => s.note = "資格情報の状態は未確認です。再入力する前にログイン状態を再確認してください。".into(),
+                    }
+                });
+            },
+        );
     }
     pub(super) fn providers_view(
         &mut self,
@@ -175,13 +195,31 @@ impl Desktop {
         let providers = rows.get("provider", login.instance());
         let busy = n.read(cx).providers.pending;
         let active = matches!(Outcome::from_flow(flow), Outcome::Active);
-        let mut v = div().flex().flex_col().gap_3();
+        let mut v = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .when(n.read(cx).providers.list_failed, |d| {
+                d.child(p.caption("ログイン一覧の再取得に失敗しました。状態を再確認してください。"))
+            });
         if active {
             let fid = flow["id"].as_str().unwrap_or_default().to_string();
             if n.read(cx).providers.following.as_ref() != Some(&fid) {
                 let l = login.clone();
                 n.update(cx, |s, _| s.providers.following = Some(fid.clone()));
-                self.page_task(n,w,cx,async move|_|{while l.follow_once().await?{}l.request(AuthAction::List).await},|_,n,r,_,cx|{if r.is_err(){n.update(cx,|s,_|s.note="ログインの進行状況は未確認です。再入力前に状態を再確認してください。".into());}});
+                self.page_task(
+                    n, w, cx,
+                    async move |_| {
+                        while l.follow_once().await? {}
+                        Ok::<_, Error>(l.request(AuthAction::List).await.is_err())
+                    },
+                    |_, n, result, _, cx| {
+                        n.update(cx, |s, _| match result {
+                            Ok(failed) => s.providers.list_failed = failed,
+                            Err(_) => s.note = "ログインの進行状況は未確認です。再入力前に状態を再確認してください。".into(),
+                        });
+                    },
+                );
             }
             let mut form = section(
                 flow["provider"].as_str().unwrap_or("ログイン").to_string(),
@@ -330,6 +368,10 @@ impl Desktop {
                     back.update(cx, |s, _| s.providers.logout = None);
                     cx.notify();
                 }));
+            let old_flow = flow["id"]
+                .as_str()
+                .filter(|_| flow["provider"].as_str() == Some(name.as_str()))
+                .map(str::to_owned);
             let confirm = Button::new("logout-yes")
                 .danger()
                 .label("ログアウト")
@@ -340,13 +382,14 @@ impl Desktop {
                     });
                     let l = login.clone();
                     let list = login.clone();
+                    let old_flow = old_flow.clone();
                     app.page_task(
                         &nav,
                         w,
                         cx,
                         async move |_| l.logout_confirmation(provider).confirm().await,
-                        |app, n, r, w, cx| {
-                            if n.update(cx, |s, _| s.logout_ack(r)) {
+                        move |app, n, r, w, cx| {
+                            if n.update(cx, |s, _| s.logout_ack(r, old_flow)) {
                                 app.page_task(
                                     n,
                                     w,
@@ -461,13 +504,20 @@ mod tests {
         use crate::screen::settings::Nav;
         use pimate_core::Error;
         let mut nav = Nav::default();
-        let previous = serde_json::json!({"status":"succeeded"});
+        let previous =
+            serde_json::json!({"id":"saved", "status":"succeeded","refreshRequired":true});
+        nav.providers.list_failed = true;
+        nav.note = "照会に失敗しました".into();
         assert!(nav.show_login_result(&previous));
         nav.providers.pending = true;
-        assert!(nav.logout_ack(Ok(serde_json::json!({"refreshRequired":true}))));
+        assert!(nav.logout_ack(
+            Ok(serde_json::json!({"refreshRequired":true})),
+            Some("saved".into())
+        ));
         assert!(nav.note.contains("/reload") && nav.providers.pending);
         nav.logout_list(Ok(serde_json::Value::Null));
         assert!(!nav.show_login_result(&previous));
+        assert!(nav.show_login_result(&serde_json::json!({"id":"next","status":"succeeded"})));
         nav.logout_list(Err(Error::Timeout));
         assert!(
             !nav.providers.pending
@@ -475,7 +525,7 @@ mod tests {
                 && nav.note.contains("/reload")
                 && nav.note.contains("再取得に失敗")
         );
-        assert!(!nav.logout_ack(Err(Error::OutcomeUnknown)));
+        assert!(!nav.logout_ack(Err(Error::OutcomeUnknown), None));
         assert!(
             nav.note.contains("削除結果は不明")
                 && !nav.note.contains("保存した認証情報を削除しました")
