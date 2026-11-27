@@ -69,6 +69,9 @@ pub trait LinuxClient {
     fn write_to_primary(&self, item: ClipboardItem);
     fn write_to_clipboard(&self, item: ClipboardItem);
     fn read_from_primary(&self) -> Option<ClipboardItem>;
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        None
+    }
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
     fn active_window(&self) -> Option<AnyWindowHandle>;
     fn window_stack(&self) -> Option<Vec<AnyWindowHandle>>;
@@ -583,6 +586,10 @@ impl<P: LinuxClient + 'static> Platform for P {
 
     fn read_from_primary(&self) -> Option<ClipboardItem> {
         self.read_from_primary()
+    }
+
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        LinuxClient::clipboard_image_reader(self)
     }
 
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {

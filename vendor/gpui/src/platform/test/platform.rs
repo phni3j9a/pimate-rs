@@ -29,7 +29,7 @@ pub(crate) struct TestPlatform {
     pub(crate) active_window: RefCell<Option<TestWindow>>,
     active_display: Rc<dyn PlatformDisplay>,
     active_cursor: Mutex<CursorStyle>,
-    current_clipboard_item: Mutex<Option<ClipboardItem>>,
+    current_clipboard_item: Mutex<Option<std::sync::Arc<ClipboardItem>>>,
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     current_primary_item: Mutex<Option<ClipboardItem>>,
     pub(crate) prompts: RefCell<TestPrompts>,
@@ -400,7 +400,7 @@ impl Platform for TestPlatform {
     }
 
     fn write_to_clipboard(&self, item: ClipboardItem) {
-        *self.current_clipboard_item.lock() = Some(item);
+        *self.current_clipboard_item.lock() = Some(item.into());
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -408,8 +408,12 @@ impl Platform for TestPlatform {
         self.current_primary_item.lock().clone()
     }
 
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        self.current_clipboard_item.lock().as_ref()?.image_reader()
+    }
+
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
-        self.current_clipboard_item.lock().clone()
+        self.current_clipboard_item.lock().as_deref().cloned()
     }
 
     fn write_credentials(&self, _url: &str, _username: &str, _password: &[u8]) -> Task<Result<()>> {

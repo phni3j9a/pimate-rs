@@ -11,7 +11,7 @@ use std::{
 };
 const WEB_MAX: usize = 8 * 1024 * 1024;
 
-const SOURCE: u64 = 32 * 1024 * 1024;
+pub(crate) const SOURCE: u64 = 32 * 1024 * 1024;
 pub(super) fn encode_file(path: &Path, budget: usize) -> Result<p::PromptImage, Error> {
     let meta = path.metadata().map_err(|_| Error::BadRequest)?;
     if !meta.is_file() || meta.len() > SOURCE {

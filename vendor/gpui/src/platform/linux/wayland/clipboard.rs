@@ -29,7 +29,7 @@ pub(crate) struct Clipboard {
     self_mime: String,
 
     // Internal clipboard
-    contents: Option<ClipboardItem>,
+    contents: Option<std::sync::Arc<ClipboardItem>>,
     primary_contents: Option<ClipboardItem>,
 
     // External clipboard
@@ -158,7 +158,7 @@ impl Clipboard {
     }
 
     pub fn set(&mut self, item: ClipboardItem) {
-        self.contents = Some(item);
+        self.contents = Some(item.into());
     }
 
     pub fn set_primary(&mut self, item: ClipboardItem) {
@@ -195,6 +195,34 @@ impl Clipboard {
         }
     }
 
+    pub fn image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        use std::io::Read;
+        let offer = self.current_offer.as_ref()?;
+        if offer.has_mime_type(&self.self_mime) {
+            return self.contents.as_ref()?.image_reader();
+        }
+        let mime = ImageFormat::iter()
+            .map(|f| f.mime_type())
+            .find(|m| offer.has_mime_type(m))?;
+        let offer = offer.inner.clone();
+        let connection = self.connection.clone();
+        Some(Box::new(move |limit| {
+            use std::{
+                os::{fd::AsFd, unix::net::UnixStream},
+                time::Duration,
+            };
+            let (read, write) = UnixStream::pair()?;
+            read.set_read_timeout(Some(Duration::from_secs(10)))?;
+            offer.receive_data(mime.to_string(), write.as_fd());
+            drop(write);
+            connection.flush()?;
+            let mut bytes = Vec::new();
+            read.take(limit.saturating_add(1) as u64)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= limit, "clipboard image too large");
+            Ok(bytes)
+        }))
+    }
     pub fn read(&mut self) -> Option<ClipboardItem> {
         let offer = self.current_offer.as_ref()?;
         if let Some(cached) = self.cached_read.clone() {
@@ -202,7 +230,7 @@ impl Clipboard {
         }
 
         if offer.has_mime_type(&self.self_mime) {
-            return self.contents.clone();
+            return self.contents.as_deref().cloned();
         }
 
         let item = offer

@@ -312,4 +312,17 @@ if mode == 'check':
         assert time.monotonic() < deadline, 'dropped PNG did not appear in the composer'
     assert prompts() == external + [['demo', 'ニホンゴ']], 'drop must not send'
     print('check: external Wayland drop attached one PNG without sending')
+    # Exercise the actual wl_data_offer pipe (GPUI unit tests use an in-memory clipboard).
+    Image.new('RGB', (96, 96), (201, 41, 117)).save('clipboard.png')
+    with open('clipboard.png', 'rb') as payload:
+        subprocess.run(['wl-copy', '--type', 'image/png'], stdin=payload, check=True)
+    click(*editor)
+    seat.NotifyKeyboardKeysym(0xffe3, True); key(ord('v')); seat.NotifyKeyboardKeysym(0xffe3, False)
+    deadline = time.monotonic() + 5
+    while True:
+        crop = snap('pasted-image').crop((x+320, y+495, x+1130, y+695))
+        if sum(n for n,(r,g,b) in crop.getcolors(crop.width*crop.height) if abs(r-201)+abs(g-41)+abs(b-117)<10) > 150: break
+        assert time.monotonic() < deadline, 'clipboard PNG did not appear in the composer'
+    assert prompts() == external + [['demo', 'ニホンゴ']], 'paste must not send'
+    print('check: external clipboard PNG attached')
 seat.Stop()

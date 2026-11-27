@@ -1099,6 +1099,36 @@ impl Platform for MacPlatform {
         }
     }
 
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        unsafe {
+            let pb = self.0.lock().pasteboard;
+            let types: id = pb.types();
+            let format = ImageFormat::iter().find(|format| {
+                let ty: UTType = (*format).into();
+                let present: bool = msg_send![types,containsObject:ty.inner()];
+                present
+            })?;
+            let revision: isize = msg_send![pb, changeCount];
+            Some(Box::new(move |limit| {
+                objc::rc::autoreleasepool(|| {
+                    let pb = NSPasteboard::generalPasteboard(nil);
+                    let current: isize = msg_send![pb, changeCount];
+                    anyhow::ensure!(current == revision, "clipboard changed");
+                    let mut ty: UTType = format.into();
+                    let data = pb.dataForType(ty.inner_mut());
+                    anyhow::ensure!(data != nil, "missing image");
+                    let after: isize = msg_send![pb, changeCount];
+                    anyhow::ensure!(after == revision, "clipboard changed");
+                    let len = data.length() as usize;
+                    anyhow::ensure!(
+                        len > 0 && len <= limit && !data.bytes().is_null(),
+                        "invalid image size"
+                    );
+                    Ok(slice::from_raw_parts(data.bytes() as *const u8, len).to_vec())
+                })
+            }))
+        }
+    }
     fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         let state = self.0.lock();
         let pasteboard = state.pasteboard;

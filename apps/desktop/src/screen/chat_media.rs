@@ -500,7 +500,7 @@ impl Viewer {
 }
 pub(super) enum ImageInput {
     Files(Vec<std::path::PathBuf>),
-    Clipboard(Vec<Vec<u8>>),
+    Clipboard(ClipboardImageReader),
 }
 impl Desktop {
     pub(super) fn add_images(
@@ -528,7 +528,9 @@ impl Desktop {
                 .spawn(async move {
                     let encoded = match source {
                         ImageInput::Files(paths) => ticket.encode(&paths),
-                        ImageInput::Clipboard(bytes) => ticket.clipboard(&bytes),
+                        ImageInput::Clipboard(read) => read(state::images::SOURCE as usize)
+                            .map_err(|_| Error::BadRequest)
+                            .and_then(|bytes| ticket.clipboard(&[bytes])),
                     };
                     encoded.map(|v| (ticket, v))
                 })

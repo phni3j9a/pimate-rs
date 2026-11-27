@@ -214,7 +214,7 @@ pub struct X11ClientState {
 
     pub(crate) common: LinuxCommon,
     pub(crate) clipboard: Clipboard,
-    pub(crate) clipboard_item: Option<ClipboardItem>,
+    pub(crate) clipboard_item: Option<std::sync::Arc<ClipboardItem>>,
     pub(crate) xdnd_state: Xdnd,
 }
 
@@ -1563,7 +1563,7 @@ impl LinuxClient for X11Client {
             )
             .context("X11: Failed to write to clipboard (clipboard)")
             .log_with_level(log::Level::Debug);
-        state.clipboard_item.replace(item);
+        state.clipboard_item.replace(item.into());
     }
 
     fn read_from_primary(&self) -> Option<crate::ClipboardItem> {
@@ -1575,6 +1575,16 @@ impl LinuxClient for X11Client {
             .log_with_level(log::Level::Debug)
     }
 
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        let state = self.0.borrow();
+        if state
+            .clipboard
+            .is_owner(clipboard::ClipboardKind::Clipboard)
+        {
+            return state.clipboard_item.as_ref()?.image_reader();
+        }
+        state.clipboard.image_reader()
+    }
     fn read_from_clipboard(&self) -> Option<crate::ClipboardItem> {
         let state = self.0.borrow_mut();
         // if the last copy was from this app, return our cached item
@@ -1583,7 +1593,7 @@ impl LinuxClient for X11Client {
             .clipboard
             .is_owner(clipboard::ClipboardKind::Clipboard)
         {
-            return state.clipboard_item.clone();
+            return state.clipboard_item.as_deref().cloned();
         }
         state
             .clipboard

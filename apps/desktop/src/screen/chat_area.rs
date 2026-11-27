@@ -399,23 +399,14 @@ impl Desktop {
                     }))
                     .capture_action(cx.listener(
                         move |app, _: &gpui_component::input::Paste, w, cx| {
-                            if let Some(item) = cx.read_from_clipboard() {
-                                let images: Vec<_> = item
-                                    .into_entries()
-                                    .filter_map(|e| match e {
-                                        ClipboardEntry::Image(im) => Some(im.bytes),
-                                        _ => None,
-                                    })
-                                    .collect();
-                                if !images.is_empty() {
-                                    cx.stop_propagation();
-                                    app.add_images(
-                                        &paste_page,
-                                        chat_media::ImageInput::Clipboard(images),
-                                        w,
-                                        cx,
-                                    );
-                                }
+                            if let Some(read) = cx.clipboard_image_reader() {
+                                cx.stop_propagation();
+                                app.add_images(
+                                    &paste_page,
+                                    chat_media::ImageInput::Clipboard(read),
+                                    w,
+                                    cx,
+                                );
                             }
                         },
                     ))

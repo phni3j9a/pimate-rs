@@ -1508,8 +1508,32 @@ mod key_tests {
             )))
         });
         std::fs::remove_file(path).unwrap();
+        assert!(w.update(|_, cx| cx.clipboard_image_reader().unwrap()(8).is_err()));
         press(w, "secondary-l secondary-v");
         wait(w, "remove-image-1");
+        let pos = wait(w, "composer-input");
+        w.simulate_mouse_down(pos, gpui::MouseButton::Right, Default::default());
+        w.run_until_parked();
+        assert!(app.read_with(w, |d, _| d.context_menu.is_some()));
+        press(w, "up up enter");
+        assert!(app.read_with(w, |d, _| d.context_menu.is_none()));
+        wait(w, "remove-image-2");
+        press(w, "secondary-l secondary-v");
+        wait(w, "remove-image-3");
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                let pg = d.chat_keys.as_ref().unwrap().0.clone();
+                d.add_images(
+                    &pg,
+                    super::chat_media::ImageInput::Clipboard(Box::new(|_| {
+                        panic!("full composer must not read bytes")
+                    })),
+                    w,
+                    cx,
+                );
+                assert!(!d.state.attachments.busy());
+            })
+        });
         assert!(wire.try_recv().is_err());
     }
     #[gpui::test]
@@ -1534,9 +1558,10 @@ mod key_tests {
         let pos = wait(w, "answer-child");
         w.simulate_click(pos, Default::default());
         w.run_until_parked();
+        press(w, "x");
         assert_eq!(
             app.read_with(w, |d, cx| d.input.as_ref().unwrap().1.read(cx).value()),
-            "reader（reader）の質問への回答: d"
+            "reader（reader）の質問への回答: dx"
         );
         assert!(wire.try_recv().is_err());
     }

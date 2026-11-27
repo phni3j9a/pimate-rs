@@ -23,3 +23,7 @@ Wayland の XDG portal の `WindowAppearance` を配送するとき、対象ウ�
 ## ウィンドウ単位のキー解放（#84）
 
 `Window::set_key_release_listener` はフォーカス先の dispatch tree より先に KeyUp を通知します。確認の表示でフォーカスが変わっても、背景で消費したキーを離した時点でラッチを解除します。
+
+## 画像の貼り付け（#94）
+
+`App::clipboard_image_reader` は形式だけを調べ、画像本体の取得を遅延します。添付枠の確認後、呼び出し側がバイト上限を指定してバックグラウンドで読みます。Wayland は提供元の FD から上限 + 1 バイトまで、X11 は通常・INCR とも残り容量以内、macOS は pasteboard の世代と NSData の長さを検査してから Rust 側にコピーします。AppKit はサイズを問い合わせて部分的に読み出す API を提供しておらず、OS 側の NSData の準備量までは制御しません。更新時は desktop の `stage5_external_image_and_image_paste_both_attach` と隔離 Wayland の `linux-session.sh check` で確認します。

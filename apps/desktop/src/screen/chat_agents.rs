@@ -361,7 +361,13 @@ impl Desktop {
                                         *i = Inspector::default();
                                         cx.notify()
                                     });
-                                    app.restore_input(w, cx);
+                                    if let Some((_, input, _)) = &app.input {
+                                        input.update(cx, |i, cx| {
+                                            use gpui_component::RopeExt;
+                                            let end = i.text().offset_to_position(i.text().len());
+                                            i.set_cursor_position(end, w, cx);
+                                        });
+                                    }
                                 }
                                 cx.notify();
                             })),

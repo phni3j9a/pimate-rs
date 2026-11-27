@@ -264,6 +264,9 @@ pub(crate) trait Platform: 'static {
     fn write_to_clipboard(&self, item: ClipboardItem);
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn read_from_primary(&self) -> Option<ClipboardItem>;
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        None
+    }
     fn read_from_clipboard(&self) -> Option<ClipboardItem>;
 
     fn write_credentials(&self, url: &str, username: &str, password: &[u8]) -> Task<Result<()>>;
@@ -1514,7 +1517,24 @@ pub enum ClipboardEntry {
     Image(Image),
 }
 
+/// A clipboard image offer. Invoke off the UI thread, after accepting the attachment.
+pub type ClipboardImageReader = Box<dyn FnOnce(usize) -> anyhow::Result<Vec<u8>> + Send>;
+
 impl ClipboardItem {
+    fn image_reader(self: &std::sync::Arc<Self>) -> Option<ClipboardImageReader> {
+        let index = self
+            .entries
+            .iter()
+            .position(|e| matches!(e, ClipboardEntry::Image(_)))?;
+        let item = self.clone();
+        Some(Box::new(move |limit| {
+            let ClipboardEntry::Image(im) = &item.entries[index] else {
+                unreachable!()
+            };
+            anyhow::ensure!(im.bytes.len() <= limit, "clipboard image too large");
+            Ok(im.bytes.clone())
+        }))
+    }
     /// Create a new ClipboardItem::String with no associated metadata
     pub fn new_string(text: String) -> Self {
         Self {
