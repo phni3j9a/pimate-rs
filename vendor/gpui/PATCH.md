@@ -33,3 +33,7 @@ Wayland の上限付き画像読み込みは転送開始から合計10秒を期�
 ## 文字だけの倍率（#73）
 
 `src/window.rs` の `Window::set_text_scale` は `text_style` の解決時に文字サイズだけに倍率を掛け、rem（余白・幅など）は変えない。既定は 1。上流更新時は設定画面の倍率変更試験と `panes_follow_the_window_width` を確認する。
+
+## フォーカスのスクロール追従（#101）
+
+`ScrollHandle::reveal_focus` は次のレイアウトで、本文内のフォーカス先が見える分だけ縦にスクロールする。「新しい Pi」の Tab 移動後だけ要求し、本文外のフッターや手動スクロールには干渉しない。更新時は `tab_reveals_the_message_and_shift_tab_scrolls_back` を確認する。
