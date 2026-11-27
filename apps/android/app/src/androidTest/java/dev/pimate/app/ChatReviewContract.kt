@@ -1,12 +1,17 @@
 package dev.pimate.app
 
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -51,6 +56,128 @@ class ChatReviewContract {
             assertEquals(40, list.layoutInfo.totalItemsCount)
             assertFalse(list.canScrollForward)
         }
+    }
+
+    @Test
+    fun tailUsesOneHeightUntilManualExpansionAndRepinsAfterJump() {
+        var count by mutableIntStateOf(10)
+        var rowHeight by mutableStateOf(40.dp)
+        val footerPositions = mutableListOf<Float>()
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    ChatTimeline(Modifier.height(180.dp)) { reverse, hold ->
+                        fun footer() =
+                            item("footer") {
+                                Spacer(
+                                    Modifier.height(10.dp).onGloballyPositioned {
+                                        footerPositions += it.positionInRoot().y
+                                    }
+                                )
+                            }
+                        if (reverse) footer()
+                        items(count, key = { if (reverse) count - 1 - it else it }) { index ->
+                            val n = if (reverse) count - 1 - index else index
+                            Spacer(
+                                Modifier.fillMaxWidth()
+                                    .height(if (n == 9) rowHeight else 40.dp)
+                                    .testTag("row:$n")
+                                    .clickable {
+                                        hold()
+                                        rowHeight += 120.dp
+                                    }
+                            )
+                        }
+                        if (!reverse) footer()
+                    }
+                }
+            }
+        }
+        ui.runOnIdle { rowHeight += 20.dp }
+        ui.runOnIdle { assertEquals(1, footerPositions.distinct().size) }
+        val previous = ui.onNodeWithTag("row:8").getUnclippedBoundsInRoot().top
+        ui.onNodeWithTag("row:9").performClick()
+        ui.runOnIdle { count++ }
+        assertEquals(previous, ui.onNodeWithTag("row:8").getUnclippedBoundsInRoot().top)
+        ui.onNodeWithContentDescription("最新の位置へ").performClick()
+        ui.onNodeWithTag("row:10").assertIsDisplayed()
+        ui.runOnIdle { count++ }
+        ui.onNodeWithTag("row:11").assertIsDisplayed()
+        ui.onNodeWithContentDescription("最新の位置へ").assertDoesNotExist()
+
+        repeat(2) { ui.onNodeWithTag("chat").performTouchInput { swipeDown() } }
+        val history = ui.onNodeWithTag("row:0").getUnclippedBoundsInRoot().top
+        ui.runOnIdle { count++ }
+        assertEquals(history, ui.onNodeWithTag("row:0").getUnclippedBoundsInRoot().top)
+        ui.onNodeWithContentDescription("最新の位置へ").assertIsDisplayed()
+    }
+
+    @Test
+    fun growingAnswerKeepsTextUnderPausedFinger() {
+        var height by mutableStateOf(500.dp)
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    ChatTimeline(Modifier.height(180.dp)) { _, _ ->
+                        item("answer") {
+                            Column(Modifier.fillMaxWidth().height(height)) {
+                                Spacer(Modifier.height(360.dp))
+                                Spacer(Modifier.size(10.dp).testTag("text"))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fun textTop() = ui.onNodeWithTag("text").getUnclippedBoundsInRoot().top
+        val initial = textTop()
+        val chat = ui.onNodeWithTag("chat")
+        chat.performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 52f))
+        }
+        val held = textTop()
+        assertTrue(held > initial)
+        ui.runOnIdle { height += 40.dp }
+        assertEquals(held, textTop())
+        chat.performTouchInput { moveBy(Offset(0f, 32f)) }
+        assertTrue(textTop() > held)
+        chat.performTouchInput { up() }
+    }
+
+    @Test
+    fun returningToTailFollowsNewRowsBeforeFingerLifts() {
+        var count by mutableIntStateOf(8)
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    ChatTimeline(Modifier.height(180.dp)) { reverse, _ ->
+                        fun bottom() = item("bottom") { Spacer(Modifier.height(10.dp)) }
+                        fun row(i: Int) = if (reverse) count - 1 - i else i
+                        if (reverse) bottom()
+                        items(count, key = ::row) { i ->
+                            Spacer(Modifier.fillMaxWidth().height(48.dp).testTag("row:${row(i)}"))
+                        }
+                        if (!reverse) bottom()
+                    }
+                }
+            }
+        }
+        val chat = ui.onNodeWithTag("chat")
+        fun lastRowBottom() = ui.onNodeWithTag("row:${count - 1}").getUnclippedBoundsInRoot().bottom
+        val bottom = lastRowBottom()
+        chat.performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 72f))
+        }
+        ui.onNodeWithContentDescription("最新の位置へ").assertIsDisplayed()
+        val distance = lastRowBottom() - bottom
+        chat.performTouchInput { moveBy(Offset(0f, -distance.toPx())) }
+        ui.runOnIdle { count++ }
+        assertEquals(bottom, lastRowBottom())
+        chat.performTouchInput { up() }
+        ui.runOnIdle { count++ }
+        assertEquals(bottom, lastRowBottom())
     }
 
     @Test
