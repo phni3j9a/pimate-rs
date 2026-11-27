@@ -1046,7 +1046,8 @@ async def demo(lab, binary):
                 "node", ROOT / "scripts/android-screen-fixture.cjs", str(port), mode,
                 stdout=asyncio.subprocess.PIPE,
             )
-            port = int(await asyncio.wait_for(fixture.stdout.readline(), timeout=5))
+            # CI の macOS は node の起動が遅いことがある（#88）。
+            port = int(await asyncio.wait_for(fixture.stdout.readline(), timeout=60))
         print(f"adb -s SERIAL reverse tcp:{port} tcp:{port}", flush=True)
         subprocess.run(
             [binary, "pair", *args, "--address", f"127.0.0.1:{port}"],
