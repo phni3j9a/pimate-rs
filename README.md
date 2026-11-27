@@ -4,7 +4,7 @@
 
 **状態:** TS 版との機能差は Android・iOS・macOS・Linux でおおむね解消しました（[#74](https://github.com/phni3j9a/pimate-rs/issues/74)）。デスクトップは[画面設計の段階1〜5](docs/design/desktop/PLAN.md)を終え、会話を中心に作り直しました（[#73](https://github.com/phni3j9a/pimate-rs/issues/73)）。
 
-公開済みは [Host・npm 0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/host-v0.2.0)、[Android 0.2.1](https://github.com/phni3j9a/pimate-rs/releases/tag/app-v0.2.1)、[Linux デスクトップ 0.2.0](https://github.com/phni3j9a/pimate-rs/releases/tag/desktop-v0.2.0) です。[次の版のリリースノート（下書き）](docs/release-notes/)は未公開です。iOS の TestFlight と macOS の署名・公証は [#70](https://github.com/phni3j9a/pimate-rs/issues/70) で扱います。
+公開済みは [Host・npm 0.2.1](https://github.com/phni3j9a/pimate-rs/releases/tag/host-v0.2.1)、[Android 0.2.3](https://github.com/phni3j9a/pimate-rs/releases/tag/app-v0.2.3)、[Linux デスクトップ 0.3.1](https://github.com/phni3j9a/pimate-rs/releases/tag/desktop-v0.3.1) です（各版の内容は [docs/release-notes/](docs/release-notes/)）。macOS のデスクトップは VM で動作を確かめ済みで、配布は署名・公証のあとです。iOS の TestFlight と macOS の署名・公証は [#70](https://github.com/phni3j9a/pimate-rs/issues/70) で扱います。
 
 ## 目的
 
