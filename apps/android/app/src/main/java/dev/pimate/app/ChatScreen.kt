@@ -73,13 +73,11 @@ internal fun ChatTimeline(
         if (follow) tail.dispatchRawDelta(delta) else -history.dispatchRawDelta(-delta)
     }
     LaunchedEffect(list) {
-        snapshotFlow {
-                list.layoutInfo to (list.isScrollInProgress || tailGesture.isScrollInProgress)
-            }
-            .collect { (info, scrolling) ->
+        snapshotFlow { list.layoutInfo }
+            .collect { info ->
                 if (info.totalItemsCount == 0 || info.reverseLayout != follow) return@collect
                 if (follow && list.canScrollBackward) holdPosition()
-                else if (!follow && !scrolling && !list.canScrollForward) pinTail()
+                else if (!follow && !list.canScrollForward) pinTail()
             }
     }
 

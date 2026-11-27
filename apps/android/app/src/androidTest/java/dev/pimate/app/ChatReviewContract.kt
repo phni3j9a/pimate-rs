@@ -146,6 +146,41 @@ class ChatReviewContract {
     }
 
     @Test
+    fun returningToTailFollowsNewRowsBeforeFingerLifts() {
+        var count by mutableIntStateOf(8)
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    ChatTimeline(Modifier.height(180.dp)) { reverse, _ ->
+                        fun bottom() = item("bottom") { Spacer(Modifier.height(10.dp)) }
+                        fun row(i: Int) = if (reverse) count - 1 - i else i
+                        if (reverse) bottom()
+                        items(count, key = ::row) { i ->
+                            Spacer(Modifier.fillMaxWidth().height(48.dp).testTag("row:${row(i)}"))
+                        }
+                        if (!reverse) bottom()
+                    }
+                }
+            }
+        }
+        val chat = ui.onNodeWithTag("chat")
+        fun lastRowBottom() = ui.onNodeWithTag("row:${count - 1}").getUnclippedBoundsInRoot().bottom
+        val bottom = lastRowBottom()
+        chat.performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 72f))
+        }
+        ui.onNodeWithContentDescription("最新の位置へ").assertIsDisplayed()
+        val distance = lastRowBottom() - bottom
+        chat.performTouchInput { moveBy(Offset(0f, -distance.toPx())) }
+        ui.runOnIdle { count++ }
+        assertEquals(bottom, lastRowBottom())
+        chat.performTouchInput { up() }
+        ui.runOnIdle { count++ }
+        assertEquals(bottom, lastRowBottom())
+    }
+
+    @Test
     fun nonExpandableSummaryStillOpensItsChangeReview() {
         var reviewed: String? = null
         ui.runOnUiThread {
