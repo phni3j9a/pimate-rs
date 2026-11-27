@@ -325,4 +325,13 @@ if mode == 'check':
         assert time.monotonic() < deadline, 'clipboard PNG did not appear in the composer'
     assert prompts() == external + [['demo', 'ニホンゴ']], 'paste must not send'
     print('check: external clipboard PNG attached')
+    def ctrl(char):
+        seat.NotifyKeyboardKeysym(0xffe3, True); key(ord(char)); seat.NotifyKeyboardKeysym(0xffe3, False)
+    text = 'PiMate clipboard text'
+    subprocess.run(['wl-copy', '--type', 'text/plain;charset=utf-8'], input=text.encode(), check=True)
+    ctrl('v'); ctrl('a')
+    subprocess.run(['wl-copy', 'sentinel'], check=True)
+    ctrl('c'); time.sleep(.3)
+    assert subprocess.check_output(['wl-paste', '--no-newline'], text=True, timeout=2) == text, 'text paste did not reach composer'
+    print('check: external Wayland text pasted')
 seat.Stop()

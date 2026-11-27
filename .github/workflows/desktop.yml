@@ -30,14 +30,22 @@ jobs:
           security list-keychains -d user -s "$keychain"
           security default-keychain -d user -s "$keychain"
           cargo test --locked -p pimate-desktop
+      - name: Pasteboard text remains text after probing for images
+        run: |
+          printf 'PiMate clipboard text' | pbcopy
+          cargo run --locked -p pimate-desktop --example clipboard_text_probe
   linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
       - run: rustup update stable && rustup default stable
-      - run: sudo apt-get update && sudo apt-get install -y libclang-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev dbus-daemon gnome-keyring libglib2.0-bin
+      - run: sudo apt-get update && sudo apt-get install -y libclang-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev dbus-daemon gnome-keyring libglib2.0-bin xvfb xauth libx11-dev
       - run: cargo build --locked -p pimate-desktop
       - run: cargo test --locked -p pimate-desktop
+      - name: Paste X11 text without TARGETS
+        run: |
+          cargo build --locked -p pimate-desktop --example clipboard_text_probe
+          apps/desktop/tests/x11-clipboard.sh target/debug/examples/clipboard_text_probe
       - name: Test with an isolated Secret Service
         run: |
           bin=$(cargo test --locked -p pimate-desktop --bin pimate-desktop --no-run --message-format=json | jq -r 'select(.executable != null) | .executable')

@@ -2,6 +2,7 @@ mod client;
 mod clipboard;
 mod cursor;
 mod display;
+mod image_transfer;
 mod keyboard_seat;
 mod serial;
 mod window;

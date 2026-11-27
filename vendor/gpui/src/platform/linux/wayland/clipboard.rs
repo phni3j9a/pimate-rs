@@ -196,7 +196,6 @@ impl Clipboard {
     }
 
     pub fn image_reader(&self) -> Option<crate::ClipboardImageReader> {
-        use std::io::Read;
         let offer = self.current_offer.as_ref()?;
         if offer.has_mime_type(&self.self_mime) {
             return self.contents.as_ref()?.image_reader();
@@ -209,18 +208,14 @@ impl Clipboard {
         Some(Box::new(move |limit| {
             use std::{
                 os::{fd::AsFd, unix::net::UnixStream},
-                time::Duration,
+                time::{Duration, Instant},
             };
             let (read, write) = UnixStream::pair()?;
-            read.set_read_timeout(Some(Duration::from_secs(10)))?;
+            let deadline = Instant::now() + Duration::from_secs(10);
             offer.receive_data(mime.to_string(), write.as_fd());
             drop(write);
             connection.flush()?;
-            let mut bytes = Vec::new();
-            read.take(limit.saturating_add(1) as u64)
-                .read_to_end(&mut bytes)?;
-            anyhow::ensure!(bytes.len() <= limit, "clipboard image too large");
-            Ok(bytes)
+            Ok(super::image_transfer::read(read, limit, deadline)?)
         }))
     }
     pub fn read(&mut self) -> Option<ClipboardItem> {

@@ -280,7 +280,12 @@ impl Inner {
     /// `formats` must be a slice of atoms, where each atom represents a target format.
     /// The first format from `formats`, which the clipboard owner supports will be the
     /// format of the return value.
-    fn read(&self, formats: &[Atom], selection: ClipboardKind) -> Result<ClipboardData> {
+    fn read(
+        &self,
+        formats: &[Atom],
+        fallback_text: &[Atom],
+        selection: ClipboardKind,
+    ) -> Result<ClipboardData> {
         // if we are the current owner, we can get the current clipboard ourselves
         if self.is_owner(selection)? {
             let data = self.selection_of(selection).data.read();
@@ -333,11 +338,11 @@ impl Inner {
             return Ok(data);
         }
 
-        log::trace!("Falling back on attempting to convert clipboard to each format.");
-        for format in formats {
+        log::trace!("Unknown clipboard targets; trying text conversions only.");
+        for format in fallback_text {
             match self.read_single(&reader, selection, *format, usize::MAX) {
                 Ok(data) => {
-                    if formats.contains(&data.format) {
+                    if fallback_text.contains(&data.format) {
                         return Ok(data);
                     } else {
                         log::trace!(
@@ -1019,14 +1024,14 @@ impl Clipboard {
     }
     pub(crate) fn image_reader(&self) -> Option<crate::ClipboardImageReader> {
         let selection = ClipboardKind::Clipboard;
-        // An invalid TARGETS reply must not fall through to get_any's unbounded image fallback.
-        let targets = match XContext::new().and_then(|reader| {
-            self.inner
-                .read_single(&reader, selection, self.inner.atoms.TARGETS, 64 * 1024)
-        }) {
-            Ok(data) if data.format == self.inner.atoms.ATOM => data,
-            _ => return Some(Box::new(|_| anyhow::bail!("clipboard formats unavailable"))),
-        };
+        let reader = XContext::new().ok()?;
+        let targets = self
+            .inner
+            .read_single(&reader, selection, self.inner.atoms.TARGETS, 64 * 1024)
+            .ok()?;
+        if targets.format != self.inner.atoms.ATOM {
+            return None;
+        }
         let targets = Inner::parse_formats(&targets.bytes);
         let format = self
             .image_atoms()
@@ -1075,7 +1080,9 @@ impl Clipboard {
         format_atoms[IMAGE_FORMAT_COUNT..].copy_from_slice(&text_format_atoms);
         debug_assert!(!format_atoms.contains(&atom_none));
 
-        let result = self.inner.read(&format_atoms, selection)?;
+        let result = self
+            .inner
+            .read(&format_atoms, &text_format_atoms, selection)?;
 
         log::trace!(
             "read clipboard as format {:?}",

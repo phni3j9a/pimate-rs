@@ -1507,6 +1507,21 @@ mod key_tests {
                 std::fs::read(&path).unwrap(),
             )))
         });
+        w.update(|w, cx| {
+            app.update(cx, |d, cx| {
+                let pg = d.chat_keys.as_ref().unwrap().0.clone();
+                d.add_images(
+                    &pg,
+                    super::chat_media::ImageInput::Clipboard(Box::new(|_| {
+                        Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into())
+                    })),
+                    w,
+                    cx,
+                );
+            })
+        });
+        w.run_until_parked();
+        assert!(app.read_with(w, |d, _| !d.state.attachments.busy()));
         std::fs::remove_file(path).unwrap();
         assert!(w.update(|_, cx| cx.clipboard_image_reader().unwrap()(8).is_err()));
         press(w, "secondary-l secondary-v");
