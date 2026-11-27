@@ -946,6 +946,7 @@ impl Render for Desktop {
             p.scrim().items_center().justify_center().child(
                 div()
                     .id("new-pi-dialog")
+                    .debug_selector(|| "new-pi-dialog".into())
                     .track_focus(&self.modal_focus)
                     .occlude()
                     .flex()
@@ -2327,6 +2328,38 @@ mod key_tests {
                 .as_deref(),
             Some(raw)
         );
+    }
+    #[gpui::test]
+    fn spawn_stays_visible_and_clickable_in_small_windows(cx: &mut gpui::TestAppContext) {
+        use gpui::{ScrollDelta, ScrollWheelEvent, point, px, size};
+        for (width, height) in [(480., 480.), (1120., 723.), (1280., 828.)] {
+            let (app, w, _socket) = tests::open_chat(cx);
+            w.update(|_, cx| keys::init(cx));
+            let (_rt, _wire, _server) = attach_active(&app, w, "key-menu");
+            w.simulate_resize(size(px(width), px(height)));
+            w.simulate_keystrokes("secondary-n");
+            let nav = app.read_with(w, |app, _| app.navigation.clone().unwrap());
+            w.simulate_input("/tmp/project");
+            w.run_until_parked();
+            let button = w.debug_bounds("spawn").unwrap();
+            let dialog = w.debug_bounds("new-pi-dialog").unwrap();
+            assert!(dialog.bottom() <= px(height) && button.is_contained_within(&dialog));
+            let scroll = nav.read_with(w, |n, _| n.scroll.clone());
+            assert!(scroll.bounds().bottom() <= button.top());
+            if width == 480. {
+                w.simulate_event(ScrollWheelEvent {
+                    position: scroll.bounds().center(),
+                    delta: ScrollDelta::Pixels(point(px(0.), px(-1000.))),
+                    ..Default::default()
+                });
+                w.run_until_parked();
+                assert!(scroll.offset().y < px(0.));
+                assert_eq!(w.debug_bounds("spawn").unwrap(), button);
+            }
+            let tasks = nav.read_with(w, |n, _| n.tasks.len());
+            w.simulate_click(button.center(), Default::default());
+            assert_eq!(nav.read_with(w, |n, _| n.tasks.len()), tasks + 1);
+        }
     }
     fn attach_active(
         app: &gpui::Entity<super::Desktop>,

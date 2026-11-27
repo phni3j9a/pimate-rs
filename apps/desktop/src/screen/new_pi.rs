@@ -616,6 +616,7 @@ impl Desktop {
                 .child(p.caption("起動した Pi はマシン一覧に表示されます。"))
                 .child(
                     p.primary("spawn", cx)
+                        .debug_selector(|| "spawn".into())
                         .label("起動")
                         .disabled(disabled)
                         .on_click(submit),

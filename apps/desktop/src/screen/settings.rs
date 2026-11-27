@@ -705,6 +705,7 @@ impl Desktop {
                 .flex_col()
                 .flex_1()
                 .min_w_0()
+                .min_h_0()
                 .when(!settings, |d| d.child(header))
                 .child(
                     div()
