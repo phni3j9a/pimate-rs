@@ -7,6 +7,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -62,6 +64,27 @@ class UiContract {
         ui.onNodeWithText("この子を停止…").performClick()
         ui.onNode(hasText("この子を停止") and hasClickAction()).performClick()
         ui.runOnIdle { assertEquals(listOf(original), sent) }
+    }
+
+    @Test
+    fun slowDragBeyondHalfOpensDrawer() {
+        lateinit var drawer: DrawerState
+        show {
+            drawer = rememberDrawerState(DrawerValue.Closed)
+            ModalNavigationDrawer(
+                { DrawerSheet {} },
+                Modifier.testTag("drawer"),
+                drawerState = drawer,
+            ) {}
+        }
+        ui.onNodeWithTag("drawer").performTouchInput {
+            swipe(
+                Offset(width * .1f, centerY),
+                Offset(width * .82f, centerY),
+                durationMillis = 1600,
+            )
+        }
+        ui.runOnIdle { assertTrue(drawer.isOpen) }
     }
 
     @Test

@@ -82,7 +82,7 @@ tasks.named("preBuild") { dependsOn(buildRust) }
 dependencies {
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.9.2")
-    implementation("androidx.compose.material3:material3:1.3.2")
+    implementation("androidx.compose.material3:material3:1.4.0")
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4:1.7.8")
