@@ -895,6 +895,10 @@ impl LinuxClient for WaylandClient {
         self.0.borrow_mut().clipboard.read_primary()
     }
 
+    fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        self.0.borrow().clipboard.image_reader()
+    }
+
     fn read_from_clipboard(&self) -> Option<crate::ClipboardItem> {
         self.0.borrow_mut().clipboard.read()
     }

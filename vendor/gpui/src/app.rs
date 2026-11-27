@@ -1049,6 +1049,11 @@ impl App {
         self.platform.read_from_primary()
     }
 
+    /// Inspects the advertised formats without reading the image payload.
+    pub fn clipboard_image_reader(&self) -> Option<crate::ClipboardImageReader> {
+        self.platform.clipboard_image_reader()
+    }
+
     /// Reads data from the platform clipboard.
     pub fn read_from_clipboard(&self) -> Option<ClipboardItem> {
         self.platform.read_from_clipboard()

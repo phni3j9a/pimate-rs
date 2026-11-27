@@ -104,10 +104,15 @@ impl Desktop {
             for (h, i, _) in self.pi_order() {
                 let data = self.machines[&h].rows.get("instance", &i);
                 let label = format!(
-                    "{}　{} · {}",
+                    "{}　{} · {} · {}",
                     pi_title(data, &i),
                     data["cwd"].as_str().unwrap_or(""),
-                    self.machines[&h].registration.name
+                    self.machines[&h].registration.name,
+                    match data["origin"].as_str() {
+                        Some("grok-bot") => "Grok Bot",
+                        Some("mobile") => "スマホで起動 (mobile)",
+                        _ => "PC で起動",
+                    }
                 );
                 items.push(("Pi", label, Choice::Pi(h, i)));
             }

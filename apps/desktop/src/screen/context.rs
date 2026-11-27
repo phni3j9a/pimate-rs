@@ -89,16 +89,25 @@ pub(super) fn editor(row: Div, input: Entity<InputState>, disabled: bool) -> Div
                 .is_some_and(|r| !r.range.is_empty())
         });
         let focus = input.focus_handle(cx);
-        let menu = PopupMenu::build(w, cx, |m, _, cx| {
+        let owner = app.downgrade();
+        let menu = PopupMenu::build(w, cx, |m, _, _| {
             use gpui_component::input::*;
-            m.action_context(focus)
+            m.action_context(focus.clone())
                 .menu_with_enable("切り取り", Box::new(Cut), selected && !disabled)
                 .menu_with_enable("コピー", Box::new(Copy), selected)
-                .menu_with_enable(
-                    "貼り付け",
-                    Box::new(Paste),
-                    !disabled && cx.read_from_clipboard().is_some(),
-                )
+                .item(PopupMenuItem::new("貼り付け").disabled(disabled).on_click(
+                    move |_, w, cx| {
+                        let _ = owner.update(cx, |d, cx| {
+                            if d.front(w, cx) != Some(keys::Overlay::Menu) {
+                                return;
+                            }
+                            d.context_menu = None;
+                            focus.focus(w);
+                            w.dispatch_action(Box::new(Paste), cx);
+                            cx.notify();
+                        });
+                    },
+                ))
                 .separator()
                 .menu("すべてを選択", Box::new(SelectAll))
         });

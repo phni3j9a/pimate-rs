@@ -16,6 +16,22 @@ from PIL import Image, ImageChops
 assert Path.cwd() == Path.home() and os.environ['XDG_RUNTIME_DIR'] == str(Path.home()/'run')
 # Small OCR crops are faster single-threaded, especially alongside other isolated clients.
 os.environ['OMP_THREAD_LIMIT'] = '1'
+# A separate Wayland surface advertises text/uri-list, like a file manager.
+if sys.argv[1] == 'drag-source':
+    import gi
+    gi.require_version('Gtk', '3.0')
+    from gi.repository import Gtk, Gdk
+    image = Path('dropped.png').resolve()
+    Image.new('RGB', (96, 96), (26, 192, 107)).save(image)
+    win = Gtk.Window(title='Image drop fixture')
+    area = Gtk.EventBox(); area.set_size_request(190, 100)
+    color = Gdk.RGBA(); color.parse('#c31d68')
+    area.override_background_color(Gtk.StateFlags.NORMAL, color)
+    area.drag_source_set(Gdk.ModifierType.BUTTON1_MASK, [], Gdk.DragAction.COPY)
+    area.drag_source_add_uri_targets()
+    area.connect('drag-data-get', lambda _,ctx,data,info,t: data.set_uris([image.as_uri()]))
+    win.add(area); win.show_all(); Gtk.main(); sys.exit()
+
 mode = sys.argv[1]
 bus = dbus.SessionBus()
 remote = 'org.gnome.Mutter.RemoteDesktop'
@@ -274,4 +290,48 @@ time.sleep(4)
 assert prompts() == external + [['demo', 'ニホンゴ']], 'Enter did not send the committed text exactly once'
 snap('sent')
 print(f'{mode}: conversion Enter: 0 prompts; committed Enter: 1 prompt = ニホンゴ')
+if mode == 'check':
+    source = subprocess.Popen([sys.executable, __file__, 'drag-source'])
+    try:
+        deadline = time.monotonic() + 5
+        while True:
+            try:
+                sx, sy, _ = blob(snap('drop-source'), (195, 29, 104)); break
+            except AssertionError:
+                if time.monotonic() >= deadline: raise
+        move(sx, sy); pointer.NotifyPointerButton(272, True)
+        for _ in range(12):
+            pointer.NotifyPointerMotionRelative((editor[0]-sx)/12., (editor[1]-sy)/12.); time.sleep(.05)
+        pointer.NotifyPointerButton(272, False)
+    finally:
+        source.terminate(); source.wait(timeout=3)
+    deadline = time.monotonic() + 5
+    while True:
+        crop = snap('dropped-image').crop((x+320, y+495, x+1130, y+695))
+        if sum(n for n,(r,g,b) in crop.getcolors(crop.width*crop.height) if abs(r-26)+abs(g-192)+abs(b-107)<10) > 150: break
+        assert time.monotonic() < deadline, 'dropped PNG did not appear in the composer'
+    assert prompts() == external + [['demo', 'ニホンゴ']], 'drop must not send'
+    print('check: external Wayland drop attached one PNG without sending')
+    # Exercise the actual wl_data_offer pipe (GPUI unit tests use an in-memory clipboard).
+    Image.new('RGB', (96, 96), (201, 41, 117)).save('clipboard.png')
+    with open('clipboard.png', 'rb') as payload:
+        subprocess.run(['wl-copy', '--type', 'image/png'], stdin=payload, check=True)
+    click(*editor)
+    seat.NotifyKeyboardKeysym(0xffe3, True); key(ord('v')); seat.NotifyKeyboardKeysym(0xffe3, False)
+    deadline = time.monotonic() + 5
+    while True:
+        crop = snap('pasted-image').crop((x+320, y+495, x+1130, y+695))
+        if sum(n for n,(r,g,b) in crop.getcolors(crop.width*crop.height) if abs(r-201)+abs(g-41)+abs(b-117)<10) > 150: break
+        assert time.monotonic() < deadline, 'clipboard PNG did not appear in the composer'
+    assert prompts() == external + [['demo', 'ニホンゴ']], 'paste must not send'
+    print('check: external clipboard PNG attached')
+    def ctrl(char):
+        seat.NotifyKeyboardKeysym(0xffe3, True); key(ord(char)); seat.NotifyKeyboardKeysym(0xffe3, False)
+    text = 'PiMate clipboard text'
+    subprocess.run(['wl-copy', '--type', 'text/plain;charset=utf-8'], input=text.encode(), check=True)
+    ctrl('v'); ctrl('a')
+    subprocess.run(['wl-copy', 'sentinel'], check=True)
+    ctrl('c'); time.sleep(.3)
+    assert subprocess.check_output(['wl-paste', '--no-newline'], text=True, timeout=2) == text, 'text paste did not reach composer'
+    print('check: external Wayland text pasted')
 seat.Stop()

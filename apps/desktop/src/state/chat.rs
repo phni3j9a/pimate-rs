@@ -406,13 +406,9 @@ impl Accepted {
     }
 }
 impl Picker {
-    /// Use only paths explicitly chosen by the system picker, on the background executor.
-    pub fn encode(&self, paths: &[std::path::PathBuf]) -> Result<Vec<p::PromptImage>, Error> {
-        if paths.is_empty() {
-            return Ok(vec![]);
-        }
+    fn image_budget(&self, count: usize) -> Result<usize, Error> {
         let r = self.page.current()?;
-        if paths.len() > image_limit(&r).saturating_sub(self.original.len()) {
+        if count == 0 || count > image_limit(&r).saturating_sub(self.original.len()) {
             return Err(Error::Blocked);
         }
         let used = self
@@ -420,8 +416,18 @@ impl Picker {
             .iter()
             .map(|i| i.data.len() / 4 * 3 - i.data.bytes().rev().take_while(|&b| b == b'=').count())
             .sum();
-        let budget = p::MAX_PROMPT_IMAGE_BYTES
-            .min(p::MAX_PROMPT_TOTAL_IMAGE_BYTES.saturating_sub(used) / paths.len());
+        Ok(p::MAX_PROMPT_IMAGE_BYTES
+            .min(p::MAX_PROMPT_TOTAL_IMAGE_BYTES.saturating_sub(used) / count))
+    }
+    pub fn clipboard(&self, images: &[Vec<u8>]) -> Result<Vec<p::PromptImage>, Error> {
+        let budget = self.image_budget(images.len())?;
+        images
+            .iter()
+            .map(|b| super::images::encode_bytes(b, budget))
+            .collect()
+    }
+    pub fn encode(&self, paths: &[std::path::PathBuf]) -> Result<Vec<p::PromptImage>, Error> {
+        let budget = self.image_budget(paths.len())?;
         paths
             .iter()
             .map(|path| {

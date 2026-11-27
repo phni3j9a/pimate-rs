@@ -11,9 +11,8 @@ use std::{
 };
 const WEB_MAX: usize = 8 * 1024 * 1024;
 
+pub(crate) const SOURCE: u64 = 32 * 1024 * 1024;
 pub(super) fn encode_file(path: &Path, budget: usize) -> Result<p::PromptImage, Error> {
-    use image::{DynamicImage, ImageDecoder, ImageReader};
-    const SOURCE: u64 = 32 * 1024 * 1024;
     let meta = path.metadata().map_err(|_| Error::BadRequest)?;
     if !meta.is_file() || meta.len() > SOURCE {
         return Err(Error::BadRequest);
@@ -22,6 +21,10 @@ pub(super) fn encode_file(path: &Path, budget: usize) -> Result<p::PromptImage, 
     std::fs::File::open(path)
         .and_then(|f| f.take(SOURCE + 1).read_to_end(&mut bytes))
         .map_err(|_| Error::BadRequest)?;
+    encode_bytes(&bytes, budget)
+}
+pub(super) fn encode_bytes(bytes: &[u8], budget: usize) -> Result<p::PromptImage, Error> {
+    use image::{DynamicImage, ImageDecoder, ImageReader};
     if bytes.len() as u64 > SOURCE {
         return Err(Error::BadRequest);
     }
