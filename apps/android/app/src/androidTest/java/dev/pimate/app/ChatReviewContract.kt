@@ -103,6 +103,12 @@ class ChatReviewContract {
         ui.runOnIdle { count++ }
         ui.onNodeWithTag("row:11").assertIsDisplayed()
         ui.onNodeWithContentDescription("最新の位置へ").assertDoesNotExist()
+
+        repeat(2) { ui.onNodeWithTag("chat").performTouchInput { swipeDown() } }
+        val history = ui.onNodeWithTag("row:0").getUnclippedBoundsInRoot().top
+        ui.runOnIdle { count++ }
+        assertEquals(history, ui.onNodeWithTag("row:0").getUnclippedBoundsInRoot().top)
+        ui.onNodeWithContentDescription("最新の位置へ").assertIsDisplayed()
     }
 
     @Test

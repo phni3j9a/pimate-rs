@@ -42,15 +42,17 @@ internal fun ChatTimeline(
     modifier: Modifier = Modifier,
     content: LazyListScope.(fromBottom: Boolean, holdPosition: () -> Unit) -> Unit,
 ) {
-    val list = rememberLazyListState()
+    val tail = rememberLazyListState()
+    val history = rememberLazyListState()
     val scope = rememberCoroutineScope()
     var follow by rememberSaveable { mutableStateOf(true) }
+    val list = if (follow) tail else history
     fun holdPosition() {
         val info = list.layoutInfo
         if (info.reverseLayout) {
             // 下端基準の座標を通常のリストの上端基準に戻す。
             val top = info.visibleItemsInfo.lastOrNull() ?: return
-            list.requestScrollToItem(
+            history.requestScrollToItem(
                 info.totalItemsCount - 1 - top.index,
                 top.offset + top.size - info.viewportEndOffset + info.afterContentPadding,
             )
@@ -59,7 +61,7 @@ internal fun ChatTimeline(
         follow = false
     }
     fun pinTail() {
-        list.requestScrollToItem(0)
+        tail.requestScrollToItem(0)
         follow = true
     }
     LaunchedEffect(list) {
