@@ -8,6 +8,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.testTag
@@ -109,6 +110,39 @@ class ChatReviewContract {
         ui.runOnIdle { count++ }
         assertEquals(history, ui.onNodeWithTag("row:0").getUnclippedBoundsInRoot().top)
         ui.onNodeWithContentDescription("最新の位置へ").assertIsDisplayed()
+    }
+
+    @Test
+    fun growingAnswerKeepsTextUnderPausedFinger() {
+        var height by mutableStateOf(500.dp)
+        ui.runOnUiThread {
+            ui.activity.setContent {
+                PiTheme(1f) {
+                    ChatTimeline(Modifier.height(180.dp)) { _, _ ->
+                        item("answer") {
+                            Column(Modifier.fillMaxWidth().height(height)) {
+                                Spacer(Modifier.height(360.dp))
+                                Spacer(Modifier.size(10.dp).testTag("text"))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fun textTop() = ui.onNodeWithTag("text").getUnclippedBoundsInRoot().top
+        val initial = textTop()
+        val chat = ui.onNodeWithTag("chat")
+        chat.performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 52f))
+        }
+        val held = textTop()
+        assertTrue(held > initial)
+        ui.runOnIdle { height += 40.dp }
+        assertEquals(held, textTop())
+        chat.performTouchInput { moveBy(Offset(0f, 32f)) }
+        assertTrue(textTop() > held)
+        chat.performTouchInput { up() }
     }
 
     @Test

@@ -1,6 +1,10 @@
 package dev.pimate.app
 
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.rememberScrollableState
+import androidx.compose.foundation.gestures.scrollable
+import androidx.compose.foundation.gestures.stopScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,22 +68,44 @@ internal fun ChatTimeline(
         tail.requestScrollToItem(0)
         follow = true
     }
+    // 基準を切り替えても、末尾で始まったドラッグとフリングは同じ scrollable が受け取る。
+    val tailGesture = rememberScrollableState { delta ->
+        if (follow) tail.dispatchRawDelta(delta) else -history.dispatchRawDelta(-delta)
+    }
     LaunchedEffect(list) {
-        snapshotFlow { list.layoutInfo to list.isScrollInProgress }
+        snapshotFlow {
+                list.layoutInfo to (list.isScrollInProgress || tailGesture.isScrollInProgress)
+            }
             .collect { (info, scrolling) ->
-                if (scrolling || info.totalItemsCount == 0 || info.reverseLayout != follow)
-                    return@collect
+                if (info.totalItemsCount == 0 || info.reverseLayout != follow) return@collect
                 if (follow && list.canScrollBackward) holdPosition()
-                else if (!follow && !list.canScrollForward) pinTail()
+                else if (!follow && !scrolling && !list.canScrollForward) pinTail()
             }
     }
 
     val fromBottom = follow
+    val tailInput = follow || tailGesture.isScrollInProgress
+    val overscroll = rememberOverscrollEffect()
     Box(modifier) {
         LazyColumn(
-            Modifier.fillMaxSize().testTag("chat"),
+            Modifier.fillMaxSize()
+                .testTag("chat")
+                .scrollable(tailGesture, Orientation.Vertical, overscroll, enabled = tailInput)
+                .semantics {
+                    if (tailInput)
+                        scrollToIndex { index ->
+                            require(index in 0 until list.layoutInfo.totalItemsCount)
+                            scope.launch {
+                                tailGesture.stopScroll()
+                                list.scrollToItem(index)
+                            }
+                            true
+                        }
+                },
             list,
             reverseLayout = fromBottom,
+            userScrollEnabled = !tailInput,
+            overscrollEffect = overscroll,
             verticalArrangement = Arrangement.Bottom,
             contentPadding = PaddingValues(start = gutter, top = 8.dp, end = gutter),
         ) {
@@ -89,6 +115,7 @@ internal fun ChatTimeline(
             IconButton(
                 onClick = {
                     scope.launch {
+                        tailGesture.stopScroll()
                         list.jumpToLatest()
                         pinTail()
                     }
